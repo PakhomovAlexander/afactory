@@ -168,9 +168,12 @@ operation/destination scope. This is a trusted machine extension, not isolation 
 
 Requests (`af/scenario-adapter-request@6`) carry `method` (`reconcile`, `execute`, `observe`),
 `intent_id`, `input_digest`, `operation`, `destination`, and typed `inputs`. Observations also
-carry an injected text `condition` input. Responses (`af/scenario-adapter-response@1`) must echo
+carry an injected text `condition` input. Responses (`af/scenario-adapter-response@2`) must echo
 both identities and supply `outcome`, bounded `evidence`, and `observation` (null for actions).
 An observation carries exact `subject`, `revision`, `condition`, `satisfied`, and `evidence`.
+For scoped implementation publication only, `native_proof_ready` and `publication_prepared` are
+closed retained progress outcomes. They earn a single immediate driver resume each; ordinary
+pending observations or uncertain responses earn none. See [the driver](scenario-impl.md#retained-foreground-driver).
 
 The installed adapter MUST implement durable idempotency by intent ID and exact input digest.
 Before returning `done`, it must retain a service receipt that reconciliation can recover. A
@@ -537,7 +540,7 @@ Creation refuses an existing label. Replay checks the revision chain and account
 missing ownership and corrupt journals fail closed.
 
 Roadmaps share `runs/scenarios.sqlite`, its immediate transactions, private ownership and checksum
-with Runs and Ants. The journal is now `af/scenario-store@13`; the previous Store shape is refused
+with Runs and Ants. The journal is now `af/scenario-store@14`; the previous Store shape is refused
 without migration. The unchanged 16 MiB document bound includes all roadmap history; the Ant
 retention policy above does not erase goal provenance or roadmap revisions. The ordinary
 machine Storage Budget counts these bytes as retained Store remainder; pruning never silently

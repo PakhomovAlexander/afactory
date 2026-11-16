@@ -225,6 +225,7 @@ if sys.argv[1:2]==['app-server']:
   if r.get('id')==2: print(json.dumps({'id':2,'result':{'account':{'type':'chatgpt','email':'scenario@example.invalid'}}}),flush=True)
  sys.exit(0)
 request=sys.stdin.read()
+with (home/'calls.jsonl').open('a') as f: f.write(json.dumps({'probe':request==PROBE_INPUT})+'\n')
 if request==PROBE_INPUT:
  message='OK'
 else:
@@ -252,14 +253,34 @@ else:
   if not (home/'scoped-mode').exists(): assert 'DISTINCT-RESEARCH' in i['research_report'][0]['payload']['text']
   root=pathlib.Path(sys.argv[sys.argv.index('-C')+1]) if '-C' in sys.argv else pathlib.Path.cwd()
   if (home/'scoped-mode').exists() and (root/'optimized.txt').exists(): (root/'repair.txt').write_text('independently accepted same-PR repair\n')
-  (root/'optimized.txt').write_text('cache decoded manifest by exact digest\n')
+  mode=(home/'scoped-mode').read_text() if (home/'scoped-mode').exists() else ''
+  if mode in ('gate-review','verifier'):
+   stage=int((root/'lifecycle-stage').read_text())+1 if (root/'lifecycle-stage').exists() else 0
+   if stage:
+    evidence=i['requirements'][0]['payload']['specification']['scenario_native_outcome']
+    findings=i['findings'][0]['payload']
+    assert findings['continues']['result_id']==evidence['receipt']['result_id']
+    assert findings['continues']['snapshot_id']==evidence['repair']['snapshot_id']
+    (root/'seen-findings.json').write_text(json.dumps(findings))
+   (root/'lifecycle-stage').write_text(str(stage))
+  (root/'optimized.txt').write_text('wrong initial gate output\n' if mode=='gate-review' and stage==0 else 'cache decoded manifest by exact digest\n')
   reply={'report':[{'summary':'Constructed the exact accepted research recommendation.'}]}
  else:
-  reply={'result':[{'outcome':'passed','reason':'exact source independently checked'}]}
+  outcome='passed'
+  mode=(home/'scoped-mode').read_text() if (home/'scoped-mode').exists() else ''
+  if mode in ('gate-review','verifier'):
+   root=pathlib.Path(sys.argv[sys.argv.index('-C')+1]) if '-C' in sys.argv else pathlib.Path.cwd()
+   stage=int((root/'lifecycle-stage').read_text())
+   counter=home/'evaluation-count'
+   count=int(counter.read_text())+1 if counter.exists() else 1
+   counter.write_text(str(count))
+   if mode=='gate-review' and stage==1 or mode=='verifier' and count==2:
+    outcome='failed'
+  reply={'result':[{'outcome':outcome,'reason':'native independent evaluator finding; repair the whole original goal' if outcome=='failed' else 'exact source independently checked'}]}
  message=json.dumps({'schema':'af.worker-reply/1','outputs':reply})
 if '-o' in sys.argv: pathlib.Path(sys.argv[sys.argv.index('-o')+1]).write_text(message)
 print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':message}}))
-print(json.dumps({'type':'turn.completed','usage':{'input_tokens':3,'cached_input_tokens':0,'output_tokens':2}}))
+print(json.dumps({'type':'turn.completed','usage':{'input_tokens':8000001 if (home/'scoped-mode').exists() and (home/'scoped-mode').read_text()=='budget' and request!=PROBE_INPUT else 3,'cached_input_tokens':0,'output_tokens':2}}))
 "#;
         std::fs::write(
             bin.join("codex"),
@@ -372,7 +393,7 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':3,'cached_inpu
 import json,sys,pathlib
 root=pathlib.Path({root:?})
 r=json.load(sys.stdin); i=r['inputs']; method=r['method']
-o=dict(schema='af/scenario-adapter-response@1',intent_id=r['intent_id'],input_digest=r['input_digest'],outcome='done',evidence='native fixture receipt',observation=None)
+o=dict(schema='af/scenario-adapter-response@2',intent_id=r['intent_id'],input_digest=r['input_digest'],outcome='done',evidence='native fixture receipt',observation=None)
 if method=='observe':
  condition=i['condition']['value']
  ready=True
@@ -450,6 +471,9 @@ print(json.dumps(o))
         bundle
     }
     fn start(&self, label: &str, bundle: &Value) -> Value {
+        self.start_recorded(label, bundle, true)
+    }
+    fn start_recorded(&self, label: &str, bundle: &Value, execute: bool) -> Value {
         write(&self.f.bundle, bundle);
         let pin = self.cli(
             &self.f.state,
@@ -476,7 +500,11 @@ print(json.dumps(o))
                 self.f.inputs.to_str().unwrap(),
                 "--confirm-pin",
                 pin["revision"].as_str().unwrap(),
-                "--execute",
+                if execute {
+                    "--execute"
+                } else {
+                    "--require-startup-scope"
+                },
             ],
         )
     }
@@ -1847,17 +1875,60 @@ sys.exit(99)
 
 #[test]
 fn native_scoped_implementation_publishes_and_repairs_one_pr_without_a_decision() {
-    native_scoped_implementation(false);
+    native_scoped_implementation(false, false, false, None, "native");
 }
 
 #[test]
 fn native_scoped_implementation_refuses_an_accepted_narrow_verifier() {
-    native_scoped_implementation(true);
+    native_scoped_implementation(true, false, false, None, "native");
 }
 
-fn native_scoped_implementation(narrow: bool) {
+#[test]
+fn native_scoped_default30s_service_publishes_one_pr_with_exact_native_accounting() {
+    native_scoped_implementation(false, true, false, None, "native");
+}
+
+#[test]
+fn native_scoped_default30s_service_recovers_a_killed_driver_reservation() {
+    native_scoped_implementation(false, true, true, None, "native");
+}
+
+#[test]
+fn native_scoped_fresh_guards_refuse_boundaries_in_independent_runs() {
+    for fault in ["actor", "destination", "source", "base"] {
+        native_scoped_implementation(false, false, false, Some(fault), "native");
+    }
+}
+
+#[test]
+fn native_scoped_default30s_routes_gate_and_review_findings_through_two_fresh_repairs() {
+    native_scoped_implementation(false, true, false, None, "gate-review");
+}
+
+#[test]
+fn native_scoped_default30s_repairs_rejected_whole_goal_verification_before_publication() {
+    native_scoped_implementation(false, true, false, None, "verifier");
+}
+
+#[test]
+fn native_scoped_driver_stops_on_native_budget_exhaustion_with_exact_charge() {
+    native_scoped_implementation(false, true, false, None, "budget");
+}
+
+#[test]
+fn native_scoped_driver_retains_a_credential_boundary_before_any_task_dispatch() {
+    native_scoped_implementation(false, true, false, None, "credentials");
+}
+
+fn native_scoped_implementation(
+    narrow: bool,
+    continuous: bool,
+    interrupt: bool,
+    fault: Option<&str>,
+    native_mode: &str,
+) {
     let p = Performance::new();
-    std::fs::write(p.home.join("scoped-mode"), "native scoped fixture").unwrap();
+    std::fs::write(p.home.join("scoped-mode"), native_mode).unwrap();
     let fixture: Value = serde_json::from_slice(include_bytes!(
         "../../../../fixtures/scenarios/performance-candidate.json"
     ))
@@ -1918,7 +1989,11 @@ fn native_scoped_implementation(narrow: bool) {
             "--body-file",
         ])
         .arg(&body)
-        .args(["--repairs", "1", "--output"])
+        .args([
+            "--repairs",
+            if native_mode == "native" { "1" } else { "2" },
+            "--output",
+        ])
         .arg(&p.f.bundle)
         .output()
         .unwrap();
@@ -2043,7 +2118,7 @@ fn native_scoped_implementation(narrow: bool) {
         "repo":p.f.repo,"task_state":p.task_state,"repository_id":template["repository_id"],"source_commit":p.commit,"source_content_digest":template["source_content_digest"],
         "repository":"octo/project","destination_repository_id":17,"actor_id":7,"actor_login":"owner","branch_prefix":"implementation/","base":"main",
         "grants":root.authority.grants,"templates":{pins[0]["template_id"].as_str().unwrap():models("implement"),pins[1]["template_id"].as_str().unwrap():models("verification")},
-        "limits":root.limits,"max_repairs":1,"expires_unix_ms":8_000_000_000_000_u64});
+        "limits":root.limits,"max_repairs":if native_mode == "native" { 1 } else { 2 },"expires_unix_ms":8_000_000_000_000_u64});
     let mut policy: Value = serde_json::from_slice(&std::fs::read(&p.f.policy).unwrap()).unwrap();
     policy["task_templates"] = json!([pins[0]["template_id"], pins[1]["template_id"]]);
     policy["decision_keys"] = json!({});
@@ -2072,9 +2147,132 @@ fn native_scoped_implementation(narrow: bool) {
     write(
         &service_file,
         &json!({"prs":[], "posts":0, "pushes":0, "lose_post":true,
-        "faults":["actor","destination","source","base"]}),
+        "faults":fault.into_iter().collect::<Vec<_>>(), "delayed_ci":continuous, "interrupt_checkpoint":interrupt, "first_checks_pass":native_mode != "native"}),
     );
-    let mut run = p.start("scoped", &serde_json::to_value(&bundle).unwrap());
+    write(&p.f.bundle, &serde_json::to_value(&bundle).unwrap());
+    let pin = p.cli(
+        &p.f.state,
+        &[
+            "scenario",
+            "validate",
+            "--file",
+            p.f.bundle.to_str().unwrap(),
+            "--authority",
+            p.f.policy.to_str().unwrap(),
+        ],
+    );
+    let before = p.cli(&p.task_state, &["task", "list"]);
+    let refused = p.output(
+        &p.f.state,
+        &[
+            "scenario",
+            "start",
+            "incompatible",
+            "--file",
+            p.f.bundle.to_str().unwrap(),
+            "--authority",
+            p.f.policy.to_str().unwrap(),
+            "--inputs",
+            p.f.inputs.to_str().unwrap(),
+            "--confirm-pin",
+            pin["revision"].as_str().unwrap(),
+            "--poll-ms",
+            "60000",
+            "--execute",
+        ],
+    );
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("incompatible with publication step")
+    );
+    assert_eq!(p.cli(&p.task_state, &["task", "list"]), before);
+    assert!(!p.home.join("requests.jsonl").exists());
+    assert!(!p.home.join("calls.jsonl").exists());
+    let mut run = p.start_recorded(
+        "scoped",
+        &serde_json::to_value(&bundle).unwrap(),
+        !continuous,
+    );
+    if let Some(fault) = fault {
+        for _ in 0..2 {
+            run = p.cli(&p.f.state, &["scenario", "resume", "scoped"]);
+        }
+        let state: Value = serde_json::from_slice(&std::fs::read(&service_file).unwrap()).unwrap();
+        assert_eq!(state["refusals"], json!([fault]), "{state}; {run}");
+        assert_eq!(state["posts"], 0);
+        assert_eq!(state["pushes"], 0);
+        assert!(state.get("bad_guard_success").is_none());
+        assert_eq!(run["waiting"]["step"], "root/publish");
+        let cancelled = p.cli(
+            &p.f.state,
+            &[
+                "scenario",
+                "cancel",
+                "scoped",
+                "--reason",
+                "Independent boundary regression complete",
+            ],
+        );
+        assert_eq!(cancelled["status"], "cancelled");
+        return;
+    }
+    if matches!(native_mode, "budget" | "credentials") {
+        if native_mode == "credentials" {
+            let mut state: Value =
+                serde_json::from_slice(&std::fs::read(&service_file).unwrap()).unwrap();
+            state["credentials_unavailable"] = json!(true);
+            write(&service_file, &state);
+        }
+        let stopped = p.cli(&p.f.state, &["scenario", "drive", "scoped"]);
+        assert_eq!(stopped["status"], "failed", "{}", stopped["failure"]);
+        let driver = p.cli(&p.f.state, &["scenario", "driver-status", "scoped"]);
+        assert_eq!(driver["blocker"]["kind"], "boundary");
+        let state: Value = serde_json::from_slice(&std::fs::read(&service_file).unwrap()).unwrap();
+        assert_eq!(state["pushes"], 0);
+        assert_eq!(state["posts"], 0);
+        if native_mode == "budget" {
+            assert_eq!(stopped["fresh_tasks"].as_object().unwrap().len(), 1);
+            let target = stopped["fresh_tasks"]
+                .as_object()
+                .unwrap()
+                .values()
+                .next()
+                .unwrap();
+            let task = p.cli(
+                &p.task_state,
+                &["task", "show", target["task_id"].as_str().unwrap()],
+            );
+            let charge = task["chargeable_tokens"]
+                .as_str()
+                .unwrap()
+                .parse::<u64>()
+                .unwrap();
+            let reservation = stopped["task_charges"]
+                .as_object()
+                .unwrap()
+                .values()
+                .next()
+                .unwrap();
+            assert_eq!(reservation["charged"], charge);
+            assert!(charge > reservation["maximum"].as_u64().unwrap());
+            assert_eq!(reservation["unknown_usage"], false);
+        } else {
+            assert!(stopped["fresh_tasks"].as_object().unwrap().is_empty());
+            assert!(!p.home.join("requests.jsonl").exists());
+            assert!(!p.home.join("calls.jsonl").exists());
+        }
+        let resumed = p.cli(&p.f.state, &["scenario", "resume", "scoped"]);
+        assert_eq!(resumed["fresh_tasks"], stopped["fresh_tasks"]);
+        assert_eq!(resumed["task_charges"], stopped["task_charges"]);
+        return;
+    }
+    if continuous {
+        assert_eq!(run["status"], "ready");
+        assert!(run["fresh_tasks"].as_object().unwrap().is_empty());
+        run = drive_native_scoped(&p, &service_file, interrupt);
+        assert_native_scoped_accounting(&p, &run, &service_file);
+        return;
+    }
     if narrow {
         let publication = run["frames"]["root"]["steps"]
             .as_array()
@@ -2191,10 +2389,11 @@ fn native_scoped_implementation(narrow: bool) {
     let typed_request: af_scenario::adapter::Request =
         serde_json::from_value(request.clone()).unwrap();
     let world = af_scenario::store::World {
-        schema: "af/scenario-store@13".into(),
+        schema: "af/scenario-store@14".into(),
         writer_version: env!("CARGO_PKG_VERSION").into(),
         runs: std::collections::BTreeMap::from([(captured.id.clone(), captured.clone())]),
         run_capacity: Default::default(),
+        drivers: Default::default(),
         ants: Default::default(),
         roadmaps: Default::default(),
     };
@@ -2257,30 +2456,8 @@ fn native_scoped_implementation(narrow: bool) {
             "live scope accepted {fault}"
         );
     }
-    for expected in 1..=4 {
-        let observed: Value =
-            serde_json::from_slice(&std::fs::read(&service_file).unwrap()).unwrap();
-        assert_eq!(observed["pushes"], 0, "{observed}");
-        assert_eq!(observed["posts"], 0, "{observed}");
-        assert_eq!(
-            observed["refusals"].as_array().unwrap().len(),
-            expected,
-            "{observed}; waiting: {}",
-            run["waiting"]
-        );
-        assert!(observed.get("bad_guard_success").is_none(), "{observed}");
-        assert_eq!(run["waiting"]["step"], "root/publish", "{run}");
-        run = p.cli(&p.f.state, &["scenario", "resume", "scoped"]);
-    }
-
-    for _ in 0..8 {
-        if run["waiting"]["step"] == "root/merged" {
-            break;
-        }
-        assert_ne!(run["status"], "failed", "{run}");
-        run = p.cli(&p.f.state, &["scenario", "resume", "scoped"]);
-    }
-    assert_eq!(run["waiting"]["step"], "root/merged", "{run}");
+    run = drive_native_scoped(&p, &service_file, false);
+    assert_native_scoped_accounting(&p, &run, &service_file);
     let remote_state: Value =
         serde_json::from_slice(&std::fs::read(&service_file).unwrap()).unwrap();
     assert_eq!(remote_state["posts"], 1, "{remote_state}");
@@ -2304,4 +2481,231 @@ fn native_scoped_implementation(narrow: bool) {
     let again: Value = serde_json::from_slice(&std::fs::read(&service_file).unwrap()).unwrap();
     assert_eq!(again["posts"], 1);
     assert_eq!(again["pushes"], 2);
+}
+
+fn assert_native_scoped_accounting(p: &Performance, run: &Value, service_file: &Path) {
+    let service: Value = serde_json::from_slice(&std::fs::read(service_file).unwrap()).unwrap();
+    assert_eq!(service["posts"], 1, "{service}");
+    let ci_repair = p.home.join("scoped-mode").exists()
+        && std::fs::read_to_string(p.home.join("scoped-mode")).unwrap() == "native";
+    assert_eq!(
+        service["pushes"],
+        if ci_repair { 2 } else { 1 },
+        "{service}"
+    );
+    assert_eq!(
+        service["patches"].as_u64().unwrap_or(0),
+        u64::from(ci_repair),
+        "{service}"
+    );
+    assert_eq!(service["prs"].as_array().unwrap().len(), 1);
+    assert_eq!(service["prs"][0]["merged"], false);
+    assert_eq!(run["fresh_tasks"].as_object().unwrap().len(), 4);
+    let mode = std::fs::read_to_string(p.home.join("scoped-mode")).unwrap();
+    let outcomes = run["frames"]["root"]["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["outputs"]["result"]["value"]["outcome"].as_str())
+        .collect::<Vec<_>>();
+    let expected = match mode.as_str() {
+        "gate-review" => vec!["gate_failed", "changes_requested", "verified", "verified"],
+        "verifier" => vec!["verified", "changes_requested", "verified", "verified"],
+        _ => vec!["verified", "verified", "verified", "verified"],
+    };
+    assert_eq!(outcomes, expected);
+    for entry in std::fs::read_dir(p.f.machine.join("publication")).unwrap() {
+        let path = entry.unwrap().path();
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "source")
+        {
+            let exported: Value =
+                serde_json::from_slice(&std::fs::read(path.join("source.json")).unwrap()).unwrap();
+            valid("git-candidate-source-v2.json", &exported);
+            if mode != "native" {
+                assert_ne!(
+                    exported["source_snapshot"], exported["task_source_snapshot"],
+                    "a native repair exports its whole original baseline, separately from its immediate source"
+                );
+            }
+        }
+    }
+    let mut total = 0u64;
+    let mut model_calls = 0u64;
+    for target in run["fresh_tasks"].as_object().unwrap().values() {
+        let task = p.cli(
+            &p.task_state,
+            &["task", "show", target["task_id"].as_str().unwrap()],
+        );
+        let charge = task["chargeable_tokens"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        total += charge;
+        let settled = task["execution_records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| &r["record"])
+            .filter(|r| r["kind"] == "settled")
+            .collect::<Vec<_>>();
+        let mut ids = std::collections::BTreeSet::new();
+        let ledger = settled
+            .iter()
+            .map(|r| {
+                assert!(ids.insert(r["attempt_id"].as_str().unwrap()));
+                let tokens = r["charged_tokens"]
+                    .as_str()
+                    .unwrap()
+                    .parse::<u64>()
+                    .unwrap();
+                assert!(
+                    tokens == 0 || tokens == 5,
+                    "Unexpected native fixture charge: {r}"
+                );
+                if tokens == 5 {
+                    model_calls += 1;
+                }
+                tokens
+            })
+            .sum::<u64>();
+        assert_eq!(
+            charge, ledger,
+            "native cumulative charge must equal distinct settled Attempt receipts"
+        );
+        assert!(task.get("unknown_usage_attempts").is_none(), "{task}");
+    }
+    let charges = run["task_charges"].as_object().unwrap();
+    assert_eq!(charges.len(), 4);
+    assert_eq!(
+        charges
+            .values()
+            .map(|c| c["charged"].as_u64().unwrap())
+            .sum::<u64>(),
+        total
+    );
+    assert!(charges.values().all(|c| c["unknown_usage"] == false));
+    assert!(total > 0);
+    let requests = std::fs::read_to_string(p.home.join("requests.jsonl")).unwrap();
+    assert!(requests.lines().count() as u64 <= model_calls);
+    let calls = std::fs::read_to_string(p.home.join("calls.jsonl")).unwrap();
+    assert_eq!(calls.lines().count() as u64, model_calls);
+    assert_eq!(total, model_calls * 5);
+    let status = p.cli(&p.f.state, &["scenario", "driver-status", "scoped"]);
+    valid("scenario-driver-v1.json", &status);
+    assert_eq!(status["poll_ms"], 30_000);
+    assert_eq!(
+        status["frontiers"].as_object().unwrap().len(),
+        if ci_repair { 2 } else { 1 }
+    );
+    assert!(status["acknowledged"].as_array().unwrap().len() <= 4);
+    assert!(status["resumes"].as_u64().unwrap() < 32);
+    for step in run["frames"]["root"]["steps"].as_array().unwrap() {
+        assert!(step["decision"].is_null());
+        if step["step"].as_str().unwrap().starts_with("publish") {
+            assert_eq!(
+                step["deadline_unix_ms"].as_u64().unwrap()
+                    - step["started_unix_ms"].as_u64().unwrap(),
+                120_000
+            );
+            assert_eq!(step["status"], "succeeded");
+        }
+    }
+}
+
+fn drive_native_scoped(p: &Performance, service_file: &Path, interrupt: bool) -> Value {
+    struct Service(std::process::Child);
+    impl Drop for Service {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let spawn = || {
+        Service(
+            crate::common::af()
+                .current_dir(&p.f.repo)
+                .env("HOME", &p.home)
+                .env("PATH", &p.path)
+                .env("AF_PROVIDERS_FILE", p.home.join("providers.toml"))
+                .args(["scenario", "drive", "scoped", "--json", "--state"])
+                .arg(&p.f.state)
+                .stdout(std::fs::File::create(p.f.machine.join("driver-stdout")).unwrap())
+                .stderr(std::fs::File::create(p.f.machine.join("driver-stderr")).unwrap())
+                .spawn()
+                .unwrap(),
+        )
+    };
+    let mut service = spawn();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(240);
+    let mut interrupted = false;
+    let run = loop {
+        if interrupt && !interrupted && service_file.with_extension("barrier").exists() {
+            let before = p.cli(&p.f.state, &["scenario", "driver-status", "scoped"]);
+            service.0.kill().unwrap();
+            service.0.wait().unwrap();
+            let retained = p.cli(&p.f.state, &["scenario", "driver-status", "scoped"]);
+            assert_eq!(
+                retained, before,
+                "killing the CLI must not refund its reservation"
+            );
+            service = spawn();
+            interrupted = true;
+        }
+        let run = p.cli(&p.f.state, &["scenario", "show", "scoped"]);
+        assert_ne!(
+            run["status"],
+            "failed",
+            "{run}; {}",
+            std::fs::read_to_string(p.f.machine.join("driver-stderr")).unwrap()
+        );
+        if run["waiting"]["step"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("root/prepare"))
+        {
+            let fixture: Value =
+                serde_json::from_slice(&std::fs::read(service_file).unwrap()).unwrap();
+            assert!(
+                fixture.get("last_error").is_none(),
+                "native preparation fixture failed: {}",
+                fixture["last_error"]
+            );
+        }
+        if run["status"] == "waiting" && run["waiting"]["step"] == "root/merged" {
+            break run;
+        }
+        assert!(
+            service.0.try_wait().unwrap().is_none(),
+            "service exited: {}",
+            std::fs::read_to_string(p.f.machine.join("driver-stderr")).unwrap()
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "driver did not settle: status={}, waiting={}, fixture={}",
+            run["status"],
+            run["waiting"],
+            std::fs::read_to_string(service_file).unwrap_or_default()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    assert_eq!(interrupted, interrupt);
+    let cancelled = p.cli(
+        &p.f.state,
+        &[
+            "scenario",
+            "cancel",
+            "scoped",
+            "--reason",
+            "Human merge remains external",
+        ],
+    );
+    assert_eq!(cancelled["status"], "cancelled");
+    // Service shutdown follows the retained due reservation, not a status != waiting shortcut.
+    while service.0.try_wait().unwrap().is_none() {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    run
 }

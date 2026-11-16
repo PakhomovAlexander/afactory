@@ -1,5 +1,5 @@
 {
-  "$id": "urn:af:schema:git-candidate-source-request:1",
+  "$id": "urn:af:schema:git-candidate-source-request:2",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
@@ -26,7 +26,7 @@
       "$ref": "urn:af:schema:scenario:8#/$defs/TaskReceipt"
     },
     "schema": {
-      "const": "af/git-candidate-source-request@1"
+      "const": "af/git-candidate-source-request@2"
     },
     "source_commit": {
       "maxLength": 65536,
@@ -42,6 +42,6 @@
     "candidate_snapshot_id",
     "predecessor_snapshot_id"
   ],
-  "title": "git-candidate-source-request v1",
+  "title": "git-candidate-source-request v2",
   "type": "object"
 }

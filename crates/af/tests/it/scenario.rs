@@ -1216,7 +1216,7 @@ fn github_read_only_source_sequence(f: Fixture) {
         &std::fs::read(f.machine.join("github-receipts/state.json")).unwrap(),
     )
     .unwrap();
-    valid("github-adapter-state-v6.json", &journal);
+    valid("github-adapter-state-v7.json", &journal);
     assert_eq!(journal["records"].as_object().unwrap().len(), 3);
     assert_eq!(
         f.github_state()["effects"],
@@ -4256,8 +4256,11 @@ fn scoped_startup_native_preflight_refuses_command_template_before_zero_task_dis
     let typed: af_scenario::contract::Bundle = serde_json::from_value(bundle).unwrap();
     write(&f.bundle, &serde_json::to_value(&typed).unwrap());
     let template = &pinned["template"];
+    assert_eq!(template["repo"], json!(f.repo.canonicalize().unwrap()));
+    assert_eq!(template["state"], json!(task_state.canonicalize().unwrap()));
+    // Preserve the pin's canonical source identity, including macOS /var aliases.
     let scope = json!({"schema":"af/implementation-startup-scope@2", "owner":"owner", "recipe_id":af_scenario::contract::hash(&typed).unwrap(),
-        "repo":f.repo, "task_state":task_state, "repository_id":template["repository_id"], "source_commit":commit.trim(), "source_content_digest":template["source_content_digest"],
+        "repo":template["repo"], "task_state":template["state"], "repository_id":template["repository_id"], "source_commit":commit.trim(), "source_content_digest":template["source_content_digest"],
         "repository":"owner/project", "destination_repository_id":1,"actor_id":2,"actor_login":"owner", "branch_prefix":"implementation/", "base":"main", "grants":[],
         "templates":{pinned["template_id"].as_str().unwrap():{"fixture/worker":{"provider":"codex-personal","provider_kind":"codex","model":"gpt-6.1-sol","effort":"medium"}}},
         "limits":typed.definitions["main"].limits,"max_repairs":0,"expires_unix_ms":8_000_000_000_000_u64});

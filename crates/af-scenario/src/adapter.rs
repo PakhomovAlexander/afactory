@@ -38,6 +38,8 @@ pub enum Outcome {
     Pending,
     Absent,
     Failed,
+    NativeProofReady,
+    PublicationPrepared,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -52,12 +54,23 @@ pub struct Response {
 impl Response {
     fn validate(&self, request: &Request) -> Result<()> {
         require(
-            self.schema == "af/scenario-adapter-response@1"
+            self.schema == "af/scenario-adapter-response@2"
                 && self.intent_id == request.intent_id
                 && self.input_digest == request.input_digest,
             "Adapter returned stale or unrelated evidence",
         )?;
         text(&self.evidence)?;
+        if matches!(
+            self.outcome,
+            Outcome::NativeProofReady | Outcome::PublicationPrepared
+        ) {
+            require(
+                request.operation == Operation::PublishImplementationPrV1
+                    && request.method != Method::Observe
+                    && self.observation.is_none(),
+                "Progress is outside scoped native publication",
+            )?;
+        }
         if let Some(o) = &self.observation {
             o.validate()?;
         }
@@ -80,6 +93,10 @@ pub enum Settlement {
     TaskDone {
         outputs: BTreeMap<String, Datum>,
         unknown_usage: bool,
+    },
+    Progress {
+        checkpoint: crate::driver::Checkpoint,
+        evidence: String,
     },
     Waiting(String),
     Failed(String),
@@ -323,6 +340,14 @@ pub(crate) fn dispatch(
                     )])))
                 }
                 Outcome::Failed => Ok(Settlement::Failed(r.evidence)),
+                Outcome::NativeProofReady => Ok(Settlement::Progress {
+                    checkpoint: crate::driver::Checkpoint::NativeProofReady,
+                    evidence: r.evidence,
+                }),
+                Outcome::PublicationPrepared => Ok(Settlement::Progress {
+                    checkpoint: crate::driver::Checkpoint::PublicationPrepared,
+                    evidence: r.evidence,
+                }),
                 _ => Ok(Settlement::Waiting(r.evidence)),
             }
         }

@@ -17,6 +17,15 @@ pub fn now() -> Result<u64> {
     .map_err(|e| e.to_string())
 }
 pub fn resume(store: &Store, id: &str, clock: Option<u64>) -> Result<Run> {
+    resume_admitted(store, id, clock, true)
+}
+
+pub(crate) fn resume_admitted(
+    store: &Store,
+    id: &str,
+    clock: Option<u64>,
+    preflight: bool,
+) -> Result<Run> {
     let existing = store
         .read()?
         .runs
@@ -42,7 +51,7 @@ pub fn resume(store: &Store, id: &str, clock: Option<u64>) -> Result<Run> {
     // expiry and cancellation checks and final adapter authorization remain live.
     let admitted = store.read()?;
     let admitted = admitted.runs.get(id).ok_or("Scenario Run not found")?;
-    if admitted.status.active() {
+    if preflight && admitted.status.active() {
         super::implementation::preflight(store.host.as_ref(), &admitted.pin)?;
     }
     loop {
@@ -275,7 +284,16 @@ pub fn resume(store: &Store, id: &str, clock: Option<u64>) -> Result<Run> {
                     }
                     Ok(cancelled || charge_breached)
                 }
-                Ok(Settlement::Waiting(ref evidence)) | Ok(Settlement::Uncertain(ref evidence)) => {
+                Ok(Settlement::Progress { ref evidence, .. })
+                | Ok(Settlement::Waiting(ref evidence))
+                | Ok(Settlement::Uncertain(ref evidence)) => {
+                    if let Ok(Settlement::Progress { checkpoint, .. }) = &result {
+                        world
+                            .drivers
+                            .get_mut(id)
+                            .ok_or("Native driver receipt missing")?
+                            .progress(&dispatch, *checkpoint)?;
+                    }
                     text(evidence)?;
                     let progress = run
                         .frames
@@ -434,7 +452,7 @@ pub fn cancel(store: &Store, id: &str, reason: String, at: u64) -> Result<Run> {
 
 /// Recover a native result whose response was lost, including after cancellation or deadline.
 /// Missing, running or unreadable Tasks retain the full reservation; no caller supplies usage.
-fn reconcile_native_charges(store: &Store, id: &str, at: u64) -> Result<()> {
+pub(crate) fn reconcile_native_charges(store: &Store, id: &str, at: u64) -> Result<()> {
     let world = store.read()?;
     let run = world.runs.get(id).ok_or("Scenario Run not found")?;
     require(at >= run.updated_unix_ms, "Run clock moved backwards")?;
@@ -564,7 +582,17 @@ pub fn tick(store: &Store, now: u64, clock: Option<u64>) -> Result<Tick> {
     let mut results = BTreeMap::new();
     let mut busy = Vec::new();
     for id in &active {
-        match resume(store, id, clock) {
+        let scoped = store.read()?.runs[id]
+            .pin
+            .policy
+            .implementation_startup
+            .is_some();
+        let result = if scoped {
+            crate::driver::once_until_idle(store, id)
+        } else {
+            resume(store, id, clock)
+        };
+        match result {
             Ok(run) => {
                 results.insert(id.clone(), run);
             }

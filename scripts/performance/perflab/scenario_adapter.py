@@ -105,7 +105,7 @@ class Adapter:
                 "unsupported Scenario adapter version or destination")
         for key in ("intent_id", "input_digest"):
             contracts.DIGEST.validate(request[key], key)
-        response = dict(schema="af/scenario-adapter-response@1", intent_id=request["intent_id"],
+        response = dict(schema="af/scenario-adapter-response@2", intent_id=request["intent_id"],
                         input_digest=request["input_digest"], outcome="pending",
                         evidence="submission requires reconciliation", observation=None)
         method, inputs = request["method"], request["inputs"]

@@ -172,6 +172,9 @@ impl Run {
     ) -> Result<Self> {
         name(&id)?;
         pin.validate(host)?;
+        if pin.policy.implementation_startup.is_some() {
+            crate::driver::validate_run_schedule(&pin, &limits, crate::driver::DEFAULT_POLL_MS)?;
+        }
         super::implementation::preflight(host, &pin)?;
         let now = if pin.policy.implementation_startup.is_some() {
             host.authorization_time()?
@@ -989,7 +992,14 @@ impl Run {
             intent.input_digest == input_digest,
             "Intent inputs changed across recovery",
         )?;
-        self.reserve_dispatch(&full)?;
+        // Re-observing the same scoped Wait is an idle poll, not a new dispatch.
+        // Resume reservations and wall/step deadlines still bound it.
+        if !(self.pin.policy.implementation_startup.is_some()
+            && matches!(step.operation, Kind::Wait { .. })
+            && intent.phase == Phase::Uncertain)
+        {
+            self.reserve_dispatch(&full)?;
+        }
         let p = &mut self.frames.get_mut(path).unwrap().steps[i];
         p.intents = intents;
         p.status = Status::Running;

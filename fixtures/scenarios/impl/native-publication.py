@@ -67,7 +67,9 @@ class Service:
                 raise RuntimeError('controlled loss after retained POST')
             return state['prs'][0]
         assert method == 'GET'
-        if path == '/user': return dict(id=state.get('actor_id', 7), login='owner')
+        if path == '/user':
+            if state.get('credentials_unavailable'): raise a.Refused('controlled credential boundary')
+            return dict(id=state.get('actor_id', 7), login='owner')
         if path == '/repos/octo/project':
             if state.get('source_after_actor') is not None:
                 state['source_actor_reads'] = state.get('source_actor_reads', 0) + 1
@@ -89,12 +91,17 @@ class Service:
         if path == '/repos/octo/project/pulls': return state['prs']
         if path.endswith('/reviews'): return []
         revision = path.split('/')[-2]
-        conclusion = 'success' if state['pushes'] >= 2 else 'failure'
+        conclusion = 'success' if state.get('first_checks_pass') or state['pushes'] >= 2 else 'failure'
+        if state.get('delayed_ci') and path.endswith('/check-runs'):
+            reads = state.setdefault('ci_reads', {})
+            reads[revision] = reads.get(revision, 0) + 1
+            save()
+        pending = state.get('delayed_ci') and state.get('ci_reads', {}).get(revision, 0) <= 1
         if path.endswith('/check-runs'):
             return [dict(id=50, name='CI', app=dict(id=4), head_sha=revision,
-                         check_suite=dict(id=40), status='completed', conclusion=conclusion)]
+                         check_suite=dict(id=40), status='in_progress' if pending else 'completed', conclusion=None if pending else conclusion)]
         if path.endswith('/check-suites'):
-            return [dict(id=40, app=dict(id=4), head_sha=revision, status='completed', conclusion=conclusion)]
+            return [dict(id=40, app=dict(id=4), head_sha=revision, status='in_progress' if pending else 'completed', conclusion=None if pending else conclusion)]
         raise AssertionError(path)
 
 
@@ -158,4 +165,10 @@ except Exception as error:
     state['last_error'] = type(error).__name__ + ': ' + str(error)
     save()
     raise
+if state.get('interrupt_checkpoint') and response.get('outcome') == 'publication_prepared':
+    state['interrupt_checkpoint'] = False
+    save()
+    service_file.with_suffix('.barrier').write_text('checkpoint persisted before native settlement')
+    import time
+    time.sleep(2)
 print(json.dumps(response))

@@ -4,6 +4,8 @@ import copy
 from contextlib import contextmanager
 import hashlib
 import inspect
+import textwrap
+import threading
 import json
 import os
 import runpy
@@ -45,9 +47,30 @@ def publish_fixture_db(path, value):
             temporary.unlink(missing_ok=True)
 
 
-# Both generated executables use the same standalone fixture publisher.
+def fixture_db_lock(path):
+    """Serialize fixture read/modify/write transactions, not just JSON replacement."""
+    import fcntl
+    lock = open(str(path) + '.lock', 'a')
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+    except BaseException:
+        lock.close()
+        raise
+    return lock
+
+
+# All generated fixture writers hold the same lock from read through final save.
 FIXTURE_DB_HELPER = inspect.getsource(publish_fixture_db)
-FAKE = '#!/usr/bin/env python3\n' + FIXTURE_DB_HELPER + r'''
+
+
+def fixture_program(body):
+    return ('#!/usr/bin/env python3\n' + FIXTURE_DB_HELPER +
+            inspect.getsource(fixture_db_lock) +
+            'import os\nwith fixture_db_lock(os.environ["FAKE_DB"]) as fixture_lock:\n' +
+            textwrap.indent(body, ' '))
+
+
+FAKE = fixture_program(r'''
 import hashlib,json,os,subprocess,sys,time
 from pathlib import Path
 name=Path(sys.argv[0]).name
@@ -159,6 +182,7 @@ if a[0]=='api':
   if endpoint.startswith('actions/artifacts/'): sys.stdout.buffer.write(archive);sys.exit(0)
   if '/artifacts?' in endpoint:
    rows=[] if d.get('ci_plan_missing') else [{'id':observed_run_id*1000+d.get('artifact_attempt',attempt),'name':'validation-plan-'+str(d.get('artifact_attempt',attempt)),'expired':False,'digest':(d.get('plan_digest') or 'sha256:'+hashlib.sha256(archive).hexdigest()),'workflow_run':{'id':observed_run_id,'head_sha':head}}]
+   d.setdefault('ci_plan_reads',[]).append({'run_id':observed_run_id,'profile':plan['profile'],'missing':not rows});save()
    out({'total_count':len(rows)+(1 if d.get('ci_artifacts_partial_page') else 0),'artifacts':rows})
   state='pass' if observed_run_id==10 and d.get('ci_superseded') else d.get('checks','pass')
   status='in_progress' if state=='pending' else 'completed'
@@ -199,7 +223,7 @@ if a[:2]==['pr','list']:
  head=a[a.index('--head')+1]
  if head.startswith('release/pin-'): out(d.get('pins',[]))
  if d.get('pause_after_validation') and d.get('metadata_check_runs'):
-  d['paused']=True;save();time.sleep(30)
+  d['paused']=True;save();fixture_lock.close();time.sleep(30)
  out([d['pr']] if d.get('pr') and d.get('pr_branch') == head else [])
 if a[:2]==['pr','create']:
  def create():
@@ -246,7 +270,7 @@ if a[:2]==['release','download']:
   (directory/name).write_bytes((Path(d['assets'])/name).read_bytes())
  effect('download',download);sys.exit(0)
 print('unsupported fake request '+str(a),file=sys.stderr);sys.exit(98)
-'''
+''')
 
 
 def write_fixture_executables(directory):
@@ -258,22 +282,24 @@ def write_fixture_executables(directory):
 
 
 def write_fixture_gate(path):
-    path.write_text('#!' + sys.executable + '\n' + FIXTURE_DB_HELPER +
+    path.write_text(fixture_program(
                     'import json,os,sys\nfrom pathlib import Path\n'
                     'p=os.environ["FAKE_DB"];d=json.loads(Path(p).read_text());'
                     'd["gate_runs"]=d.get("gate_runs",0)+1;publish_fixture_db(p,d);'
                     'import subprocess\n'
                     'subprocess.run([sys.executable,"-I","scripts/release-contract.py"],check=True)\n'
-                    'sys.exit(9 if d.get("gate_fail") else 0)\n')
+                    'sys.exit(9 if d.get("gate_fail") else 0)\n'))
     path.chmod(0o755)
 
 
 def fixture_data(path, **changes):
-    value = json.loads(path.read_text())
-    if changes:
+    if not changes:
+        return json.loads(path.read_text())
+    with fixture_db_lock(path):
+        value = json.loads(path.read_text())
         value.update(changes)
         publish_fixture_db(path, value)
-    return value
+        return value
 
 
 class FixtureDatabase(unittest.TestCase):
@@ -325,6 +351,87 @@ class FixtureDatabase(unittest.TestCase):
                 fixture_data(self.db)
             json.dump(old, stream)
         self.assertEqual(fixture_data(self.db), old)
+
+    def test_controller_update_waits_for_fake_read_modify_write(self):
+        # Force the controller to update after gh read the old snapshot but
+        # before its API observation is saved. Atomic replacement alone loses
+        # that update; the transaction lock must retain both writers' evidence.
+        attempted = threading.Event()
+        finished = threading.Event()
+        errors = []
+        original_lock = fixture_db_lock
+        original_replace = os.replace
+        controller = None
+
+        def controller_lock(path):
+            attempted.set()
+            return original_lock(path)
+
+        def update():
+            try:
+                fixture_data(self.db, ci_plan_missing=False, ci_run_id=20)
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                finished.set()
+
+        def replace(source, destination):
+            nonlocal controller
+            if threading.current_thread() is threading.main_thread():
+                controller = threading.Thread(target=update)
+                controller.start()
+                self.assertTrue(attempted.wait(5), 'controller never attempted its transaction')
+                import fcntl
+                with open(str(self.db) + '.lock', 'a') as probe:
+                    with self.assertRaises(BlockingIOError):
+                        fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.assertFalse(finished.is_set())
+            return original_replace(source, destination)
+
+        try:
+            with mock.patch.dict(os.environ, self.env), \
+                    mock.patch.object(sys, 'argv', [str(self.bin / 'gh'), 'api', 'repos/o/r']), \
+                    mock.patch(__name__ + '.fixture_db_lock', side_effect=controller_lock), \
+                    mock.patch('os.replace', side_effect=replace), mock.patch('sys.stdout'):
+                with self.assertRaises(SystemExit) as stopped:
+                    runpy.run_path(str(self.bin / 'gh'), run_name='__main__')
+                self.assertEqual(stopped.exception.code, 0)
+        finally:
+            if controller is not None:
+                controller.join(timeout=5)
+        self.assertTrue(finished.is_set(), 'controller remained blocked after fake exit')
+        self.assertEqual(errors, [])
+        value = fixture_data(self.db)
+        self.assertEqual(value['api_requests'], ['repos/o/r'])
+        self.assertEqual(value['ci_run_id'], 20)
+        self.assertFalse(value['ci_plan_missing'])
+
+    def test_stage_failure_reports_persisted_state_and_driver_status(self):
+        observer = ReleaseCLI(methodName='runTest')
+        observer.state = self.base / 'state'
+        observer.state.mkdir()
+        observer.db = self.db
+        persisted = {'stage': 'checks', 'status': 'waiting', 'receipts': {'checks': {'next': 'plan'}}}
+        (observer.state / 'run.json').write_text(json.dumps(persisted))
+        process = mock.Mock(pid=123)
+        for returncode in (3, None):
+            with self.subTest(returncode=returncode):
+                process.reset_mock()
+                process.poll.return_value = returncode
+                process.communicate.return_value = ('output', 'diagnostic')
+                with mock.patch('time.monotonic', side_effect=[0, 0, 26]), \
+                        mock.patch('time.sleep'):
+                    with self.assertRaises(AssertionError) as failed:
+                        observer.await_stage(process, 'publication')
+                message = str(failed.exception)
+                self.assertIn('returncode=' + repr(returncode), message)
+                self.assertIn('persisted_state=' + json.dumps(persisted), message)
+                self.assertIn('controller_marker=False', message)
+                if returncode is None:
+                    process.communicate.assert_not_called()
+                    self.assertIn('driver still running', message)
+                else:
+                    self.assertIn('diagnostic', message)
 
     def test_fixture_writers_publish_complete_documents_atomically(self):
         original_file = tempfile.NamedTemporaryFile
@@ -466,7 +573,7 @@ class ReleaseCLI(unittest.TestCase):
             target + ' = "sha256:' + 'a' * 64 + '"\n' for target in policy['targets']))
         (self.source / 'Cargo.lock').write_text('# fixture lock\n')
         harness = self.source / 'scripts/performance/cli.py'
-        harness.write_text(FIXTURE_DB_HELPER +
+        harness.write_text(fixture_program(
                            'import json,os,pathlib,sys\np=pathlib.Path("fixtures/performance/kernel-measure/pin")\n'
                            'if "--write" in sys.argv:\n p.parent.mkdir(parents=True,exist_ok=True);p.write_text("pin")\n'
                            'elif sys.argv[1:] == ["harness-digest","--check"]:\n'
@@ -474,7 +581,7 @@ class ReleaseCLI(unittest.TestCase):
                            '  f=os.environ["FAKE_DB"];d=json.loads(pathlib.Path(f).read_text())\n'
                            '  d["metadata_check_runs"]=d.get("metadata_check_runs",0)+1;publish_fixture_db(f,d)\n'
                            '  sys.exit(9 if d.get("metadata_check_fail") else 0)\n'
-                           'else: sys.exit(98)\n')
+                           'else: sys.exit(98)\n'))
         write_fixture_gate(self.source / 'scripts/verify.sh')
         self.git('init', '-q', '-b', 'main', self.source)
         self.commit('initial')
@@ -524,14 +631,35 @@ class ReleaseCLI(unittest.TestCase):
         deadline = time.monotonic() + 25
         while time.monotonic() < deadline:
             if process.poll() is not None:
-                self.fail('driver exited early: ' + str(process.communicate()))
+                self.driver_failure(process, 'driver exited before waiting ' + stage)
             if (self.state / 'run.json').exists():
                 state = self.state_value()
                 if (state['stage'] == stage and state['status'] == 'waiting'
                         and Path(str(self.db) + '.controller-' + str(process.pid)).exists()):
                     return state
             time.sleep(.05)
-        self.fail('driver did not reach waiting ' + stage)
+        self.driver_failure(process, 'driver did not reach waiting ' + stage)
+
+    def driver_failure(self, process, message):
+        path = self.state / 'run.json'
+        persisted = path.read_text() if path.exists() else '<absent>'
+        returncode = process.poll()
+        marker = Path(str(self.db) + '.controller-' + str(process.pid)).exists()
+        output = process.communicate() if returncode is not None else '<driver still running>'
+        self.fail('%s; returncode=%r; controller_marker=%r; persisted_state=%s; '
+                  'fixture=%s; output=%r' %
+                  (message, returncode, marker, persisted, self.data(), output))
+
+    def await_plan_read(self, process, run_id, profile, missing):
+        expected = {'run_id': run_id, 'profile': profile, 'missing': missing}
+        deadline = time.monotonic() + 25
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                self.driver_failure(process, 'driver exited before reading plan ' + str(expected))
+            if expected in self.data().get('ci_plan_reads', []):
+                return
+            time.sleep(.05)
+        self.driver_failure(process, 'driver did not read plan ' + str(expected))
 
     def test_one_real_invocation_drives_checks_merge_and_signed_publication(self):
         self.data(checks='pending')
@@ -574,10 +702,10 @@ class ReleaseCLI(unittest.TestCase):
         self.data(ci_plan_labels=[])
         process = self.start_driver(profile='full', timeout=60)
         self.await_stage(process, 'checks')
-        time.sleep(2)
+        self.await_plan_read(process, 10, 'fast', False)
         self.assertNotIn('merge', self.data()['effects'])
         self.data(ci_plan_labels=['release:full'], ci_plan_missing=True, ci_run_id=20, ci_prior_run=True)
-        time.sleep(2)
+        self.await_plan_read(process, 20, 'full', True)
         self.assertNotIn('merge', self.data()['effects'])
         self.data(ci_plan_missing=False)
         self.publish_assets(self.await_stage(process, 'publication'))

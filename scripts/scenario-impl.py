@@ -140,7 +140,7 @@ def bundle(pin, destination, title, body, owner="owner", adapter="workspace", re
         else:
             add(step(decision, dict(kind="decision", owner=owner), obj, "decision"), success)
             publication_inputs["decision"] = step_ref(decision)
-        add(step(pub, action(publication_op, not scoped), publication_inputs, "action"), success)
+        add(step(pub, action(publication_op, not scoped), publication_inputs, "action", 120000), success)
         add(step(observed, wait("checks_completed"), obj, "observation"), success)
         values = (accepted, step_ref(prep), step_ref(pub), step_ref(observed), success)
         if remaining:

@@ -138,7 +138,9 @@ class ReleaseContract(unittest.TestCase):
         policy = json.loads((ROOT / 'scripts/release-policy.json').read_text())
         # Independent expectations: do not infer the current generation from either the
         # declaration or the schemas being checked. Both can drift together.
-        expected = {'scenario-store': 13, 'scenario': 8, 'scenario-bundle': 8,
+        expected = {'scenario-store': 14, 'scenario-driver': 1,
+                    'scenario-adapter-response': 2, 'github-adapter-state': 7,
+                    'git-candidate-source-request': 2, 'git-candidate-source': 2, 'scenario': 8, 'scenario-bundle': 8,
                     'scenario-pin': 9, 'scenario-run': 9, 'scenario-list': 9,
                     'ant': 9, 'ant-pin': 10, 'ant-tick': 10, 'ant-state': 11,
                     'ant-inspection': 6, 'ant-list': 11,

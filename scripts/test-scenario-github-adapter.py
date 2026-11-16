@@ -709,7 +709,7 @@ class AdapterTests(unittest.TestCase):
             earlier["schema"] = "af/scenario-adapter-request@%d" % version
             with self.assertRaises(A.Refused):
                 A.validate_request(earlier, self.config)
-        for version in range(6):
+        for version in range(7):
             state = A.empty_state(self.config_digest)
             state["schema"] = "af/github-adapter-state@%d" % version
             A.atomic_write(self.root / "receipts/state.json", A.state_bytes(state))

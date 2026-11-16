@@ -1,5 +1,5 @@
 {
-  "$id": "urn:af:schema:github-adapter-state:6",
+  "$id": "urn:af:schema:github-adapter-state:7",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "description": "GitHub Scenario adapter v1. Semantic validation also binds exact identities, scope and durable state.",
@@ -70,6 +70,13 @@
               "failed"
             ]
           },
+          "publication_checkpoint": {
+            "enum": [
+              null,
+              "native_proof_ready",
+              "publication_prepared"
+            ]
+          },
           "request": {
             "additionalProperties": false,
             "properties": {
@@ -127,6 +134,7 @@
           }
         },
         "required": [
+          "publication_checkpoint",
           "request",
           "request_digest",
           "phase",
@@ -146,7 +154,7 @@
       "type": "object"
     },
     "schema": {
-      "const": "af/github-adapter-state@6"
+      "const": "af/github-adapter-state@7"
     }
   },
   "required": [

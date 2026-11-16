@@ -2355,50 +2355,6 @@
         }
       }
     },
-    "Response": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "schema",
-        "intent_id",
-        "input_digest",
-        "outcome",
-        "evidence",
-        "observation"
-      ],
-      "properties": {
-        "schema": {
-          "const": "af/scenario-adapter-response@1"
-        },
-        "intent_id": {
-          "$ref": "urn:af:schema:scenario:8#/$defs/digest"
-        },
-        "input_digest": {
-          "$ref": "urn:af:schema:scenario:8#/$defs/digest"
-        },
-        "outcome": {
-          "enum": [
-            "done",
-            "pending",
-            "absent",
-            "failed"
-          ]
-        },
-        "evidence": {
-          "$ref": "urn:af:schema:scenario:8#/$defs/text"
-        },
-        "observation": {
-          "anyOf": [
-            {
-              "$ref": "urn:af:schema:scenario:8#/$defs/Observation"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        }
-      }
-    },
     "OwnedDocument": {
       "type": "object",
       "additionalProperties": false,

@@ -15,7 +15,7 @@ request = json.load(sys.stdin)
 intent = request["intent_id"].split(":")[1]
 receipt = root / (intent + ".json")
 response = {
-    "schema": "af/scenario-adapter-response@1",
+    "schema": "af/scenario-adapter-response@2",
     "intent_id": request["intent_id"],
     "input_digest": request["input_digest"],
     "outcome": "absent",

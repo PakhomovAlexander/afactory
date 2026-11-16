@@ -174,7 +174,7 @@ contents inside the exact owned build directory belong to that reservation. Task
 ## Recovery and bounds
 
 The workspace journal is `af/git-workspace-state@4`. Its separate `github.json` is the ordinary
-`af/github-adapter-state@6`; both share the stable workspace lock. Both are owner-only,
+`af/github-adapter-state@7`; both share the stable workspace lock. Both are owner-only,
 checksummed, no-follow and fsynced. Missing/corrupt/foreign journals refuse dispatch. The local
 journal admits 32 intents and at most 32 explicit lineage members; the production journal keeps
 its existing bounds. Native exports admit 32768 entries, 4096-byte paths and 64 MiB of content.
@@ -291,3 +291,12 @@ fixture, helper, schema and workflow changes. It captures exact PR base/head SHA
 has bounded job time and per-PR concurrency. Standard CI, release gates and AF remote checks are
 unchanged. The benchmark integration tests use tiny synthetic suites only to check evidence
 handling; their timings do not prove an improvement in the workspace lifecycle suite.
+
+Native candidate export uses `af/git-candidate-source-request@2` and
+`af/git-candidate-source@2`. The receipt distinguishes the original export baseline
+(`source_snapshot`) from the accepted Task's immediate source (`task_source_snapshot`). A
+pre-publication repair follows checked native continuation/source-binding receipts to the original
+committed baseline; a same-PR repair stops at its exact declared published predecessor. The walk
+is bounded and verifies every native revision, result and source link. Candidate acceptance,
+commit content equality and repository identity remain required. Export creates isolated objects;
+it grants no publication capability. Earlier export records fail closed.

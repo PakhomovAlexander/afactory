@@ -611,15 +611,15 @@ Scenario and Ant documents (ADR-0274; `af help scenarios`):
   Roadmaps: af/scenario-roadmap-proposal@2 (input), af/scenario-roadmap-revision@2 (validate),
   af/scenario-roadmap@3 (create, show, revise), af/scenario-roadmap-list@3 (list).
   Fresh templates: af/scenario-task-template@2; capture: af/scenario-template-pin@2.
-  Journal: af/scenario-store@13. Owned file envelope: af/scenario-owned-file@1.
+  Driver status: af/scenario-driver@1. Journal: af/scenario-store@14. Owned file envelope: af/scenario-owned-file@1.
   Research evidence: af/scenario-evidence-source@1.
   Experiment source: af/scenario-experiment-source-request@1 and af/scenario-experiment-source@1.
-  Accepted Git candidates: af/git-candidate-source-request@1 and af/git-candidate-source@1.
+  Accepted Git candidates: af/git-candidate-source-request@2 and af/git-candidate-source@2.
   Performance publication: af/performance-pr-proof-request@1, af/performance-pr-proof@1,
   af/performance-pr-content@1, af/performance-publication-activation@1, af/github-performance-pr@1.
   Installed Git workspaces: af/git-workspace-config@3, af/git-workspace-content@1,
   af/git-workspace-prepared@1 and af/git-workspace-state@4.
-  Bounded adapters: af/scenario-adapter-request@6 and af/scenario-adapter-response@1.
+  Bounded adapters: af/scenario-adapter-request@6 and af/scenario-adapter-response@2.
   `af schema show ID` prints each schema; semantic admission additionally checks authority,
   exact bindings, signatures, budgets, lifecycle and transitive identity.
 

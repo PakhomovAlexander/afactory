@@ -1,5 +1,5 @@
 {
-  "$id": "urn:af:schema:git-candidate-source:1",
+  "$id": "urn:af:schema:git-candidate-source:2",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
@@ -46,7 +46,7 @@
       "type": "string"
     },
     "schema": {
-      "const": "af/git-candidate-source@1"
+      "const": "af/git-candidate-source@2"
     },
     "source_commit": {
       "maxLength": 65536,
@@ -66,6 +66,12 @@
       "pattern": "^sha256:[0-9a-f]{64}$",
       "type": "string"
     },
+    "task_source_snapshot": {
+      "maxLength": 65536,
+      "minLength": 1,
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
     "transport_commit": {
       "maxLength": 65536,
       "minLength": 1,
@@ -78,6 +84,7 @@
     "request_digest",
     "repository_id",
     "source_snapshot",
+    "task_source_snapshot",
     "candidate_snapshot",
     "predecessor_snapshot",
     "source_content_digest",
@@ -86,6 +93,6 @@
     "transport_commit",
     "repository"
   ],
-  "title": "git-candidate-source v1",
+  "title": "git-candidate-source v2",
   "type": "object"
 }
