@@ -304,7 +304,7 @@ def driver_python(contained):
 def tui_home_environment(scratch):
     """The browser sample's private HOME and XDG roots, created by its setup."""
     home = os.path.join(scratch, "home")
-    return {"HOME": home, "XDG_STATE_HOME": os.path.join(home, "state"),
+    return {"HOME": home, "AF_TEST_WAKE_ACCOUNT_HOME": home, "XDG_STATE_HOME": os.path.join(home, "state"),
             "XDG_CONFIG_HOME": os.path.join(home, "config"),
             "XDG_CACHE_HOME": os.path.join(home, "cache"),
             "XDG_DATA_HOME": os.path.join(home, "data")}

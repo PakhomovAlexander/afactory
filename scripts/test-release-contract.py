@@ -23,6 +23,9 @@ def copy_inputs(source, destination):
     (destination / 'scripts').mkdir()
     shutil.copyfile(source / 'scripts/telemetry-overhead.py',
                     destination / 'scripts/telemetry-overhead.py')
+    helper = Path('scripts/performance/perflab/account_isolation.py')
+    (destination / helper).parent.mkdir(parents=True)
+    shutil.copyfile(source / helper, destination / helper)
     # copyfile does not preserve read-only file modes, unlike copy/copy2. copytree
     # still preserves the directory mode; schemas is a flat directory we also mutate.
     declaration = json.loads((source / 'scripts/release-contract.json').read_text())
@@ -156,6 +159,30 @@ class ReleaseContract(unittest.TestCase):
         self.assertIn('bindings', template['required'])
         self.assertEqual(PREFLIGHT.check(self.root), '0.15.1-rc.3')
 
+    def test_combined_wake_and_long_flow_contracts_are_bound_by_one_declaration(self):
+        # Neither merge parent's capability pin covers the combined schema closure.
+        expected = {
+            'task-wake-route-v1.json': 'af/task-wake-route@1',
+            'task-wake-status-v1.json': 'af/task-wake-status@1',
+            'performance-run-v8.json': 'af.perf-run/8',
+            'performance-supervisor-request-v5.json': 'af.perf-supervisor-request/5',
+            'performance-supervisor-result-v6.json': 'af.perf-supervisor-result/6',
+        }
+        self.assertEqual(PREFLIGHT.check(self.root), '0.15.1-rc.3')
+        for name, identity in expected.items():
+            path = self.root / 'schemas' / name
+            original = path.read_bytes()
+            document = json.loads(original)
+            with self.subTest(schema=name):
+                self.assertEqual(document['properties']['schema']['const'], identity)
+                self.assertFalse(document['additionalProperties'])
+                # Even a semantically harmless byte change must invalidate the pin.
+                path.write_bytes(original + b'\n')
+                with self.assertRaisesRegex(ValueError, 'stale|capabilities differ'):
+                    PREFLIGHT.check(self.root)
+            path.write_bytes(original)
+        self.assertEqual(PREFLIGHT.check(self.root), '0.15.1-rc.3')
+
     def test_preparation_refuses_changed_capabilities(self):
         self.version('0.15.1-rc.4')
         path = self.root / 'scripts/release-contract.json'
@@ -220,8 +247,8 @@ class ReleaseContract(unittest.TestCase):
     def test_real_preflight_cli_and_schema_writer_refuse_drift(self):
         shutil.copy(ROOT / 'scripts/release-contract.py', self.root / 'scripts')
         lab = self.root / 'scripts/performance'
-        lab.mkdir()
-        shutil.copytree(ROOT / 'scripts/performance/perflab', lab / 'perflab')
+        lab.mkdir(exist_ok=True)
+        shutil.copytree(ROOT / 'scripts/performance/perflab', lab / 'perflab', dirs_exist_ok=True)
         shutil.copy(ROOT / 'scripts/performance/schemas.py', lab)
         def run(script, *args):
             return subprocess.run([sys.executable, '-I', str(self.root / script), *args],

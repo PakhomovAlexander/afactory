@@ -835,7 +835,7 @@ class _Spent(Exception):
 
 def scratch_environment(root):
     """HOME, XDG and TMPDIR of a child, all inside its private scratch."""
-    return {"HOME": root, "TMPDIR": root, "XDG_CACHE_HOME": root, "XDG_CONFIG_HOME": root,
+    return {"HOME": root, "AF_TEST_WAKE_ACCOUNT_HOME": root, "TMPDIR": root, "XDG_CACHE_HOME": root, "XDG_CONFIG_HOME": root,
             "XDG_DATA_HOME": root, "XDG_STATE_HOME": root}
 
 

@@ -13,6 +13,7 @@ mod reservation;
 mod retry;
 mod source;
 mod token_scopes;
+mod wake_episode;
 mod wide_usage;
 
 /// Artifact type of the fixture Pipeline definition envelope. Production captures the

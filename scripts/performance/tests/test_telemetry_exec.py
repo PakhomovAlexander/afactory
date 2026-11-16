@@ -604,8 +604,23 @@ class Contained(ContainedBase):
         mounts = [argv[index + 1] for index, item in enumerate(argv) if item == "--mount"]
         writable = [item for item in mounts if not item.endswith(",readonly")]
         self.assertEqual(writable, ["type=bind,src=%s,dst=%s" % (self.run_dir, self.run_dir)])
+        account_mounts = [item for item in mounts
+                          if item.endswith(('dst=/etc/passwd,readonly', 'dst=/etc/nsswitch.conf,readonly'))]
+        self.assertEqual(len(account_mounts), 2)
         self.assertEqual(sorted(item.split(",")[1][4:] for item in mounts
-                                if item.endswith(",readonly")), sorted([candidate, script]))
+                                if item.endswith(",readonly") and item not in account_mounts),
+                         sorted([candidate, script]))
+        for item in account_mounts:
+            source = item.split(",")[1][4:]
+            self.assertTrue(source.startswith(self.run_dir + os.sep))
+            with open(source) as stream:
+                data = stream.read()
+            if 'dst=/etc/passwd,' in item:
+                self.assertIn(':%d:%d:AF measurement:%s:' %
+                              (os.getuid(), os.getgid(), self.run_dir), data)
+                self.assertIn('PERFLAB_ACCOUNT_FILE=' + source, argv)
+            else:
+                self.assertIn('passwd: files\n', data)
         self.assertNotIn(self.path("capture"), joined, "the capture files are never bound")
         self.assertEqual(argv[argv.index("--entrypoint") + 1:argv.index("--entrypoint") + 4],
                          ["/usr/bin/env", Image.reference, "-i"])
