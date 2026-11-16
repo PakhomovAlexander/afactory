@@ -171,7 +171,8 @@ def validation_commands(policy, tree):
                    for command in commands)):
         raise Refusal('validation_policy: expected nonempty ordered commands')
     return [(['env', 'AF_GATE_TARGET_DIR=' + str(tree / 'target'), *command]
-             if command[0] == 'scripts/verify.sh' else command) for command in commands]
+             if command[0] == 'scripts/verify.sh' else command.copy())
+            for command in commands]
 
 
 def safe_prepublication_failure(state, tree):
@@ -813,13 +814,12 @@ class Controller:
                 self.state['authorization'] = AUTHORIZATION
                 save(self.path, self.state)
             return
-        for tool in ('git', 'gh', 'cargo', 'python3', 'minisign', 'npx'):
+        for tool in ('git', 'gh', 'cargo', 'rustc', 'python3', 'minisign'):
             if not shutil.which(tool):
                 raise Refusal('required_tool: install ' + tool)
         required_rust = 'rustc ' + re.search(r'channel = "([^"]+)"', (ROOT / 'rust-toolchain.toml').read_text())[1]
         if not run(['rustc', '--version']).startswith(required_rust):
             raise Refusal('rust_toolchain: activate pinned ' + required_rust)
-        run(['cargo', 'nextest', '--version'])
         if self.mirror.is_symlink():
             raise Refusal('foreign_state: mirror symlink refused')
         if not self.mirror.exists():
@@ -856,7 +856,6 @@ class Controller:
         if json.loads(self.gh('pr', 'list', '--head', branch, '--state', 'all', '--json', 'number')):
             raise Refusal('pr_collision: no durable matching reservation')
         profile = self.args.profile or 'fast'
-        policy['validation'][-1][-1] = profile
         self.state = {'schema': SCHEMA, 'plan': {
             'repo': self.args.repo, 'remote': self.args.remote, 'source': source,
             'version': version, 'branch': branch, 'policy': policy,
@@ -1179,7 +1178,7 @@ def main():
     parser.add_argument('--repo', required=True, help='explicit GitHub OWNER/REPO')
     parser.add_argument('--remote', help='credential-free Git URL; defaults to GitHub HTTPS')
     parser.add_argument('--state', type=Path, help='owned private directory outside source')
-    parser.add_argument('--profile', choices=('fast', 'full'), help='validation profile (default fast)')
+    parser.add_argument('--profile', choices=('fast', 'full'), help='hosted CI validation profile (default fast)')
     parser.add_argument('--source', help='optional required exact fetched main SHA')
     parser.add_argument('--version', help='optional exact reserved RC version')
     parser.add_argument('--format', choices=('json', 'markdown'), default='markdown')
