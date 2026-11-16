@@ -28,7 +28,7 @@ impl Host for AfHost {
             "Startup adapter executable changed",
         )?;
         let scope_id = hash(scope)?;
-        let bytes = serde_json::to_vec(&serde_json::json!({"schema":"af/implementation-startup-preflight@1", "scope_id":scope_id, "scope":scope})).map_err(|e| e.to_string())?;
+        let bytes = serde_json::to_vec(&serde_json::json!({"schema":"af/implementation-startup-preflight@2", "scope_id":scope_id, "scope":scope})).map_err(|e| e.to_string())?;
         let mut command = std::process::Command::new(&adapter.executable);
         command.current_dir(
             adapter
@@ -52,7 +52,7 @@ impl Host for AfHost {
             .map_err(|_| "Invalid startup adapter receipt")?;
         require(
             response
-                == serde_json::json!({"schema":"af/implementation-startup-ready@1", "scope_id":scope_id}),
+                == serde_json::json!({"schema":"af/implementation-startup-ready@2", "scope_id":scope_id}),
             "Startup adapter scope differs",
         )
     }
@@ -246,6 +246,14 @@ impl Host for AfHost {
         predecessors: &BTreeMap<String, (TaskReceipt, String)>,
     ) -> Result<TaskTarget> {
         crate::task_commands::scenario_template::plan(template, document, performance, predecessors)
+    }
+    fn validate_implementation_proof(
+        &self,
+        request: &af_scenario::adapter::Request,
+        run: &af_scenario::state::Run,
+        scope: &af_scenario::implementation::Scope,
+    ) -> Result<()> {
+        crate::task_commands::candidate::implementation::proof(request, run, scope).map(|_| ())
     }
     fn validate_performance_proof(&self, request: &ProofRequest, scope: &Scope) -> Result<()> {
         crate::task_commands::candidate::performance::proof(request, &scope.repo, &scope.task_state)

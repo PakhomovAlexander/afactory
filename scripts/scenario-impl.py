@@ -60,7 +60,7 @@ def step(name, operation, inputs, port, timeout=604800000):
                 max_attempts=1, timeout_ms=timeout, on_timeout="fail")
 
 
-def bundle(pin, destination, title, body, owner="owner", adapter="workspace", repairs=2, verification_pin=None):
+def bundle(pin, destination, title, body, owner="owner", adapter="workspace", repairs=2, verification_pin=None, scoped=True):
     if type(repairs) is not int or not 0 <= repairs <= 2:
         raise ValueError("impl permits zero, one or two bounded implementation repairs")
     if pin["schema"] != "af/scenario-template-pin@2" or re.fullmatch(r"sha256:[0-9a-f]{64}", pin["template_id"]) is None:
@@ -71,8 +71,9 @@ def bundle(pin, destination, title, body, owner="owner", adapter="workspace", re
         raise ValueError("recipe requires an implement Task with reviewed acceptance; review its captured package contracts")
     if re.fullmatch(r"github:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", destination) is None:
         raise ValueError("exact GitHub machine destination required")
+    publication_op = "publish_implementation_pr_v1" if scoped else "publish_pr"
     grants = [dict(adapter=adapter, operation=op, destination=destination)
-              for op in ("prepare_candidate_v1", "publish_pr", "cleanup_workspace_v1", "observe")]
+              for op in ("prepare_candidate_v1", publication_op, "cleanup_workspace_v1", "observe")]
     by_op = {g["operation"]: g for g in grants}
     def action(op, decision=False, condition=None):
         return dict(kind="action", grant=by_op[op], requires_decision=decision, required_condition=condition)
@@ -96,6 +97,8 @@ def bundle(pin, destination, title, body, owner="owner", adapter="workspace", re
         if any(verifier[field] != template[field] for field in
                ("repo", "state", "repository_id", "authority_commit", "source_content_digest")):
             raise ValueError("verification must share the pinned native source and Task Store")
+        if scoped and any(verifier["document"].get(key) != doc.get(key) for key in ("goal", "requirements")):
+            raise ValueError("scoped verifier must cover the original whole goal and requirements")
         templates.add(verification_pin["template_id"])
     def boolean(value):
         return dict(source="literal", value=dict(type="boolean", value=value))
@@ -131,8 +134,13 @@ def bundle(pin, destination, title, body, owner="owner", adapter="workspace", re
             prepare_inputs["previous"] = previous
         add(step(prep, action("prepare_candidate_v1"), prepare_inputs, "action"), success)
         obj = dict(subject=project(prep, "workspace_subject"), revision=project(prep, "workspace_revision"))
-        add(step(decision, dict(kind="decision", owner=owner), obj, "decision"), success)
-        add(step(pub, action("publish_pr", True), dict(**obj, body=project(prep, "workspace_publication"), decision=step_ref(decision)), "action"), success)
+        publication_inputs = dict(**obj, body=project(prep, "workspace_publication"))
+        if scoped:
+            publication_inputs.update(candidate=accepted, verification=project(verifier, "accepted_task"), prepared=step_ref(prep))
+        else:
+            add(step(decision, dict(kind="decision", owner=owner), obj, "decision"), success)
+            publication_inputs["decision"] = step_ref(decision)
+        add(step(pub, action(publication_op, not scoped), publication_inputs, "action"), success)
         add(step(observed, wait("checks_completed"), obj, "observation"), success)
         values = (accepted, step_ref(prep), step_ref(pub), step_ref(observed), success)
         if remaining:
@@ -152,13 +160,13 @@ def bundle(pin, destination, title, body, owner="owner", adapter="workspace", re
                   prepared=prepared_value, evidence=step_ref("merged")), "action")]
     for item in final_steps:
         add(item, final_success)
-    root = dict(schema="af/scenario@7", inputs={}, outputs={"implementation": "task", "publication": "action", "merged": "observation", "cleanup": "action"},
+    root = dict(schema="af/scenario@8", inputs={}, outputs={"implementation": "task", "publication": "action", "merged": "observation", "cleanup": "action"},
         steps=steps, result={"implementation": task_value, "publication": publication_value, "merged": step_ref("merged"), "cleanup": step_ref("cleanup")},
         completion=[final_success, project("merged", "observation_satisfied")],
-        authority=dict(task_plans=[], task_templates=sorted(templates), grants=grants, decision_owners=[owner]),
+        authority=dict(task_plans=[], task_templates=sorted(templates), grants=grants, decision_owners=[] if scoped else [owner]),
         limits=dict(max_tokens=sum(item["operation"]["template"]["max_tokens"] for item in steps if item["operation"]["kind"] == "fresh_task"),
                     max_wall_ms=sum(item["timeout_ms"] for item in steps), max_dispatches=len(steps) * 8), admission=None)
-    return dict(schema="af/scenario-bundle@7", root="impl", definitions={"impl": root})
+    return dict(schema="af/scenario-bundle@8", root="impl", definitions={"impl": root})
 
 
 def toml_value(value):
@@ -426,6 +434,7 @@ def main():
     pkg.add_argument("--check", action="append", required=True)
     build = subs.add_parser("bundle", help="create impl bundle from a real native template pin")
     build.add_argument("--pin", required=True)
+    build.add_argument("--signed-publication", action="store_true", help="use generic exact signed Decisions instead of admitted startup authority")
     build.add_argument("--verification-pin", required=True, help="exact independent whole-change native verification template pin")
     build.add_argument("--destination", required=True)
     build.add_argument("--title", required=True)
@@ -437,7 +446,7 @@ def main():
     if args.command == "packages":
         packages(args.output, args.af.resolve(strict=True), args.check, read(args.team), args.namespace)
     else:
-        value = bundle(read(args.pin), args.destination, args.title, Path(args.body_file).read_text(), args.owner, repairs=args.repairs, verification_pin=read(args.verification_pin) if args.verification_pin else None)
+        value = bundle(read(args.pin), args.destination, args.title, Path(args.body_file).read_text(), args.owner, repairs=args.repairs, verification_pin=read(args.verification_pin) if args.verification_pin else None, scoped=not args.signed_publication)
         with Path(args.output).open("x") as output:
             json.dump(value, output, indent=2)
             output.write("\n")

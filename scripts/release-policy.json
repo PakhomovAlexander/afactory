@@ -1,6 +1,6 @@
 {
   "schema": "af.dev-release-policy/3",
-  "compatibility": "Breaking persisted Scenario/Ant shapes: Scenario policy 6, pins/runs/list 7, Store 11; Ant pins/tick 8, state/list 9 and inspection 4. Scenario definitions/bundles remain 6, Ant definitions 7 and Task templates/pins 2. Optional implementation startup scope 1 binds the complete recipe and requires native preflight; it grants no publication permission. Finish or discard prior-release runs and state before upgrading; no migration or replay of retired shapes. Review committed authority and refresh its lock with the published release; pin adoption is a separate reviewed PR.",
+  "compatibility": "Breaking closed Scenario/Ant and publication shapes: Scenario definitions/bundles 8, policy 7, pins/runs/list 9, Store 13; Ant definition 9, pin/tick 10, state/list 11, inspection 6; adapter request 6, workspace config 3/state 4 and GitHub journal 6. Implementation startup scope 2 admits the explicit native scoped publication capability. Generic signed and performance authority stay separate. Finish or discard prior-release state; no migration or replay of retired shapes. Review and commit authority and refresh its lock before adoption.",
   "required_features": {
     "crates/af-scenario/src/retention.rs": [
       "settlement",
@@ -10,44 +10,44 @@
       "roadmap"
     ],
     "crates/af-scenario/src/store.rs": [
-      "af/scenario-store@12",
+      "af/scenario-store@13",
       "run_capacity"
     ],
-    "schemas/scenario-store-v12.json": [
-      "af/scenario-store@12"
+    "schemas/scenario-store-v13.json": [
+      "af/scenario-store@13"
     ],
-    "schemas/scenario-v7.json": [
-      "af/scenario@7"
+    "schemas/scenario-v8.json": [
+      "af/scenario@8"
     ],
-    "schemas/scenario-bundle-v7.json": [
-      "af/scenario-bundle@7"
+    "schemas/scenario-bundle-v8.json": [
+      "af/scenario-bundle@8"
     ],
-    "schemas/scenario-pin-v8.json": [
-      "af/scenario-pin@8"
+    "schemas/scenario-pin-v9.json": [
+      "af/scenario-pin@9"
     ],
-    "schemas/scenario-run-v8.json": [
-      "af/scenario-run@8"
+    "schemas/scenario-run-v9.json": [
+      "af/scenario-run@9"
     ],
-    "schemas/scenario-list-v8.json": [
-      "af/scenario-list@8"
+    "schemas/scenario-list-v9.json": [
+      "af/scenario-list@9"
     ],
-    "schemas/ant-v8.json": [
-      "af/ant@8"
+    "schemas/ant-v9.json": [
+      "af/ant@9"
     ],
-    "schemas/ant-pin-v9.json": [
-      "af/ant-pin@9"
+    "schemas/ant-pin-v10.json": [
+      "af/ant-pin@10"
     ],
-    "schemas/ant-tick-v9.json": [
-      "af/ant-tick@9"
+    "schemas/ant-tick-v10.json": [
+      "af/ant-tick@10"
     ],
-    "schemas/ant-state-v10.json": [
-      "af/ant-state@10"
+    "schemas/ant-state-v11.json": [
+      "af/ant-state@11"
     ],
-    "schemas/ant-inspection-v5.json": [
-      "af/ant-inspection@5"
+    "schemas/ant-inspection-v6.json": [
+      "af/ant-inspection@6"
     ],
-    "schemas/ant-list-v10.json": [
-      "af/ant-list@10"
+    "schemas/ant-list-v11.json": [
+      "af/ant-list@11"
     ],
     "schemas/scenario-task-template-v2.json": [
       "af/scenario-task-template@2",
@@ -66,12 +66,26 @@
       "restore_compiler(&cas, &authority, &settings)?",
       "recorded_bindings != template.bindings"
     ],
-    "schemas/scenario-policy-v6.json": [
-      "af/scenario-policy@6",
+    "schemas/scenario-policy-v7.json": [
+      "af/scenario-policy@7",
       "implementation_startup"
     ],
-    "schemas/implementation-startup-scope-v1.json": [
-      "af/implementation-startup-scope@1"
+    "schemas/implementation-startup-scope-v2.json": [
+      "af/implementation-startup-scope@2"
+    ],
+    "schemas/implementation-pr-proof-v1.json": [
+      "af/implementation-pr-proof@1"
+    ],
+    "schemas/implementation-pr-live-v1.json": [
+      "af/implementation-pr-live@1"
+    ],
+    "crates/af/src/task_commands/candidate/implementation.rs": [
+      "af/implementation-pr-proof@1",
+      "TaskBaseV1"
+    ],
+    "scripts/scenario-git-workspace.py": [
+      "publish_implementation_pr_v1",
+      "implementation_live"
     ]
   },
   "targets": [

@@ -17,7 +17,7 @@ python3 -I scripts/install-scenario-git-workspace.py \
   --config /private/machine/workspace.json --output /private/tools/workspace-adapter
 ```
 
-The config is `af/git-workspace-config@2`; its inert shape is in
+The config is `af/git-workspace-config@3`; its inert shape is in
 [`config.example.json`](../fixtures/scenarios/workspace/config.example.json). All paths are
 canonical, administrator-selected machine paths. Config, token and SSH configuration are private
 files outside Git checkouts. State is a new private directory; the worktree root already exists
@@ -32,7 +32,7 @@ checking. Git hooks, global/system config, filters, executable local config and 
 cannot add authority. The installer creates no token, remote ref, service object or schedule.
 
 Review the complete installed executable digest printed by installation and use it in the
-ordinary `af/scenario-policy@6` adapter entry. Allow only the operations/destination needed by
+ordinary `af/scenario-policy@7` adapter entry. Allow only the operations/destination needed by
 the consuming Scenario, with the existing 30-second wall and 65536-byte output ceilings. The
 executable contains both this capability and all production GitHub code; runtime imports cannot
 load application code from a checkout. Config/tool/SSH pin changes refuse further dispatch.
@@ -56,6 +56,24 @@ back to this mode. Generic `publish_pr` still requires the kernel-verified exact
 The separately opted-in `publish_performance_pr_v1` operation uses the standing machine scope and
 native acceptance/evidence checks in the [performance runbook](performance-scenarios.md). It creates
 only a new scoped branch and normal PR; it cannot enter the continuation or cleanup paths.
+
+## Scoped implementation publication
+
+`publish_implementation_pr_v1` separately requires `implementation_state` in the installed
+configuration, naming the private native Scenario Store. Its owner-confirmed startup scope must
+admit the exact operation, source, template pool, actor, destination, branch namespace, budgets
+and expiry before paid work. The [implementation recipe](scenario-impl.md#scoped-native-publication-stage-c1)
+passes accepted implementation and independent whole-goal verification receipts and the exact
+preparation Action. The native proof checks the original baseline separately from the live base.
+
+The prepared subject still hashes the preparation payload. The complete input digest additionally
+binds both Task receipts; their native report is derived and appended to the actual PR body.
+Repairs update that same PR's native report with all prior Run Tasks once each. Exact actor,
+source/base and native live Run/cancellation/expiry checks follow blocking observations and run
+before each push, POST and PATCH. Immutable proof caching cannot retain live authorization.
+The Git deadline includes its final guard. A lost metadata response retains its dispatch flag;
+readback can complete it, but observing old content cannot authorize another PATCH.
+Generic signed and performance flows and external human merge retain their existing boundaries.
 
 ## Typed composition
 
@@ -155,8 +173,8 @@ contents inside the exact owned build directory belong to that reservation. Task
 
 ## Recovery and bounds
 
-The workspace journal is `af/git-workspace-state@3`. Its separate `github.json` is the ordinary
-`af/github-adapter-state@5`; both share the stable workspace lock. Both are owner-only,
+The workspace journal is `af/git-workspace-state@4`. Its separate `github.json` is the ordinary
+`af/github-adapter-state@6`; both share the stable workspace lock. Both are owner-only,
 checksummed, no-follow and fsynced. Missing/corrupt/foreign journals refuse dispatch. The local
 journal admits 32 intents and at most 32 explicit lineage members; the production journal keeps
 its existing bounds. Native exports admit 32768 entries, 4096-byte paths and 64 MiB of content.
@@ -174,8 +192,9 @@ Only an empty private uncertain slot may be bypassed, up to the fixed slot bound
 symlinks and exhaustion refuse. An interrupted checkout is preserved rather than reset. Local
 idempotent operations recover during ordinary reconciliation; there is no new protocol method.
 
-The Scenario vocabulary is generation 4, embedding wrappers/Ants are generation 4, the Scenario
-Store is generation 5, adapter requests and the GitHub journal are generation 3. Added operation
+The current Scenario/bundle vocabulary is generation 7, pins/Runs/lists and Ant definitions are
+generation 8, Ant pins/ticks are generation 9, and Ant states/lists are generation 10. The Scenario
+Store is generation 12, adapter requests and the GitHub journal are generation 5. Added operation
 and projection discriminators change typed persisted shapes; old generations fail closed without
 migration. Task delivery, reviewer evidence, cache authority and GitHub operation payloads retain
 their existing shapes. Finish old Runs with their original release before upgrading.
@@ -185,6 +204,20 @@ including both reservation crash matrices, signed input checks, same-PR continua
 POSTs and merge-gated cleanup. The native `task_delivery::workspace` integration test executes an
 ordinary accepted command-backed Task and checks object bytes and forged-receipt refusals. No
 live GitHub account, model, remote gate or scheduler is used or claimed by these tests.
+
+Owned pushes recheck the authenticated actor and numeric destination after local ownership,
+remote-ref and parent observations, then recheck exact signed authority and its live expiry
+immediately before invoking Git. HTTP POST repeats identity and signed-expiry checks after
+connection establishment; transport retains its existing deadline and refuses automatic reconnect.
+A refusal after a dispatched checkpoint remains uncertain and requires reconciliation. These
+checks do not grant scoped implementation publication or implement a continuous driver.
+See the [final publication guard decision](adr/2026-11-16-recheck-owned-publication-after-identity-observations.md).
+
+The native `production_workspace_rechecks_actor_and_signed_expiry_before_push_and_post` regression
+uses real accepted command-backed Tasks, native signed Decisions and a local bare remote. Its
+transport changes actor observations or advances the fixture wall clock at the final observation.
+It verifies no push at the push boundary, no POST at either boundary, and no Task redispatch on
+resume. It does not test startup standing publication, cancellation, live GitHub, or physical reboot.
 
 The native `ordinary_scenario_routes_completed_checks_into_one_fresh_repair_and_signed_same_pr`
 regression composes ordinary accepted command-backed Tasks, completed outcomes, conditional

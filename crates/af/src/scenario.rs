@@ -65,6 +65,17 @@ pub(crate) enum ScenarioCommand {
         #[command(flatten)]
         inspect: Inspect,
     },
+    /// Check scoped publication against a retained Run and native accepted Task evidence
+    ImplementationProof {
+        /// Exact scoped adapter request; authority comes from the retained native Run
+        #[arg(long)]
+        file: PathBuf,
+        /// Recheck live authorization without repeating immutable accepted-candidate validation
+        #[arg(long)]
+        live_only: bool,
+        #[command(flatten)]
+        inspect: Inspect,
+    },
     /// Validate native performance publication Tasks and render their exact report block
     #[command(
         long_about = "Read exact accepted implementation, independent verification and final report Tasks, check their source and measured comparison bindings, and render native publication reports. This read-only command grants no publication authority; the installed publication Action additionally re-observes the pinned native lab and enforces machine scope."
@@ -581,6 +592,33 @@ fn at(inspect: &Inspect) -> Result<u64> {
 pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
     match command {
         ScenarioCommand::Output { id, view, inspect } => output(&id, false, &view, &inspect),
+        ScenarioCommand::ImplementationProof {
+            file,
+            live_only,
+            inspect,
+        } => {
+            let request: af_scenario::adapter::Request =
+                serde_json::from_slice(&store::read(&file, MAX_BYTES)?)
+                    .map_err(|e| e.to_string())?;
+            let native = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?;
+            let world = native.read()?;
+            let (run, scope) = af_scenario::implementation::authorize(
+                &world,
+                &request,
+                runtime::now()?,
+                live_only,
+            )?;
+            if live_only {
+                print(
+                    &serde_json::json!({"schema":"af/implementation-pr-live@1", "request_digest":hash(&request)?, "scope_id":hash(scope)?, "execution_id":run.execution_id, "pin_id":run.pin.revision}),
+                    &inspect,
+                )
+            } else {
+                let proof =
+                    crate::task_commands::candidate::implementation::proof(&request, run, scope)?;
+                print(&proof, &inspect)
+            }
+        }
         ScenarioCommand::PerformanceProof {
             file,
             repo,
@@ -729,7 +767,7 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
         ScenarioCommand::List { inspect } => {
             let world = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?.read()?;
             print(
-                &serde_json::json!({"schema":"af/scenario-list@8","runs":world.runs}),
+                &serde_json::json!({"schema":"af/scenario-list@9","runs":world.runs}),
                 &inspect,
             )
         }
@@ -846,7 +884,7 @@ pub(crate) fn ant(command: AntCommand) -> Result<i32> {
                 .map(|(id, ant)| Ok((id.clone(), ant_inspection(ant, &world, &scheduler)?)))
                 .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
             print(
-                &serde_json::json!({"schema":"af/ant-list@10","ants":ants}),
+                &serde_json::json!({"schema":"af/ant-list@11","ants":ants}),
                 &inspect,
             )
         }
@@ -863,7 +901,7 @@ pub(crate) fn ant(command: AntCommand) -> Result<i32> {
                 runs: results,
             } = runtime::tick(&store, now, inspect.now)?;
             print(
-                &serde_json::json!({"schema":"af/ant-tick@9","now_unix_ms":now,"started":started,"busy":busy,"refused":refused,"runs":results}),
+                &serde_json::json!({"schema":"af/ant-tick@10","now_unix_ms":now,"started":started,"busy":busy,"refused":refused,"runs":results}),
                 &inspect,
             )
         }
@@ -875,7 +913,7 @@ fn ant_inspection(
     scheduler: &serde_json::Value,
 ) -> Result<serde_json::Value> {
     let mut value = serde_json::to_value(ant).map_err(|e| e.to_string())?;
-    value["schema"] = serde_json::json!("af/ant-inspection@5");
+    value["schema"] = serde_json::json!("af/ant-inspection@6");
     value["scheduler"] = scheduler.clone();
     let next_due = ant.next_due_unix_ms();
     value["next_due_unix_ms"] = serde_json::json!(next_due.as_ref().ok().copied().flatten());

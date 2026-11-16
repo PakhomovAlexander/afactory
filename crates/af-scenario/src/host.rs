@@ -74,6 +74,14 @@ pub trait Host: Send + Sync {
     fn cancel_task_run(&self, target: &TaskTarget, expected: u64) -> Result<()>;
     /// Missing, unreadable, running or mismatched Tasks retain the full reservation (`None`).
     fn task_charge(&self, target: &TaskTarget) -> Result<Option<(u64, bool)>>;
+    fn validate_implementation_proof(
+        &self,
+        _: &crate::adapter::Request,
+        _: &crate::state::Run,
+        _: &crate::implementation::Scope,
+    ) -> Result<()> {
+        Err("Host does not support scoped native publication".into())
+    }
     fn validate_performance_proof(&self, request: &ProofRequest, scope: &Scope) -> Result<()>;
 
     fn default_store_path(&self) -> Result<PathBuf>;

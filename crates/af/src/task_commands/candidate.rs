@@ -1039,4 +1039,5 @@ mod tests {
 mod workspace;
 pub(crate) use workspace::candidate_source;
 
+pub(crate) mod implementation;
 pub(crate) mod performance;

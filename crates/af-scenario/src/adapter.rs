@@ -141,10 +141,11 @@ fn call(
 // External effects are reached through the durable runtime, after intent admission.
 pub(crate) fn dispatch(
     host: &dyn crate::Host,
-    policy: &Policy,
+    run: &crate::state::Run,
     dispatch: &Dispatch,
     cancellation: &AtomicBool,
 ) -> Result<Settlement> {
+    let policy = &run.pin.policy;
     match &dispatch.definition.operation {
         Kind::Task { target } => host.run_task(target, dispatch.timeout_ms, cancellation),
         Kind::FreshTask { .. } => host.run_task(
@@ -157,7 +158,7 @@ pub(crate) fn dispatch(
         ),
         Kind::Wait { grant, condition } => {
             let request = Request {
-                schema: "af/scenario-adapter-request@5".into(),
+                schema: "af/scenario-adapter-request@6".into(),
                 method: Method::Observe,
                 intent_id: dispatch.intent.id.clone(),
                 input_digest: dispatch.intent.input_digest.clone(),
@@ -221,7 +222,7 @@ pub(crate) fn dispatch(
                     .get(&scope.evidence_adapter)
                     .ok_or("Missing pinned native evidence adapter")?;
                 let observation_request = Request {
-                    schema: "af/scenario-adapter-request@5".into(),
+                    schema: "af/scenario-adapter-request@6".into(),
                     method: Method::Observe,
                     intent_id: dispatch.intent.id.clone(),
                     input_digest: dispatch.intent.input_digest.clone(),
@@ -252,7 +253,7 @@ pub(crate) fn dispatch(
                 )?;
             }
             let mut request = Request {
-                schema: "af/scenario-adapter-request@5".into(),
+                schema: "af/scenario-adapter-request@6".into(),
                 method: Method::Reconcile,
                 intent_id: dispatch.intent.id.clone(),
                 input_digest: dispatch.intent.input_digest.clone(),
@@ -269,6 +270,14 @@ pub(crate) fn dispatch(
             }
             // Reconciliation is mandatory even for a fresh intent. An absent response is a
             // positive, authoritative no-effect result, not a timeout or a missing response.
+            if grant.operation == Operation::PublishImplementationPrV1 {
+                let scope = policy
+                    .implementation_startup
+                    .as_ref()
+                    .ok_or("Missing admitted implementation scope")?;
+                scope.live(host)?;
+                host.validate_implementation_proof(&request, run, scope)?;
+            }
             let left = remaining();
             require(
                 left > 0,

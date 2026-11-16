@@ -342,7 +342,7 @@ required. Task delivery and Remote Checks retain their existing authority.
 
 Prepare the installed [workspace/GitHub adapter](scenario-git-workspace.md) outside every checkout.
 Start from the inert `fixtures/scenarios/performance-workspace.example.json`.
-Its owner-only `af/git-workspace-config@2` pins the exact repository numeric identity, native
+Its owner-only `af/git-workspace-config@3` pins the exact repository numeric identity, native
 repository and Task Store, reviewed source commit/content, base, branch namespace, native tools,
 SSH config and author. Set `operations` to `["publish_performance_pr_v1"]` and add:
 

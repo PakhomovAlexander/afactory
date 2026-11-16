@@ -1,4 +1,4 @@
-//! Immutable startup authority. This capability never authorizes publication.
+//! Owner-admitted startup authority and exact scoped publication authorization.
 use crate::contract::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -39,7 +39,7 @@ pub struct Scope {
 impl Scope {
     pub fn validate(&self) -> Result<()> {
         require(
-            self.schema == "af/implementation-startup-scope@1",
+            self.schema == "af/implementation-startup-scope@2",
             "Unsupported implementation startup scope",
         )?;
         name(&self.owner)?;
@@ -128,6 +128,7 @@ impl Scope {
                         grant.operation,
                         Operation::PrepareCandidateV1
                             | Operation::PublishPr
+                            | Operation::PublishImplementationPrV1
                             | Operation::Observe
                             | Operation::CleanupWorkspaceV1
                     ),
@@ -247,6 +248,126 @@ pub fn preflight(host: &dyn crate::Host, pin: &Pin) -> Result<()> {
     scope.live(host)
 }
 
+/// A read-only live capability check. Only an intent in the retained owner-confirmed Run can
+/// supply authority; an adapter request, copied receipt or caller-selected scope cannot.
+pub fn authorize<'a>(
+    world: &'a crate::store::World,
+    request: &crate::adapter::Request,
+    now: u64,
+    live: bool,
+) -> Result<(&'a crate::state::Run, &'a Scope)> {
+    require(
+        request.schema == "af/scenario-adapter-request@6"
+            && request.operation == Operation::PublishImplementationPrV1
+            && matches!(
+                request.method,
+                crate::adapter::Method::Execute | crate::adapter::Method::Reconcile
+            ),
+        "Expected scoped implementation publication",
+    )?;
+    let mut found = None;
+    for run in world.runs.values() {
+        for (path, frame) in &run.frames {
+            let definition = &run.pin.bundle.definitions[&frame.scenario];
+            for progress in &frame.steps {
+                let Some(intent) = progress
+                    .intents
+                    .last()
+                    .filter(|i| i.id == request.intent_id)
+                else {
+                    continue;
+                };
+                require(found.is_none(), "Ambiguous scoped intent")?;
+                let scope = run
+                    .pin
+                    .policy
+                    .implementation_startup
+                    .as_ref()
+                    .ok_or("No admitted startup scope")?;
+                scope.admits(&run.pin.bundle)?;
+                let step = definition
+                    .steps
+                    .iter()
+                    .find(|s| s.id == progress.step)
+                    .ok_or("Missing scoped step")?;
+                let Kind::Action {
+                    grant,
+                    requires_decision: false,
+                    required_condition: None,
+                } = &step.operation
+                else {
+                    return Err("Not a scoped publication Action".into());
+                };
+                let inputs = step
+                    .inputs
+                    .iter()
+                    .map(|(k, b)| Ok((k.clone(), run.resolve(path, b)?)))
+                    .collect::<Result<BTreeMap<_, _>>>()?;
+                require(
+                    grant.operation == request.operation
+                        && grant.destination == request.destination
+                        && scope.grants.contains(grant)
+                        && inputs == request.inputs
+                        && hash(&(step, &inputs))? == request.input_digest
+                        && intent.input_digest == request.input_digest,
+                    "Scoped publication intent or input differs",
+                )?;
+                require(
+                    !live
+                        || (run.status.active()
+                            && run.cancellation.is_none()
+                            && progress.status.active()
+                            && matches!(
+                                intent.phase,
+                                crate::state::Phase::Prepared | crate::state::Phase::Uncertain
+                            )
+                            && now < scope.expires_unix_ms
+                            && now < progress.deadline_unix_ms
+                            && now < run.created_unix_ms.saturating_add(run.limits.max_wall_ms)),
+                    "Scoped publication expired, cancelled, fenced or inactive",
+                )?;
+                if live {
+                    for (ancestor, parent) in &run.frames {
+                        if path == ancestor || path.starts_with(&format!("{ancestor}/")) {
+                            let limits = &run.pin.bundle.definitions[&parent.scenario].limits;
+                            require(
+                                now < parent.started_unix_ms.saturating_add(limits.max_wall_ms),
+                                "Scoped parent frame deadline reached",
+                            )?;
+                            for invocation in &parent.steps {
+                                let full = format!("{ancestor}/{}", invocation.step);
+                                if path == &full || path.starts_with(&format!("{full}/")) {
+                                    require(
+                                        now < invocation.deadline_unix_ms,
+                                        "Scoped parent invocation expired",
+                                    )?;
+                                }
+                            }
+                        }
+                    }
+                }
+                for key in ["candidate", "verification"] {
+                    let Some(Datum::Task(receipt)) = inputs.get(key) else {
+                        return Err("Scoped native receipt absent".into());
+                    };
+                    require(
+                        run.fresh_tasks.values().any(|t| {
+                            t.task_id == receipt.task_id
+                                && t.revision_id == receipt.revision_id
+                                && t.plan_id == receipt.plan_id
+                                && t.repo == scope.repo
+                                && t.state == scope.task_state
+                        }),
+                        "Scoped receipt belongs to another Run or plan",
+                    )?;
+                }
+                found = Some((run, scope));
+            }
+        }
+    }
+    found.ok_or_else(|| "No retained scoped publication intent".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,7 +403,7 @@ mod tests {
         let template = template.clone();
         let limits = root.limits.clone();
         let scope = Scope {
-            schema: "af/implementation-startup-scope@1".into(),
+            schema: "af/implementation-startup-scope@2".into(),
             owner: "owner".into(),
             recipe_id: hash(&pin.bundle).unwrap(),
             repo: template.repo.clone(),
@@ -330,18 +451,18 @@ mod tests {
     fn complete_conditional_pool_is_preflighted_before_any_task_planning() {
         let (pin, repair) = fixture();
         valid(
-            "implementation-startup-scope-v1.json",
+            "implementation-startup-scope-v2.json",
             pin.policy.implementation_startup.as_ref().unwrap(),
         );
         valid(
-            "implementation-startup-preflight-v1.json",
-            &serde_json::json!({"schema":"af/implementation-startup-preflight@1", "scope_id":hash(pin.policy.implementation_startup.as_ref().unwrap()).unwrap(), "scope":pin.policy.implementation_startup}),
+            "implementation-startup-preflight-v2.json",
+            &serde_json::json!({"schema":"af/implementation-startup-preflight@2", "scope_id":hash(pin.policy.implementation_startup.as_ref().unwrap()).unwrap(), "scope":pin.policy.implementation_startup}),
         );
         valid(
-            "implementation-startup-ready-v1.json",
-            &serde_json::json!({"schema":"af/implementation-startup-ready@1", "scope_id":hash(pin.policy.implementation_startup.as_ref().unwrap()).unwrap()}),
+            "implementation-startup-ready-v2.json",
+            &serde_json::json!({"schema":"af/implementation-startup-ready@2", "scope_id":hash(pin.policy.implementation_startup.as_ref().unwrap()).unwrap()}),
         );
-        valid("scenario-pin-v8.json", &pin);
+        valid("scenario-pin-v9.json", &pin);
         let host = TestHost {
             startup_reject: Some(repair.clone()),
             ..Default::default()
@@ -369,7 +490,7 @@ mod tests {
             None,
         )
         .unwrap();
-        valid("scenario-run-v8.json", &run);
+        valid("scenario-run-v9.json", &run);
         assert_eq!(
             run.pin.policy.implementation_startup,
             pin.policy.implementation_startup
@@ -622,9 +743,11 @@ mod tests {
         let mut old = pin.clone();
         old.policy.schema = "af/scenario-policy@5".into();
         assert!(old.validate(&TestHost::default()).is_err());
-        old = pin.clone();
-        old.schema = "af/scenario-pin@6".into();
-        assert!(old.validate(&TestHost::default()).is_err());
+        for retired in ["af/scenario-pin@6", "af/scenario-pin@7"] {
+            old = pin.clone();
+            old.schema = retired.into();
+            assert!(old.validate(&TestHost::default()).is_err());
+        }
         let mut changed = pin;
         changed.bundle.definitions.get_mut("main").unwrap().steps[1].when = None;
         assert!(changed.validate(&TestHost::default()).is_err());
@@ -651,11 +774,15 @@ mod tests {
         host.startup_time.store(START + DAY, Ordering::Relaxed);
         assert!(store.read().is_ok());
         let mut old = store.read().unwrap();
-        old.schema = "af/scenario-store@10".into();
-        assert!(old.validate(host.as_ref()).is_err());
+        for retired in ["af/scenario-store@10", "af/scenario-store@11"] {
+            old.schema = retired.into();
+            assert!(old.validate(host.as_ref()).is_err());
+        }
         let mut old_run = old.runs["expired"].clone();
-        old_run.schema = "af/scenario-run@6".into();
-        assert!(old_run.validate(host.as_ref()).is_err());
+        for retired in ["af/scenario-run@6", "af/scenario-run@7"] {
+            old_run.schema = retired.into();
+            assert!(old_run.validate(host.as_ref()).is_err());
+        }
         assert!(
             crate::runtime::resume(&store, "expired", Some(START))
                 .unwrap_err()

@@ -1,7 +1,7 @@
 # Implementation through human merge
 
 A Pipeline describes one Task's execution and typed acceptance. The reusable `impl` Scenario
-orchestrates native Task outcomes, bounded repairs, owned candidate preparation, signed PR publication, completed CI,
+orchestrates native Task outcomes, bounded repairs, owned candidate preparation, scoped PR publication, completed CI,
 actual human merge and owned cleanup. Models run only inside Tasks. An independently pinned verification Task must precede preparation. There is no automatic merge or scheduler installation.
 
 `scripts/scenario-impl.py` is an offline authoring recipe. It creates packages in a consuming
@@ -74,10 +74,12 @@ python3 -I /path/to/afactory/scripts/scenario-impl.py bundle \
 
 The recipe accepts any reviewed implement template; inspect its pinned package contracts before
 granting machine authority. The Scenario name is `impl`; its Pipeline name is configurable.
-Template pinning, policy installation, Run creation and signing remain operator-controlled.
+Template pinning, policy installation and exact Run-pin confirmation remain operator-controlled.
+The default recipe requires owner-admitted startup scope. `--signed-publication` explicitly
+selects the generic recipe with a fresh signed Decision for each publication.
 Use the separately installed [Git workspace capability](scenario-git-workspace.md) under adapter
 name `workspace`, granting only its preparation, publication, observation and cleanup operations
-at the exact destination. Its exclusive owned writer restriction and all signed publication,
+at the exact destination. Its exclusive owned writer restriction and all publication,
 lease, recovery and owned-resource checks remain binding. The
 [executable-review guide](task-execution/executable-review.md) explains evidence limits.
 
@@ -96,8 +98,8 @@ repair allowance. The recipe never resets it in a nested branch. Every branch's 
 and effective Provider pool must pass startup admission before any paid work.
 
 Completed failing CI still selects a fresh repair with the accepted predecessor, exact observation
-and preparation receipt. Pending, missing or unknown CI never selects repair. Every publication
-requires a fresh exact signed Decision before updating the same PR. Successful checks precede a
+and preparation receipt. Pending, missing or unknown CI never selects repair. Scoped publication
+uses the admitted startup capability for first and same-PR publication without a later Decision. Successful checks precede a
 separate actual `merged` Wait and cleanup; closed-unmerged PRs cannot complete. Finite total Task,
 token, elapsed-time and dispatch bounds derive from the complete generated tree. Scoped Runs also
 check the shared implementation reservation count on every new Task reservation, across restart.
@@ -140,12 +142,12 @@ publication.
 ## Scoped startup admission (Stage A)
 
 An owner-only machine policy may set `implementation_startup` to an
-`af/implementation-startup-scope@1` object. Review its complete recipe digest (`hash(bundle)`),
+`af/implementation-startup-scope@2` object. Review its complete recipe digest (`hash(bundle)`),
 exact template IDs and effective Worker model pool, native repository/source,
 GitHub repository numeric ID and actor ID/login, branch prefix/base, exact grants, finite Run
 limits, repair count and expiry before confirming the ordinary Scenario pin. Changing any of
 these fields changes that pin. This capability is separate from performance standing authority.
-The public schema is `schemas/implementation-startup-scope-v1.json`. Pass
+The public schema is `schemas/implementation-startup-scope-v2.json`. Pass
 `af scenario start --require-startup-scope` to refuse an accidentally absent scope before
 Run creation or Task dispatch. A policy that carries scope always enforces it.
 
@@ -173,18 +175,54 @@ Stage A tests exercise conditional-template refusal, exact recipe/source/budget/
 missing machine preflight support, live creation/elapsed budgets, expiry before and during Task planning, cancellation, retired
 versions, native zero-dispatch refusal, and admitted personal native plans reused with zero
 Attempts and no inference. Workspace preflight uses a fake read-only GitHub transport. They do not establish
-live GitHub permissions, VM reboot survival, continuous service operation, scoped publication. Publication still waits for exact signed decisions. Stage B adds the
-terminal evidence and repair paths above; Stages C and D remain required for issue 834; existing Task wake support does not implement a Scenario driver.
+live GitHub permissions, VM reboot survival or continuous service operation. Stage B adds the
+terminal evidence and repair paths above. Stage C1 below adds scoped publication; continuous
+driving and combined lifecycle proof remain required for issue 834. Existing Task wake support
+does not implement a Scenario driver.
 See [the startup ADR](adr/2026-11-16-admit-implementation-startup-scope.md).
 
 See the [Stage B decision](adr/2026-11-16-route-terminal-native-outcomes-to-bounded-repairs.md).
 The command fixtures use zero-token Workers and prove exact zero native charges, retained Task
 identities and no redispatch on terminal resume. They do not establish nonzero paid-provider
-charges or production whole-change verification/publication composition. Stage C scoped publication
-and continuous service driving and Stage D whole lifecycle proof remain explicitly pending.
+charges or production whole-change verification/publication composition. Continuous service driving and Stage D whole lifecycle proof remain explicitly pending.
 
 A separate coordinator fixture settles four Tasks at 17 tokens each and restarts at the shared
 repair boundary. It proves 68-token accounting and that verification/report reservations do not
 spend repair slots. These are synthetic coordinator settlements, separate from the executed native
 command Workers' zero charges. Unknown-usage and cancellation boundary fixtures make no paid-provider
 or physical interruption claim.
+
+## Scoped native publication (Stage C1)
+
+`publish_implementation_pr_v1` is a separate capability. Install its workspace adapter with
+`implementation_state` naming the private native Scenario Store, and admit its exact grant in
+`implementation_startup`. Confirming the complete pin authorizes that bounded scope; it retains
+no signing key. Generic `publish_pr`, `followup` and performance publication retain their existing
+contracts. The recipe passes both the accepted implementation and independent verifier receipts,
+and the exact preparation receipt. The verifier template must carry the same original goal and
+requirements and an explicit original baseline commit. The live destination base is checked
+separately; the candidate cannot serve as its own verification baseline.
+
+The native `af scenario implementation-proof --file REQUEST --state STORE --json` reader binds
+the exact intent and input digest to its retained Run, pin, admitted template pool and native
+Task plans/results. It opens accepted native Tasks, candidate SourceTree artifacts, complete
+independent Review Rounds, evaluator evidence and original baseline provenance. Missing, foreign,
+unaccepted or narrowed evidence refuses. Its proof includes the native Task report for the PR.
+`--live-only` rechecks current authorization without repeating immutable acceptance validation.
+An immutable proof alone does not authorize a send.
+
+After blocking observations, the production adapter rechecks the exact actor/repository, local
+and remote source/base, then native active Run, cancellation, current intent, budgets and trusted
+expiry immediately before each push, POST or PATCH. HTTP connects before this guard, disables
+implicit reconnection and recomputes remaining timeout afterward. Git checks before spawning.
+Same-PR repairs retain the original marker and update the exact PR body with the new native
+Task report. A retained metadata dispatch is never repeated merely because readback still shows
+old content. Conflicting same-head PRs, including another base, refuse. Unknown effects remain
+uncertain until the exact retained journal reconciles them.
+
+The native scoped fixture uses admitted Codex bindings with deterministic Provider IO, production
+proof/workspace/publication code, real disposable Git refs and controlled GitHub IO. It exercises
+first publication, a CI repair to the same PR, lost publication responses and retained recovery.
+It supplies no live publication or VM-reboot evidence. Continuous service/default cadence,
+interrupted-Worker lifecycle and the combined whole-lifecycle integration proof are the next
+stage, not completed here. See the [C1 decision](adr/2026-11-16-publish-implementation-under-native-startup-scope.md).

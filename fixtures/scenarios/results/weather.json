@@ -1,9 +1,9 @@
 {
-  "schema": "af/scenario-bundle@7",
+  "schema": "af/scenario-bundle@8",
   "root": "weather",
   "definitions": {
     "weather": {
-      "schema": "af/scenario@7",
+      "schema": "af/scenario@8",
       "inputs": {},
       "outputs": {
         "report": "text",

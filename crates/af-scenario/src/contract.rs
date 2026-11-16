@@ -425,6 +425,7 @@ impl Limits {
 #[serde(rename_all = "snake_case")]
 pub enum Operation {
     PublishPr,
+    PublishImplementationPrV1,
     PublishPerformancePrV1,
     Followup,
     Notify,
@@ -582,7 +583,7 @@ fn decision_origin(
 impl Bundle {
     pub fn validate(&self, host: &dyn crate::Host) -> Result<()> {
         require(
-            self.schema == "af/scenario-bundle@7"
+            self.schema == "af/scenario-bundle@8"
                 && !self.definitions.is_empty()
                 && self.definitions.len() <= 64,
             "Unsupported or oversized Scenario bundle",
@@ -726,7 +727,7 @@ impl Bundle {
 impl Scenario {
     fn validate(&self, bundle: &Bundle, host: &dyn crate::Host) -> Result<()> {
         require(
-            self.schema == "af/scenario@7"
+            self.schema == "af/scenario@8"
                 && !self.outputs.is_empty()
                 && self.outputs.len() <= 32
                 && self.inputs.len() <= 32
@@ -912,6 +913,20 @@ impl Scenario {
                         "Publication requires an exact human decision",
                     )?;
                     match grant.operation {
+                        Operation::PublishImplementationPrV1 => {
+                            require(
+                                !requires_decision && required_condition.is_none(),
+                                "Scoped implementation publication requires native proof",
+                            )?;
+                            for key in ["subject", "revision", "body"] {
+                                expected.insert(key.into(), Port::Text);
+                            }
+                            for key in ["candidate", "verification"] {
+                                expected.insert(key.into(), Port::Task);
+                            }
+                            expected.insert("prepared".into(), Port::Action);
+                            output = Port::Action;
+                        }
                         Operation::PublishPerformancePrV1 => {
                             require(
                                 !requires_decision && required_condition.is_none(),
@@ -1041,7 +1056,7 @@ pub struct Policy {
 impl Policy {
     pub fn validate(&self) -> Result<()> {
         require(
-            self.schema == "af/scenario-policy@6"
+            self.schema == "af/scenario-policy@7"
                 && self.adapters.len() <= 32
                 && self.decision_keys.len() <= 32
                 && self.task_templates.len() <= 256
@@ -1142,6 +1157,11 @@ impl Policy {
                 "Scenario Task plan authority exceeds machine policy",
             )?;
             for grant in &def.authority.grants {
+                require(
+                    grant.operation != Operation::PublishImplementationPrV1
+                        || self.implementation_startup.is_some(),
+                    "Scoped implementation publication needs admitted startup authority",
+                )?;
                 if matches!(
                     grant.operation,
                     Operation::WriteOwnedFile | Operation::CleanupOwnedFile
@@ -1201,7 +1221,7 @@ impl Pin {
             .collect::<Result<_>>()?;
         let revision = hash(&(&bundle, &policy))?;
         Ok(Self {
-            schema: "af/scenario-pin@8".into(),
+            schema: "af/scenario-pin@9".into(),
             bundle,
             policy,
             revision,

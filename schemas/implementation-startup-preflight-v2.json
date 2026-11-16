@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:implementation-startup-preflight:2",
+  "title": "Implementation startup preflight v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "scope_id",
+    "scope"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/implementation-startup-preflight@2"
+    },
+    "scope_id": {
+      "$ref": "urn:af:schema:scenario:8#/$defs/digest"
+    },
+    "scope": {
+      "$ref": "urn:af:schema:implementation-startup-scope:2"
+    }
+  }
+}

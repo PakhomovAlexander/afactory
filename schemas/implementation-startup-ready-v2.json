@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:implementation-startup-ready:1",
-  "title": "Implementation startup ready v1",
+  "$id": "urn:af:schema:implementation-startup-ready:2",
+  "title": "Implementation startup ready v2",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -10,10 +10,10 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/implementation-startup-ready@1"
+      "const": "af/implementation-startup-ready@2"
     },
     "scope_id": {
-      "$ref": "urn:af:schema:scenario:7#/$defs/digest"
+      "$ref": "urn:af:schema:scenario:8#/$defs/digest"
     }
   }
 }

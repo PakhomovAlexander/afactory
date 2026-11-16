@@ -105,7 +105,21 @@ fn assert_task(state: &Path, run: &Value, name: &str, p: &Value) {
 
 #[test]
 fn production_workspace_scenario_repairs_same_pr_and_cleans_only_after_merge() {
-    for mode in ["ready", "repairable", "pending", "stale"] {
+    production_lifecycle(&["ready", "repairable", "pending", "stale"]);
+}
+
+#[test]
+fn production_workspace_rechecks_actor_and_signed_expiry_before_push_and_post() {
+    production_lifecycle(&[
+        "expired-push",
+        "foreign-push",
+        "expired-post",
+        "foreign-post",
+    ]);
+}
+
+fn production_lifecycle(modes: &[&str]) {
+    for &mode in modes {
         let f = Fixture::bare();
         std::fs::remove_dir(&f.repo).unwrap();
         let task_root = f.repo.parent().unwrap().join("task-fixture");
@@ -211,8 +225,8 @@ fn production_workspace_scenario_repairs_same_pr_and_cleans_only_after_merge() {
                 "evidence":binding("merge")}),
             "action",
         );
-        let bundle = json!({"schema":"af/scenario-bundle@7","root":"documentation-maintenance","definitions":{"documentation-maintenance":{
-            "schema":"af/scenario@7","admission":null,"inputs":{},"outputs":{"selected":"action"},
+        let bundle = json!({"schema":"af/scenario-bundle@8","root":"documentation-maintenance","definitions":{"documentation-maintenance":{
+            "schema":"af/scenario@8","admission":null,"inputs":{},"outputs":{"selected":"action"},
             "steps":[step("edit",json!({"kind":"fresh_task","template":pinned["template"],"bindings":{}}),json!({}),"task"),
                 prepare("prepare","edit"),decision("approve","prepare"),publish("publish","prepare","approve"),
                 step("checks",json!({"kind":"wait","grant":grant("observe"),"condition":"checks_completed"}),
@@ -222,7 +236,7 @@ fn production_workspace_scenario_repairs_same_pr_and_cleans_only_after_merge() {
             "authority":{"task_plans":[],"task_templates":[pinned["template_id"]],
                 "grants":[grant("prepare_candidate_v1"),grant("publish_pr"),grant("observe"),grant("cleanup_workspace_v1")],"decision_owners":["owner"]},
             "limits":{"max_tokens":2000,"max_wall_ms":3600000,"max_dispatches":24}}}});
-        valid("scenario-bundle-v7.json", &bundle);
+        valid("scenario-bundle-v8.json", &bundle);
         write(&f.bundle, &bundle);
         let initial = f.start("documentation");
         assert_eq!(initial["status"], "waiting", "{initial}");
@@ -243,6 +257,60 @@ fn production_workspace_scenario_repairs_same_pr_and_cleans_only_after_merge() {
         assert_eq!(remote_head(&f, &remote, &first), ""); // preparation does not push
         f.approve("documentation");
         let mut run = cli(&f.repo, &f.state, &["scenario", "resume", "documentation"]);
+        if mode.starts_with("expired-") || mode.starts_with("foreign-") {
+            // Acceptance and signature above are real native receipts. Only service
+            // identity/clock observations are faulted, after local preparation and
+            // parent/ref reads (push), or HTTP connection establishment (POST).
+            let expected_head = if mode.ends_with("push") {
+                String::new()
+            } else {
+                first["commit"].as_str().unwrap().to_owned()
+            };
+            for _ in 0..2 {
+                assert_eq!(run["status"], "waiting", "{mode}: {run}");
+                assert_eq!(remote_head(&f, &remote, &first), expected_head, "{mode}");
+                let service = f.github_state();
+                assert_eq!(
+                    service["guard_fault"],
+                    json!({"mode": mode, "observation": if mode.ends_with("push") {2} else {3}}),
+                    "guard did not reach the intended blocking observation: {service}"
+                );
+                assert_eq!(service["effects"], json!([]), "{mode}: {service}");
+                assert_eq!(service["prs"], json!({}), "{mode}: {service}");
+                assert!(
+                    service["requests"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .all(|r| r[0] != "POST"),
+                    "{mode}: {service}"
+                );
+                let pushes = std::fs::read_to_string(f.machine.join("pushes")).unwrap_or_default();
+                assert_eq!(
+                    pushes.lines().count(),
+                    usize::from(mode.ends_with("post")),
+                    "{mode}: {pushes}"
+                );
+                let journal: Value = serde_json::from_slice(
+                    &std::fs::read(f.machine.join("receipts/github.json")).unwrap(),
+                )
+                .unwrap();
+                let records = journal["records"].as_object().unwrap();
+                assert_eq!(records.len(), 1);
+                assert_eq!(
+                    records.values().next().unwrap()["phase"],
+                    if mode.ends_with("push") {
+                        "prepared"
+                    } else {
+                        "dispatched"
+                    },
+                    "{mode}: {journal}"
+                );
+                assert_eq!(run["fresh_tasks"], initial["fresh_tasks"]);
+                run = cli(&f.repo, &f.state, &["scenario", "resume", "documentation"]);
+            }
+            continue;
+        }
         assert_eq!(remote_head(&f, &remote, &first), first["commit"]);
         let identity = f.github_state()["prs"]["1"]["id"].clone();
         assert_eq!(f.github_state()["effects"], json!(["publish_pr:1"]));
@@ -448,12 +516,16 @@ args = sys.argv[1:]
 url = "ssh://git@github.com/octo/project.git"
 if url in args:
     assert "push" in args or "ls-remote" in args
+    if "push" in args:
+        with open({pushes}, "a") as output:
+            output.write("push\n")
     args = [ {remote} if a == url else a for a in args ]
     # Override the production file denial only for this one fixed transport mapping.
     args = [a if a != "protocol.file.allow=never" else "protocol.file.allow=always" for a in args]
 os.execve("/usr/bin/git", ["/usr/bin/git"] + args, os.environ)
 "#,
-        remote = serde_json::to_string(remote).unwrap()
+        remote = serde_json::to_string(remote).unwrap(),
+        pushes = serde_json::to_string(&f.machine.join("pushes")).unwrap()
     );
     std::fs::write(&git_wrapper, wrapper).unwrap();
     std::fs::set_permissions(&git_wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -469,7 +541,7 @@ os.execve("/usr/bin/git", ["/usr/bin/git"] + args, os.environ)
         .mode(0o700)
         .create(&worktrees)
         .unwrap();
-    let config = json!({"schema":"af/git-workspace-config@2", "repository":"octo/project","repository_id":17,
+    let config = json!({"schema":"af/git-workspace-config@3", "repository":"octo/project","repository_id":17,
         "actor":{"id":7,"login":"machine-bot"},"token_file":token,"state_dir":f.machine.join("receipts"),
         "repo":f.repo,"task_store":task_state,"worktree_root":worktrees,"base":"main","branch_prefix":"accepted",
         "source_commit":commit,"source_content_digest":pin["template"]["source_content_digest"],
@@ -477,7 +549,7 @@ os.execve("/usr/bin/git", ["/usr/bin/git"] + args, os.environ)
         "ssh_config":ssh,"ssh_config_digest":hash(&ssh),"author_name":"Fixture","author_email":"fixture@example.invalid",
         "required_checks":[{"kind":"check","name":"CI","app_id":4}],"reviewers":[],
         "publication_mode":"exclusive_owned_writer","operations":["prepare_candidate_v1","publish_pr","observe","cleanup_workspace_v1"]});
-    valid("git-workspace-config-v2.json", &config);
+    valid("git-workspace-config-v3.json", &config);
     let config_path = f.machine.join("config.json");
     write(&config_path, &config);
     std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600)).unwrap();

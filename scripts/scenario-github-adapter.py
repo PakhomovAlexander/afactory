@@ -36,9 +36,10 @@ LOGIN = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?"
 REPO = r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}"
 PUB = r"github-pr:sha256:[0-9a-f]{64}"
 CONFIG_SCHEMA = "af/github-adapter-config@1"
-STATE_SCHEMA = "af/github-adapter-state@5"
-PR_OPERATIONS = ("publish_pr", "publish_performance_pr_v1")
+STATE_SCHEMA = "af/github-adapter-state@6"
+PR_OPERATIONS = ("publish_pr", "publish_performance_pr_v1", "publish_implementation_pr_v1")
 PAYLOAD_SCHEMAS = {
+    "publish_implementation_pr_v1": "af/github-publish-pr@1",
     "publish_performance_pr_v1": "af/github-performance-pr@1",
     "publish_pr": "af/github-publish-pr@1",
     "followup": "af/github-followup@1",
@@ -207,7 +208,7 @@ def load_config():
 
 
 def subject(operation, payload):
-    prefix = {"publish_pr": "github-pr:", "publish_performance_pr_v1": "github-pr:", "followup": "github-followup:", "notify": "github-notify:"}
+    prefix = {"publish_implementation_pr_v1": "github-pr:", "publish_pr": "github-pr:", "publish_performance_pr_v1": "github-pr:", "followup": "github-followup:", "notify": "github-notify:"}
     return prefix[operation] + digest(canonical(payload))
 
 
@@ -241,7 +242,7 @@ def validate_payload(operation, value, config):
 
 def validate_request(request, config):
     fields(request, ("schema", "method", "intent_id", "input_digest", "operation", "destination", "inputs"))
-    need(request["schema"] == "af/scenario-adapter-request@5", "unsupported request version")
+    need(request["schema"] == "af/scenario-adapter-request@6", "unsupported request version")
     for key in ("intent_id", "input_digest"):
         string(request[key], DIGEST)
     op = request["operation"]
@@ -252,7 +253,7 @@ def validate_request(request, config):
                                           and op in PAYLOAD_SCHEMAS), "invalid method/operation")
     inputs = request["inputs"]
     fields(inputs, ("subject", "revision", "condition") if observe else ("subject", "revision", "body"),
-           () if observe else ("decision", "evidence"))
+           () if observe else (("candidate", "verification", "prepared") if op == "publish_implementation_pr_v1" else ("decision", "evidence")))
     texts = {}
     for key in (("subject", "revision", "condition") if observe else ("subject", "revision", "body")):
         fields(inputs[key], ("type", "value"))
@@ -374,13 +375,17 @@ class Journal:
         need(isinstance(records, dict) and len(records) <= MAX_RECORDS, "journal record bound exceeded")
         subjects = set()
         for key, record in records.items():
-            fields(record, ("request", "request_digest", "phase", "object", "evidence"))
+            fields(record, ("request", "request_digest", "phase", "object", "evidence", "metadata_dispatched"))
+            need(type(record["metadata_dispatched"]) is bool, "invalid metadata dispatch receipt")
             request = record["request"]
             fields(request, ("schema", "intent_id", "input_digest", "operation", "destination", "inputs"))
             texts, _ = validate_request({**request, "method": "reconcile"}, self.config)
             need(key == request["intent_id"] and record["request_digest"] == digest(canonical(request)),
                  "journal intent identity mismatch")
             need(record["phase"] in ("prepared", "dispatched", "done", "failed"), "invalid journal phase")
+            need(not record["metadata_dispatched"] or (request["operation"] == "publish_implementation_pr_v1"
+                 and record["phase"] in ("dispatched", "done") and record["object"] is not None),
+                 "metadata dispatch is outside a retained scoped repair")
             obj = record["object"]
             if obj is not None:
                 fields(obj, ("id", "number"))
@@ -419,7 +424,7 @@ class Journal:
                  "object already reserved by another intent; inspect its original receipt")
         need(len(records) < MAX_RECORDS, "journal receipt budget exhausted; do not discard uncertain intents")
         record = {"request": wanted, "request_digest": digest(canonical(wanted)),
-                  "phase": "prepared", "object": None, "evidence": None}
+                  "phase": "prepared", "object": None, "evidence": None, "metadata_dispatched": False}
         records[key] = record
         unsettled = sum(r["phase"] in ("prepared", "dispatched") for r in records.values())
         need(len(state_bytes(self.state)) + unsettled * 1024 <= STATE_LIMIT,
@@ -453,7 +458,7 @@ class GitHub:
         self.more = False
 
     def request(self, method, path, body=None, *, before_send=None):
-        need((method in ("GET", "POST") and path.startswith("/repos/")) or
+        need((method in ("GET", "POST", "PATCH") and path.startswith("/repos/")) or
              (method == "GET" and path.startswith("/users/")) or
              (method == "GET" and path == "/user") or
              (method == "POST" and path == "/graphql"), "invalid API route")
@@ -472,7 +477,7 @@ class GitHub:
             conn.connect()
             need(conn.sock is not None, "API connection unavailable before send")
             need(self.deadline > time.monotonic(), "bounded API connection exhausted")
-            if method == "POST":
+            if method in ("POST", "PATCH"):
                 need(callable(before_send), "API mutation requires a final authorization guard")
                 before_send()
             remaining = self.deadline - time.monotonic()
@@ -560,6 +565,8 @@ class Adapter:
     def before_mutation(self, record):
         req = record["request"]
         validate_request({**req, "method": "execute"}, self.config)
+        need(req["operation"] != "publish_implementation_pr_v1" or getattr(self, "workspace", None) is not None,
+             "scoped implementation publication requires the native workspace adapter")
         decision = req["inputs"].get("decision")
         if decision is not None:
             need(decision["value"]["request"]["expires_unix_ms"] > time.time_ns() // 1_000_000,
@@ -586,11 +593,14 @@ class Adapter:
         req = record["request"]
         return decode(req["inputs"]["body"]["value"].encode())
 
+    def publication_body(self, record):
+        return self.payload(record)["body"]
+
     def object_id(self, remote):
         need(isinstance(remote, dict), "invalid remote receipt")
         return {"id": integer(remote.get("id")), "number": integer(remote.get("number"))}
 
-    def validate_remote(self, record, remote):
+    def validate_remote(self, record, remote, *, expected_revision=None, expected_body=None):
         req, p = record["request"], self.payload(record)
         obj = self.object_id(remote)
         if record["object"] is not None:
@@ -610,7 +620,7 @@ class Adapter:
              and remote["user"].get("id") == self.config["actor"]["id"]
              and remote["user"].get("login") == self.config["actor"]["login"]
              and remote.get("title") == p["title"]
-             and remote.get("body") == p["body"] + self.marker(record),
+             and remote.get("body") == (self.publication_body(record) + self.marker(record) if expected_body is None else expected_body),
              "foreign actor, marker or changed publication content")
         if pr:
             for side, ref in (("head", p["head"]), ("base", p["base"])):
@@ -620,7 +630,7 @@ class Adapter:
                      and value["repo"].get("id") == self.config["repository_id"]
                      and value["repo"].get("full_name") == self.config["repository"],
                      "PR branch or repository identity changed")
-            need(remote["head"].get("sha") == req["inputs"]["revision"]["value"], "PR head is stale")
+            need(remote["head"].get("sha") == (req["inputs"]["revision"]["value"] if expected_revision is None else expected_revision), "PR head is stale")
         else:
             need("pull_request" not in remote, "a PR cannot satisfy an issue receipt")
         return obj
@@ -759,7 +769,7 @@ class Adapter:
             self.locked_head(p, revision)
             path = self.repo + "/pulls"
             body = {"head": p["head"], "base": p["base"], "title": p["title"],
-                    "body": p["body"] + self.marker(record), "draft": False,
+                    "body": self.publication_body(record) + self.marker(record), "draft": False,
                     "maintainer_can_modify": False}
         else:
             source, remote = self.publication(p["publication"], revision)
@@ -901,7 +911,7 @@ def schema_documents():
     def document(name, value):
         if name == "github-performance-pr":
             value = dict(title="Performance pull request v1", **value)
-        version = 5 if name == "github-adapter-state" else 1
+        version = 6 if name == "github-adapter-state" else 1
         documents[name + "-v%d.json" % version] = {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "$id": "urn:af:schema:" + name + ":%d" % version,
@@ -929,13 +939,13 @@ def schema_documents():
         else:
             props.update(title=text(maximum=200), body=text(maximum=48000))
         document(schema.split("/")[1].split("@")[0], obj(props))
-    request = obj({"schema": {"const": "af/scenario-adapter-request@5"},
+    request = obj({"schema": {"const": "af/scenario-adapter-request@6"},
                    "intent_id": text(DIGEST), "input_digest": text(DIGEST),
                    "operation": {"enum": list(PAYLOAD_SCHEMAS)}, "destination": text(),
                    "inputs": {"type": "object", "additionalProperties": {
-                       "$ref": "urn:af:schema:scenario:7#/$defs/Datum"}}})
+                       "$ref": "urn:af:schema:scenario:8#/$defs/Datum"}}})
     record = obj({"request": request, "request_digest": text(DIGEST),
-                  "phase": {"enum": ["prepared", "dispatched", "done", "failed"]},
+                  "phase": {"enum": ["prepared", "dispatched", "done", "failed"]}, "metadata_dispatched": {"type":"boolean"},
                   "object": {"anyOf": [{"type": "null"}, obj({"id": positive, "number": positive})]},
                   "evidence": {"anyOf": [{"type": "null"}, text(maximum=1000)]}})
     document("github-adapter-state", obj({"schema": {"const": STATE_SCHEMA},

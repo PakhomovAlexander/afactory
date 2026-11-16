@@ -1,9 +1,9 @@
 {
-  "schema": "af/scenario-bundle@7",
+  "schema": "af/scenario-bundle@8",
   "root": "performance",
   "definitions": {
     "performance": {
-      "schema": "af/scenario@7",
+      "schema": "af/scenario@8",
       "admission": null,
       "inputs": {},
       "outputs": {

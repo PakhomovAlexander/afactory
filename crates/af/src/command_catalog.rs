@@ -272,6 +272,7 @@ pub(crate) const EFFECTS: &[(&str, Effects)] = &[
     ("af scenario template-pin", writes(&[(Store, None)])),
     ("af scenario evidence-source", READS),
     ("af scenario performance-proof", READS),
+    ("af scenario implementation-proof", READS),
     ("af scenario experiment-source", writes(&[(Files, None)])),
     ("af scenario candidate-source", writes(&[(Files, None)])),
     (

@@ -1,9 +1,9 @@
 {
-  "schema": "af/scenario-bundle@7",
+  "schema": "af/scenario-bundle@8",
   "root": "documentation-update",
   "definitions": {
     "documentation-update": {
-      "schema": "af/scenario@7",
+      "schema": "af/scenario@8",
       "inputs": {},
       "outputs": {
         "publication": "action",

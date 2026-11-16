@@ -1,5 +1,5 @@
 {
-  "$id": "urn:af:schema:git-workspace-config:2",
+  "$id": "urn:af:schema:git-workspace-config:3",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
@@ -68,6 +68,12 @@
       "pattern": "^sha256:[0-9a-f]{64}$",
       "type": "string"
     },
+    "implementation_state": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "pattern": "^/[^\\x00]+$",
+      "type": "string"
+    },
     "operations": {
       "items": {
         "enum": [
@@ -76,11 +82,12 @@
           "notify",
           "observe",
           "prepare_candidate_v1",
+          "publish_implementation_pr_v1",
           "publish_performance_pr_v1",
           "publish_pr"
         ]
       },
-      "maxItems": 7,
+      "maxItems": 8,
       "minItems": 1,
       "type": "array",
       "uniqueItems": true
@@ -218,7 +225,7 @@
       "uniqueItems": true
     },
     "schema": {
-      "const": "af/git-workspace-config@2"
+      "const": "af/git-workspace-config@3"
     },
     "source_commit": {
       "maxLength": 65536,
@@ -296,6 +303,6 @@
     "publication_mode",
     "operations"
   ],
-  "title": "git-workspace-config v2",
+  "title": "git-workspace-config v3",
   "type": "object"
 }

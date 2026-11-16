@@ -38,12 +38,14 @@ pub fn resume(store: &Store, id: &str, clock: Option<u64>) -> Result<Run> {
         return cancel(store, id, cancellation.reason, execution_time()?);
     }
     let _lock = store.lock_run(id)?;
+    // Admit the complete immutable pool once per drive. Per-dispatch native binding,
+    // expiry and cancellation checks and final adapter authorization remain live.
+    let admitted = store.read()?;
+    let admitted = admitted.runs.get(id).ok_or("Scenario Run not found")?;
+    if admitted.status.active() {
+        super::implementation::preflight(store.host.as_ref(), &admitted.pin)?;
+    }
     loop {
-        let retained = store.read()?;
-        let current = retained.runs.get(id).ok_or("Scenario Run not found")?;
-        if current.status.active() {
-            super::implementation::preflight(store.host.as_ref(), &current.pin)?;
-        }
         let at = execution_time()?;
         let prepared = store.update(|world| crate::retention::prepare_run(world, id, at))?;
         let run = store
@@ -168,12 +170,7 @@ pub fn resume(store: &Store, id: &str, clock: Option<u64>) -> Result<Run> {
                     }
                 }
             });
-            let result = adapter::dispatch(
-                store.host.as_ref(),
-                &run.pin.policy,
-                &dispatch,
-                &cancellation,
-            );
+            let result = adapter::dispatch(store.host.as_ref(), &run, &dispatch, &cancellation);
             let _ = finished.send(());
             let _ = watcher.join();
             result

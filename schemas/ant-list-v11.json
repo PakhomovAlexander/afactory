@@ -1,32 +1,26 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:scenario-bundle:7",
-  "title": "scenario-bundle v7",
+  "$id": "urn:af:schema:ant-list:11",
+  "title": "ant-list v11",
   "description": "ADR-0274. Cross-port types, identity, authority, budget, signature and lifecycle invariants also require semantic admission.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schema",
-    "root",
-    "definitions"
+    "ants"
   ],
   "properties": {
     "schema": {
-      "const": "af/scenario-bundle@7"
+      "const": "af/ant-list@11"
     },
-    "root": {
-      "$ref": "urn:af:schema:scenario:7#/$defs/name"
-    },
-    "definitions": {
+    "ants": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:scenario:7#/$defs/name"
+        "$ref": "urn:af:schema:scenario:8#/$defs/name"
       },
       "additionalProperties": {
-        "$ref": "urn:af:schema:scenario:7#/$defs/Scenario"
-      },
-      "minProperties": 1,
-      "maxProperties": 64
+        "$ref": "urn:af:schema:scenario:8#/$defs/AntInspection"
+      }
     }
   }
 }

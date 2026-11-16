@@ -249,8 +249,9 @@ else:
    text+=' Final report retains research artifact '+i['research_report'][0]['artifact_id']+' and its evidence: '+i['research_report'][0]['payload']['text']
   reply={'draft':[{'schema':'af.document-draft/3','title':'Research chain','sections':[{'heading':'Findings','body':text},{'heading':'Recommendation','body':text}],'citations':[{'kind':'repository','location':{'path':'subject.txt','line':1}}]}]}
  elif 'report' in ports:
-  assert 'DISTINCT-RESEARCH' in i['research_report'][0]['payload']['text']
+  if not (home/'scoped-mode').exists(): assert 'DISTINCT-RESEARCH' in i['research_report'][0]['payload']['text']
   root=pathlib.Path(sys.argv[sys.argv.index('-C')+1]) if '-C' in sys.argv else pathlib.Path.cwd()
+  if (home/'scoped-mode').exists() and (root/'optimized.txt').exists(): (root/'repair.txt').write_text('independently accepted same-PR repair\n')
   (root/'optimized.txt').write_text('cache decoded manifest by exact digest\n')
   reply={'report':[{'summary':'Constructed the exact accepted research recommendation.'}]}
  else:
@@ -929,7 +930,7 @@ fn shipped_performance_loop_delivers_research_and_publishes_verified_improvement
     let history = &mut bundle["definitions"]["performance"]["steps"][0];
     history["inputs"]["subject"]["value"]["value"] = packet["index_digest"].clone();
     history["inputs"]["revision"]["value"]["value"] = packet["compatibility"].clone();
-    valid("scenario-bundle-v7.json", &bundle);
+    valid("scenario-bundle-v8.json", &bundle);
     write(&p.f.bundle, &bundle);
     let pin = p.cli(
         &p.f.state,
@@ -1076,7 +1077,7 @@ fn shipped_performance_loop_delivers_research_and_publishes_verified_improvement
         }
     }
     assert_eq!(done["status"], "succeeded", "{done:#}");
-    valid("scenario-run-v8.json", &done);
+    valid("scenario-run-v9.json", &done);
     let steps = done["frames"]["root"]["steps"].as_array().unwrap();
     let research = &steps[1]["outputs"]["result"]["value"];
     let id = research["result"]["outputs"]["report"]["artifact_ids"][0]
@@ -1410,7 +1411,7 @@ def observe(records):
     a.config['evidence_index'] = research_evidence.retain(evidence, current, 'evidence-index')
     a.config['evidence_index_digest'] = canonical_digest(current)
     text = lambda v: dict(type='text', value=v)
-    return a.request(dict(schema='af/scenario-adapter-request@5', method='observe',
+    return a.request(dict(schema='af/scenario-adapter-request@6', method='observe',
         operation='observe', destination='native:claw', intent_id=digest, input_digest=digest,
         inputs=dict(subject=text(canonical_digest(current)), revision=text(records[0]['compatibility']),
                     condition=text('bounded_evidence'))))
@@ -1751,15 +1752,15 @@ sys.exit(99)
     let template_id = template.id().unwrap();
     let limits =
         json!({"max_tokens":template.max_tokens,"max_wall_ms":604800000,"max_dispatches":64});
-    let bundle: af_scenario::contract::Bundle = serde_json::from_value(json!({"schema":"af/scenario-bundle@7","root":"startup","definitions":{"startup":{
-        "schema":"af/scenario@7","inputs":{},"outputs":{"ok":"boolean"},"steps":[step("implement",json!({"kind":"fresh_task","template":template,"bindings":{}}),json!({}),"task")],
+    let bundle: af_scenario::contract::Bundle = serde_json::from_value(json!({"schema":"af/scenario-bundle@8","root":"startup","definitions":{"startup":{
+        "schema":"af/scenario@8","inputs":{},"outputs":{"ok":"boolean"},"steps":[step("implement",json!({"kind":"fresh_task","template":template,"bindings":{}}),json!({}),"task")],
         "result":{"ok":literal("boolean",json!(true))},"completion":[literal("boolean",json!(true))],
         "authority":{"task_plans":[],"task_templates":[template_id],"grants":[],"decision_owners":[]},"limits":limits,"admission":null}}})).unwrap();
     let models: std::collections::BTreeMap<_, _> = [
         ("implementer", "gpt-6.1-sol", "medium"), ("bugs", "gpt-6.1-terra", "high"),
         ("correctness", "gpt-6.1-terra", "high"), ("evaluator", "gpt-6.1-terra", "medium")
     ].into_iter().map(|(role, model, effort)| (format!("owner-default/{role}"), json!({"provider":"codex-personal","provider_kind":"codex","model":model,"effort":effort}))).collect();
-    let scope = json!({"schema":"af/implementation-startup-scope@1", "owner":"owner", "recipe_id":af_scenario::contract::hash(&bundle).unwrap(),
+    let scope = json!({"schema":"af/implementation-startup-scope@2", "owner":"owner", "recipe_id":af_scenario::contract::hash(&bundle).unwrap(),
         "repo":p.f.repo, "task_state":p.task_state, "repository_id":template.repository_id, "source_commit":template.authority_commit,"source_content_digest":template.source_content_digest,
         "repository":"owner/project","destination_repository_id":1,"actor_id":2,"actor_login":"owner","branch_prefix":"implementation/","base":"main","grants":[],
         "templates":{template_id.clone():models},"limits":limits,"max_repairs":0,"expires_unix_ms":8_000_000_000_000_u64});
@@ -1842,4 +1843,465 @@ sys.exit(99)
         !marker.exists(),
         "startup admission must never invoke inference"
     );
+}
+
+#[test]
+fn native_scoped_implementation_publishes_and_repairs_one_pr_without_a_decision() {
+    native_scoped_implementation(false);
+}
+
+#[test]
+fn native_scoped_implementation_refuses_an_accepted_narrow_verifier() {
+    native_scoped_implementation(true);
+}
+
+fn native_scoped_implementation(narrow: bool) {
+    let p = Performance::new();
+    std::fs::write(p.home.join("scoped-mode"), "native scoped fixture").unwrap();
+    let fixture: Value = serde_json::from_slice(include_bytes!(
+        "../../../../fixtures/scenarios/performance-candidate.json"
+    ))
+    .unwrap();
+    let steps = fixture["definitions"]["performance"]["steps"]
+        .as_array()
+        .unwrap();
+    let mut pins = Vec::new();
+    for kind in ["implement", "verification"] {
+        let mut document = steps
+            .iter()
+            .find(|s| s["operation"]["template"]["document"]["kind"] == kind)
+            .unwrap()["operation"]["template"]["document"]
+            .clone();
+        document["goal"] = json!("Complete the original whole implementation goal");
+        document["requirements"] = json!({"acceptance":["Keep the subject and construct the accepted candidate with independent whole-change verification"]});
+        if kind == "verification" {
+            document["base"] = json!({"commit":p.commit});
+        }
+        let file = p.f.machine.join(format!("scoped-{kind}.json"));
+        write(&file, &document);
+        let binding = p.bindings(kind);
+        let pin = p.cli(
+            &p.f.state,
+            &[
+                "scenario",
+                "template-pin",
+                "--file",
+                file.to_str().unwrap(),
+                "--repo",
+                p.f.repo.to_str().unwrap(),
+                "--task-state",
+                p.task_state.to_str().unwrap(),
+                "--authority-commit",
+                &p.commit,
+                "--bindings",
+                binding.to_str().unwrap(),
+            ],
+        );
+        write(&p.f.machine.join(format!("scoped-{kind}-pin.json")), &pin);
+        pins.push(pin);
+    }
+    let body = p.f.machine.join("body.md");
+    std::fs::write(&body, "Native scoped implementation fixture").unwrap();
+    std::fs::remove_file(&p.f.bundle).unwrap();
+    let output = std::process::Command::new("/usr/bin/python3")
+        .arg("-I")
+        .arg(workspace().join("scripts/scenario-impl.py"))
+        .args(["bundle", "--pin"])
+        .arg(p.f.machine.join("scoped-implement-pin.json"))
+        .arg("--verification-pin")
+        .arg(p.f.machine.join("scoped-verification-pin.json"))
+        .args([
+            "--destination",
+            "github:octo/project",
+            "--title",
+            "Native scoped change",
+            "--body-file",
+        ])
+        .arg(&body)
+        .args(["--repairs", "1", "--output"])
+        .arg(&p.f.bundle)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut authored: Value = serde_json::from_slice(&std::fs::read(&p.f.bundle).unwrap()).unwrap();
+    if narrow {
+        let mut document = pins[1]["template"]["document"].clone();
+        document["goal"] = json!("Verify only the new file, omitting the original whole goal");
+        let file = p.f.machine.join("narrow-verifier.json");
+        write(&file, &document);
+        let binding = p.bindings("verification");
+        let pin = p.cli(
+            &p.f.state,
+            &[
+                "scenario",
+                "template-pin",
+                "--file",
+                file.to_str().unwrap(),
+                "--repo",
+                p.f.repo.to_str().unwrap(),
+                "--task-state",
+                p.task_state.to_str().unwrap(),
+                "--authority-commit",
+                &p.commit,
+                "--bindings",
+                binding.to_str().unwrap(),
+            ],
+        );
+        pins[1] = pin;
+        let root = &mut authored["definitions"]["impl"];
+        root["authority"]["task_templates"] =
+            json!([pins[0]["template_id"], pins[1]["template_id"]]);
+        for step in root["steps"].as_array_mut().unwrap() {
+            if step["operation"]["kind"] == "fresh_task"
+                && step["operation"]["template"]["document"]["kind"] == "verification"
+            {
+                step["operation"]["template"] = pins[1]["template"].clone();
+            }
+        }
+    }
+    let bundle: af_scenario::contract::Bundle = serde_json::from_value(authored).unwrap();
+    assert!(bundle.definitions.values().all(|d| {
+        d.steps
+            .iter()
+            .all(|s| !matches!(s.operation, af_scenario::contract::Kind::Decision { .. }))
+    }));
+    let remote = p.f.machine.join("remote.git");
+    for args in [
+        vec!["init", "--bare", "-q", remote.to_str().unwrap()],
+        vec![
+            "-C",
+            p.f.repo.to_str().unwrap(),
+            "push",
+            "-q",
+            remote.to_str().unwrap(),
+            &format!("{}:refs/heads/main", p.commit),
+        ],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+    let (binary, binary_digest) = installed_native_reader(&p.f.machine);
+    let git = std::fs::canonicalize("/usr/bin/git").unwrap();
+    let state_dir = p.f.machine.join("publication");
+    let worktrees = p.f.machine.join("worktrees");
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&worktrees)
+        .unwrap();
+    let token = p.f.machine.join("token");
+    std::fs::write(&token, "controlled-test-token\n").unwrap();
+    let ssh = p.f.machine.join("ssh-config");
+    std::fs::write(&ssh, "Host github.com\n  BatchMode yes\n").unwrap();
+    for file in [&token, &ssh] {
+        std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let template = &pins[0]["template"];
+    let config = json!({"schema":"af/git-workspace-config@3", "repository":"octo/project", "repository_id":17,
+        "actor":{"id":7,"login":"owner"},"token_file":token,"state_dir":state_dir,"repo":p.f.repo,
+        "task_store":p.task_state,"worktree_root":worktrees,"base":"main","branch_prefix":"implementation",
+        "source_commit":p.commit,"source_content_digest":template["source_content_digest"],"af":binary,"af_digest":binary_digest,
+        "git":git,"git_digest":executable_digest(&git),"ssh_config":ssh,"ssh_config_digest":executable_digest(&ssh),
+        "author_name":"Owner","author_email":"owner@example.invalid","required_checks":[{"kind":"check","name":"CI","app_id":4}],
+        "reviewers":[],"publication_mode":"exclusive_owned_writer","operations":["prepare_candidate_v1","publish_implementation_pr_v1","observe","cleanup_workspace_v1"],
+        "implementation_state":p.f.state});
+    let config_file = p.f.machine.join("workspace-config.json");
+    write(&config_file, &config);
+    std::fs::set_permissions(&config_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let service_file = p.f.machine.join("remote-service.json");
+    let launcher = p.f.machine.join("scoped-adapter");
+    let helper = workspace().join("fixtures/scenarios/impl/native-publication.py");
+    let program = format!(
+        "#!/usr/bin/python3 -B\nimport sys,runpy\nsys.argv={:?}\nrunpy.run_path({:?},run_name='__main__')\n",
+        vec![
+            helper.display().to_string(),
+            workspace().display().to_string(),
+            config_file.display().to_string(),
+            remote.display().to_string(),
+            service_file.display().to_string()
+        ],
+        helper.display().to_string()
+    );
+    std::fs::write(&launcher, &program).unwrap();
+    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let root = &bundle.definitions[&bundle.root];
+    let models = |kind: &str| -> Value {
+        [ ("bugs", "gpt-6.1-terra", "high"), ("correctness", "gpt-6.1-terra", "high"), ("evaluator", "gpt-6.1-terra", "medium"), ("implementer", "gpt-6.1-sol", "medium") ].into_iter()
+        .filter(|(role,_,_)| kind == "implement" || *role != "implementer")
+        .map(|(role,model,effort)| (format!("owner-default/{role}"), json!({"provider":"codex-personal","provider_kind":"codex","model":model,"effort":effort}))).collect::<serde_json::Map<_,_>>().into()
+    };
+    let scope = json!({"schema":"af/implementation-startup-scope@2","owner":"owner","recipe_id":af_scenario::contract::hash(&bundle).unwrap(),
+        "repo":p.f.repo,"task_state":p.task_state,"repository_id":template["repository_id"],"source_commit":p.commit,"source_content_digest":template["source_content_digest"],
+        "repository":"octo/project","destination_repository_id":17,"actor_id":7,"actor_login":"owner","branch_prefix":"implementation/","base":"main",
+        "grants":root.authority.grants,"templates":{pins[0]["template_id"].as_str().unwrap():models("implement"),pins[1]["template_id"].as_str().unwrap():models("verification")},
+        "limits":root.limits,"max_repairs":1,"expires_unix_ms":8_000_000_000_000_u64});
+    let mut policy: Value = serde_json::from_slice(&std::fs::read(&p.f.policy).unwrap()).unwrap();
+    policy["task_templates"] = json!([pins[0]["template_id"], pins[1]["template_id"]]);
+    policy["decision_keys"] = json!({});
+    policy["implementation_startup"] = scope;
+    policy["adapters"] = json!({"workspace":{"executable":launcher,"digest":executable_digest(&launcher),"operations":config["operations"],
+        "destinations":["github:octo/project"],"max_wall_ms":30000,"max_output_bytes":65536}});
+    write(&p.f.policy, &policy);
+    let preflight = json!({"schema":"af/implementation-startup-preflight@2", "scope_id":af_scenario::contract::hash(&policy["implementation_startup"]).unwrap(), "scope":policy["implementation_startup"]});
+    let mut child = std::process::Command::new(&launcher)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::io::Write::write_all(
+        &mut child.stdin.take().unwrap(),
+        &serde_json::to_vec(&preflight).unwrap(),
+    )
+    .unwrap();
+    let checked = child.wait_with_output().unwrap();
+    assert!(
+        checked.status.success(),
+        "{}",
+        String::from_utf8_lossy(&checked.stderr)
+    );
+    write(
+        &service_file,
+        &json!({"prs":[], "posts":0, "pushes":0, "lose_post":true,
+        "faults":["actor","destination","source","base"]}),
+    );
+    let mut run = p.start("scoped", &serde_json::to_value(&bundle).unwrap());
+    if narrow {
+        let publication = run["frames"]["root"]["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["step"] == "publish")
+            .unwrap();
+        assert!(
+            publication["diagnostic"]
+                .as_str()
+                .unwrap()
+                .contains("original whole goal and requirements"),
+            "{run}"
+        );
+        assert_eq!(run["fresh_tasks"].as_object().unwrap().len(), 2);
+        let remote: Value = serde_json::from_slice(&std::fs::read(&service_file).unwrap()).unwrap();
+        assert_eq!(remote["pushes"], 0);
+        assert_eq!(remote["posts"], 0);
+        return;
+    }
+    let publication = run["frames"]["root"]["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|step| step["step"] == "publish")
+        .unwrap();
+    let intent = publication["intents"].as_array().unwrap().last().unwrap()["id"]
+        .as_str()
+        .unwrap();
+    let request_file = state_dir.join(format!(
+        "{}.implementation.json",
+        intent.trim_start_matches("sha256:")
+    ));
+    let request: Value = serde_json::from_slice(&std::fs::read(&request_file).unwrap()).unwrap();
+    let proof = p.cli(
+        &p.f.state,
+        &[
+            "scenario",
+            "implementation-proof",
+            "--file",
+            request_file.to_str().unwrap(),
+        ],
+    );
+    valid("implementation-pr-proof-v1.json", &proof);
+    assert!(
+        proof["task_report"]
+            .as_str()
+            .unwrap()
+            .contains("<!-- af-task-report:v1 -->")
+    );
+    let live = p.cli(
+        &p.f.state,
+        &[
+            "scenario",
+            "implementation-proof",
+            "--file",
+            request_file.to_str().unwrap(),
+            "--live-only",
+        ],
+    );
+    valid("implementation-pr-live-v1.json", &live);
+    let negative = p.f.machine.join("negative-proof.json");
+    for fault in [
+        "unaccepted",
+        "foreign",
+        "stale",
+        "affinity",
+        "verifier",
+        "destination",
+        "missing",
+        "retired",
+    ] {
+        let mut wrong = request.clone();
+        match fault {
+            "unaccepted" => {
+                wrong["inputs"]["candidate"]["value"]["result"]["acceptance"] = json!("unsatisfied")
+            }
+            "foreign" => wrong["inputs"]["candidate"]["value"]["task_id"] = json!("foreign"),
+            "stale" => {
+                wrong["inputs"]["verification"]["value"]["result_id"] =
+                    json!(format!("sha256:{}", "0".repeat(64)))
+            }
+            "affinity" => {
+                wrong["inputs"]["candidate"]["value"]["result"]["outputs"]["snapshot"]["snapshot_id"] =
+                    proof["source_snapshot"].clone()
+            }
+            "verifier" => wrong["inputs"]["verification"] = wrong["inputs"]["candidate"].clone(),
+            "destination" => wrong["destination"] = json!("github:foreign/repository"),
+            "missing" => {
+                wrong["inputs"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("verification");
+            }
+            _ => wrong["schema"] = json!("af/scenario-adapter-request@5"),
+        }
+        write(&negative, &wrong);
+        let refused = p.output(
+            &p.f.state,
+            &[
+                "scenario",
+                "implementation-proof",
+                "--file",
+                negative.to_str().unwrap(),
+            ],
+        );
+        assert!(
+            !refused.status.success(),
+            "accepted {fault}: {}",
+            String::from_utf8_lossy(&refused.stdout)
+        );
+    }
+    let captured: af_scenario::state::Run = serde_json::from_value(run.clone()).unwrap();
+    let typed_request: af_scenario::adapter::Request =
+        serde_json::from_value(request.clone()).unwrap();
+    let world = af_scenario::store::World {
+        schema: "af/scenario-store@13".into(),
+        writer_version: env!("CARGO_PKG_VERSION").into(),
+        runs: std::collections::BTreeMap::from([(captured.id.clone(), captured.clone())]),
+        run_capacity: Default::default(),
+        ants: Default::default(),
+        roadmaps: Default::default(),
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    af_scenario::implementation::authorize(&world, &typed_request, now, true).unwrap();
+    for fault in [
+        "expiry",
+        "cancel",
+        "fence",
+        "inactive",
+        "foreign-plan",
+        "deadline",
+    ] {
+        let mut changed = world.clone();
+        let changed = changed.runs.get_mut("scoped").unwrap();
+        match fault {
+            "expiry" => {
+                changed
+                    .pin
+                    .policy
+                    .implementation_startup
+                    .as_mut()
+                    .unwrap()
+                    .expires_unix_ms = now
+            }
+            "cancel" => {
+                changed.cancellation = Some(af_scenario::state::Cancellation {
+                    requested_unix_ms: now,
+                    reason: "owner cancellation".into(),
+                    child_requests: Default::default(),
+                })
+            }
+            "inactive" => changed.status = af_scenario::state::Status::Failed,
+            "foreign-plan" => changed.fresh_tasks.clear(),
+            other => {
+                let progress = changed
+                    .frames
+                    .get_mut("root")
+                    .unwrap()
+                    .steps
+                    .iter_mut()
+                    .find(|s| s.step == "publish")
+                    .unwrap();
+                if other == "deadline" {
+                    progress.deadline_unix_ms = now;
+                } else {
+                    progress.intents.last_mut().unwrap().phase = af_scenario::state::Phase::Done;
+                }
+            }
+        }
+        let refused = af_scenario::store::World {
+            runs: std::collections::BTreeMap::from([("scoped".into(), changed.clone())]),
+            ..world.clone()
+        };
+        assert!(
+            af_scenario::implementation::authorize(&refused, &typed_request, now, true).is_err(),
+            "live scope accepted {fault}"
+        );
+    }
+    for expected in 1..=4 {
+        let observed: Value =
+            serde_json::from_slice(&std::fs::read(&service_file).unwrap()).unwrap();
+        assert_eq!(observed["pushes"], 0, "{observed}");
+        assert_eq!(observed["posts"], 0, "{observed}");
+        assert_eq!(
+            observed["refusals"].as_array().unwrap().len(),
+            expected,
+            "{observed}; waiting: {}",
+            run["waiting"]
+        );
+        assert!(observed.get("bad_guard_success").is_none(), "{observed}");
+        assert_eq!(run["waiting"]["step"], "root/publish", "{run}");
+        run = p.cli(&p.f.state, &["scenario", "resume", "scoped"]);
+    }
+
+    for _ in 0..8 {
+        if run["waiting"]["step"] == "root/merged" {
+            break;
+        }
+        assert_ne!(run["status"], "failed", "{run}");
+        run = p.cli(&p.f.state, &["scenario", "resume", "scoped"]);
+    }
+    assert_eq!(run["waiting"]["step"], "root/merged", "{run}");
+    let remote_state: Value =
+        serde_json::from_slice(&std::fs::read(&service_file).unwrap()).unwrap();
+    assert_eq!(remote_state["posts"], 1, "{remote_state}");
+    assert_eq!(remote_state["pushes"], 2, "{remote_state}");
+    assert_eq!(remote_state["patches"], 1, "{remote_state}");
+    let body = remote_state["prs"][0]["body"].as_str().unwrap();
+    assert_eq!(body.matches("<!-- af-task-report:v1 -->").count(), 1);
+    for target in run["fresh_tasks"].as_object().unwrap().values() {
+        assert!(body.contains(target["task_id"].as_str().unwrap()), "{body}");
+    }
+    assert_eq!(run["fresh_tasks"].as_object().unwrap().len(), 4);
+    assert!(
+        run["frames"]["root"]["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["decision"].is_null())
+    );
+    let resumed = p.cli(&p.f.state, &["scenario", "resume", "scoped"]);
+    assert_eq!(resumed["fresh_tasks"], run["fresh_tasks"]);
+    let again: Value = serde_json::from_slice(&std::fs::read(&service_file).unwrap()).unwrap();
+    assert_eq!(again["posts"], 1);
+    assert_eq!(again["pushes"], 2);
 }

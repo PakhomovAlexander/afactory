@@ -16,7 +16,7 @@
     "roadmaps": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:scenario:7#/$defs/name"
+        "$ref": "urn:af:schema:scenario:8#/$defs/name"
       },
       "additionalProperties": {
         "$ref": "urn:af:schema:scenario-roadmap:3"
