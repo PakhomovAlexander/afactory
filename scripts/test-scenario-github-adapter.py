@@ -52,7 +52,7 @@ def request(operation="publish_pr", intent="a", publication=None):
     inputs = {"subject": {"type": "text", "value": subject}, "revision": {"type": "text", "value": SHA},
               "body": {"type": "text", "value": A.canonical(p).decode()},
               "decision": {"type": "decision", "value": decision}}
-    return {"schema": "af/scenario-adapter-request@4", "method": "reconcile", "intent_id": "sha256:" + intent * 64,
+    return {"schema": "af/scenario-adapter-request@5", "method": "reconcile", "intent_id": "sha256:" + intent * 64,
             "input_digest": "sha256:" + "b" * 64, "operation": operation, "destination": "github:octo/project", "inputs": inputs}
 
 
@@ -136,7 +136,7 @@ class AdapterTests(unittest.TestCase):
         return req["inputs"]["subject"]["value"]
 
     def observe(self, publication, condition="checks_passed"):
-        req = {"schema": "af/scenario-adapter-request@4", "method": "observe", "operation": "observe",
+        req = {"schema": "af/scenario-adapter-request@5", "method": "observe", "operation": "observe",
                "intent_id": "sha256:" + "e" * 64, "input_digest": "sha256:" + "f" * 64,
                "destination": "github:octo/project", "inputs": {
                    "subject": {"type": "text", "value": publication}, "revision": {"type": "text", "value": SHA},
@@ -169,15 +169,12 @@ class AdapterTests(unittest.TestCase):
         req = request()
         expiry = req["inputs"]["decision"]["value"]["request"]["expires_unix_ms"]
         original = MOCK.GitHubFixtureConnection
-        clock = [expiry - 1]
-        events = []
+        clock, events = [expiry - 1], []
 
         class Connection(original):
             def connect(self):
                 super().connect()
                 events.append("connect")
-                # The mutation is the fifth connection, after actor/repository and
-                # exact locked-head observations. Expire during its TLS setup.
                 if len(events) == 5:
                     clock[0] = expiry
 
@@ -195,20 +192,17 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(self.service()["effects"], [])
         state = json.loads((self.root / "receipts/state.json").read_text())
         self.assertEqual(state["records"][req["intent_id"]]["phase"], "dispatched")
-        # A fresh invocation reconciles conservatively even though this test knows
-        # the refusal happened before send. An empty remote listing grants no retry.
         self.assertEqual(self.call(req, "execute")["outcome"], "pending")
         self.assertEqual(self.call(req)["outcome"], "pending")
         self.assertEqual(self.service()["effects"], [])
 
-    def test_transport_guard_is_after_connect_and_remaining_budget_is_rebound(self):
+    def test_transport_final_guard_and_remaining_budget(self):
         original = MOCK.GitHubFixtureConnection
-        events, connections = [], []
-        clock = [100.0]
+        events, connections, clock = [], [], [100.0]
 
         class Connection(original):
             def connect(self):
-                self.assert_disabled = self.auto_open == 0
+                assert self.auto_open == 0
                 events.append("connect")
                 super().connect()
                 clock[0] += 1
@@ -228,11 +222,9 @@ class AdapterTests(unittest.TestCase):
 
         def guard():
             self.assertIsNotNone(connections[0].sock)
-            self.assertTrue(connections[0].assert_disabled)
             events.append("guard")
             clock[0] += 1
 
-        # Each test invocation gets its own finite API clock.
         with patch.object(A.http.client, "HTTPSConnection", Connection), \
                 patch.object(A.time, "monotonic", side_effect=lambda: clock[0]):
             api = A.GitHub(self.config)
@@ -275,6 +267,7 @@ class AdapterTests(unittest.TestCase):
                 self.assertEqual(sent, [])
                 self.assertEqual(len(connections), 1)
                 self.assertIsNone(connections[0].sock)
+
     def test_restart_after_remote_effect_before_response_reconciles_without_duplicate(self):
         for operation in ("publish_pr", "followup"):
             with self.subTest(operation=operation):
@@ -711,11 +704,12 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual((ROOT / "schemas" / name).read_text(), rendered)
         with self.assertRaises(A.Refused):
             A.validate_config({**self.config, "schema": "af/github-adapter-config@0"})
-        earlier = request()
-        earlier["schema"] = "af/scenario-adapter-request@1"
-        with self.assertRaises(A.Refused):
-            A.validate_request(earlier, self.config)
-        for version in (0, 1):
+        for version in range(5):
+            earlier = request()
+            earlier["schema"] = "af/scenario-adapter-request@%d" % version
+            with self.assertRaises(A.Refused):
+                A.validate_request(earlier, self.config)
+        for version in range(5):
             state = A.empty_state(self.config_digest)
             state["schema"] = "af/github-adapter-state@%d" % version
             A.atomic_write(self.root / "receipts/state.json", A.state_bytes(state))

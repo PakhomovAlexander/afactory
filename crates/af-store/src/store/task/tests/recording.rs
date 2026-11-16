@@ -532,3 +532,99 @@ fn assert_conflict<T: std::fmt::Debug>(result: Result<T, StoreError>, cause: &st
         format!("event store conflict: {cause}")
     );
 }
+
+#[test]
+fn wake_episode_recording_resume_and_later_finished_boundary_use_checked_history() {
+    super::super::test_clock::with_time(1_000_000, |clock| {
+        let (mut f, lease, _) =
+            paused_publication_at_report(Fixture::new(true).with_execution_graph(), false, false);
+        let before = f.state();
+        assert!(matches!(before.phase, TaskPhaseV1::Waiting { .. }));
+        clock.set(before.deadline_unix_ms() + 1);
+        let resumed = f
+            .store
+            .resume_task_for_recording(&f.cas, &lease, &f.authority)
+            .unwrap();
+        let after = f.state();
+        assert!(matches!(after.phase, TaskPhaseV1::Running {}));
+        assert_eq!(after.lifecycle_episode(), before.lifecycle_episode() + 1);
+        let execution = after.execution.as_ref().unwrap();
+        let result = TaskResultV1 {
+            task_revision_id: f.revision_id.clone(),
+            execution: task::TaskExecutionV1::Incomplete,
+            acceptance: TaskAcceptanceV1::Inconclusive,
+            domain_conclusion: "recording stopped".into(),
+            outputs: execution
+                .graph
+                .outputs
+                .iter()
+                .filter_map(|(name, address)| {
+                    execution
+                        .outputs
+                        .get(&address.node)
+                        .and_then(|(_, o)| o.outputs.get(&address.port))
+                        .map(|o| (name.clone(), o.clone()))
+                })
+                .collect(),
+            evidence: execution
+                .graph
+                .coverage
+                .values()
+                .filter_map(|address| {
+                    execution
+                        .outputs
+                        .get(&address.node)
+                        .and_then(|(_, o)| o.outputs.get(&address.port))
+                })
+                .flat_map(|o| o.artifact_ids.iter().cloned())
+                .collect(),
+            missing_obligations: BTreeSet::from(["checked".into()]),
+        };
+        let result_id = f
+            .cas
+            .put_artifact(
+                task::TASK_RESULT_V1,
+                producer(),
+                vec![f.revision_id.clone()],
+                None,
+                serde_json::to_value(result).unwrap(),
+            )
+            .unwrap()
+            .0;
+        // This lifecycle fixture deliberately refuses every domain result at the host
+        // interface. Preserve that refusal; exercise the checked journal transition using
+        // the same internal writer seam as the independent late-accounting fixtures.
+        assert!(
+            f.store
+                .finish_task(&f.cas, &lease, &result_id, &f.authority)
+                .is_err()
+        );
+        let finished = f
+            .store
+            .task_change(
+                &f.cas,
+                &lease,
+                TaskChangeV1::Finished { result_id },
+                now().unwrap(),
+            )
+            .unwrap();
+        f.store.release_task_lease(&f.cas, &lease).unwrap();
+        f.store = EventStore::open(&f.path).unwrap();
+        let replay = f
+            .store
+            .task_projection_at_sequence(&f.cas, lease.task_id(), finished.sequence)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(replay.phase, TaskPhaseV1::Finished { .. }));
+        assert_eq!(replay.lifecycle_episode(), after.lifecycle_episode());
+        assert_eq!(f.state().lifecycle_episode(), after.lifecycle_episode());
+        assert_eq!(
+            f.store
+                .task_projection_at_sequence(&f.cas, lease.task_id(), resumed.sequence - 1)
+                .unwrap()
+                .unwrap()
+                .lifecycle_episode(),
+            before.lifecycle_episode()
+        );
+    });
+}

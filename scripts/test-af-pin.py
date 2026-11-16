@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the af pin check and scripts/pin-release.sh with local repositories and a stand-in
-`af`; no network, no GitHub side effects."""
+"""Hermetic pin checks and preparation with local Git, fake GitHub and real signatures."""
 from pathlib import Path
 import hashlib
 import json
@@ -12,11 +11,11 @@ import unittest
 
 SCRIPTS = Path(__file__).resolve().parent
 GIT = shutil.which('git')
-TARGETS = ['aarch64-apple-darwin', 'x86_64-unknown-linux-musl']
+TARGETS = ['aarch64-apple-darwin', 'x86_64-unknown-linux-musl', 'aarch64-unknown-linux-musl']
 
 
 def lock(version, worker='1.0.0', targets=TARGETS):
-    digests = ''.join(f'{target} = "sha256:{version_digest(version, target)}"\n' for target in targets)
+    digests = ''.join(f'{target} = "sha256:{version_digest(version, target)}"\n' for target in sorted(targets))
     return (f'version = 1\n\n[af]\nversion = "{version}"\n\n[af.digests]\n{digests}\n'
             f'[workers.bugs]\nversion = "{worker}"\n')
 
@@ -25,26 +24,57 @@ def version_digest(version, target):
     return hashlib.sha256(f'{version}/{target}'.encode()).hexdigest()
 
 
-# The stand-in `af`: `onboard --refresh-lock --af VERSION` rewrites the pin the way the real
-# command does; FAKE_AF_WORKER also moves a Worker pin, which the script must refuse.
-FAKE_AF = r'''#!/usr/bin/env python3
-import os, sys
-sys.path.insert(0, os.environ["FAKE_AF_TESTS"])
-import fixture_af_pin as fixture
-assert sys.argv[1:4] == ["onboard", "--refresh-lock", "--af"], sys.argv
-if os.environ.get("FAKE_AF_MOVE_MAIN"):
-    import subprocess
-    subprocess.run(["bash", os.environ["FAKE_AF_MOVE_MAIN"]], check=True)
-open(".af/af.lock", "w").write(fixture.lock(sys.argv[4], os.environ.get("FAKE_AF_WORKER", "1.0.0")))
-if os.environ.get("FAKE_AF_CATALOG"):
-    open(".af/task-catalog.toml", "w").write("# unexpected catalog refresh\n")
-'''
-
-
 FAKE_GH = r'''#!/usr/bin/env python3
 import json, os, pathlib, subprocess, sys
 state = pathlib.Path(os.environ['FAKE_PR_STATE'])
 args = sys.argv[1:]
+if args[0] == 'api':
+    import hashlib
+    sys.path.insert(0, os.environ['FAKE_AF_TESTS'])
+    import fixture_af_pin as fixture
+    assets = pathlib.Path(os.environ['FIXTURE_ASSETS'])
+    if '/releases/tags/' in args[1]:
+        version = args[1].split('/tags/v')[1]
+        if os.environ.get('FAKE_AF_MOVE_MAIN'):
+            subprocess.run(['bash', os.environ['FAKE_AF_MOVE_MAIN']], check=True)
+        provenance = json.dumps(dict(schema='af.release-provenance/1',
+            version=os.environ.get('PROVENANCE_VERSION', version),
+            repository=os.environ.get('PROVENANCE_REPO', 'fixture/repo'), source='a'*40, run_id='1')).encode()
+        if os.environ.get('BAD_PROVENANCE'): provenance = b'{bad json'
+        names = ['af-v'+version+'-'+t+'.tar.gz' for t in fixture.TARGETS]
+        sums = ''.join(fixture.version_digest(version,t)+'  '+n+'\n' for t,n in zip(fixture.TARGETS,names))
+        mode = os.environ.get('PROVENANCE', 'absent')
+        if mode in ('present', 'missing-asset'):
+            sums += hashlib.sha256(provenance).hexdigest()+'  release-provenance.json\n'
+        if os.environ.get('BAD_PROVENANCE_DIGEST'): sums = sums.replace(hashlib.sha256(provenance).hexdigest(), '0'*64)
+        bad = os.environ.get('BAD_MANIFEST')
+        if bad == 'missing': sums = sums.split('\n',1)[1]
+        if bad == 'duplicate': sums += sums.splitlines()[0]+'\n'
+        if bad == 'foreign': sums += 'f'*64+'  foreign.tar.gz\n'
+        if bad == 'malformed': sums += 'oops\n'
+        if bad == 'digest': sums = 'z'+sums[1:]
+        if bad == 'wrong-version': sums = sums.replace('af-v'+version, 'af-v9.9.9')
+        (assets/'SHA256SUMS').write_text(sums)
+        (assets/'release-provenance.json').write_bytes(provenance)
+        subprocess.run([os.environ['REAL_MINISIGN'], '-S', '-q', '-m', str(assets/'SHA256SUMS'),
+            '-s', os.environ['FIXTURE_SECRET'], '-t', 'af v'+os.environ.get('COMMENT_VERSION', version)], check=True)
+        if os.environ.get('BAD_SIGNATURE'): (assets/'SHA256SUMS').write_text(sums+'tamper')
+        if os.environ.get('MISSING_SIGNATURE'): (assets/'SHA256SUMS.minisig').unlink()
+        all_names = names+['SHA256SUMS','SHA256SUMS.minisig','install.sh']
+        if mode in ('present', 'missing-row'): all_names.append('release-provenance.json')
+        if os.environ.get('BAD_ASSETS') == 'duplicate': all_names.append(names[0])
+        if os.environ.get('BAD_ASSETS') == 'missing': all_names.remove(names[0])
+        if os.environ.get('BAD_ASSETS') == 'foreign': all_names.append('foreign.tar.gz')
+        (assets/'names.json').write_text(json.dumps(all_names))
+        print(json.dumps(dict(tag_name='v'+version, draft=False,
+            html_url='https://github.com/fixture/repo/releases/tag/v'+version,
+            assets=[dict(id=i+1,name=n) for i,n in enumerate(all_names)])))
+    else:
+        name = json.loads((assets/'names.json').read_text())[int(args[1].rsplit('/',1)[1])-1]
+        path=assets/name
+        if not path.exists(): sys.exit(1)
+        sys.stdout.buffer.write(path.read_bytes())
+    sys.exit(0)
 assert os.environ['GH_HOST'] == 'github.com'
 assert os.environ['GH_TOKEN'] == os.environ['RELEASE_PIN_TOKEN']
 if args[:2] == ['pr', 'list']:
@@ -108,23 +138,23 @@ class Repository(unittest.TestCase):
         (self.repo / 'scripts').mkdir(parents=True)
         (self.repo / '.af').mkdir()
         (self.repo / '.github/workflows').mkdir(parents=True)
-        for script in ('af-pin.py', 'pin-release.sh'):
+        shutil.copytree(SCRIPTS / 'performance/perflab/_vendor',
+                        self.repo / 'scripts/performance/perflab/_vendor')
+        for script in ('af-pin.py', 'pin-release.sh', 'prepare-release-pin.py'):
             shutil.copy(SCRIPTS / script, self.repo / 'scripts' / script)
         (self.repo / '.github/workflows/release.yml').write_text(
             ''.join(f'          - target: {target}\n' for target in TARGETS))
         self.changelog('0.2.0', '0.1.0')
         (self.repo / '.af/af.lock').write_text(lock('0.2.0'))
-        # The stand-in imports lock() from here, so the fixture and the check share one shape.
+        # Fake transport imports deterministic target digests from this fixture.
         bin_dir = self.root / 'bin'
         bin_dir.mkdir()
         shutil.copy(Path(__file__), bin_dir / 'fixture_af_pin.py')
-        (bin_dir / 'af').write_text(FAKE_AF)
-        (bin_dir / 'af').chmod(0o755)
         self.env = {**os.environ, 'AF': str(bin_dir / 'af'), 'FAKE_AF_TESTS': str(bin_dir), 'PYTHONDONTWRITEBYTECODE': '1',
                     'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1',
                     'GIT_AUTHOR_NAME': 'Fixture', 'GIT_AUTHOR_EMAIL': 'fixture@example.invalid',
                     'GIT_COMMITTER_NAME': 'Fixture', 'GIT_COMMITTER_EMAIL': 'fixture@example.invalid'}
-        for key in ('FAKE_AF_WORKER', 'FAKE_AF_CATALOG', 'FAKE_AF_MOVE_MAIN', 'FAKE_PR_REFUSE', 'FAKE_PR_RACE',
+        for key in ('FAKE_AF_MOVE_MAIN', 'FAKE_PR_REFUSE', 'FAKE_PR_RACE',
                     'RELEASE_PIN_TOKEN', 'GH_TOKEN'):
             self.env.pop(key, None)
         (bin_dir / 'git').write_text(FAKE_GIT)
@@ -138,6 +168,16 @@ class Repository(unittest.TestCase):
         self.env['GH_REPO'] = 'fixture/repo'
 
         self.git('init', '-q', '-b', 'main')
+        self.git('remote', 'add', 'origin', 'https://github.com/fixture/repo.git')
+        assets = self.root / 'assets'
+        assets.mkdir()
+        key = self.repo / 'crates/af/keys/release.pub'
+        key.parent.mkdir(parents=True)
+        secret = self.root / 'release.key'
+        subprocess.run(['minisign', '-G', '-W', '-p', str(key), '-s', str(secret)],
+                       check=True, capture_output=True)
+        self.env.update(FIXTURE_ASSETS=str(assets), FIXTURE_SECRET=str(secret),
+                        REAL_MINISIGN=shutil.which('minisign'))
         self.git('add', '.')
         self.git('commit', '-qm', 'fixture')
 
@@ -198,17 +238,343 @@ class Repository(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn('no digest for x86_64-unknown-linux-musl', result.stderr)
 
+    def helper(self, version='0.3.0', repo='fixture/repo', *extra):
+        return self.run_script('python3', '-I', 'scripts/prepare-release-pin.py', version, '--repo', repo, *extra)
+
+    def test_prospective_check_preserves_current_previous_yanked_and_digest_rules(self):
+        self.changelog('0.3.0', '0.2.0', '0.1.0')
+        self.assertEqual(self.check().returncode, 0)
+        self.assertEqual(self.run_script('python3', 'scripts/af-pin.py', '--check-next', '0.4.0').returncode, 1)
+        self.changelog('0.3.0 [YANKED]', '0.2.0', '0.1.0')
+        self.assertEqual(self.run_script('python3', 'scripts/af-pin.py', '--check-next', '0.4.0').returncode, 0)
+        (self.repo / '.af/af.lock').write_text(lock('0.2.0', targets=TARGETS[:1]))
+        self.assertEqual(self.run_script('python3', 'scripts/af-pin.py', '--check-next', '0.4.0').returncode, 1)
+        (self.repo / '.af/af.lock').write_text(lock('0.4.0'))
+        self.assertEqual(self.run_script('python3', 'scripts/af-pin.py', '--check-next', '0.4.0').returncode, 0)
+
+    def test_published_rc3_archive_only_shape_with_real_local_signature(self):
+        # Equivalent of published RC3: exactly three archive rows, no provenance asset/row.
+        version = '0.15.1-rc.3'
+        result = self.helper(version)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        assets = Path(self.env['FIXTURE_ASSETS'])
+        expected = {'af-v'+version+'-'+t+'.tar.gz' for t in TARGETS}
+        self.assertEqual(set(json.loads((assets / 'names.json').read_text())),
+                         expected | {'install.sh', 'SHA256SUMS', 'SHA256SUMS.minisig'})
+        self.assertEqual(len((assets / 'SHA256SUMS').read_text().splitlines()), 3)
+        text = (self.repo / '.af/af.lock').read_text()
+        self.assertIn('version = "'+version+'"', text)
+        for target in TARGETS:
+            self.assertIn(target+' = "sha256:'+version_digest(version, target)+'"', text)
+        self.assertEqual(self.helper(version, 'fixture/repo', '--check').returncode, 0)
+        self.assertEqual(self.git('status', '--porcelain'), 'M .af/af.lock')
+
+    def test_future_provenance_is_verified_and_never_ignored(self):
+        before = (self.repo / '.af/af.lock').read_bytes()
+        for mode in ('missing-asset', 'missing-row'):
+            self.env['PROVENANCE'] = mode
+            result = self.helper()
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertEqual((self.repo / '.af/af.lock').read_bytes(), before)
+        self.env['PROVENANCE'] = 'present'
+        for flag, value in (('PROVENANCE_REPO', 'foreign/repo'), ('PROVENANCE_VERSION', '9.9.9'),
+                            ('BAD_PROVENANCE_DIGEST', '1'), ('BAD_PROVENANCE', '1')):
+            with self.subTest(flag=flag):
+                self.env[flag] = value
+                self.assertEqual(self.helper().returncode, 1)
+                self.assertEqual((self.repo / '.af/af.lock').read_bytes(), before)
+                self.env.pop(flag)
+        self.assertEqual(self.helper().returncode, 0)
+
+    def test_signed_inventory_failures_and_scratch_cleanup_before_write(self):
+        before = (self.repo / '.af/af.lock').read_bytes()
+        scratch = self.root / 'scratch'
+        scratch.mkdir()
+        self.env['TMPDIR'] = str(scratch)
+        for flag, values in (('BAD_MANIFEST', ('missing', 'duplicate', 'foreign', 'malformed', 'digest', 'wrong-version')),
+                             ('BAD_ASSETS', ('missing', 'duplicate', 'foreign')),
+                             ('MISSING_SIGNATURE', ('1',)), ('COMMENT_VERSION', ('9.9.9',))):
+            for value in values:
+                with self.subTest(flag=flag, value=value):
+                    self.env[flag] = value
+                    self.assertEqual(self.helper().returncode, 1)
+                    self.assertEqual((self.repo / '.af/af.lock').read_bytes(), before)
+                    self.assertEqual(list(scratch.iterdir()), [])
+            self.env.pop(flag)
+
+    def test_real_wrong_key_and_tamper_fail_before_write(self):
+        before = (self.repo / '.af/af.lock').read_bytes()
+        other_secret = self.root / 'wrong.key'
+        subprocess.run(['minisign', '-G', '-W', '-p', str(self.root / 'wrong.pub'),
+                        '-s', str(other_secret)], check=True, capture_output=True)
+        self.env['FIXTURE_SECRET'] = str(other_secret)
+        self.assertEqual(self.helper().returncode, 1)
+        self.assertEqual((self.repo / '.af/af.lock').read_bytes(), before)
+        self.env['FIXTURE_SECRET'] = str(self.root / 'release.key')
+        self.env['BAD_SIGNATURE'] = '1'
+        self.assertEqual(self.helper().returncode, 1)
+        self.assertEqual((self.repo / '.af/af.lock').read_bytes(), before)
+
+    def test_exact_bytes_outside_af_tables_and_check_only(self):
+        path = self.repo / '.af/af.lock'
+        prefix = b'# preamble\r\nversion = 1\r\n\r\n'
+        suffix = b'[task.pipelines."fixture"]\r\n# preserve comments\r\ndigest = "unchanged"\r\n'
+        body = lock('0.2.0').split('[af]', 1)[1].split('[workers.bugs]', 1)[0]
+        before = prefix + b'[af]' + body.encode() + suffix
+        path.write_bytes(before)
+        self.assertEqual(self.helper('0.3.0', 'fixture/repo', '--check').returncode, 1)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(self.helper().returncode, 0)
+        self.assertTrue(path.read_bytes().startswith(prefix))
+        self.assertTrue(path.read_bytes().endswith(suffix))
+        self.assertFalse(list(path.parent.glob('.af-pin-*')))
+
+    def test_signed_refresh_preserves_indented_non_pin_tables(self):
+        path = self.repo / '.af/af.lock'
+        for header in ('  [workers.bugs]', '\t[task.pipelines."fixture"] # comment',
+                       ' \t["workers" . "bugs"] # quoted', '  [[pipelines]]'):
+            with self.subTest(header=header):
+                prefix = lock('0.2.0').split('[workers.bugs]')[0]
+                if header.startswith(' \t["workers"'):
+                    prefix = prefix.replace('[af]', ' \t[ "af" ] # pin').replace(
+                        '[af.digests]', '\t[ "af" . "digests" ] # signed digests')
+                prefix = prefix.encode()
+                suffix = (header + '\r\n# retain bytes\r\nversion = "1.0.0"\r\n').encode()
+                before = prefix + suffix
+                path.write_bytes(before)
+                result = self.helper()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue(path.read_bytes().endswith(suffix), path.read_bytes())
+                result = self.helper('0.3.0', 'fixture/repo', '--check')
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def indented_lock(self):
+        path = self.repo / '.af/af.lock'
+        text = lock('0.2.0').replace('[workers.bugs]', ' \t["workers" . "bugs"] # retain')
+        text += '\n  [[task.pipelines."fixture"]] # array table\nvalue = "unchanged"\n'
+        path.write_text(text)
+        self.git('add', '.af/af.lock')
+        self.git('commit', '-qm', 'indented non-pin tables')
+        return path, text[text.index(' \t["workers"'):]
+
+    def test_wrapper_and_published_branch_preserve_indented_tables(self):
+        path, suffix = self.indented_lock()
+        self.remote()
+        result = self.pin_release('0.3.0', '--pr')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(path.read_text().endswith(suffix))
+        head = self.remote_head(self.branch)
+        result = self.pin_release('0.3.0', '--pr')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.remote_head(self.branch), head)
+        self.assertTrue(path.read_text().endswith(suffix))
+
+    def test_indented_non_pin_tamper_is_refused_by_both_guards(self):
+        path, _ = self.indented_lock()
+        self.remote()
+        result = self.pin_release('0.3.0', '--pr')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        path.write_text(path.read_text().replace('version = "1.0.0"', 'version = "9.0.0"'))
+        before = path.read_bytes()
+        result = self.run_script('python3', '-I', 'scripts/af-pin.py',
+                                 '--only-pin-moved', self.base, '0.3.0')
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(path.read_bytes(), before)
+        self.git('add', '.af/af.lock')
+        self.git('commit', '--amend', '--no-edit', '-q')
+        self.git('push', '-q', '--force', 'origin', 'HEAD:' + self.branch)
+        head = self.remote_head(self.branch)
+        result = self.pin_release('0.3.0', '--pr')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('beyond its [af] tables', result.stderr)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(self.remote_head(self.branch), head)
+        self.assertEqual(Path(self.env['FAKE_PR_STATE'] + '.creates').read_text(), '1')
+
+    def test_pin_only_guard_rejects_non_pin_bytes_and_invalid_toml(self):
+        path, _ = self.indented_lock()
+        result = self.helper()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        signed = path.read_bytes()
+        cases = [signed.replace(b'# retain', b'# changed comment'),
+                 signed.replace(b'version = "1.0.0"', b'version  = "1.0.0"'),
+                 signed.replace(b'# retain\n', b'# retain\r\n'),
+                 signed + b'  [workers.bugs]\nversion = "duplicate"\n']
+        for data in cases:
+            with self.subTest(data=data):
+                path.write_bytes(data)
+                result = self.run_script('python3', '-I', 'scripts/af-pin.py',
+                                         '--only-pin-moved', 'HEAD', '0.3.0')
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertEqual(path.read_bytes(), data)
+
+    def test_pin_only_guard_rejects_added_changed_removed_unknown_af_fields(self):
+        path = self.repo / '.af/af.lock'
+        for old_extra, new_extra in (('', 'extra = "added"\n'),
+                                     ('extra = "old"\n', 'extra = "changed"\n'),
+                                     ('extra = "removed"\n', '')):
+            with self.subTest(old_extra=old_extra, new_extra=new_extra):
+                path.write_text(lock('0.2.0').replace('[af]\n', '[af]\n' + old_extra))
+                self.git('add', '.af/af.lock')
+                self.git('commit', '--allow-empty', '-qm', 'guard base')
+                after = lock('0.3.0').replace('[af]\n', '[af]\n' + new_extra)
+                path.write_text(after)
+                result = self.run_script('python3', '-I', 'scripts/af-pin.py',
+                                         '--only-pin-moved', 'HEAD', '0.3.0')
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertEqual(path.read_text(), after)
+
+    def test_pin_only_guard_accepts_valid_pin_and_rejects_malformed_base(self):
+        path, _ = self.indented_lock()
+        self.assertEqual(self.helper().returncode, 0)
+        after = path.read_bytes()
+        result = self.run_script('python3', '-I', 'scripts/af-pin.py',
+                                 '--only-pin-moved', 'HEAD', '0.3.0')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        path.write_bytes(after + b'broken = "unterminated\n')
+        self.git('add', '.af/af.lock')
+        self.git('commit', '-qm', 'malformed base')
+        path.write_bytes(after)
+        result = self.run_script('python3', '-I', 'scripts/af-pin.py',
+                                 '--only-pin-moved', 'HEAD', '0.3.0')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(path.read_bytes(), after)
+
+    def test_helper_and_standalone_guard_enforce_the_shared_invariant(self):
+        result = self.run_script('python3', '-I', '-c', """
+import importlib.util
+spec = importlib.util.spec_from_file_location('prepare', 'scripts/prepare-release-pin.py')
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+validate = module.pin.validate_pin_edit
+calls = []
+def record(*args):
+    calls.append(args)
+    validate(*args)
+module.pin.validate_pin_edit = record
+module.prepare('0.3.0', 'fixture/repo')
+assert module.pin.only_pin_moved('HEAD', '0.3.0') == 0
+assert len(calls) == 2, calls
+assert calls[0] == calls[1]
+before = module.pin.LOCK.read_bytes()
+def refuse(*args):
+    raise ValueError('shared predicate refused')
+module.pin.validate_pin_edit = refuse
+try:
+    module.prepare('0.4.0', 'fixture/repo')
+except ValueError as error:
+    assert str(error) == 'shared predicate refused', error
+else:
+    raise AssertionError('helper bypassed shared predicate')
+assert module.pin.only_pin_moved('HEAD', '0.3.0') == 1
+assert module.pin.LOCK.read_bytes() == before
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_table_like_values_are_preserved_and_not_pin_boundaries(self):
+        path = self.repo / '.af/af.lock'
+        prefix = ('version = 1\r\nnote = """\r\n[af]\r\n'
+                  '  [af.digests]\r\n"""\r\n')
+        suffix = ("  ['workers'.'bugs'] # comment\r\nnote = " + "'''" +
+                  '\r\n[af]\r\n[af.digests]\r\n' + "'''" + '\r\n' +
+                  'items = ["[af]", "[workers.fake]", { key = "[[af.digests]]" }]\r\n' +
+                  '  [[task.pipelines."quoted.name"]] # retain\r\nversion = "1"')
+        pin_tables = '[af]' + lock('0.2.0').split('[af]', 1)[1].split('[workers.bugs]')[0]
+        before = prefix + pin_tables + suffix
+        path.write_bytes(before.encode())
+        result = self.helper()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(path.read_bytes().startswith(prefix.encode()))
+        self.assertTrue(path.read_bytes().endswith(suffix.encode()))
+
+    def test_unsafe_lock_shapes_refuse_before_write(self):
+        path = self.repo / '.af/af.lock'
+        original = lock('0.2.0')
+        cases = [original + '  [workers.bugs]\nversion = "duplicate"\n',
+                 original + 'broken = "unterminated\n',
+                 original.replace('[af]\n', '[af]\nextra = "must not disappear"\n'),
+                 original.replace('[af.digests]', '[af.digests] trailing'),
+                 original.replace('[af.digests]', '["af.digests"]'),
+                 original.replace('[af.digests]', '[[af.digests]]')]
+        for text in cases:
+            with self.subTest(text=text):
+                path.write_bytes(text.encode())
+                result = self.helper()
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertEqual(path.read_bytes(), text.encode())
+                self.assertFalse(list(path.parent.glob('.af-pin-*')))
+
+    def test_prewrite_invariant_rejects_a_corrupt_replacement(self):
+        path = self.repo / '.af/af.lock'
+        before = path.read_bytes()
+        # Reproduce the old destructive span independently of the new scanner.
+        # Even a bad edit plan must not reach the atomic replacement.
+        result = self.run_script('python3', '-I', '-c', """
+import importlib.util
+spec = importlib.util.spec_from_file_location('prepare', 'scripts/prepare-release-pin.py')
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+scan = module.pin.table_spans
+calls = 0
+def corrupt(text):
+    global calls
+    calls += 1
+    spans = scan(text)
+    if calls == 1:
+        spans[-2] = (spans[-2][0], spans[-2][1], len(text))
+        spans.pop()
+    return spans
+module.pin.table_spans = corrupt
+try:
+    module.prepare('0.3.0', 'fixture/repo')
+except ValueError:
+    raise SystemExit(1)
+""")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertFalse(list(path.parent.glob('.af-pin-*')))
+
+    def test_invalid_identity_and_hostile_paths_never_write(self):
+        path = self.repo / '.af/af.lock'
+        before = path.read_bytes()
+        for version, repo in (('../0.3.0', 'fixture/repo'), ('0.3.0', 'other/repo'),
+                              ('0.3.0', 'user:secret@host/repo')):
+            result = self.helper(version, repo)
+            self.assertEqual(result.returncode, 1)
+            self.assertNotIn('secret', result.stderr)
+            self.assertEqual(path.read_bytes(), before)
+        external = self.root / 'foreign.lock'
+        path.rename(external)
+        path.symlink_to(external)
+        self.assertEqual(self.helper().returncode, 1)
+        self.assertEqual(external.read_bytes(), before)
+        path.unlink()
+        os.link(external, path)
+        self.assertEqual(self.helper().returncode, 1)
+        self.assertEqual(external.read_bytes(), before)
+        path.unlink()
+        path.write_bytes(before)
+        parent = path.parent
+        moved = self.root / 'authority'
+        parent.rename(moved)
+        parent.symlink_to(moved, target_is_directory=True)
+        self.assertEqual(self.helper().returncode, 1)
+        self.assertEqual((moved / 'af.lock').read_bytes(), before)
+
     def test_pin_release_moves_only_the_pin(self):
         result = self.pin_release('0.3.0')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('version = "0.3.0"', (self.repo / '.af/af.lock').read_text())
         self.assertEqual(self.git('status', '--porcelain'), 'M .af/af.lock')
 
-    def test_pin_release_refuses_a_refresh_that_moves_a_worker(self):
-        self.env['FAKE_AF_WORKER'] = '2.0.0'
+    def test_pin_release_signature_failure_preserves_lock(self):
+        before = (self.repo / '.af/af.lock').read_bytes()
+        self.env['BAD_SIGNATURE'] = '1'
         result = self.pin_release('0.3.0')
         self.assertEqual(result.returncode, 1)
-        self.assertIn('beyond its [af] tables', result.stderr)
+        self.assertIn('signed release pin preparation refused', result.stderr)
+        self.assertEqual((self.repo / '.af/af.lock').read_bytes(), before)
+        self.assertEqual(self.git('status', '--porcelain'), '')
 
     def test_pin_release_is_a_no_op_when_already_pinned(self):
         result = self.pin_release('0.2.0')
@@ -216,38 +582,103 @@ class Repository(unittest.TestCase):
         self.assertIn('already pins af 0.2.0', result.stdout)
         self.assertEqual(self.git('status', '--porcelain'), '')
 
-    def test_catalog_changes_are_retained_and_refused_before_publication(self):
-        catalog = self.repo / '.af/task-catalog.toml'
-        catalog.write_text('# project catalog\n')
-        self.git('add', '.af/task-catalog.toml')
-        self.git('commit', '-qm', 'project catalog')
+    def noncanonical_pin(self, version):
+        path = self.repo / '.af/af.lock'
+        text = lock(version).replace('version = "' + version + '"',
+                                     '  version  = "' + version + '" # selected release')
+        text = text.replace(' = "sha256:', '  =  "sha256:')
+        pin_text, workers = text.split('[workers.bugs]', 1)
+        text = pin_text.replace('"\n', '" # pin comment\n') + '[workers.bugs]' + workers
+        path.write_text(text)
+        self.git('add', '.af/af.lock')
+        self.git('commit', '-qm', 'valid noncanonical pin')
+        return path.read_bytes()
+
+    def test_noncanonical_helper_and_manual_pin_are_idempotent(self):
+        before = self.noncanonical_pin('0.2.0')
+        result = self.helper('0.2.0', 'fixture/repo', '--check')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.pin_release('0.2.0')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('already pins af 0.2.0', result.stdout)
+        self.assertEqual((self.repo / '.af/af.lock').read_bytes(), before)
+        self.assertEqual(self.git('status', '--porcelain'), '')
+
+    def test_semantic_check_refuses_invalid_or_foreign_pin_without_writing(self):
+        path = self.repo / '.af/af.lock'
+        original = lock('0.2.0')
+        cases = [original.replace(version_digest('0.2.0', TARGETS[0]), 'f' * 64),
+                 original.replace(TARGETS[0], 'foreign-target'),
+                 original.replace('[af.digests]', '[af.digests]\nforeign = "sha256:' + 'f' * 64 + '"'),
+                 original.replace('[af]\n', '[af]\nversion = "0.2.0"\n'),
+                 original.replace('[af.digests]', '[af.digests]\n' + TARGETS[0] + ' = "bad"'),
+                 original.replace('0.2.0', '0.1.0')]
+        for text in cases:
+            with self.subTest(text=text):
+                path.write_text(text)
+                before = path.read_bytes()
+                result = self.helper('0.2.0', 'fixture/repo', '--check')
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_noncanonical_main_pin_pr_is_idempotent(self):
+        before = self.noncanonical_pin('0.3.0')
         self.remote()
-        self.env['FAKE_AF_CATALOG'] = '1'
         result = self.pin_release('0.3.0', '--pr')
-        self.assertEqual(result.returncode, 1, result.stderr)
-        self.assertIn('refresh changed more than .af/af.lock', result.stderr)
-        self.assertEqual(catalog.read_text(), '# unexpected catalog refresh\n')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('on main already pins af 0.3.0', result.stdout)
+        self.assertEqual((self.repo / '.af/af.lock').read_bytes(), before)
+        self.assertEqual(self.git('status', '--porcelain'), '')
+        self.assertEqual(self.remote_head('main'), self.base)
         self.assertEqual(self.git('ls-remote', '--heads', 'origin', self.branch), '')
         self.assertFalse(Path(self.env['FAKE_PR_STATE']).exists())
 
-    def test_existing_branch_catalog_change_is_retained_and_refused(self):
+    def test_noncanonical_published_branch_is_not_reused(self):
         self.remote()
         self.assertEqual(self.pin_release('0.3.0', '--pr').returncode, 0)
+        path = self.repo / '.af/af.lock'
+        path.write_text(path.read_text().replace('[af]\n', '[af]\n\n'))
+        self.git('add', '.af/af.lock')
+        self.git('commit', '--amend', '--no-edit', '-q')
+        self.git('push', '-q', '--force', 'origin', 'HEAD:' + self.branch)
         head = self.remote_head(self.branch)
-        self.env['FAKE_AF_CATALOG'] = '1'
         result = self.pin_release('0.3.0', '--pr')
-        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.returncode, 1)
         self.assertIn('does not match the signed release refresh', result.stderr)
-        self.assertEqual((self.repo / '.af/task-catalog.toml').read_text(),
-                         '# unexpected catalog refresh\n')
         self.assertEqual(self.remote_head(self.branch), head)
         self.assertEqual(Path(self.env['FAKE_PR_STATE'] + '.creates').read_text(), '1')
 
+    def test_catalog_policy_and_worker_pins_unchanged_without_af(self):
+        catalog = self.repo / '.af/task-catalog.toml'
+        policy = self.repo / '.af/af.toml'
+        catalog.write_text('provider_admission = "required"\n')
+        policy.write_text('# project policy\n')
+        self.git('add', '.af')
+        self.git('commit', '-qm', 'project authority')
+        before = (self.repo / '.af/af.lock').read_text().split('[workers.bugs]')[1]
+        self.env['AF'] = '/nonexistent/af'
+        result = self.pin_release('0.3.0')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(catalog.read_text(), 'provider_admission = "required"\n')
+        self.assertEqual(policy.read_text(), '# project policy\n')
+        self.assertEqual((self.repo / '.af/af.lock').read_text().split('[workers.bugs]')[1], before)
+        self.assertEqual(self.git('status', '--porcelain'), 'M .af/af.lock')
+
+    def test_existing_branch_signature_failure_preserves_checkout_and_ref(self):
+        self.remote()
+        self.assertEqual(self.pin_release('0.3.0', '--pr').returncode, 0)
+        head = self.remote_head(self.branch)
+        self.env['BAD_SIGNATURE'] = '1'
+        result = self.pin_release('0.3.0', '--pr')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(self.remote_head(self.branch), head)
+        self.assertEqual(self.git('status', '--porcelain'), '')
+        self.assertEqual(Path(self.env['FAKE_PR_STATE'] + '.creates').read_text(), '1')
 
     def remote(self):
         remote = self.root / 'remote.git'
         self.git('init', '-q', '--bare', '-b', 'main', str(remote))
-        self.git('remote', 'add', 'origin', str(remote))
+        self.git('remote', 'set-url', 'origin', str(remote))
         self.git('push', '-q', 'origin', 'main')
         self.env['RELEASE_PIN_TOKEN'] = 'github_pat_fixture'
         self.base = self.git('rev-parse', 'HEAD')
@@ -506,7 +937,9 @@ class Repository(unittest.TestCase):
         self.assertNotIn('PIN_DEPLOY_KEY', pin)
         self.assertNotIn('GH_TOKEN: ${{ github.token }}', pin)
         self.assertLess(pin.index('Require CI-triggering pin credentials'),
-                        pin.index('Install the published release'))
+                        pin.index('Install signature verifier'))
+        self.assertNotIn('sh install.sh', pin)
+        self.assertNotIn('AF_INSTALL_VERSION', pin)
         self.assertIn('--pr', pin)
         script = (SCRIPTS / 'pin-release.sh').read_text()
         self.assertNotIn('HEAD:refs/heads/main', script)
@@ -514,13 +947,13 @@ class Repository(unittest.TestCase):
 
     def test_remote_pr_refuses_non_pin_refresh_and_refused_branch_push(self):
         remote = self.remote()
-        self.env['FAKE_AF_WORKER'] = '2.0.0'
+        self.env['BAD_SIGNATURE'] = '1'
         result = self.pin_release('0.3.0', '--pr')
         self.assertEqual(result.returncode, 1)
-        self.assertIn('beyond its [af] tables', result.stderr)
+        self.assertIn('signed release pin preparation refused', result.stderr)
         self.assertEqual(self.remote_head('main'), self.base)
         self.git('reset', '--hard', 'origin/main')
-        self.env.pop('FAKE_AF_WORKER')
+        self.env.pop('BAD_SIGNATURE')
         (remote / 'hooks/pre-receive').write_text('#!/bin/sh\necho "branch denied" >&2\nexit 1\n')
         result = self.pin_release('0.3.0', '--pr')
         self.assertEqual(result.returncode, 1)

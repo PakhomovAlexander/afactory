@@ -64,7 +64,7 @@ secret material. Editing config, scope, paths or application code refuses existi
 Finish/cancel old Runs under their original installation before approving a different installation.
 Do not discard uncertain receipts or reuse an old intent with a new installation.
 
-The existing `af/scenario-policy@5` adapter entry is authored by the operator, for example:
+The existing `af/scenario-policy@6` adapter entry is authored by the operator, for example:
 
 ```toml
 [adapters.github]
@@ -174,7 +174,7 @@ performed by the adapter. Changed head or content remains unknown and cannot com
 ## Recovery, bounds and evidence
 
 Before any possible POST the adapter fsyncs `dispatched` in its private journal. A nonblocking
-exclusive lock serializes all invocations against one retained lock inode. The `af/github-adapter-state@4` journal binds
+exclusive lock serializes all invocations against one retained lock inode. The `af/github-adapter-state@5` journal binds
 intent ID, opaque kernel input digest, entire exact request, config identity, phase and remote
 object ID/number; checksums detect corruption. Every invocation validates the journal and exact
 input match. A different intent cannot publish the same subject/revision while another one is
@@ -196,15 +196,14 @@ at most 4096 receipts and 16 MiB of journal bytes, plus one bounded 16 MiB atomi
 slot. These are fixed code bounds, not workflow knobs. State writes fsync the file and directory;
 unknown shapes/versions, checksum errors, partial responses and unavailable locks fail closed.
 
-HTTP setup completes DNS/TCP/TLS before the final mutation guard. Immediately before POST, the
-adapter revalidates the exact request binding and checks any signed Decision's expiry against
-the real machine clock. Implicit connection reopening is disabled; the connected socket must
-still exist, and its timeout is bounded by the remaining application deadline after the guard.
-A refusal after the durable `dispatched` checkpoint stays uncertain and only reconciles,
-including when local execution observed that no HTTP bytes were sent. This conservative journal
-rule prevents a restart from interpreting an empty listing as permission to repeat a POST.
-The [transport decision](adr/2026-11-16-guard-scenario-http-mutations-after-connection.md)
-records this boundary. It introduces no startup standing authority or automatic repair flow.
+HTTP connection setup completes before the final mutation guard. POST revalidates the exact
+request and any signed expiry against the real clock, then checks the connected socket and
+remaining application deadline and rebinds its timeout. Implicit reconnection is disabled.
+A refusal after the durable dispatched checkpoint retains reconciliation-only recovery, even
+when this process observed no send. An empty listing cannot authorize another POST. See the
+[transport decision](adr/2026-11-16-guard-scenario-http-mutations-after-connection.md).
+Connection-time expiry, socket loss and exhausted allowances are tested with isolated mocks;
+these tests do not prove live GitHub, physical reboot or mid-Worker-kill recovery.
 
 Receipts, including uncertain intents, have no automatic retention expiry or collection. At a
 budget limit new intents are refused; existing receipts still reconcile. Keep original state,
@@ -221,13 +220,9 @@ The mock service, private fake token and installed transport fixture in
 stdin/CLI path, crashes, concurrency, stale checks, scope, receipts and ambiguous recovery without
 using developer credentials or real external mutations. Schemas live under `schemas/github-*-v1.json`;
 `python3 -I scripts/scenario-github-schemas.py` checks their parity with the adapter contract.
-The Python transport regressions also inject connection-time signed expiry, connection loss,
-and exhaustion during connection or the final guard. They assert no HTTP send, retained uncertain
-intent and no retry. These are isolated mocked connection tests, not live GitHub, physical reboot
-or mid-Worker-kill evidence, and do not establish the complete durable implementation lifecycle.
 
-The current adapter reads `af/scenario-adapter-request@4` and writes its embedded requests in
-`af/github-adapter-state@4`; earlier request/journal generations fail closed. Config and operation
+The current adapter reads `af/scenario-adapter-request@5` and writes its embedded requests in
+`af/github-adapter-state@5`; earlier request/journal generations fail closed. Config and operation
 payloads retain generation 1. Finish old Runs under their original release/installation before
 upgrading; there is no journal migration or automatic replay through a replacement installation.
 The [performance loop integration decision](adr/2026-11-03-native-performance-scenario-loops.md)

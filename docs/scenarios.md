@@ -11,12 +11,12 @@ defines the authority boundary.
 ## Review, record, drive
 
 Definitions use TOML for authoring and JSON for their versioned wire documents, with schema
-`af/scenario@6`. A bundle (`af/scenario-bundle@6`) names its
+`af/scenario@7`. A bundle (`af/scenario-bundle@7`) names its
 `root` and maps names to definitions. See the inert examples in `fixtures/scenarios/` and the
 schemas from `af schema show`. Definitions have explicit `inputs`, `outputs`, ordered `steps`,
 `result` bindings, boolean `completion` conditions, `authority`, and `limits`.
 
-The port types are `text`, `boolean`, `integer`, `task`, `action`, `decision`, `observation`, and
+The port types are `text`, `boolean`, `integer`, `task`, `task_outcome`, `action`, `decision`, `observation`, and
 `owned_file`. A value is `{"type":"text","value":"example"}`. Bindings have `source` set to
 `literal` (with `value`), `input` (with `port`), or `step` (with `step` and `port`). Forward
 references and type mismatches fail admission. A `project` binding selects a typed receipt field:
@@ -29,6 +29,17 @@ A `select` binding has boolean `condition` and equal-type `when_true`/`when_fals
 it resolves only the chosen arm, so optional skipped outputs remain unread. Decision branches
 are refused to keep signed approval consumers static. Root inputs and literals are scalar data; they
 cannot manufacture receipts. Child inputs may carry receipts produced by preceding steps.
+
+A native Task step may explicitly declare its result as `task_outcome` instead of `task`.
+This retains the exact terminal Task/plan/revision/result, native cause, available candidate
+Snapshot, checks and reviewed continuation, known charges and unknown-usage flag. It grants no
+acceptance. The `task_accepted` and `task_repairable` projections return booleans;
+`accepted_task` requires the existing completed, satisfied Task contract. Preflight failure,
+exhaustion, cancellation, unknown usage and missing continuation cannot acquire repair authority.
+An explicit fresh implementation step may bind `repair` to eligible terminal evidence; the
+native host rechecks its exact Store evidence and plans a new Task with source-bound findings.
+See [bounded implementation repairs](scenario-impl.md) for the required whole-change verifier
+and the shared allowance across native, verifier and CI paths.
 
 Each step declares `id`, `operation`, `inputs`, `outputs`, `when` (null or boolean binding),
 `max_attempts` (1–8), `timeout_ms`, and `on_timeout` (`fail` or `skip`). Only Wait and Decision
@@ -139,7 +150,7 @@ pausing its Ant are separate operations.
 
 ## Machine policy and bounded adapters
 
-`af/scenario-policy@5` is an explicit, owner-only machine file outside every Git checkout.
+`af/scenario-policy@6` is an explicit, owner-only machine file outside every Git checkout.
 Author it as TOML; its captured JSON wire form is also accepted. The filename selects the format
 (`.toml` or JSON); a parse failure never selects a fallback format or an earlier version.
 It contains
@@ -154,7 +165,7 @@ environment plus sanitized PATH, HOME and XDG_CONFIG_HOME,
 and supervised process-tree termination. It must own its credential access and enforce its
 operation/destination scope. This is a trusted machine extension, not isolation of hostile code.
 
-Requests (`af/scenario-adapter-request@4`) carry `method` (`reconcile`, `execute`, `observe`),
+Requests (`af/scenario-adapter-request@5`) carry `method` (`reconcile`, `execute`, `observe`),
 `intent_id`, `input_digest`, `operation`, `destination`, and typed `inputs`. Observations also
 carry an injected text `condition` input. Responses (`af/scenario-adapter-response@1`) must echo
 both identities and supply `outcome`, bounded `evidence`, and `observation` (null for actions).
@@ -200,7 +211,7 @@ script does not change native Wait behavior or complete a native Scenario Run.
 
 ## Ant scheduling
 
-An `af/ant@7` definition has `id`, `scenario` (bundle), typed `inputs`, `owner`, `notification`,
+An `af/ant@8` definition has `id`, `scenario` (bundle), typed `inputs`, `owner`, `notification`,
 `schedule` (`kind: daily`, `timezone`, `hour`, `minute`, `start_unix_ms`), and `execution`. The
 notification is
 an accountable routing label retained in inspection; sending a notification is an explicit
@@ -525,7 +536,7 @@ Creation refuses an existing label. Replay checks the revision chain and account
 missing ownership and corrupt journals fail closed.
 
 Roadmaps share `runs/scenarios.sqlite`, its immediate transactions, private ownership and checksum
-with Runs and Ants. The journal is now `af/scenario-store@10`; the previous Store shape is refused
+with Runs and Ants. The journal is now `af/scenario-store@12`; the previous Store shape is refused
 without migration. The unchanged 16 MiB document bound includes all roadmap history; the Ant
 retention policy above does not erase goal provenance or roadmap revisions. The ordinary
 machine Storage Budget counts these bytes as retained Store remainder; pruning never silently

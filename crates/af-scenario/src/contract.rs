@@ -44,7 +44,7 @@ pub fn text(s: &str) -> Result<()> {
     )
 }
 
-fn unique<'de, D, T>(deserializer: D) -> std::result::Result<BTreeSet<T>, D::Error>
+pub(crate) fn unique<'de, D, T>(deserializer: D) -> std::result::Result<BTreeSet<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de> + Ord,
@@ -66,6 +66,7 @@ pub enum Port {
     Boolean,
     Integer,
     Task,
+    TaskOutcome,
     Action,
     Decision,
     Observation,
@@ -84,6 +85,7 @@ pub enum Datum {
     Boolean(bool),
     Integer(u64),
     Task(TaskReceipt),
+    TaskOutcome(super::task_outcome::TaskOutcome),
     Action(ActionReceipt),
     Decision(DecisionReceipt),
     Observation(Observation),
@@ -96,6 +98,7 @@ impl Datum {
             Self::Boolean(_) => Port::Boolean,
             Self::Integer(_) => Port::Integer,
             Self::Task(_) => Port::Task,
+            Self::TaskOutcome(_) => Port::TaskOutcome,
             Self::Action(_) => Port::Action,
             Self::Decision(_) => Port::Decision,
             Self::Observation(_) => Port::Observation,
@@ -129,6 +132,7 @@ impl Datum {
                     "Task receipt lacks acceptance",
                 )
             }
+            Self::TaskOutcome(r) => r.validate(),
             Self::Action(r) => {
                 text(&r.intent_id)?;
                 text(&r.evidence)?;
@@ -242,6 +246,9 @@ pub enum Projection {
     WorkspaceRevision,
     WorkspacePublication,
     WorkspaceReceipt,
+    TaskAccepted,
+    TaskRepairable,
+    AcceptedTask,
     TaskConclusion,
     TaskResultId,
     TaskOutputId { port: String },
@@ -263,6 +270,8 @@ impl Projection {
                 name(port)?;
                 (Port::Task, Port::Text)
             }
+            Self::TaskAccepted | Self::TaskRepairable => (Port::TaskOutcome, Port::Boolean),
+            Self::AcceptedTask => (Port::TaskOutcome, Port::Task),
             Self::ChecksState => (Port::Observation, Port::Text),
             Self::ObservationSatisfied => (Port::Observation, Port::Boolean),
             Self::DecisionApproved => (Port::Decision, Port::Boolean),
@@ -283,6 +292,14 @@ impl Projection {
             (Self::WorkspaceReceipt, Datum::Action(a)) => {
                 super::workspace::Prepared::parse(&a)?;
                 Datum::Text(a.evidence)
+            }
+            (Self::TaskAccepted, Datum::TaskOutcome(t)) => Datum::Boolean(t.accepted()),
+            (Self::TaskRepairable, Datum::TaskOutcome(t)) => Datum::Boolean(t.repairable()),
+            (Self::AcceptedTask, Datum::TaskOutcome(t)) => {
+                t.validate()?;
+                let value = Datum::Task(t.receipt);
+                value.validate()?;
+                value
             }
             (Self::ActionIntent, Datum::Action(a)) => Datum::Text(a.intent_id),
             (Self::TaskConclusion, Datum::Task(t)) => Datum::Text(t.result.domain_conclusion),
@@ -565,7 +582,7 @@ fn decision_origin(
 impl Bundle {
     pub fn validate(&self, host: &dyn crate::Host) -> Result<()> {
         require(
-            self.schema == "af/scenario-bundle@6"
+            self.schema == "af/scenario-bundle@7"
                 && !self.definitions.is_empty()
                 && self.definitions.len() <= 64,
             "Unsupported or oversized Scenario bundle",
@@ -709,7 +726,7 @@ impl Bundle {
 impl Scenario {
     fn validate(&self, bundle: &Bundle, host: &dyn crate::Host) -> Result<()> {
         require(
-            self.schema == "af/scenario@6"
+            self.schema == "af/scenario@7"
                 && !self.outputs.is_empty()
                 && self.outputs.len() <= 32
                 && self.inputs.len() <= 32
@@ -811,7 +828,18 @@ impl Scenario {
                         )?;
                         expected.insert("publication".into(), Port::Action);
                     }
-                    output = Port::Task;
+                    if step.inputs.contains_key("repair") {
+                        require(
+                            bindings.is_empty(),
+                            "Native repair cannot mix predecessor bindings",
+                        )?;
+                        expected.insert("repair".into(), Port::TaskOutcome);
+                    }
+                    output = if step.outputs.get("result") == Some(&Port::TaskOutcome) {
+                        Port::TaskOutcome
+                    } else {
+                        Port::Task
+                    };
                 }
                 Kind::Task { target } => {
                     name(&target.task_id)?;
@@ -1007,11 +1035,13 @@ pub struct Policy {
     pub performance_publications: BTreeMap<String, super::performance::Scope>,
     #[serde(deserialize_with = "unique")]
     pub file_roots: BTreeSet<PathBuf>,
+    #[serde(default)]
+    pub implementation_startup: Option<super::implementation::Scope>,
 }
 impl Policy {
     pub fn validate(&self) -> Result<()> {
         require(
-            self.schema == "af/scenario-policy@5"
+            self.schema == "af/scenario-policy@6"
                 && self.adapters.len() <= 32
                 && self.decision_keys.len() <= 32
                 && self.task_templates.len() <= 256
@@ -1023,6 +1053,9 @@ impl Policy {
                 && self.file_roots.len() <= 32,
             "Invalid machine Scenario policy",
         )?;
+        if let Some(scope) = &self.implementation_startup {
+            scope.validate()?;
+        }
         for (id, a) in &self.adapters {
             name(id)?;
             require(
@@ -1096,6 +1129,9 @@ impl Policy {
     }
     pub fn admits(&self, bundle: &Bundle) -> Result<()> {
         self.validate()?;
+        if let Some(scope) = &self.implementation_startup {
+            scope.admits(bundle)?;
+        }
         for def in bundle.definitions.values() {
             require(
                 def.authority.task_templates.is_subset(&self.task_templates),
@@ -1165,7 +1201,7 @@ impl Pin {
             .collect::<Result<_>>()?;
         let revision = hash(&(&bundle, &policy))?;
         Ok(Self {
-            schema: "af/scenario-pin@6".into(),
+            schema: "af/scenario-pin@8".into(),
             bundle,
             policy,
             revision,

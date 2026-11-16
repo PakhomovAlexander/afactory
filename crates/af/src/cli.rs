@@ -1297,6 +1297,13 @@ pin=$(af catalog digest .af/task-packages/team/implementer) || exit 1"
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum TaskCommand {
+    /// Opt-in durable original-session wakes (Linux); never runs or resumes a Task
+    Wake {
+        #[command(subcommand)]
+        command: crate::task_commands::wake::WakeCommand,
+        #[command(flatten)]
+        inspect: TaskInspectArgs,
+    },
     /// Capture a Task and preview its plan, as `plan` does; with --execute, also run it
     #[command(
         long_about = "Capture a Task and show its execution plan before any Worker runs.\n\nWithout \
@@ -1627,6 +1634,9 @@ af task run NEW_ID --from TASK_ID   # needs: a finished reviewed Task TASK_ID\n 
         /// Run in the background: return once the run holds the Task, with its pid and log
         #[arg(long)]
         detach: bool,
+        /// Commit a wake registration and launch intent before detach; owner-private grant file
+        #[arg(long, value_name = "FILE", requires = "detach")]
+        wake_route: Option<PathBuf>,
         /// Print no progress lines or heartbeat on stderr; the last line still follows
         #[arg(long)]
         quiet: bool,

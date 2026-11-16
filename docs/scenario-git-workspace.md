@@ -32,7 +32,7 @@ checking. Git hooks, global/system config, filters, executable local config and 
 cannot add authority. The installer creates no token, remote ref, service object or schedule.
 
 Review the complete installed executable digest printed by installation and use it in the
-ordinary `af/scenario-policy@5` adapter entry. Allow only the operations/destination needed by
+ordinary `af/scenario-policy@6` adapter entry. Allow only the operations/destination needed by
 the consuming Scenario, with the existing 30-second wall and 65536-byte output ceilings. The
 executable contains both this capability and all production GitHub code; runtime imports cannot
 load application code from a checkout. Config/tool/SSH pin changes refuse further dispatch.
@@ -155,8 +155,8 @@ contents inside the exact owned build directory belong to that reservation. Task
 
 ## Recovery and bounds
 
-The workspace journal is `af/git-workspace-state@2`. Its separate `github.json` is the ordinary
-`af/github-adapter-state@4`; both share the stable workspace lock. Both are owner-only,
+The workspace journal is `af/git-workspace-state@3`. Its separate `github.json` is the ordinary
+`af/github-adapter-state@5`; both share the stable workspace lock. Both are owner-only,
 checksummed, no-follow and fsynced. Missing/corrupt/foreign journals refuse dispatch. The local
 journal admits 32 intents and at most 32 explicit lineage members; the production journal keeps
 its existing bounds. Native exports admit 32768 entries, 4096-byte paths and 64 MiB of content.

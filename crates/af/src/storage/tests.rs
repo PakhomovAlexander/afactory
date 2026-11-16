@@ -20,6 +20,7 @@ fn layout() -> Layout {
         campaigns: base.join("state/af/review/campaigns"),
         local_reviews: base.join("state/af/review/local"),
         tasks: base.join("state/af/task/local"),
+        wake_authority: None,
         registry: base.join("state/af/stores.toml"),
         installs: crate::self_management::Paths {
             versions: base.join("data/af/versions"),
@@ -39,6 +40,60 @@ fn layout() -> Layout {
         root: base,
         roots,
     }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_authority_is_accounted_and_retained_across_state_roots() {
+    let mut layout = layout();
+    let path = layout
+        .root
+        .join("account/.local/state/af/task/local/authority");
+    af_store::local_fs::create_private_dir_all(&path).unwrap();
+    let store = EventStore::open(path.join("events.sqlite")).unwrap();
+    Cas::open(path.join("cas")).unwrap();
+    let identity = store.admit_wake_incarnation().unwrap();
+    let key = format!("sha256:{}", "a".repeat(64));
+    store.bind_wake_session_store(&key, &identity).unwrap();
+    layout.roots.wake_authority = Some(path.clone());
+    for detail in [Detail::Stores, Detail::Tasks] {
+        let stock = inventory(&layout.roots, detail);
+        let entries: Vec<_> = stock
+            .entries
+            .iter()
+            .filter(|entry| entry.path == path)
+            .collect();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].bytes > 0);
+        assert!(entries[0].in_use.is_some());
+    }
+    // A different state/registry root still counts the same retained machine authority.
+    layout.roots.tasks = layout.root.join("alternate/task/local");
+    layout.roots.registry = layout.root.join("alternate/stores.toml");
+    let stock = inventory(&layout.roots, Detail::Tasks);
+    assert!(
+        stock
+            .entries
+            .iter()
+            .any(|entry| entry.path == path && entry.bytes > 0)
+    );
+    let report = sweep(&layout.roots, &policy(0), true, false);
+    assert!(!removed_paths(&report).contains(&path));
+    drop(store);
+    EventStore::open_read_only(path.join("events.sqlite"))
+        .unwrap()
+        .check_wake_session_store(&key, &identity)
+        .unwrap();
+    // If discovery through the default root names it too, it is counted just once.
+    layout.roots.tasks = path.parent().unwrap().to_owned();
+    assert_eq!(
+        inventory(&layout.roots, Detail::Stores)
+            .entries
+            .iter()
+            .filter(|entry| entry.path == path)
+            .count(),
+        1
+    );
 }
 
 fn policy(max_bytes: u64) -> StoragePolicy {

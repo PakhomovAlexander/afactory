@@ -11,7 +11,7 @@ import ctypes
 
 WORKSPACE_MAX_RECORDS = 32
 WORKSPACE_CONFIG = "af/git-workspace-config@2"
-WORKSPACE_STATE = "af/git-workspace-state@2"
+WORKSPACE_STATE = "af/git-workspace-state@3"
 RESERVATION_SLOTS = 4
 PREPARED = "af/git-workspace-prepared@1"
 PERFORMANCE_OP = "publish_performance_pr_v1"
@@ -210,7 +210,7 @@ def performance_subject(p):
 
 def workspace_validate_request(r, c):
     fields(r, ("schema", "method", "intent_id", "input_digest", "operation", "destination", "inputs"))
-    need(r["schema"] == "af/scenario-adapter-request@4", "unsupported workspace request")
+    need(r["schema"] == "af/scenario-adapter-request@5", "unsupported workspace request")
     for key in ("intent_id", "input_digest"):
         string(r[key], DIGEST)
     op, i = r["operation"], r["inputs"]
@@ -405,7 +405,7 @@ class WorkspaceAdapter:
         fields(proof, ("schema", "request_digest", "source_snapshot", "candidate_snapshot", "body"))
         need(proof["schema"] == "af/performance-pr-proof@1" and proof["request_digest"] == digest(canonical(native_request))
              and proof["candidate_snapshot"] == datum(inputs, "revision"), "native publication proof differs")
-        lab_request = dict(schema="af/scenario-adapter-request@4", method="observe", intent_id=request["intent_id"],
+        lab_request = dict(schema="af/scenario-adapter-request@5", method="observe", intent_id=request["intent_id"],
             input_digest=request["input_digest"], operation="observe", destination=lab["destination"],
             inputs={key: dict(type="text", value=value) for key, value in
                 dict(subject=observation["subject"], revision=observation["revision"], condition="native_verified").items()})
@@ -793,6 +793,30 @@ class WorkspaceAdapter:
     def publication(self, subject_value, revision):
         return self.common.publication(subject_value, revision)
 
+    def startup_preflight(self, r):
+        fields(r, ("schema", "scope_id", "scope"))
+        need(r["schema"] == "af/implementation-startup-preflight@1", "unsupported startup preflight")
+        scope, c = r["scope"], self.config
+        need(r["scope_id"] == digest(canonical(scope)) and scope["schema"] == "af/implementation-startup-scope@1",
+             "startup scope identity differs")
+        for key in ("repo", "repository", "source_commit", "source_content_digest", "base"):
+            need(scope[key] == c[key], "startup adapter scope differs")
+        need(scope["task_state"] == c["task_store"], "startup Task Store differs")
+        need(scope["branch_prefix"] == c["branch_prefix"] + "/", "startup branch namespace differs")
+        need(scope["destination_repository_id"] == c["repository_id"]
+             and scope["actor_id"] == c["actor"]["id"] and scope["actor_login"] == c["actor"]["login"],
+             "startup repository or actor differs")
+        need({g["operation"] for g in scope["grants"]} <= set(c["operations"]), "startup operation unavailable")
+        need(self.git("rev-parse", "refs/heads/" + c["base"]).decode() == c["source_commit"],
+             "startup local source changed")
+        # All remote observations are read-only. No push or publication probe is inferred.
+        with self.journal.locked():
+            self.configure_github()
+            self.common.actor()
+            remote = self.git("ls-remote", "ssh://git@github.com/" + c["repository"] + ".git", "refs/heads/" + c["base"]).decode()
+            need(remote.split() == [c["source_commit"], "refs/heads/" + c["base"]], "startup remote base changed")
+        return dict(schema="af/implementation-startup-ready@1", scope_id=r["scope_id"])
+
     def handle(self, r):
         self.performance_checked = {}  # Native acceptance/evidence reopens on every call, including replay.
         need(r.get("operation") in self.config["operations"], "operation outside installed machine scope")
@@ -821,7 +845,7 @@ class WorkspaceAdapter:
                         p = rec["prepared"]
                         self.configure_github()
                         self.common.actor()
-                        publication = dict(schema="af/scenario-adapter-request@4", method=r["method"],
+                        publication = dict(schema="af/scenario-adapter-request@5", method=r["method"],
                             intent_id=r["intent_id"], input_digest=r["input_digest"], operation=PERFORMANCE_OP,
                             destination=r["destination"], inputs={key: dict(type="text", value=value) for key, value in
                                 dict(subject=performance_subject(p), revision=p["commit"], body=canonical(performance_payload(p)).decode()).items()})
@@ -956,7 +980,9 @@ def workspace_main():
         # Initial preparation is offline. A continuation must read back its prior
         # publication before admitting the next local commit, so it needs transport too.
         offline = r.get("operation") == "prepare_candidate_v1" and "previous" not in r.get("inputs", {})
-        response = WorkspaceAdapter(c, CONFIG_DIGEST, None if offline else GitHub(c)).handle(r)
+        adapter = WorkspaceAdapter(c, CONFIG_DIGEST, None if offline else GitHub(c))
+        response = (adapter.startup_preflight(r) if r.get("schema") == "af/implementation-startup-preflight@1"
+                    else adapter.handle(r))
         sys.stdout.buffer.write(canonical(response) + b"\n")
         sys.stdout.buffer.flush()
     finally:
@@ -990,7 +1016,7 @@ def workspace_schema_documents():
     doc("git-workspace-prepared", prepared)
     doc("git-workspace-content", dict(title=text(maximum=200), body=text(maximum=48000)))
     doc("performance-pr-content", dict(title=text(maximum=200)))
-    doc("git-candidate-source-request", dict(receipt={"$ref": "urn:af:schema:scenario:6#/$defs/TaskReceipt"},
+    doc("git-candidate-source-request", dict(receipt={"$ref": "urn:af:schema:scenario:7#/$defs/TaskReceipt"},
         source_commit=sha, candidate_snapshot_id=dig, predecessor_snapshot_id=dict(anyOf=[dict(type="null"), dig])))
     doc("git-candidate-source", dict(request_digest=dig, repository_id=text(maximum=4096), source_snapshot=dig,
         candidate_snapshot=dig, predecessor_snapshot=dict(anyOf=[dict(type="null"), dig]), source_content_digest=dig, source_commit=sha, candidate_tree=sha,
@@ -1009,9 +1035,9 @@ def workspace_schema_documents():
     config["performance"] = obj(dict(executable=path, digest=dig, destination=text()))
     doc("git-workspace-config", config, version=2)
     schemas["git-workspace-config-v2.json"]["required"].remove("performance")
-    request = obj(dict(schema={"const": "af/scenario-adapter-request@4"}, intent_id=dig, input_digest=dig,
+    request = obj(dict(schema={"const": "af/scenario-adapter-request@5"}, intent_id=dig, input_digest=dig,
         operation={"enum": sorted(OPS - {"observe"})}, destination=text(), inputs={"type": "object",
-            "additionalProperties": {"$ref": "urn:af:schema:scenario:6#/$defs/Datum"}}))
+            "additionalProperties": {"$ref": "urn:af:schema:scenario:7#/$defs/Datum"}}))
     rec = obj(dict(request=request, phase={"enum": ["reserved", "started", "done"]},
         prepared=dict(anyOf=[dict(type="null"), obj(dict(schema={"const": PREPARED}, **prepared))]),
         inode=nullable_int, device=nullable_int,
@@ -1021,6 +1047,6 @@ def workspace_schema_documents():
         cleaned=array(dig, WORKSPACE_MAX_RECORDS), cleanup_pending=dict(anyOf=[dict(type="null"), dig]),
         progress=array({"enum": ["branch", "remote"]}, 2)))
     doc("git-workspace-state", dict(config_digest=dig, checksum=dig, records={"type": "object", "maxProperties": WORKSPACE_MAX_RECORDS,
-        "propertyNames": dig, "additionalProperties": rec}), version=2)
+        "propertyNames": dig, "additionalProperties": rec}), version=3)
     return schemas
 

@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-wake-subscription:1",
+  "$comment": "Foundation metadata only; no authority. Rust additionally validates ordered times, source boundaries and content identities.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "subscription_id",
+    "registration_key",
+    "configuration_digest",
+    "task",
+    "recipient_ref",
+    "registered_unix_ms",
+    "expires_unix_ms",
+    "max_observations"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/TaskWakeSubscription@1"
+    },
+    "subscription_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71
+    },
+    "registration_key": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71
+    },
+    "configuration_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71
+    },
+    "task": {
+      "$ref": "urn:af:schema:task-wake-observation:1#/$defs/task"
+    },
+    "recipient_ref": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71
+    },
+    "registered_unix_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "expires_unix_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "max_observations": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4096
+    }
+  }
+}

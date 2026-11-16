@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:implementation-startup-scope:1",
+  "title": "Implementation startup scope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "owner",
+    "recipe_id",
+    "repo",
+    "repository_id",
+    "source_commit",
+    "source_content_digest",
+    "repository",
+    "actor_login",
+    "branch_prefix",
+    "base",
+    "destination_repository_id",
+    "actor_id",
+    "expires_unix_ms",
+    "max_repairs",
+    "limits",
+    "grants",
+    "templates",
+    "task_state"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/implementation-startup-scope@1"
+    },
+    "owner": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "recipe_id": {
+      "$ref": "urn:af:schema:scenario:7#/$defs/digest"
+    },
+    "repo": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "repository_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "source_commit": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "source_content_digest": {
+      "$ref": "urn:af:schema:scenario:7#/$defs/digest"
+    },
+    "repository": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "actor_login": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "branch_prefix": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "base": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "destination_repository_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "actor_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "expires_unix_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "max_repairs": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 16
+    },
+    "limits": {
+      "$ref": "urn:af:schema:scenario:7#/$defs/Limits"
+    },
+    "grants": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 32,
+      "items": {
+        "$ref": "urn:af:schema:scenario:7#/$defs/Grant"
+      }
+    },
+    "templates": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 256,
+      "propertyNames": {
+        "$ref": "urn:af:schema:scenario:7#/$defs/digest"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "minProperties": 1,
+        "maxProperties": 256,
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "provider",
+            "provider_kind",
+            "model",
+            "effort"
+          ],
+          "properties": {
+            "provider": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "provider_kind": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "effort": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          }
+        }
+      }
+    },
+    "task_state": {
+      "$ref": "urn:af:schema:scenario:7#/$defs/path"
+    }
+  }
+}

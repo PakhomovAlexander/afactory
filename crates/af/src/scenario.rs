@@ -181,6 +181,9 @@ af scenario experiment-source --file source.json --repo /project \\\n    --task-
         /// Exact revision printed by validate; confirms the full definition and machine policy
         #[arg(long)]
         confirm_pin: String,
+        /// Refuse startup unless the confirmed machine policy carries implementation scope
+        #[arg(long)]
+        require_startup_scope: bool,
         /// Drive the recorded Run immediately until it settles or waits
         #[arg(long)]
         execute: bool,
@@ -683,6 +686,7 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
             definition,
             inputs,
             confirm_pin,
+            require_startup_scope,
             execute,
             inspect,
         } => {
@@ -690,6 +694,10 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
             require(
                 pin.revision == confirm_pin,
                 "Scenario pin confirmation differs; validate and review it again",
+            )?;
+            require(
+                !require_startup_scope || pin.policy.implementation_startup.is_some(),
+                "Implementation startup scope is required but absent",
             )?;
             let limits = pin.bundle.definitions[&pin.bundle.root].limits.clone();
             let run = Run::new(
@@ -721,7 +729,7 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
         ScenarioCommand::List { inspect } => {
             let world = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?.read()?;
             print(
-                &serde_json::json!({"schema":"af/scenario-list@6","runs":world.runs}),
+                &serde_json::json!({"schema":"af/scenario-list@8","runs":world.runs}),
                 &inspect,
             )
         }
@@ -838,7 +846,7 @@ pub(crate) fn ant(command: AntCommand) -> Result<i32> {
                 .map(|(id, ant)| Ok((id.clone(), ant_inspection(ant, &world, &scheduler)?)))
                 .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
             print(
-                &serde_json::json!({"schema":"af/ant-list@8","ants":ants}),
+                &serde_json::json!({"schema":"af/ant-list@10","ants":ants}),
                 &inspect,
             )
         }
@@ -855,7 +863,7 @@ pub(crate) fn ant(command: AntCommand) -> Result<i32> {
                 runs: results,
             } = runtime::tick(&store, now, inspect.now)?;
             print(
-                &serde_json::json!({"schema":"af/ant-tick@7","now_unix_ms":now,"started":started,"busy":busy,"refused":refused,"runs":results}),
+                &serde_json::json!({"schema":"af/ant-tick@9","now_unix_ms":now,"started":started,"busy":busy,"refused":refused,"runs":results}),
                 &inspect,
             )
         }
@@ -867,7 +875,7 @@ fn ant_inspection(
     scheduler: &serde_json::Value,
 ) -> Result<serde_json::Value> {
     let mut value = serde_json::to_value(ant).map_err(|e| e.to_string())?;
-    value["schema"] = serde_json::json!("af/ant-inspection@3");
+    value["schema"] = serde_json::json!("af/ant-inspection@5");
     value["scheduler"] = scheduler.clone();
     let next_due = ant.next_due_unix_ms();
     value["next_due_unix_ms"] = serde_json::json!(next_due.as_ref().ok().copied().flatten());

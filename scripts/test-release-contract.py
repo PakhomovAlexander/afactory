@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Offline release preflight regressions, with no binary, benchmark or GitHub access."""
+import hashlib
+import json
 from pathlib import Path
 import shutil
 import stat
@@ -21,11 +23,58 @@ def copy_inputs(source, destination):
     (destination / 'scripts').mkdir()
     shutil.copyfile(source / 'scripts/telemetry-overhead.py',
                     destination / 'scripts/telemetry-overhead.py')
+    helper = Path('scripts/performance/perflab/account_isolation.py')
+    (destination / helper).parent.mkdir(parents=True)
+    shutil.copyfile(source / helper, destination / helper)
     # copyfile does not preserve read-only file modes, unlike copy/copy2. copytree
     # still preserves the directory mode; schemas is a flat directory we also mutate.
+    declaration = json.loads((source / 'scripts/release-contract.json').read_text())
+    declaration['version'] = '0.15.1-rc.3'
+    (destination / 'scripts/release-contract.json').write_text(json.dumps(declaration))
+    for fixture in (source / 'fixtures').glob('telemetry-bench'):
+        shutil.copytree(fixture, destination / 'fixtures' / fixture.name, copy_function=shutil.copyfile)
     schemas = destination / 'schemas'
     shutil.copytree(source / 'schemas', schemas, copy_function=shutil.copyfile)
     schemas.chmod(schemas.stat().st_mode | stat.S_IRWXU)
+
+
+class HostedReleaseDependencies(unittest.TestCase):
+    def test_base_installs_real_signature_dependency_before_release_checks(self):
+        workflow = (ROOT / '.github/workflows/validate.yml').read_text()
+        base = workflow.split('\n  base:\n', 1)[1].split('\n  classes:\n', 1)[0]
+        self.assertIn('"ubuntu-latest", "macos-latest"', base)
+        install, checks = base.split('      - name: Always-on format, lint, policy and binary smoke', 1)
+        self.assertIn('make fmt lint base-check', checks)
+        step = install.split('      - name: Install release-check signature verifier\n', 1)[1]
+        self.assertIn('        shell: bash\n', step)
+        script = '\n'.join(line[10:] for line in step.split('        run: |\n', 1)[1].splitlines())
+        # Exercise the actual workflow shell without installing packages or contacting a service.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / 'commands'
+            for name in ('sudo', 'brew'):
+                stub = root / name
+                stub.write_text('#!/bin/bash\nprintf "%s\\n" "${0##*/} $*" >> "$COMMAND_LOG"\n'
+                                'exit "$INSTALL_EXIT"\n')
+                stub.chmod(0o755)
+            for runner, commands in (
+                ('Linux', ['sudo apt-get update',
+                           'sudo apt-get install -y --no-install-recommends minisign']),
+                ('macOS', ['brew install minisign']),
+            ):
+                for exit_code in (0, 23):
+                    with self.subTest(runner=runner, exit_code=exit_code):
+                        log.write_text('')
+                        result = subprocess.run([shutil.which('bash'), '-c', script],
+                            env={'PATH': str(root), 'RUNNER_OS': runner,
+                                 'COMMAND_LOG': str(log), 'INSTALL_EXIT': str(exit_code)},
+                            capture_output=True, text=True)
+                        self.assertEqual(result.returncode, exit_code, result.stderr)
+                        self.assertEqual(log.read_text().splitlines(),
+                                         commands if exit_code == 0 else commands[:1])
+        policy = json.loads((ROOT / 'scripts/release-policy.json').read_text())
+        self.assertEqual(policy['pr_validation']['source_files']['.github/workflows/validate.yml'],
+                         hashlib.sha256(workflow.strip().encode()).hexdigest())
 
 
 class ReleaseContract(unittest.TestCase):
@@ -34,7 +83,7 @@ class ReleaseContract(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         copy_inputs(ROOT, self.root)
-        self.version('0.15.1-rc.1')
+        self.version('0.15.1-rc.3')
 
     def test_read_only_source_copies_allow_all_contract_mutations(self):
         # Model the AF gate's sealed source even in a writable developer checkout.
@@ -51,7 +100,10 @@ class ReleaseContract(unittest.TestCase):
         destination.mkdir()
         copy_inputs(source, destination)
         script = destination / 'scripts/telemetry-overhead.py'
-        script.write_text(script.read_text().replace("'0.15.1-rc.1'", "'0.15.1-rc.1', '9.0.0'"))
+        declaration = destination / 'scripts/release-contract.json'
+        document = json.loads(declaration.read_text())
+        document['version'] = '9.0.0'
+        declaration.write_text(json.dumps(document))
         (destination / 'Cargo.toml').write_text('[workspace.package]\nversion = "9.0.0"\n')
         self.assertEqual(PREFLIGHT.check(destination), '9.0.0')
         schema = destination / 'schemas' / next(iter(contracts.schema_documents()))
@@ -74,16 +126,48 @@ class ReleaseContract(unittest.TestCase):
         (self.root / 'Cargo.toml').write_text('[workspace.package]\nversion = "%s"\n' % version)
 
     def test_explicit_compatible_version_passes(self):
-        self.assertEqual(PREFLIGHT.check(self.root), '0.15.1-rc.1')
-        self.version('0.15.1-rc.2')
-        self.assertEqual(PREFLIGHT.check(self.root), '0.15.1-rc.2')
-        self.version('0.15.1-rc.3')
         self.assertEqual(PREFLIGHT.check(self.root), '0.15.1-rc.3')
-        # A future compatible release still requires an explicit reviewed declaration.
-        self.version('9.0.0')
-        path = self.root / 'scripts/telemetry-overhead.py'
-        path.write_text(path.read_text().replace("'0.15.1-rc.1'", "'0.15.1-rc.1', '9.0.0'"))
-        self.assertEqual(PREFLIGHT.check(self.root), '9.0.0')
+        for version in ('0.15.1-rc.4', '9.0.0'):
+            self.version(version)
+            PREFLIGHT.prepare(self.root, 'a' * 40)
+            self.assertEqual(PREFLIGHT.check(self.root), version)
+            declaration = json.loads((self.root / 'scripts/release-contract.json').read_text())
+            self.assertEqual(declaration['source'], 'a' * 40)
+
+    def test_current_scenario_contracts_are_declared_and_drift_is_refused(self):
+        policy = json.loads((ROOT / 'scripts/release-policy.json').read_text())
+        expected = {'scenario-store': 11, 'scenario': 6, 'scenario-bundle': 6,
+                    'scenario-pin': 7, 'scenario-run': 7, 'scenario-list': 7,
+                    'ant': 7, 'ant-pin': 8, 'ant-tick': 8, 'ant-state': 9,
+                    'ant-inspection': 4, 'ant-list': 9,
+                    'scenario-task-template': 2, 'scenario-template-pin': 2}
+        for name, version in expected.items():
+            relative = 'schemas/%s-v%s.json' % (name, version)
+            with self.subTest(schema=relative):
+                self.assertIn('af/%s@%s' % (name, version), policy['required_features'][relative])
+                path = self.root / relative
+                original = path.read_bytes()
+                document = json.loads(original)
+                self.assertEqual(document['properties']['schema']['const'], 'af/%s@%s' % (name, version))
+                document['properties']['schema']['const'] = 'af/foreign@1'
+                path.write_text(json.dumps(document))
+                with self.assertRaisesRegex(ValueError, 'capabilities differ'):
+                    PREFLIGHT.check(self.root)
+                path.write_bytes(original)
+        template = json.loads((self.root / 'schemas/scenario-task-template-v2.json').read_text())
+        self.assertIn('authority_id', template['required'])
+        self.assertIn('bindings', template['required'])
+        self.assertEqual(PREFLIGHT.check(self.root), '0.15.1-rc.3')
+
+    def test_preparation_refuses_changed_capabilities(self):
+        self.version('0.15.1-rc.4')
+        path = self.root / 'scripts/release-contract.json'
+        original = path.read_bytes()
+        fixture = next((self.root / 'fixtures').glob('telemetry-bench/*/repo/bench.json'))
+        fixture.write_text('{}')
+        with self.assertRaisesRegex(ValueError, 'capabilities differ'):
+            PREFLIGHT.prepare(self.root, 'a' * 40)
+        self.assertEqual(path.read_bytes(), original)
 
     def test_undeclared_and_incompatible_versions_fail(self):
         for version in ('9.0.0', '0.13.0', '0.11.9', '0.0.0', '0.14.0',
@@ -139,8 +223,8 @@ class ReleaseContract(unittest.TestCase):
     def test_real_preflight_cli_and_schema_writer_refuse_drift(self):
         shutil.copy(ROOT / 'scripts/release-contract.py', self.root / 'scripts')
         lab = self.root / 'scripts/performance'
-        lab.mkdir()
-        shutil.copytree(ROOT / 'scripts/performance/perflab', lab / 'perflab')
+        lab.mkdir(exist_ok=True)
+        shutil.copytree(ROOT / 'scripts/performance/perflab', lab / 'perflab', dirs_exist_ok=True)
         shutil.copy(ROOT / 'scripts/performance/schemas.py', lab)
         def run(script, *args):
             return subprocess.run([sys.executable, '-I', str(self.root / script), *args],
@@ -177,8 +261,11 @@ class ReleaseContract(unittest.TestCase):
         validate = (ROOT / '.github/workflows/validate.yml').read_text()
         self.assertIn('make fmt lint base-check', validate)
         release = (ROOT / 'scripts/release.sh').read_text()
-        self.assertLess(release.index('scripts/release-contract.py'), release.index('git commit'))
-        self.assertLess(release.index('cargo update --workspace'), release.index('scripts/release-contract.py'))
+        self.assertIn('exec "$root/dev" release rc', release)
+        controller = (ROOT / 'scripts/dev-release.py').read_text()
+        self.assertIn("'scripts/release-contract.py', '--prepare'", controller)
+        self.assertIn('harness-digest', controller)
+
 
 
 if __name__ == '__main__':
