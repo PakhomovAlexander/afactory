@@ -21,7 +21,7 @@ def register(c):
     # An explicitly configured host tool or tool directory: never searched for on PATH.
     tool = Str(pattern=r"^/[A-Za-z0-9_./+-]{1,1023}$", max_len=1024)
     configuration = Obj(
-        Field("schema", Const("af.perf-executor/4")), Field("backend", backend),
+        Field("schema", Const("af.perf-executor/5")), Field("backend", backend),
         Field("root", path), Field("repository_path", path), Field("repository", c.REPOSITORY),
         Field("control_sha", SHA), Field("trusted_ref", Str(pattern=r"^refs/heads/[A-Za-z0-9._/-]+$")),
         Field("machine_id", ID), Field("journal_id", ID),

@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:performance-history:1",
-  "title": "af.perf-history/1",
+  "$id": "urn:af:schema:performance-history:2",
+  "title": "af.perf-history/2",
   "description": "Compatible history across runs (ADR-0172): every run with its source, result and retention, groups of one case under one workload, fixture, policy, recipe, environment and provenance identity with each run's point and seed provenance, how incompatible groups of a case differ, and what could not be shown.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "af.perf-history/1"
+      "const": "af.perf-history/2"
     },
     "comparison": {
       "const": "trend_across_runs"

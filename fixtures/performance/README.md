@@ -102,7 +102,7 @@ unavailable until a reviewed activation binds a passing calibration cohort. Such
 (`af.perf-activation/3`, ADR-0183, ADR-0184) binds the cohort, its sealed parameters and its
 readiness as committed files by path and SHA-256, and the environment, recipe and CPU/image
 groups the cohort calibrated; an equivalent-adapter bridge also binds its execution evidence
-(`af.perf-equivalence/1`). Every active plan verifies those records locally, and the
+(`af.perf-equivalence/2`). Every active plan verifies those records locally, and the
 `Performance activation` workflow's `cli.py activate --verify-proposed` recomputes them from the
 retained Actions evidence before the activation change merges.
 

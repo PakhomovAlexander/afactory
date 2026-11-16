@@ -65,6 +65,18 @@
       "validate_pin(&store, &cas, template)?",
       "restore_compiler(&cas, &authority, &settings)?",
       "recorded_bindings != template.bindings"
+    ],
+    "schemas/performance-executor-v5.json": [
+      "af.perf-executor/5"
+    ],
+    "schemas/performance-history-v2.json": [
+      "af.perf-history/2"
+    ],
+    "schemas/performance-equivalence-v2.json": [
+      "af.perf-equivalence/2"
+    ],
+    "schemas/performance-schedule-v3.json": [
+      "af.perf-schedule/3"
     ]
   },
   "targets": [

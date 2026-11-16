@@ -47,7 +47,11 @@ Run `/8`, verdict `/3`, report `/4`, suite `/6`, CLI registry `/8`, cohort `/5`,
 readiness `/7`, local readiness `/2` and Scenario completion/verification `/2` travel with current readers, writers, generated schemas
 and parity fixtures. Prior versions fail closed under
 [ADR-0145](../adr/0145-read-only-what-this-release-writes-and-version-every-changed-shape.md).
-Root `.af/` and `.github/` authority are unchanged.
+The expanded tier vocabulary also versions executor declarations as `af.perf-executor/5`,
+history as `af.perf-history/2`, equivalence evidence as `af.perf-equivalence/2` and schedules as
+`af.perf-schedule/3`. Their previous identities refuse even standard-tier documents; finish or
+discard prior records under their original release. Tier rules and statistical algorithms are
+unchanged. Root `.af/` and `.github/` authority are unchanged.
 
 ## Source validation and operator follow-up
 

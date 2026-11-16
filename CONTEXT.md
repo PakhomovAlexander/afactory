@@ -486,7 +486,7 @@ instrument.
 _Avoid_: **Authority Snapshot** — the Review Kernel's pinned review policy.
 
 **Performance Schedule**:
-The `af.perf-schedule/2` record of one Actions event, resolved once to full SHAs by the trusted
+The `af.perf-schedule/3` record of one Actions event, resolved once to full SHAs by the trusted
 control revision's own scripts: the event and its pull request, whether it is trusted and which
 executor it may use, each comparison it freezes or why that comparison is unavailable or
 refused, and the Release Claim it measures, if any. Enforcement in it is always advisory

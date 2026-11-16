@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:performance-equivalence:1",
-  "title": "af.perf-equivalence/1",
+  "$id": "urn:af:schema:performance-equivalence:2",
+  "title": "af.perf-equivalence/2",
   "description": "An equivalent-adapter bridge's execution evidence (ADR-0184): the golden check of the calibrated and the bridged product sources and the post-merge A/A, each recomputed from a retained run of the bridged authority with its identities, adapters, probe binaries, observed groups, completeness and case outcomes, its reasons re-derived by the reader; owner approval of semantic equivalence stays separate.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "af.perf-equivalence/1"
+      "const": "af.perf-equivalence/2"
     },
     "equivalence_group": {
       "$ref": "#/$defs/id"

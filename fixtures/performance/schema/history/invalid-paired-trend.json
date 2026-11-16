@@ -1,5 +1,5 @@
 {
-  "schema": "af.perf-history/1",
+  "schema": "af.perf-history/2",
   "comparison": "same_host_paired",
   "runs": [
     {

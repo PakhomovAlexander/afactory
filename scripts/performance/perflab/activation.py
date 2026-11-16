@@ -31,7 +31,7 @@ wrote is taken as success:
   the protected harness and the complete build closure (lock files, Cargo manifests, build
   scripts, toolchain and Cargo configuration, additions included) may differ only in the named
   adapter files, the adapter registry's entries of the named equivalence group, and the
-  calibration records. The bridge's execution evidence (`af.perf-equivalence/1`, equivalence.py)
+  calibration records. The bridge's execution evidence (`af.perf-equivalence/2`, equivalence.py)
   must verify: a golden check of the calibrated and the bridged product sources and a post-merge
   A/A, each a retained run of the bridged authority, rechecked locally and recomputed from the
   fetched runs in proposed verification. A matching file list does not establish semantic

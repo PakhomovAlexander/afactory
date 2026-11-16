@@ -39,8 +39,12 @@ class Events(test_planning.History):
     def schedule(self, event, settings=None):
         doc, plans = ci.schedule(self.git, event, settings or self.settings())
         # Every document the scheduler writes passes its own reader.
+        self.assertEqual(doc["schema"], "af.perf-schedule/3")
         self.assertEqual(contracts.read_json(contracts.write_bytes(doc, "schedule"),
                                              "schedule"), doc)
+        with self.assertRaisesRegex(ContractError, "expected.*af.perf-schedule/3"):
+            contracts.read_json(json.dumps(dict(doc, schema="af.perf-schedule/2")).encode(),
+                                "schedule")
         for item in doc["comparisons"]:
             if item["status"] == "planned":
                 plan = contracts.read_json(plans[item["run_id"]], "run")

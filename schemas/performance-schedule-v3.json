@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:performance-schedule:2",
-  "title": "af.perf-schedule/2",
+  "$id": "urn:af:schema:performance-schedule:3",
+  "title": "af.perf-schedule/3",
   "description": "One Actions event's continuous schedule (ADR-0177, ADR-0180): the event resolved once to full SHAs with its pull request metadata, whether it is trusted and which executor it may use, advisory enforcement, each comparison planned from the trusted control (or why it is unavailable or refused), the shard matrix and concurrency every later job reads, and the confirmed release claim a release handoff measures.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "af.perf-schedule/2"
+      "const": "af.perf-schedule/3"
     },
     "actions": {
       "type": "object",

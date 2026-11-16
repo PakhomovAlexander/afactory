@@ -1929,7 +1929,7 @@ ACTIVATION = Obj(
             # revision, and the SHA-256 of its bytes.
             Field("calibrated_activation_path", RECORD_PATH),
             Field("calibrated_activation_sha256", DIGEST),
-            # The bridge's execution evidence (af.perf-equivalence/1, ADR-0184): the golden
+            # The bridge's execution evidence (af.perf-equivalence/2, ADR-0184): the golden
             # check on both product sources and the post-merge A/A, recomputed from their
             # retained runs. Without verified evidence a bridge never measures as active.
             Field("equivalence_path", RECORD_PATH), Field("equivalence_sha256", DIGEST),
@@ -1959,7 +1959,7 @@ def validate_activation(doc, where="activation.toml"):
     return doc
 
 
-# af.perf-equivalence/1 (ADR-0184) ---------------------------------------------------------
+# af.perf-equivalence/2 (ADR-0184) ---------------------------------------------------------
 #
 # The execution evidence of an equivalent-adapter bridge, recomputed from two retained runs that
 # the bridged authority measured: the golden check, whose baseline is the calibrated product
@@ -1970,7 +1970,7 @@ def validate_activation(doc, where="activation.toml"):
 # check keeps what its run showed, and its reasons follow from those facts alone; owner approval
 # of semantic equivalence stays a separate administrative prerequisite.
 
-EQUIVALENCE_SCHEMA = "af.perf-equivalence/1"
+EQUIVALENCE_SCHEMA = "af.perf-equivalence/2"
 EQUIVALENCE_CLAIM = ("execution evidence of the bridge's golden checks and post-merge A/A; owner "
                      "approval of semantic equivalence is a separate prerequisite")
 EQUIVALENCE_CASE = Obj(
@@ -3572,9 +3572,9 @@ def validate_transport(doc, where="af-perf-transport.json"):
     return doc
 
 
-# af.perf-history/1 --------------------------------------------------------------------------
+# af.perf-history/2 --------------------------------------------------------------------------
 
-HISTORY_SCHEMA = "af.perf-history/1"
+HISTORY_SCHEMA = "af.perf-history/2"
 # What a compatible group's runs share; a run's ID, sources and seed artifacts never split one.
 HISTORY_COMPONENTS = ("workload", "fixture", "policy", "recipe", "environment", "provenance")
 HISTORY_IDENTITY = Obj(
@@ -3690,7 +3690,7 @@ def validate_refusal(doc, where="refusal"):
 
 # Continuous scheduling (ADR-0177) ------------------------------------------------------------
 
-SCHEDULE_SCHEMA = "af.perf-schedule/2"
+SCHEDULE_SCHEMA = "af.perf-schedule/3"
 BUILD_PACK_SCHEMA = "af.perf-build-pack/1"
 ACTIONS_EVENTS = ("pull_request", "push", "schedule", "workflow_dispatch", "workflow_run")
 # The events whose workflow runs reviewed code of main: a push, the schedule, a dispatch and a

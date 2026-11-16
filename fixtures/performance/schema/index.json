@@ -1079,7 +1079,7 @@
       "path": "executor/invalid-version.json",
       "contract": "executor",
       "valid": false,
-      "error": "expected af.perf-executor/4",
+      "error": "expected af.perf-executor/5",
       "shape": true
     },
     {

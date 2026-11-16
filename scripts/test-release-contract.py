@@ -161,10 +161,15 @@ class ReleaseContract(unittest.TestCase):
 
     def test_combined_wake_and_long_flow_contracts_are_bound_by_one_declaration(self):
         # Neither merge parent's capability pin covers the combined schema closure.
+        policy = json.loads((ROOT / 'scripts/release-policy.json').read_text())
         expected = {
             'task-wake-route-v1.json': 'af/task-wake-route@1',
             'task-wake-status-v1.json': 'af/task-wake-status@1',
             'performance-run-v8.json': 'af.perf-run/8',
+            'performance-executor-v5.json': 'af.perf-executor/5',
+            'performance-history-v2.json': 'af.perf-history/2',
+            'performance-equivalence-v2.json': 'af.perf-equivalence/2',
+            'performance-schedule-v3.json': 'af.perf-schedule/3',
             'performance-supervisor-request-v5.json': 'af.perf-supervisor-request/5',
             'performance-supervisor-result-v6.json': 'af.perf-supervisor-result/6',
         }
@@ -176,6 +181,9 @@ class ReleaseContract(unittest.TestCase):
             with self.subTest(schema=name):
                 self.assertEqual(document['properties']['schema']['const'], identity)
                 self.assertFalse(document['additionalProperties'])
+                if name in ('performance-executor-v5.json', 'performance-history-v2.json',
+                            'performance-equivalence-v2.json', 'performance-schedule-v3.json'):
+                    self.assertIn(identity, policy['required_features']['schemas/' + name])
                 # Even a semantically harmless byte change must invalidate the pin.
                 path.write_bytes(original + b'\n')
                 with self.assertRaisesRegex(ValueError, 'stale|capabilities differ'):

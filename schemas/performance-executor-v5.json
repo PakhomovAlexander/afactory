@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:performance-executor:4",
-  "title": "af.perf-executor/4",
+  "$id": "urn:af:schema:performance-executor:5",
+  "title": "af.perf-executor/5",
   "description": "Independent performance executor: executor (ADR-0240).",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "af.perf-executor/4"
+      "const": "af.perf-executor/5"
     },
     "backend": {
       "type": "string",
