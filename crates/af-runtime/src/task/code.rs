@@ -2636,12 +2636,24 @@ AF_TOOLCHAIN_SNAPSHOT ",
             evidence,
             missing_obligations: BTreeSet::new(),
         };
-        if report
+        if execution.budget.breached()
+            || report.outcomes.iter().any(|(_, outcome)| {
+                matches!(
+                    outcome,
+                    NodeOutcome::Failed {
+                        class: Some(af_graph::NodeFailureClass::RunBudgetExhausted),
+                        ..
+                    }
+                )
+            })
+        {
+            result.execution = TaskExecutionV1::Exhausted;
+        } else if report
             .outcomes
             .iter()
             .any(|(_, outcome)| matches!(outcome, NodeOutcome::Failed { .. }))
         {
-            result.execution = TaskExecutionV1::Exhausted;
+            result.execution = TaskExecutionV1::Incomplete;
         }
         self.assess(cas, &state.revision, &mut result)?;
         result.validate()?;

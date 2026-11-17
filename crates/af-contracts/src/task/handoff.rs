@@ -1,5 +1,5 @@
 //! The findings handoff (ADR-0248): what an agent that will fix a review finding needs, beside
-//! the finding itself, in `af/task-findings@2`.
+//! the finding itself, in `af/task-findings@3`.
 //!
 //! - [`FindingPromptV1`]: one self-contained prompt per finding — its location on the reviewed
 //!   Snapshot, the quoted evidence, the requested change, and how verification will judge the

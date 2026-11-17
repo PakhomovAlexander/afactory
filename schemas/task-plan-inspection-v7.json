@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:task-plan-inspection:6",
-  "title": "Recorded Task plan inspection af/task-plan-inspection@6",
+  "$id": "urn:af:schema:task-plan-inspection:7",
+  "title": "Recorded Task plan inspection af/task-plan-inspection@7",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -17,7 +17,7 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/task-plan-inspection@6"
+      "const": "af/task-plan-inspection@7"
     },
     "task_id": {
       "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
@@ -44,10 +44,10 @@
       "$ref": "urn:af:schema:task-contracts:4#/$defs/taskRevision"
     },
     "plan": {
-      "$ref": "urn:af:schema:task-inspection:20#/properties/plan"
+      "$ref": "urn:af:schema:task-inspection:21#/properties/plan"
     },
     "graph": {
-      "$ref": "urn:af:schema:task-inspection:20#/properties/graph"
+      "$ref": "urn:af:schema:task-inspection:21#/properties/graph"
     }
   }
 }

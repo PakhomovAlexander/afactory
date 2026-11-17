@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:review-ledger:2",
-  "title": "af/review-ledger@2",
+  "$id": "urn:af:schema:review-ledger:3",
+  "title": "af/review-ledger@3",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -12,10 +12,10 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/review-ledger@2"
+      "const": "af/review-ledger@3"
     },
     "inspection": {
-      "$ref": "urn:af:schema:task-findings:2"
+      "$ref": "urn:af:schema:task-findings:3"
     },
     "finding_set": {
       "anyOf": [

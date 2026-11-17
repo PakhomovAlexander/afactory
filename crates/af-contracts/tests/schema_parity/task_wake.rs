@@ -5,7 +5,7 @@ fn digest(c: char) -> String {
     format!("sha256:{}", c.to_string().repeat(64))
 }
 fn observation() -> Value {
-    json!({"schema":WAKE_OBSERVATION_V1,"task":{"store_incarnation":digest('1'),"task_id":"wake-task","task_run_id":format!("task:{}",digest('2')),"opening_event_id":"0123456789abcdef0123456789"},
+    json!({"schema":WAKE_OBSERVATION_V2,"task":{"store_incarnation":digest('1'),"task_id":"wake-task","task_run_id":format!("task:{}",digest('2')),"opening_event_id":"0123456789abcdef0123456789"},
     "observation_id":digest('3'),"causal":{"sequence":4,"event_id":"0123456789abcdef0123456789"},"checked_prefix":{"sequence":4,"event_id":"0123456789abcdef0123456789"},"revision_id":digest('4'),"episode":1,"kind":"completed","state":{"phase":"finished","outcome":"verified","cause":null,"waiting_reason":null},"evidence":{"kind":"history"},"observed_unix_ms":100,"result_id":digest('5')})
 }
 fn rust(name: &str, value: Value) -> Result<(), String> {
@@ -37,8 +37,8 @@ fn wake_owner_routes_and_receiver_contracts_are_closed_and_versioned() {
         "mode":"follow_up","expires_unix_ms":1000,"installation":installation});
     let grant =
         json!({"schema":"af/task-wake-grant@1","route_id":digest('1'),"capability":digest('4')});
-    let envelope = json!({"schema":WAKE_ENVELOPE_V1,"subscription_id":digest('6'),"delivery_id":digest('a'),"payload_digest":digest('b'),"observation":observation(),"expires_unix_ms":1000});
-    let delivery = json!({"schema":"af/task-wake-delivery@1","envelope":envelope,"route_id":digest('1'),
+    let envelope = json!({"schema":WAKE_ENVELOPE_V2,"subscription_id":digest('6'),"delivery_id":digest('a'),"payload_digest":digest('b'),"observation":observation(),"expires_unix_ms":1000});
+    let delivery = json!({"schema":"af/task-wake-delivery@2","envelope":envelope,"route_id":digest('1'),
         "attempts":1,"epoch":1,"claim_until_unix_ms":100,"next_attempt_unix_ms":0,"state":"pending","reason":null,"receipts":[]});
     for (schema, value) in [
         (
@@ -73,7 +73,8 @@ fn wake_owner_routes_and_receiver_contracts_are_closed_and_versioned() {
                     .validate(),
             }
         };
-        let filename = format!("task-wake-{schema}-v1.json");
+        let version = if schema == "delivery" { 2 } else { 1 };
+        let filename = format!("task-wake-{schema}-v{version}.json");
         assert_valid(&filename, &value);
         validate(value.clone()).unwrap();
         for field in value.as_object().unwrap().keys() {
@@ -115,9 +116,9 @@ fn wake_owner_routes_and_receiver_contracts_are_closed_and_versioned() {
 fn closed_wake_contracts_match_schemas_and_refuse_authority_fields() {
     let obs = observation();
     let sub = json!({"schema":WAKE_SUBSCRIPTION_V1,"subscription_id":digest('6'),"registration_key":digest('7'),"configuration_digest":digest('8'),"task":obs["task"],"recipient_ref":digest('9'),"registered_unix_ms":1,"expires_unix_ms":1000,"max_observations":16});
-    let envelope = json!({"schema":WAKE_ENVELOPE_V1,"subscription_id":digest('6'),"delivery_id":digest('a'),"payload_digest":digest('b'),"observation":obs,"expires_unix_ms":1000});
+    let envelope = json!({"schema":WAKE_ENVELOPE_V2,"subscription_id":digest('6'),"delivery_id":digest('a'),"payload_digest":digest('b'),"observation":obs,"expires_unix_ms":1000});
     let receipt = json!({"schema":WAKE_RECEIPT_V1,"receipt_id":digest('c'),"delivery_id":digest('a'),"payload_digest":digest('b'),"attempt_id":digest('d'),"observed_unix_ms":200,"stage":{"kind":"admission_unknown","intent_id":digest('e')}});
-    let checkpoint = json!({"schema":"af/task-wake-checkpoint@1","configuration_digest":digest('1'),
+    let checkpoint = json!({"schema":"af/task-wake-checkpoint@2","configuration_digest":digest('1'),
         "run_facts_digest":digest('2'),"through":obs["checked_prefix"],"prior_semantic":[1,digest('3'),obs["state"]],
         "lease_boundary":obs["causal"],"observations":1,"observed_unix_ms":200,
         "prefix_digest":digest('4'),"clock_observed":true});
@@ -132,7 +133,12 @@ fn closed_wake_contracts_match_schemas_and_refuse_authority_fields() {
         ("envelope", envelope),
         ("receipt", receipt),
     ] {
-        let schema = format!("task-wake-{name}-v1.json");
+        let version = if ["observation", "checkpoint", "envelope"].contains(&name) {
+            2
+        } else {
+            1
+        };
+        let schema = format!("task-wake-{name}-v{version}.json");
         assert_valid(&schema, &value);
         rust(name, value.clone()).unwrap();
         for field in [
@@ -175,7 +181,7 @@ fn closed_wake_contracts_match_schemas_and_refuse_authority_fields() {
     ] {
         let mut bad = observation();
         *bad.pointer_mut(pointer).unwrap() = value;
-        assert_invalid("task-wake-observation-v1.json", &bad, pointer);
+        assert_invalid("task-wake-observation-v2.json", &bad, pointer);
         assert!(rust("observation", bad).is_err());
     }
 }
@@ -183,13 +189,13 @@ fn closed_wake_contracts_match_schemas_and_refuse_authority_fields() {
 #[test]
 fn wake_states_and_receipt_stages_are_independently_typed() {
     use af_contracts::task::state::*;
-    let wrapper = json!({"$ref":"urn:af:schema:task-wake-observation:1#/$defs/state"});
+    let wrapper = json!({"$ref":"urn:af:schema:task-wake-observation:2#/$defs/state"});
     // The same registry as the public observation validator.
     let mut registry = jsonschema::Registry::new();
-    let schema = super::schema("task-wake-observation-v1.json");
+    let schema = super::schema("task-wake-observation-v2.json");
     registry = registry
         .add(
-            "urn:af:schema:task-wake-observation:1",
+            "urn:af:schema:task-wake-observation:2",
             jsonschema::Resource::from_contents(schema),
         )
         .unwrap();

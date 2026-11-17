@@ -288,22 +288,23 @@ fn task_states_topic_and_the_state_flags_describe_the_commands() {
         "5    gate_failed",
         "6    provider_failed",
         "7    expired",
+        "8    execution_failed",
         "3    changes_requested",
     ] {
         assert!(codes.contains(needle), "{needle}:\n{codes}");
     }
     let json = out(&af(&["help", "json"]));
     for needle in [
-        "af/task-findings@2",
-        "af/task-inspection@20",
-        "af/task-report@3",
+        "af/task-findings@3",
+        "af/task-inspection@21",
+        "af/task-report@4",
         "af/findings-sarif@1",
-        "af/task-inspection@20",
-        "af/task-checks@3",
-        "af/task-list@4",
-        "af/task-list-entry@4",
-        "af/task-attention@1",
-        "af/task-report@3",
+        "af/task-inspection@21",
+        "af/task-checks@4",
+        "af/task-list@5",
+        "af/task-list-entry@5",
+        "af/task-attention@2",
+        "af/task-report@4",
         "af/task-selection@3",
         "af/error@2",
         "recovery_exhausted",
@@ -329,7 +330,7 @@ fn task_states_topic_and_the_state_flags_describe_the_commands() {
             &["task", "show", "--help"][..],
             &[
                 "--checks",
-                "af/task-checks@3",
+                "af/task-checks@4",
                 "next",
                 "stopped at its 90 min wall",
                 "never started",
@@ -340,8 +341,8 @@ fn task_states_topic_and_the_state_flags_describe_the_commands() {
             &["task", "list", "--help"],
             &[
                 "--attention",
-                "af/task-attention@1",
-                "af/task-list@4",
+                "af/task-attention@2",
+                "af/task-list@5",
                 "next command",
             ],
         ),
@@ -377,7 +378,7 @@ fn task_report_help_and_man_page_describe_the_command() {
             "<TASK_ID>...",
             "<!-- af-task-report:v1 -->",
             "<!-- /af-task-report -->",
-            "af/task-report@3",
+            "af/task-report@4",
             "Never:",
             "--repo <DIR>",
             "--state <DIR>",
@@ -1546,7 +1547,7 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
             &[
                 "--round <N>",
                 "--format <FORMAT>",
-                "af/task-findings@2",
+                "af/task-findings@3",
                 "agent_prompt",
                 "not reviewed",
                 "SARIF 2.1.0",
@@ -1585,7 +1586,7 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
                 "only that recorded pid is signalled",
                 "another host is refused with its pid and host",
                 "abandoned/cancelled/host_cancelled",
-                "af/task-cancelled@2",
+                "af/task-cancelled@3",
             ],
         ),
         (
@@ -1595,19 +1596,19 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
                 "--bell",
                 "--notify",
                 "exits 124",
-                "af/task-status@2",
+                "af/task-status@3",
             ],
         ),
         (
             &["task", "status", "--help"],
-            &["af/task-status@2", "without waiting"],
+            &["af/task-status@3", "without waiting"],
         ),
         (
             &["task", "events", "--help"],
             &[
                 "--after <N>",
                 "--timeout <S>",
-                "af/task-event@2",
+                "af/task-event@3",
                 "gap-free from 0",
                 "exactly once, last",
                 "--after N prints only the events after sequence N",
@@ -1620,7 +1621,7 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
             &[
                 "--detach",
                 "--quiet",
-                "af/task-detached@3",
+                "af/task-detached@4",
                 "not admitted within 2 minutes exits 4",
                 "every 5 minutes a heartbeat",
                 "runs/<TASK_ID>-<N>.log",
@@ -1800,12 +1801,12 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
     }
     let json = out(&af(&["help", "json"]));
     for document in [
-        "af/task-findings@2",
+        "af/task-findings@3",
         "af/task-diff@1",
         "af/task-materialized@1",
-        "af/task-status@2",
-        "af/task-detached@3",
-        "af/task-cancelled@2",
+        "af/task-status@3",
+        "af/task-detached@4",
+        "af/task-cancelled@3",
     ] {
         assert!(json.contains(document), "{document}:\n{json}");
         assert!(page.contains(document), "docs/agents.md lacks {document}");
@@ -2633,7 +2634,7 @@ fn schema_show_prints_every_id_af_help_json_lists() {
     assert_eq!(old.status.code(), Some(1));
     assert!(old.stdout.is_empty());
     assert!(
-        err(&old).contains("only af/task-status@2; run af schema show af/task-status@2"),
+        err(&old).contains("only af/task-status@3; run af schema show af/task-status@3"),
         "{}",
         err(&old)
     );

@@ -466,7 +466,7 @@ class Driver:
         cache_bytes = directory_bytes(self.cache)
         self.host["load_1m_end"] = os.getloadavg()[0]
         document = {
-            "schema": "af.perf-dev-flow/1",
+            "schema": "af.perf-dev-flow/2",
             "fixture": "default-light-smoke",
             "cache_treatment": "primed" if self.primed else "cold",
             "host": self.host,

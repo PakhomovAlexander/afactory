@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:task-wake-envelope:1",
+  "$id": "urn:af:schema:task-wake-envelope:2",
   "$comment": "Foundation metadata only; no authority. Rust additionally validates ordered times, source boundaries and content identities.",
   "type": "object",
   "additionalProperties": false,
@@ -14,7 +14,7 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/TaskWakeEnvelope@1"
+      "const": "af/TaskWakeEnvelope@2"
     },
     "subscription_id": {
       "type": "string",
@@ -35,7 +35,7 @@
       "maxLength": 71
     },
     "observation": {
-      "$ref": "urn:af:schema:task-wake-observation:1"
+      "$ref": "urn:af:schema:task-wake-observation:2"
     },
     "expires_unix_ms": {
       "type": "integer",

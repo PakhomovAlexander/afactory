@@ -3,7 +3,7 @@
 //! with no usage report at capacity, ADR-0143), two
 //! Tasks of one Store (one of them later collected, and reported alone), and two Tasks under two
 //! pipelines, one whose review round recorded a major and a minor finding. Every `--json` document validates against
-//! `schemas/task-report-v3.json`, every Markdown block passes `scripts/check-pr-report.py` (beside
+//! `schemas/task-report-v4.json`, every Markdown block passes `scripts/check-pr-report.py` (beside
 //! the lines added block a description also carries, ADR-0195), and
 //! neither carries a Provider label, a path or an account the Store or the machine holds.
 
@@ -54,7 +54,7 @@ fn stdout(output: &Output) -> String {
 /// The `--json` document, validated against the published schema.
 fn document(repo: &Path, state: &Path, ids: &[&str]) -> Value {
     let value: Value = serde_json::from_str(&stdout(&report(repo, state, ids, true))).unwrap();
-    schemas::valid(&schemas::validator("task-report-v3.json"), &value);
+    schemas::valid(&schemas::validator("task-report-v4.json"), &value);
     value
 }
 
@@ -457,7 +457,7 @@ fn fixture_report(f: &Fixture, json: bool) -> String {
     let text = stdout(&command.output().unwrap());
     if json {
         let value: Value = serde_json::from_str(&text).unwrap();
-        schemas::valid(&schemas::validator("task-report-v3.json"), &value);
+        schemas::valid(&schemas::validator("task-report-v4.json"), &value);
     }
     text
 }
@@ -646,7 +646,7 @@ fn a_capacity_failure_without_usage_is_charged_zero_and_reported_as_unknown() {
     // `af task show --json`: the settlement carries the marker and a closed diagnostic.
     let shown = f.cli(&["task", "show", "release-notes"]);
     let shown: Value = serde_json::from_slice(&shown.stdout).unwrap();
-    schemas::valid(&schemas::validator("task-inspection-v20.json"), &shown);
+    schemas::valid(&schemas::validator("task-inspection-v21.json"), &shown);
     assert_eq!(shown["unknown_usage_attempts"], 1, "{shown:#}");
     let settled = shown["execution_records"]
         .as_array()
@@ -679,7 +679,7 @@ fn a_capacity_failure_without_usage_is_charged_zero_and_reported_as_unknown() {
     assert!(listed.contains("5712 (+1 unknown)"), "{listed}");
     let listed: Value = serde_json::from_slice(&f.cli(&["task", "list"]).stdout).unwrap();
     schemas::valid(
-        &schemas::validator("task-list-entry-v4.json"),
+        &schemas::validator("task-list-entry-v5.json"),
         &listed["tasks"][0],
     );
     assert_eq!(
@@ -766,7 +766,7 @@ fn a_collected_task_keeps_its_unknown_usage_count() {
             .stdout,
     )
     .unwrap();
-    schemas::valid(&schemas::validator("task-gc-v1.json"), &preview);
+    schemas::valid(&schemas::validator("task-gc-v2.json"), &preview);
     assert_eq!(
         preview["tasks"][0]["unknown_usage_attempts"], 1,
         "{preview:#}"
@@ -778,7 +778,7 @@ fn a_collected_task_keeps_its_unknown_usage_count() {
         serde_json::json!(["release-notes"]),
         "{collected:#}"
     );
-    schemas::valid(&schemas::validator("task-gc-v1.json"), &collected);
+    schemas::valid(&schemas::validator("task-gc-v2.json"), &collected);
 
     // `af task list`: the tombstone keeps the count, in both forms.
     let listed = fixture_text(&f, &["task", "list"]);
@@ -790,7 +790,7 @@ fn a_collected_task_keeps_its_unknown_usage_count() {
     assert!(row.contains("collected "), "{row}");
     let listed: Value = serde_json::from_slice(&f.cli(&["task", "list"]).stdout).unwrap();
     let entry = &listed["tasks"][0];
-    schemas::valid(&schemas::validator("task-list-entry-v4.json"), entry);
+    schemas::valid(&schemas::validator("task-list-entry-v5.json"), entry);
     assert_eq!(entry["unknown_usage_attempts"], 1, "{entry:#}");
     assert_eq!(entry["collected"]["unknown_usage_attempts"], 1, "{entry:#}");
     schemas::valid(
@@ -2026,7 +2026,11 @@ fn a_report_warns_when_two_candidates_take_the_same_adr_number() {
     assert_eq!(script.matches(marker).count(), 1, "{script}");
     let adr = "import os\nname='second' if 'again' in json.dumps(request) else 'first'\n\
                os.makedirs('docs/adr', exist_ok=True)\n\
-               open('docs/adr/0205-%s.md' % name,'w').write('# 196\\n')\n";
+               open('docs/adr/0205-%s.md' % name,'w').write('# 196\\n')\n\
+               open('docs/adr/2026-11-05-%s.md' % name,'w').write('# distinct')\n\
+               open('docs/adr/2026-11-05-shared.md','w').write('# shared')\n\
+               open('docs/adr/2026-11-05-\\x1b[31mred\\nforged\\tend.md','w').write('# controls')\n\
+               open('docs/adr/2026-11-05-same%s.md' % ('\\x01' if name == 'first' else '\\x02'),'w').write('# distinct controls')\n";
     std::fs::write(
         &worker,
         script.replacen(marker, &format!("{adr}{marker}"), 1),
@@ -2071,6 +2075,25 @@ fn a_report_warns_when_two_candidates_take_the_same_adr_number() {
         "{said}"
     );
     assert!(flat.contains(", gc-newer (docs/adr/0205-"), "{said}");
+    assert!(
+        flat.contains("ADR 2026-11-05-shared is added by 2 Tasks"),
+        "{said}"
+    );
+    assert!(
+        flat.contains("ADR 2026-11-05-?[31mred?forged?end is added by 2 Tasks"),
+        "{said}"
+    );
+    assert!(
+        !said.contains(['\u{1b}', '\t', '\u{1}', '\u{2}']),
+        "{said:?}"
+    );
+    assert!(!flat.contains("ADR 2026-11-05-first is added"), "{said}");
+    assert!(!flat.contains("ADR 2026-11-05-second is added"), "{said}");
+    assert!(!flat.contains("ADR 2026-11-05-same? is added"), "{said}");
+    assert!(
+        !flat.contains("renumber") && !flat.contains("README"),
+        "{said}"
+    );
     for line in said.lines() {
         assert!(line.chars().count() <= 100, "{line}");
     }

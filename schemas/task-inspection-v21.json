@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:task-inspection:20",
-  "title": "Task inspection af/task-inspection@20",
+  "$id": "urn:af:schema:task-inspection:21",
+  "title": "Task inspection af/task-inspection@21",
   "$comment": "The one read-only projection of a common Task. Sections beyond the required core appear only when the Task recorded them: owned children, Review handoffs and Integration phases, measured Attempt walls with their runtime evidence, experiments and adoption observations. History, execution, report and handoff entries keep their exact artifact types and payloads. The Store validates cross-artifact identities, histories, selected results and cumulative accounting; a JSON schema cannot authenticate CAS or recompute a history. These records grant no admission or dispatch authority. Explain adds graph and plan together. Version 12 adds the `state` every rendering prints, the `gate` summary of the last check receipt with its check reports and gate retries, and the `failures` of the last run report (`af help task-states`). Version 13 adds `continues`, the Task and review round a continued Task was planned from (ADR-0212).",
   "type": "object",
   "additionalProperties": false,
@@ -21,7 +21,7 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/task-inspection@20"
+      "const": "af/task-inspection@21"
     },
     "task_id": {
       "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
@@ -34,7 +34,7 @@
     },
     "state": {
       "description": "The state `af task list`, `show`, `report` and `run` print for this Task.",
-      "$ref": "urn:af:schema:task-state:2#/$defs/state"
+      "$ref": "urn:af:schema:task-state:3#/$defs/state"
     },
     "clock": {
       "description": "The Task's wall clock, which starts at its first plan admission (`af task run`), not at planning: the wall it has from then, when it started, and the deadline it has since; both null before the first run. The plan's own `limits.deadline_unix_ms` is the deadline recorded at planning.",
@@ -1160,7 +1160,7 @@
       "type": "array",
       "minItems": 1,
       "items": {
-        "$ref": "urn:af:schema:task-state:2#/$defs/failure"
+        "$ref": "urn:af:schema:task-state:3#/$defs/failure"
       }
     }
   },
@@ -1175,13 +1175,13 @@
       ],
       "properties": {
         "status": {
-          "$ref": "urn:af:schema:task-state:2#/$defs/gate/properties/status"
+          "$ref": "urn:af:schema:task-state:3#/$defs/gate/properties/status"
         },
         "failed_tests": {
-          "$ref": "urn:af:schema:task-state:2#/$defs/gate/properties/failed_tests"
+          "$ref": "urn:af:schema:task-state:3#/$defs/gate/properties/failed_tests"
         },
         "flaky": {
-          "$ref": "urn:af:schema:task-state:2#/$defs/gate/properties/flaky"
+          "$ref": "urn:af:schema:task-state:3#/$defs/gate/properties/flaky"
         },
         "check_reports": {
           "description": "Each check node's latest `af/TaskCheckReport@1`, the report of its latest settled Attempt, by node ID: the host's load and CPUs, the steps by stage with the one that stopped the check and its fix, and the flaky tests and those that failed twice. Absent when no check recorded one.",

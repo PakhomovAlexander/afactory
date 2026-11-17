@@ -1,13 +1,13 @@
 # Review accounting inspection
 
-`af review report TASK_ID --json` reads the same `af/task-report@3` document as
+`af review report TASK_ID --json` reads the same `af/task-report@4` document as
 `af task report TASK_ID --json`. `af review inspect TASK_ID --json` reads
-`af/task-inspection@20`: current and recorded plans, exact Attempt accounting, checked Task
+`af/task-inspection@21`: current and recorded plans, exact Attempt accounting, checked Task
 history, selected Review Rounds, execution outputs and recovery evidence. There is one Task
 Store and one cumulative allowance. A missing accounting observation remains absent or unknown;
 report snapshots are never added together as independent spend.
 
-`af review ledger TASK_ID --json` prints `af/review-ledger@2`: the complete selected canonical
+`af review ledger TASK_ID --json` prints `af/review-ledger@3`: the complete selected canonical
 Finding Set envelope, original Report envelopes keyed by exact ID, and an `inspection` view
 with current Finding statuses, severity counts and reviewer coverage. Reports retain their
 original producer and Snapshot; the inspection's reviewer result IDs describe current Round

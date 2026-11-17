@@ -1,4 +1,4 @@
-//! `af task events ID` (ADR-0250): a Task's log as JSON lines, one `af/task-event@2` document per
+//! `af task events ID` (ADR-0250): a Task's log as JSON lines, one `af/task-event@3` document per
 //! event the Store recorded, followed until the Task settles and ended by one terminal record.
 //! Every line is read from the Task's own log and projection, never from a second record: an
 //! event's `sequence` is the Store's, so the stream is gap-free and `--after N` resumes it.
@@ -81,7 +81,7 @@ pub(crate) fn events(
             let state = view.state;
             let exit_code = TaskEventTerminalV1::exit_code_of(&state);
             write_line(&TaskEventV1::Terminal(TaskEventTerminalV1 {
-                schema: TASK_EVENT_V2.into(),
+                schema: TASK_EVENT_V3.into(),
                 task_id: id.into(),
                 last_sequence: through.saturating_sub(1),
                 state,
@@ -156,7 +156,7 @@ fn entry(
             .map_err(|e| format!("event {} of the Task's log: {e}", event.sequence))
     }
     let mut line = TaskEventEntryV1 {
-        schema: TASK_EVENT_V2.into(),
+        schema: TASK_EVENT_V3.into(),
         task_id: task_id.into(),
         sequence: event.sequence,
         event_id: event.event_id.clone(),

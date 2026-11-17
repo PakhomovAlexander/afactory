@@ -30,7 +30,7 @@ use af_store::store::task::execution::TaskAttemptAccounting;
 use af_store::store::task::gate_retry::GateRetry;
 
 /// The schema of `af task show ID --checks --json`.
-pub(crate) const TASK_CHECKS_V3: &str = "af/task-checks@3";
+pub(crate) const TASK_CHECKS_V4: &str = "af/task-checks@4";
 
 /// How many lines of a check's stderr `af task show --checks` prints.
 const STDERR_TAIL_LINES: usize = 40;
@@ -292,7 +292,8 @@ fn next_action(cas: &Cas, state: &TaskProjection, cause: TaskCauseV1) -> Result<
         TaskCauseV1::Deadline | TaskCauseV1::Budget => {
             format!("af task plan --file {TASK_FILE} --fit")
         }
-        TaskCauseV1::EvaluatorRejected
+        TaskCauseV1::KernelExecution
+        | TaskCauseV1::EvaluatorRejected
         | TaskCauseV1::MalformedReply
         | TaskCauseV1::ModelRefused
         | TaskCauseV1::Collected => format!("af task show {id}"),
@@ -1037,10 +1038,10 @@ pub(crate) fn tests_list(names: &[String], max: usize) -> String {
     }
 }
 
-/// The `af/task-checks@3` document of `af task show ID --checks --json`.
+/// The `af/task-checks@4` document of `af task show ID --checks --json`.
 pub(crate) fn checks_document(task_id: &str, view: &TaskView) -> serde_json::Value {
     json!({
-        "schema": TASK_CHECKS_V3,
+        "schema": TASK_CHECKS_V4,
         "task_id": task_id,
         "state": view.state,
         "gate": view.gate,
@@ -1358,7 +1359,7 @@ mod tests {
             "  phases: no build step reported, 9000 ms in one (build 2400000 ms + tests 3600000 ms)"
         );
         let document = checks_document("t", &task);
-        assert_eq!(document["schema"], "af/task-checks@3");
+        assert_eq!(document["schema"], "af/task-checks@4");
         assert_eq!(document["receipt"]["checks"][0]["layer"]["lock"], "waited");
         assert_eq!(
             document["receipt"]["checks"][0]["layer"]["phases"]["deadline"],
@@ -1544,7 +1545,7 @@ mod tests {
         assert_eq!(
             shown["stopped_step"],
             json!({"step": "kernel", "exit_code": 2}),
-            "no key beyond af/task-checks@3"
+            "no key beyond af/task-checks@4"
         );
     }
 
@@ -1636,6 +1637,16 @@ mod tests {
             ),
             TaskCauseV1::ProviderTimeout
         );
+        for message in [
+            "Cannot review an empty Diff Subject",
+            "budget exhausted",
+            "Provider timeout",
+        ] {
+            assert_eq!(
+                cause(TaskFailureClassV1::Execution, NodeKind::Kernel, message),
+                TaskCauseV1::KernelExecution
+            );
+        }
         assert_eq!(
             TaskCauseV1::Deadline.outcome(),
             Some(TaskOutcomeV1::Expired),

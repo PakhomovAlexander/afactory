@@ -570,7 +570,7 @@ af/provider-setup@2, af/pi-provider-setup@4 and af/provider-models@4; none carri
 a credential or the Provider CLI's own words.
 
 One command prints JSON lines instead and takes no --json: `af task events ID` writes one
-af/task-event@2 document per line while it follows a Task, and its refusal or usage error is one
+af/task-event@3 document per line while it follows a Task, and its refusal or usage error is one
 af/error@2 line with the same exit code.
 
 Documents carry `kind@version` identifiers where they describe persisted records; a payload shape
@@ -580,13 +580,13 @@ never under --json.
 
 Native Review commands use current Task and Ledger documents:
 
-  af review inspect TASK_ID --json    af/task-inspection@20
-  af review show TASK_ID --json       af/task-inspection@20
-  af review ledger TASK_ID --json     af/review-ledger@2
+  af review inspect TASK_ID --json    af/task-inspection@21
+  af review show TASK_ID --json       af/task-inspection@21
+  af review ledger TASK_ID --json     af/review-ledger@3
   af review ledger TASK_ID --format sarif   SARIF 2.1.0, af/findings-sarif@1
-  af review report TASK_ID --json     af/task-report@3
+  af review report TASK_ID --json     af/task-report@4
   af review decision-context ID --json    af/review-decision-context@1
-  af review decide NEW --from ID --file BATCH --json   af/task-inspection@20 or af/task-selection@3
+  af review decide NEW --from ID --file BATCH --json   af/task-inspection@21 or af/task-selection@3
   af review export TASK_ID PROPOSAL_ID      exact patch bytes, no JSON envelope
 
 The Ledger carries the complete selected canonical Finding Set and original Report envelopes,
@@ -624,33 +624,33 @@ Scenario and Ant documents (ADR-0274; `af help scenarios`):
 
 The Task documents, each named by its `schema`:
 
-  af task show --json                  af/task-inspection@20; a collected Task:
-                                       af/task-collected-inspection@3
-  af task show --checks --json         af/task-checks@3
-  af task list --json                  af/task-list@4, one af/task-list-entry@4 per Task
-  af task list --attention --json      af/task-attention@1: seven groups by what each Task
-                                       waits for, each Task its af/task-list-entry@4
-  af task report --json                af/task-report@3
-  af task findings --json              af/task-findings@2, each finding with its agent_prompt,
+  af task show --json                  af/task-inspection@21; a collected Task:
+                                       af/task-collected-inspection@4
+  af task show --checks --json         af/task-checks@4
+  af task list --json                  af/task-list@5, one af/task-list-entry@5 per Task
+  af task list --attention --json      af/task-attention@2: seven groups by what each Task
+                                       waits for, each Task its af/task-list-entry@5
+  af task report --json                af/task-report@4
+  af task findings --json              af/task-findings@3, each finding with its agent_prompt,
                                        the round with its coverage and verified_fixed
   af task findings --format sarif      SARIF 2.1.0, profile af/findings-sarif@1
   af task diff --json                  af/task-diff@1
   af task materialize --json           af/task-materialized@1
-  af task status --json, wait --json   af/task-status@2
-  af task events                       JSON lines, no --json: one af/task-event@2 per event
+  af task status --json, wait --json   af/task-status@3
+  af task events                       JSON lines, no --json: one af/task-event@3 per event
                                        of the Task's log, with the Store's gap-free
                                        `sequence` (--after N resumes), then one terminal
                                        record with the Task's state and exit_code
-  af task run --detach --json          af/task-detached@3
-  af task cancel --json                af/task-cancelled@2
+  af task run --detach --json          af/task-detached@4
+  af task cancel --json                af/task-cancelled@3
   af task plan --json, refused         af/task-selection@3, exit 1, with `error`, `exit_code`
                                        and `next_action`; an infeasible plan carries
                                        planning_diagnostic.required_limits and .reserves
 
-af/task-inspection@20, af/task-collected-inspection@3, af/task-checks@3, each
-af/task-list-entry@4, the groups of af/task-attention@1, af/task-report@3, af/task-findings@2,
-af/task-status@2, af/task-detached@3, af/task-cancelled@2 and the terminal record of
-af/task-event@2 carry the Task's `state` (`af help task-states`), its `next_action` carrying the
+af/task-inspection@21, af/task-collected-inspection@4, af/task-checks@4, each
+af/task-list-entry@5, the groups of af/task-attention@2, af/task-report@4, af/task-findings@3,
+af/task-status@3, af/task-detached@4, af/task-cancelled@3 and the terminal record of
+af/task-event@3 carry the Task's `state` (`af help task-states`), its `next_action` carrying the
 selectors the command was given (a report, pasted into a pull request, names no Store path); the
 diff, the materialized candidate and the refused selection describe no Task state. A previous
 version is refused, never read.
@@ -702,7 +702,7 @@ Examples:
   af task list --json
   af task show nope --json   # exit 1
   af help task run --json
-  af schema show af/task-status@2";
+  af schema show af/task-status@3";
 
 const TASK_STATES: &str = "\
 Every af task command that shows a Task prints one state for it, in text and under --json alike:
@@ -748,7 +748,7 @@ names who cancelled it. `af help agents` walks the whole loop.
 `af task list --attention` groups the Tasks by what they wait for, read from each state alone and
 never recorded; the browser's Tasks folder opens on the same groups. The first five need a person
 and print each Task with its next command; running Tasks are named on one line and the Tasks that
-need nothing are counted. Under --json, `af/task-attention@1` holds all seven groups.";
+need nothing are counted. Under --json, `af/task-attention@2` holds all seven groups.";
 
 const TASK_FILE: &str = "\
 A Task file (JSON, or TOML for any other extension) is what `af task plan --file` and `af task

@@ -93,7 +93,7 @@ Review exit codes on replay, and inspection includes the typed Round receipts.
 
 ## Ledger inspection and contained checks
 
-`af review ledger ID --json` prints `af/review-ledger@2`: the complete selected canonical Finding
+`af review ledger ID --json` prints `af/review-ledger@3`: the complete selected canonical Finding
 Set and original Report envelopes, plus current statuses, severity counts and reviewer coverage.
 A later Round containing only `not_reproduced` or `dispute` dispositions retains the unresolved
 original Finding. A dispute changes its current status to contested; not-reproduced does not

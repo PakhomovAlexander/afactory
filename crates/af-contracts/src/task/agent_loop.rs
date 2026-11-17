@@ -14,15 +14,15 @@ use super::usage::DecimalU128;
 use super::{is_name, require};
 use crate::is_digest;
 
-pub const TASK_FINDINGS_V2: &str = "af/task-findings@2";
+pub const TASK_FINDINGS_V3: &str = "af/task-findings@3";
 pub const TASK_MATERIALIZED_V1: &str = "af/task-materialized@1";
 pub const TASK_DIFF_V1: &str = "af/task-diff@1";
-pub const TASK_STATUS_V2: &str = "af/task-status@2";
-pub const TASK_DETACHED_V3: &str = "af/task-detached@3";
-pub const TASK_CANCELLED_V2: &str = "af/task-cancelled@2";
+pub const TASK_STATUS_V3: &str = "af/task-status@3";
+pub const TASK_DETACHED_V4: &str = "af/task-detached@4";
+pub const TASK_CANCELLED_V3: &str = "af/task-cancelled@3";
 pub const TASK_RUN_PROCESS_V1: &str = "af/task-run-process@1";
 pub const TASK_CANCEL_REQUEST_V1: &str = "af/task-cancel-request@1";
-pub const TASK_EVENT_V2: &str = "af/task-event@2";
+pub const TASK_EVENT_V3: &str = "af/task-event@3";
 
 /// The longest text a document carries in one field: a reviewer's evidence, an evaluator's
 /// reason or a host name. Longer text is cut by its writer, never refused by its reader.
@@ -136,7 +136,7 @@ pub struct TaskFindingsEvaluationV1 {
 
 impl TaskFindingsV2 {
     pub fn validate(&self) -> Result<(), String> {
-        schema_is(&self.schema, TASK_FINDINGS_V2)?;
+        schema_is(&self.schema, TASK_FINDINGS_V3)?;
         require(is_name(&self.task_id), "Findings name an exact Task")?;
         self.state.validate()?;
         if let Some(round) = &self.round {
@@ -457,7 +457,7 @@ pub struct TaskStatusV2 {
 
 impl TaskStatusV2 {
     pub fn validate(&self) -> Result<(), String> {
-        schema_is(&self.schema, TASK_STATUS_V2)?;
+        schema_is(&self.schema, TASK_STATUS_V3)?;
         require(is_name(&self.task_id), "A status names an exact Task")?;
         self.state.validate()?;
         require(
@@ -498,7 +498,7 @@ pub struct TaskDetachedV3 {
 
 impl TaskDetachedV3 {
     pub fn validate(&self) -> Result<(), String> {
-        schema_is(&self.schema, TASK_DETACHED_V3)?;
+        schema_is(&self.schema, TASK_DETACHED_V4)?;
         require(
             is_name(&self.task_id)
                 && self.run >= 1
@@ -529,7 +529,7 @@ pub struct TaskCancelledV2 {
 
 impl TaskCancelledV2 {
     pub fn validate(&self) -> Result<(), String> {
-        schema_is(&self.schema, TASK_CANCELLED_V2)?;
+        schema_is(&self.schema, TASK_CANCELLED_V3)?;
         require(
             is_name(&self.task_id) && self.request.task_id == self.task_id,
             "A cancellation names its Task and that Task's request",
@@ -680,7 +680,7 @@ pub struct TaskEventEntryV1 {
 
 impl TaskEventEntryV1 {
     pub fn validate(&self) -> Result<(), String> {
-        schema_is(&self.schema, TASK_EVENT_V2)?;
+        schema_is(&self.schema, TASK_EVENT_V3)?;
         require(
             is_name(&self.task_id)
                 && self.sequence <= crate::json::SAFE_INTEGER_MAX as u64
@@ -756,7 +756,7 @@ impl TaskEventTerminalV1 {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        schema_is(&self.schema, TASK_EVENT_V2)?;
+        schema_is(&self.schema, TASK_EVENT_V3)?;
         require(
             is_name(&self.task_id) && self.last_sequence <= crate::json::SAFE_INTEGER_MAX as u64,
             "A terminal record names its Task and the last sequence it covers",
@@ -812,7 +812,7 @@ mod tests {
     #[test]
     fn a_round_counts_its_reviewers_findings_by_severity() {
         let mut document = TaskFindingsV2 {
-            schema: TASK_FINDINGS_V2.into(),
+            schema: TASK_FINDINGS_V3.into(),
             task_id: "t".into(),
             state: TaskStateV1::ended(TaskStatePhaseV1::Finished, TaskOutcomeV1::Verified, None),
             rounds: 1,

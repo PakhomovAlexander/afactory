@@ -10,7 +10,7 @@
                                      [--evidence-platform macos|linux] [--inventory FILE]
                                      [--today YYYY-MM-DD]
 
-`scan` reads `af task list --json` documents (`af/task-list@3` or `@4`), resolves each row's
+`scan` reads `af task list --json` documents (`af/task-list@3` or `@5`), resolves each row's
 `gate.flaky` names against the default-feature nextest inventory and proposes, as `quarantined`,
 every identity flaky in at least 2 distinct Tasks updated within the 7 days ending at the end of
 today (UTC). Without --write it changes nothing; --write adds the proposals to
@@ -53,7 +53,7 @@ GATE_SPEC = importlib.util.spec_from_file_location('nextest_gate', ROOT / 'scrip
 ng = importlib.util.module_from_spec(GATE_SPEC)
 GATE_SPEC.loader.exec_module(ng)
 
-LISTS = ('af/task-list@3', 'af/task-list@4')
+LISTS = ('af/task-list@3', 'af/task-list@5')
 SCAN = 'af.test-quarantine-scan/1'
 MIN_TASKS = 2
 WINDOW_DAYS = 7

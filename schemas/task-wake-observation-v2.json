@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:task-wake-observation:1",
+  "$id": "urn:af:schema:task-wake-observation:2",
   "$comment": "Foundation metadata only; no authority. Rust additionally validates ordered times, source boundaries and content identities.",
   "type": "object",
   "additionalProperties": false,
@@ -20,10 +20,10 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/TaskWakeObservation@1"
+      "const": "af/TaskWakeObservation@2"
     },
     "task": {
-      "$ref": "urn:af:schema:task-wake-observation:1#/$defs/task"
+      "$ref": "urn:af:schema:task-wake-observation:2#/$defs/task"
     },
     "observation_id": {
       "type": "string",
@@ -32,10 +32,10 @@
       "maxLength": 71
     },
     "causal": {
-      "$ref": "urn:af:schema:task-wake-observation:1#/$defs/boundary"
+      "$ref": "urn:af:schema:task-wake-observation:2#/$defs/boundary"
     },
     "checked_prefix": {
-      "$ref": "urn:af:schema:task-wake-observation:1#/$defs/boundary"
+      "$ref": "urn:af:schema:task-wake-observation:2#/$defs/boundary"
     },
     "revision_id": {
       "type": "string",
@@ -56,10 +56,10 @@
       ]
     },
     "state": {
-      "$ref": "urn:af:schema:task-wake-observation:1#/$defs/state"
+      "$ref": "urn:af:schema:task-wake-observation:2#/$defs/state"
     },
     "evidence": {
-      "$ref": "urn:af:schema:task-wake-observation:1#/$defs/evidence"
+      "$ref": "urn:af:schema:task-wake-observation:2#/$defs/evidence"
     },
     "observed_unix_ms": {
       "type": "integer",
@@ -186,7 +186,8 @@
         "provider_failed",
         "cancelled",
         "exhausted",
-        "expired"
+        "expired",
+        "execution_failed"
       ]
     },
     "cause": {
@@ -209,7 +210,8 @@
         "budget",
         "attempt_wall",
         "collected",
-        "host_cancelled"
+        "host_cancelled",
+        "kernel_execution"
       ]
     },
     "waiting_reason": {
@@ -302,7 +304,7 @@
         "outcome": {
           "anyOf": [
             {
-              "$ref": "urn:af:schema:task-wake-observation:1#/$defs/outcome"
+              "$ref": "urn:af:schema:task-wake-observation:2#/$defs/outcome"
             },
             {
               "type": "null"
@@ -312,7 +314,7 @@
         "cause": {
           "anyOf": [
             {
-              "$ref": "urn:af:schema:task-wake-observation:1#/$defs/cause"
+              "$ref": "urn:af:schema:task-wake-observation:2#/$defs/cause"
             },
             {
               "type": "null"
@@ -322,7 +324,7 @@
         "waiting_reason": {
           "anyOf": [
             {
-              "$ref": "urn:af:schema:task-wake-observation:1#/$defs/waiting_reason"
+              "$ref": "urn:af:schema:task-wake-observation:2#/$defs/waiting_reason"
             },
             {
               "type": "null"
@@ -345,7 +347,7 @@
           "then": {
             "properties": {
               "outcome": {
-                "$ref": "urn:af:schema:task-wake-observation:1#/$defs/outcome"
+                "$ref": "urn:af:schema:task-wake-observation:2#/$defs/outcome"
               }
             }
           },
@@ -550,6 +552,22 @@
             "properties": {
               "waiting_reason": {
                 "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "execution_failed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "cause": {
+                "const": "kernel_execution"
               }
             }
           }

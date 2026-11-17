@@ -207,7 +207,7 @@ fn implementation_seals_s1_and_negative_or_unavailable_checks_skip_the_evaluator
         let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
         let command: af_contracts::Command = match case {
             "passed" | "named_failure" | "independent_failed" => serde_json::from_value(json!({"program":"/usr/bin/python3","args":[{"value":"-B","provenance":"literal"},{"value":"-c","provenance":"literal"},{"value":"import pagination; assert pagination.paginate(list(range(7)),2,3) == [2,3,4]","provenance":"literal"}]})).unwrap(),
-            "failed" | "failed_with_independent" => af_contracts::Command::new("/usr/bin/false",vec![]),
+            "failed" | "failed_with_independent" => af_contracts::Command::new("/usr/bin/python3",vec![af_contracts::Arg::literal("-c"), af_contracts::Arg::literal("raise SystemExit(1)")]),
             "process_timeout" => af_contracts::Command::new("/bin/sh",vec![af_contracts::Arg::literal("-c"),af_contracts::Arg::literal("sleep 1; exit 0")]),
             _ => af_contracts::Command::new("/no-such-af-check",vec![]),
         };

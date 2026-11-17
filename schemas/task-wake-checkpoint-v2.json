@@ -2,10 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "$id": "urn:af:schema:task-wake-checkpoint:1",
+  "$id": "urn:af:schema:task-wake-checkpoint:2",
   "properties": {
     "schema": {
-      "const": "af/task-wake-checkpoint@1"
+      "const": "af/task-wake-checkpoint@2"
     },
     "configuration_digest": {
       "type": "string",
@@ -14,7 +14,7 @@
       "maxLength": 71
     },
     "through": {
-      "$ref": "urn:af:schema:task-wake-observation:1#/$defs/boundary"
+      "$ref": "urn:af:schema:task-wake-observation:2#/$defs/boundary"
     },
     "prior_semantic": {
       "anyOf": [
@@ -38,7 +38,7 @@
               "maxLength": 71
             },
             {
-              "$ref": "urn:af:schema:task-wake-observation:1#/$defs/state"
+              "$ref": "urn:af:schema:task-wake-observation:2#/$defs/state"
             }
           ],
           "items": false
@@ -46,7 +46,7 @@
       ]
     },
     "lease_boundary": {
-      "$ref": "urn:af:schema:task-wake-observation:1#/$defs/boundary"
+      "$ref": "urn:af:schema:task-wake-observation:2#/$defs/boundary"
     },
     "observations": {
       "type": "integer",

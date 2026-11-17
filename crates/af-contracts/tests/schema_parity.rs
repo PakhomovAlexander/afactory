@@ -28,16 +28,16 @@ const SCHEMAS: [&str; 251] = [
     "task-wake-pi-config-v1.json",
     "task-wake-pi-next-v1.json",
     "task-wake-capabilities-v1.json",
-    "task-wake-status-v1.json",
+    "task-wake-status-v2.json",
     "task-wake-route-v1.json",
     "task-wake-grant-v1.json",
-    "task-wake-delivery-v1.json",
+    "task-wake-delivery-v2.json",
     "task-wake-subscription-v1.json",
     "task-wake-registration-v1.json",
-    "task-wake-checkpoint-v1.json",
+    "task-wake-checkpoint-v2.json",
     "task-wake-checkpoint-seal-v1.json",
-    "task-wake-observation-v1.json",
-    "task-wake-envelope-v1.json",
+    "task-wake-observation-v2.json",
+    "task-wake-envelope-v2.json",
     "task-wake-receipt-v1.json",
     "implementation-test-evidence-v1.json",
     "implementation-evaluation-input-v1.json",
@@ -70,13 +70,13 @@ const SCHEMAS: [&str; 251] = [
     "findings-sarif-v1.json",
     "task-attempt-wall-end-v1.json",
     "task-partial-candidate-v1.json",
-    "task-findings-v2.json",
+    "task-findings-v3.json",
     "task-materialized-v1.json",
     "task-diff-v1.json",
-    "task-status-v2.json",
-    "task-detached-v3.json",
-    "task-cancelled-v2.json",
-    "task-event-v2.json",
+    "task-status-v3.json",
+    "task-detached-v4.json",
+    "task-cancelled-v3.json",
+    "task-event-v3.json",
     "task-run-process-v1.json",
     "task-cancel-request-v1.json",
     "task-delivery-proof-v1.json",
@@ -88,18 +88,18 @@ const SCHEMAS: [&str; 251] = [
     "seal-ignored-v1.json",
     "task-check-layer-v1.json",
     "task-check-containment-v1.json",
-    "review-ledger-v2.json",
+    "review-ledger-v3.json",
     "warm-sources-v1.json",
     "warm-holder-v1.json",
     "warm-eviction-v1.json",
     "task-gate-retried-v1.json",
-    "task-state-v2.json",
+    "task-state-v3.json",
     "task-selection-v3.json",
     "pipeline-selection-v1.json",
-    "task-collected-inspection-v3.json",
-    "task-list-v4.json",
-    "task-attention-v1.json",
-    "task-checks-v3.json",
+    "task-collected-inspection-v4.json",
+    "task-list-v5.json",
+    "task-attention-v2.json",
+    "task-checks-v4.json",
     "provider-detect-v4.json",
     "store-writer-v1.json",
     "doctor-v3.json",
@@ -120,7 +120,7 @@ const SCHEMAS: [&str; 251] = [
     "project-v1.json",
     "project-policy-v2.json",
     "project-workspaces-v1.json",
-    "task-report-v3.json",
+    "task-report-v4.json",
     "provider-models-v4.json",
     "code-task-policy-v1.json",
     "remote-check-evidence-v1.json",
@@ -147,7 +147,7 @@ const SCHEMAS: [&str; 251] = [
     "optimization-adoption-task-evidence-v1.json",
     "optimization-evaluation-v1.json",
     "experimental-slot-v2.json",
-    "task-inspection-v20.json",
+    "task-inspection-v21.json",
     "experiment-execution-plan-v3.json",
     "task-runtime-evidence-v1.json",
     "optimization-sources-v1.json",
@@ -167,10 +167,10 @@ const SCHEMAS: [&str; 251] = [
     "task-builtin-context-v1.json",
     "task-provider-context-v3.json",
     "document-context-v1.json",
-    "task-plan-inspection-v6.json",
+    "task-plan-inspection-v7.json",
     "task-file-v1.json",
     "task-catalog-v2.json",
-    "task-list-entry-v4.json",
+    "task-list-entry-v5.json",
     "task-owned-child-set-v1.json",
     "task-token-usage-v3.json",
     "task-usage-observation-v1.json",
@@ -2202,16 +2202,26 @@ fn finding_set_roundtrips_as_an_exact_reducer_projection() {
 
 #[path = "schema_parity/attempt_wall.rs"]
 mod attempt_wall;
+#[path = "schema_parity/remote_check.rs"]
+mod remote_check;
 #[path = "schema_parity/task_agent_loop.rs"]
 mod task_agent_loop;
 #[path = "schema_parity/task_check_receipt.rs"]
 mod task_check_receipt;
 #[path = "schema_parity/task_contracts.rs"]
 mod task_contracts;
+#[path = "schema_parity/task_owned.rs"]
+mod task_owned;
+#[path = "schema_parity/task_recording.rs"]
+mod task_recording;
+#[path = "schema_parity/task_report.rs"]
+mod task_report;
 #[path = "schema_parity/task_reports.rs"]
 mod task_reports;
 #[path = "schema_parity/task_review_findings.rs"]
 mod task_review_findings;
+#[path = "schema_parity/task_state.rs"]
+mod task_state;
 
 #[test]
 fn task_lifecycle_events_have_closed_versioned_payloads() {

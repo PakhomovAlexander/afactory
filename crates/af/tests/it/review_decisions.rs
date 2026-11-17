@@ -1111,7 +1111,7 @@ fn native_ledger_keeps_original_unresolved_findings_after_not_reproduced_and_dis
         assert_eq!(context["review"]["round"], 2);
         let (code, value) = f.invoke(&["review", "ledger", "ledger-later"]);
         assert_eq!(code, 0, "{value:#}");
-        crate::schemas::valid(&crate::schemas::validator("review-ledger-v2.json"), &value);
+        crate::schemas::valid(&crate::schemas::validator("review-ledger-v3.json"), &value);
         let typed: af_contracts::task::review_ledger::ReviewLedgerV2 =
             serde_json::from_value(value.clone()).unwrap();
         typed.validate().unwrap();
@@ -1152,7 +1152,7 @@ fn native_ledger_keeps_original_unresolved_findings_after_not_reproduced_and_dis
             wrong_severity.validate().is_err(),
             "Ledger counts must retain canonical severity"
         );
-        assert_eq!(value["schema"], "af/review-ledger@2");
+        assert_eq!(value["schema"], "af/review-ledger@3");
         assert_eq!(
             value["inspection"]["round"]["counts"],
             json!({"blocker":0,"major":2,"minor":0})
