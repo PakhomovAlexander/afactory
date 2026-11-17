@@ -29,7 +29,7 @@ pub trait Host: Send + Sync {
         &self,
         _: &crate::contract::Adapter,
         _: &crate::implementation::Scope,
-    ) -> Result<()> {
+    ) -> crate::implementation::PreflightResult {
         Err("Host does not support implementation adapter preflight".into())
     }
 

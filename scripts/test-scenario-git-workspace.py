@@ -167,6 +167,59 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(self.service.pushes, 0)
         self.assertEqual(adapter.journal.state["records"], {})
 
+    def test_startup_classifies_only_positive_transport_and_credential_failures(self):
+        adapter = LocalAdapter(self.config, self.config_digest, self.service)
+        scope = dict(schema="af/implementation-startup-scope@2", task_state=self.config["task_store"],
+            **{k: self.config[k] for k in ("repo", "repository", "source_commit", "source_content_digest", "base")},
+            branch_prefix=self.config["branch_prefix"] + "/", destination_repository_id=17,
+            actor_id=7, actor_login="owner", grants=[dict(operation=op) for op in self.config["operations"]])
+        request = dict(schema="af/implementation-startup-preflight@2", scope_id=A.digest(A.canonical(scope)), scope=scope)
+        for error, kind in ((A.TransportUnavailable("outage"), "transport"),
+                            (A.CredentialsRefused("rejected"), "credentials")):
+            for location in ("actor", "remote-base"):
+                with self.subTest(kind=kind, location=location):
+                    effects = [self.config["source_commit"].encode(), error] if location == "remote-base" else [self.config["source_commit"].encode()]
+                    with patch.object(adapter, "git", side_effect=effects), \
+                            patch.object(A.Adapter, "actor", side_effect=error if location == "actor" else None):
+                        result = adapter.startup_preflight(request)
+                    self.assertEqual(result, dict(schema="af/implementation-startup-failure@1", scope_id=request["scope_id"], kind=kind))
+        for error in (A.Refused("unknown or corrupt"), ValueError("malformed evidence")):
+            with patch.object(adapter, "git", side_effect=error), self.assertRaises(type(error)):
+                adapter.startup_preflight(request)
+        self.assertEqual(self.service.posts, 0)
+        self.assertEqual(self.service.pushes, 0)
+
+    def test_remote_base_command_classifies_closed_transport_allowlist(self):
+        for diagnostic, error in ((b"ssh: Could not resolve hostname github.com", A.TransportUnavailable),
+                (b"ssh: Connection timed out", A.TransportUnavailable),
+                (b"Permission denied (publickey).", A.CredentialsRefused),
+                (b"Host key verification failed.", A.Refused),
+                (b"Connection timed out; Host key verification failed.", A.Refused),
+                (b"Connection timed out; Permission denied (publickey).", A.CredentialsRefused),
+                (b"unknown failure", A.Refused)):
+            def fail(argv, **kwargs):
+                kwargs["stderr"].write(diagnostic)
+                return subprocess.CompletedProcess(argv, 128)
+            with patch.object(A.subprocess, "run", side_effect=fail), self.assertRaises(error) as raised:
+                A.bounded_command(["git", "ls-remote", "ssh://git@github.com/octo/project.git"],
+                    self.repo, self.env, None, 5, self.root)
+            self.assertIs(type(raised.exception), error)
+        def oversized(argv, **kwargs):
+            kwargs["stdout"].write(b"x" * 9)
+            kwargs["stderr"].write(b"Connection timed out")
+            return subprocess.CompletedProcess(argv, 128)
+        with patch.object(A.subprocess, "run", side_effect=oversized), self.assertRaises(A.Refused) as raised:
+            A.bounded_command(["git", "ls-remote"], self.repo, self.env, None, 5, self.root, maximum=8)
+        self.assertIs(type(raised.exception), A.Refused)
+        def oversized_timeout(argv, **kwargs):
+            kwargs["stdout"].write(b"x" * 9)
+            raise subprocess.TimeoutExpired("git", 5)
+        with patch.object(A.subprocess, "run", side_effect=oversized_timeout), self.assertRaises(subprocess.TimeoutExpired):
+            A.bounded_command(["git", "ls-remote"], self.repo, self.env, None, 5, self.root, maximum=8)
+        for command, error in (("ls-remote", A.TransportUnavailable), ("rev-parse", subprocess.TimeoutExpired)):
+            with patch.object(A.subprocess, "run", side_effect=subprocess.TimeoutExpired("git", 5)), self.assertRaises(error):
+                A.bounded_command(["git", command], self.repo, self.env, None, 5, self.root)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)

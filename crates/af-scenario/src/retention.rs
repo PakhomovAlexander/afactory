@@ -648,7 +648,7 @@ mod tests {
                 let world = store.read().unwrap();
                 assert_eq!(world, Store::isolated(root.path()).unwrap().read().unwrap());
                 assert!(serde_json::to_vec(&world).unwrap().len() as u64 <= MAX_BYTES);
-                valid("scenario-store-v15.json", &world);
+                valid("scenario-store-v16.json", &world);
             }
         }
         eprintln!(
@@ -1477,7 +1477,7 @@ mod tests {
         );
         assert_eq!(run.dispatches, 1);
         assert!(occupied(&world).unwrap() <= MAX_BYTES);
-        valid("scenario-store-v15.json", &world);
+        valid("scenario-store-v16.json", &world);
     }
 
     #[test]

@@ -165,7 +165,7 @@ pub fn schema(name: &str) -> jsonschema::Validator {
     let mut registry = jsonschema::Registry::new();
     for file in [
         "scenario-v9.json",
-        "scenario-driver-v1.json",
+        "scenario-driver-v2.json",
         "implementation-startup-scope-v2.json",
         "task-contracts-v4.json",
         "scenario-roadmap-proposal-v2.json",
@@ -1243,7 +1243,7 @@ fn simultaneous_scheduler_transactions_admit_one_occurrence_and_locks_exclude_tw
     let id = world.runs.keys().next().unwrap();
     let _held = store.lock_run(id).unwrap();
     assert!(store.lock_run(id).is_err());
-    valid("scenario-store-v15.json", &world);
+    valid("scenario-store-v16.json", &world);
 }
 
 #[test]
@@ -1869,6 +1869,7 @@ pub(super) struct TestHost {
     pub startup_time: std::sync::atomic::AtomicU64,
     pub startup_templates: std::sync::Mutex<Vec<String>>,
     pub startup_reject: Option<String>,
+    pub startup_adapter: Option<std::sync::Mutex<implementation::PreflightResult>>,
     pub expire_startup_on_plan: bool,
     pub native_dispatches: std::sync::atomic::AtomicUsize,
     pub charge: Option<(u64, bool)>,
@@ -1892,6 +1893,17 @@ impl crate::Host for TestHost {
             self.startup_reject.as_ref() != Some(&id),
             "native startup refused",
         )
+    }
+
+    fn preflight_implementation_adapter(
+        &self,
+        _: &Adapter,
+        _: &implementation::Scope,
+    ) -> implementation::PreflightResult {
+        self.startup_adapter
+            .as_ref()
+            .map(|result| result.lock().unwrap().clone())
+            .unwrap_or_else(|| Err("Host does not support implementation adapter preflight".into()))
     }
 
     fn validate_template(&self, _: &Value, _: Option<&Value>, _: u64) -> Result<()> {

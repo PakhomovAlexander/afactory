@@ -19,7 +19,14 @@ pub struct Driver {
     #[serde(deserialize_with = "crate::contract::unique")]
     pub acknowledged: BTreeSet<String>,
     pub blocker: Option<Blocker>,
+    pub preflight_wait: Option<PreflightWait>,
     pub frontiers: BTreeMap<String, PublicationProgress>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreflightWait {
+    Transport,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,21 +57,32 @@ pub fn validate_schedule(pin: &Pin, poll_ms: u64) -> Result<()> {
         (1_000..=3_600_000).contains(&poll_ms),
         "Scenario driver poll-ms must be between 1000 and 3600000",
     )?;
-    for definition in pin.bundle.definitions.values() {
+    fn visit(pin: &Pin, name: &str, enclosing: u64, poll_ms: u64) -> Result<()> {
+        let definition = &pin.bundle.definitions[name];
+        let bound = enclosing.min(definition.limits.max_wall_ms);
         for step in &definition.steps {
-            if matches!(&step.operation, Kind::Action { grant, .. }
-                if grant.operation == Operation::PublishImplementationPrV1)
-            {
-                require(
-                    poll_ms * 2 < step.timeout_ms.min(definition.limits.max_wall_ms),
-                    &format!(
-                        "Scenario driver poll-ms {poll_ms} is incompatible with publication step {} ({} ms); two polls must fit strictly inside its immutable deadline",
-                        step.id, step.timeout_ms
-                    ),
-                )?;
+            let bound = bound.min(step.timeout_ms);
+            match &step.operation {
+                Kind::Scenario { scenario } => visit(pin, scenario, bound, poll_ms)?,
+                Kind::Action { grant, .. }
+                    if grant.operation == Operation::PublishImplementationPrV1 =>
+                {
+                    require(
+                        poll_ms * 2 < bound,
+                        &format!(
+                            "Scenario driver poll-ms {poll_ms} is incompatible with publication step {} (effective enclosing bound {bound} ms); two polls must fit strictly inside its immutable deadline",
+                            step.id
+                        ),
+                    )?;
+                }
+                _ => {}
             }
         }
+        Ok(())
     }
+    // Do not deduplicate by Scenario identity: a shared child has a distinct effective
+    // deadline on each invocation path. Bundle admission already refuses cycles.
+    visit(pin, &pin.bundle.root, u64::MAX, poll_ms)?;
     Ok(())
 }
 
@@ -86,7 +104,7 @@ impl Driver {
     pub fn new(run: &Run, poll_ms: u64) -> Result<Self> {
         validate_run_schedule(&run.pin, &run.limits, poll_ms)?;
         Ok(Self {
-            schema: "af/scenario-driver@1".into(),
+            schema: "af/scenario-driver@2".into(),
             execution_id: run.execution_id.clone(),
             pin_id: run.pin.revision.clone(),
             poll_ms,
@@ -94,13 +112,14 @@ impl Driver {
             next_unix_ms: run.created_unix_ms,
             acknowledged: BTreeSet::new(),
             blocker: None,
+            preflight_wait: None,
             frontiers: BTreeMap::new(),
         })
     }
 
     pub fn validate(&self, run: &Run) -> Result<()> {
         require(
-            self.schema == "af/scenario-driver@1"
+            self.schema == "af/scenario-driver@2"
                 && self.execution_id == run.execution_id
                 && self.pin_id == run.pin.revision
                 && self.resumes <= MAX_RESUMES
@@ -178,6 +197,9 @@ impl Driver {
     fn credit(&self, run: &Run) -> Result<Option<String>> {
         // Only the two closed, native-proof-backed checkpoints admitted by the pinned
         // publication adapter earn credits. Uncertainty and pending prose never do.
+        if self.preflight_wait.is_some() {
+            return Ok(None);
+        }
         let Some(Waiting::Reconcile { intent_id, .. }) = &run.waiting else {
             return Ok(None);
         };
@@ -245,7 +267,7 @@ impl Driver {
 /// One durable reservation, useful to service supervisors as well as the foreground CLI.
 /// No supplied clock can backdate authorization or make a reservation due.
 pub fn once(store: &Store, id: &str) -> Result<Run> {
-    once_inner(store, id, true)
+    once_inner(store, id)
 }
 
 /// Completed child frames retain evidence, not a deadline on subsequent parent work.
@@ -270,7 +292,7 @@ fn deadline(run: &Run) -> u64 {
     due
 }
 
-fn once_inner(store: &Store, id: &str, preflight: bool) -> Result<Run> {
+fn once_inner(store: &Store, id: &str) -> Result<Run> {
     let _driver = store.lock_driver(id)?;
     let at = store.host.authorization_time()?;
     crate::runtime::reconcile_native_charges(store, id, at)?;
@@ -307,9 +329,35 @@ fn once_inner(store: &Store, id: &str, preflight: bool) -> Result<Run> {
         Ok(reserved)
     })?;
     if reserved {
-        if let Err(why) = crate::runtime::resume_admitted(store, id, None, preflight) {
+        let pin = store.read()?.runs[id].pin.clone();
+        let preflight = crate::implementation::preflight(store.host.as_ref(), &pin);
+        store.update(|world| {
+            world
+                .drivers
+                .get_mut(id)
+                .ok_or("Driver disappeared")?
+                .preflight_wait = matches!(
+                &preflight,
+                Err(crate::implementation::PreflightError::Transport(_))
+            )
+            .then_some(PreflightWait::Transport);
+            Ok(())
+        })?;
+        let (result, runtime) = match preflight {
+            Ok(()) => (
+                crate::runtime::resume_admitted(store, id, None, false),
+                true,
+            ),
+            Err(crate::implementation::PreflightError::Transport(_)) => {
+                // No runtime dispatch is allowed until complete preflight succeeds.
+                // This already consumed reservation retains cadence across process loss.
+                return Ok(store.read()?.runs[id].clone());
+            }
+            Err(error) => (Err(String::from(error)), false),
+        };
+        if let Err(why) = result {
             // Busy is a transient wait; the already consumed reservation stays consumed.
-            if !why.starts_with("Scenario Run is already executing:") {
+            if !runtime || !why.starts_with("Scenario Run is already executing:") {
                 store.update(|world| {
                     let run = world.runs.get_mut(id).ok_or("Scenario Run disappeared")?;
                     if run.status.active() {
@@ -345,10 +393,8 @@ fn once_inner(store: &Store, id: &str, preflight: bool) -> Result<Run> {
 
 /// Drain only newly observed finite progress. A pending observation returns immediately.
 pub fn once_until_idle(store: &Store, id: &str) -> Result<Run> {
-    let mut preflight = true;
     loop {
-        let run = once_inner(store, id, preflight)?;
-        preflight = false;
+        let run = once_inner(store, id)?;
         let world = store.read()?;
         if !run.status.active() || world.drivers[id].credit(&run)?.is_none() {
             return Ok(run);
@@ -363,29 +409,6 @@ pub fn drive(store: &Store, id: &str) -> Result<Run> {
 }
 
 pub fn drive_until(store: &Store, id: &str, stop: impl Fn() -> bool) -> Result<Run> {
-    let initial = store
-        .read()?
-        .runs
-        .get(id)
-        .ok_or("Scenario Run not found")?
-        .clone();
-    if initial.status.active() {
-        if let Err(why) = crate::implementation::preflight(store.host.as_ref(), &initial.pin) {
-            store.update(|world| {
-                world
-                    .runs
-                    .get_mut(id)
-                    .ok_or("Run disappeared")?
-                    .fail(why.clone());
-                world
-                    .drivers
-                    .get_mut(id)
-                    .ok_or("Driver disappeared")?
-                    .blocker = Some(Blocker::Boundary { diagnostic: why });
-                Ok(())
-            })?;
-        }
-    }
     loop {
         if stop() {
             return store
@@ -395,7 +418,7 @@ pub fn drive_until(store: &Store, id: &str, stop: impl Fn() -> bool) -> Result<R
                 .cloned()
                 .ok_or("Scenario Run disappeared".into());
         }
-        let run = once_inner(store, id, false)?;
+        let run = once_inner(store, id)?;
         if !run.status.active() {
             return Ok(run);
         }
@@ -460,10 +483,11 @@ mod tests {
         );
         assert_eq!(replay.resumes, MAX_RESUMES);
         assert_eq!(replay.blocker, Some(Blocker::Exhausted));
-        crate::tests::valid("scenario-driver-v1.json", &driver);
+        crate::tests::valid("scenario-driver-v2.json", &driver);
         let mut retired = serde_json::to_value(&driver).unwrap();
-        retired["schema"] = serde_json::json!("af/scenario-driver@0");
-        assert!(!crate::tests::schema("scenario-driver-v1.json").is_valid(&retired));
+        retired["schema"] = serde_json::json!("af/scenario-driver@1");
+        retired.as_object_mut().unwrap().remove("preflight_wait");
+        assert!(!crate::tests::schema("scenario-driver-v2.json").is_valid(&retired));
         driver.execution_id = digest(b"foreign");
         assert!(driver.validate(&run).is_err());
     }
@@ -512,6 +536,85 @@ mod tests {
     }
 
     #[test]
+    fn publication_schedule_checks_every_ancestor_and_shared_invocation_path() {
+        let mut run = run();
+        let mut child = run.pin.bundle.definitions["main"].clone();
+        child.steps[0].operation = Kind::Action {
+            grant: Grant {
+                adapter: "workspace".into(),
+                operation: Operation::PublishImplementationPrV1,
+                destination: "github:owner/project".into(),
+            },
+            requires_decision: false,
+            required_condition: None,
+        };
+        child.steps[0].timeout_ms = 120_000;
+        child.limits.max_wall_ms = 180_000;
+        let mut parent = child.clone();
+        parent.steps[0].operation = Kind::Scenario {
+            scenario: "publication".into(),
+        };
+        parent.steps[0].timeout_ms = 90_000;
+        parent.limits.max_wall_ms = 150_000;
+        run.pin
+            .bundle
+            .definitions
+            .insert("publication".into(), child);
+        run.pin
+            .bundle
+            .definitions
+            .insert("other-parent".into(), parent.clone());
+        run.pin.bundle.definitions.insert("parent".into(), parent);
+        let root = run.pin.bundle.definitions.get_mut("main").unwrap();
+        root.steps[0].operation = Kind::Scenario {
+            scenario: "parent".into(),
+        };
+        root.steps[0].timeout_ms = 100_000;
+        root.limits.max_wall_ms = 200_000;
+        assert!(validate_run_schedule(&run.pin, &run.limits, 30_000).is_ok());
+        // A second invocation of the same child must not reuse the first path's admission.
+        let root = run.pin.bundle.definitions.get_mut("main").unwrap();
+        let mut second = root.steps[0].clone();
+        second.id = "second".into();
+        second.operation = Kind::Scenario {
+            scenario: "other-parent".into(),
+        };
+        second.timeout_ms = 45_000;
+        second.when = Some(Binding::Literal {
+            value: Box::new(Datum::Boolean(false)),
+        });
+        root.steps.push(second);
+        assert!(validate_schedule(&run.pin, 30_000).is_err());
+        for bound in [59_999, 60_000, 60_001] {
+            run.pin.bundle.definitions.get_mut("main").unwrap().steps[1].timeout_ms = bound;
+            assert_eq!(validate_schedule(&run.pin, 30_000).is_ok(), bound > 60_000);
+        }
+        run.pin
+            .bundle
+            .definitions
+            .get_mut("parent")
+            .unwrap()
+            .limits
+            .max_wall_ms = 60_000;
+        assert!(validate_schedule(&run.pin, 30_000).is_err());
+        run.pin
+            .bundle
+            .definitions
+            .get_mut("parent")
+            .unwrap()
+            .limits
+            .max_wall_ms = 60_001;
+        assert!(validate_schedule(&run.pin, 30_000).is_ok());
+        let mut limits = run.limits.clone();
+        limits.max_wall_ms = 60_000;
+        assert!(validate_run_schedule(&run.pin, &limits, 30_000).is_err());
+        limits.max_wall_ms += 1;
+        assert!(validate_run_schedule(&run.pin, &limits, 30_000).is_ok());
+        assert_eq!(run.dispatches, 0);
+        assert!(run.task_charges.is_empty());
+    }
+
+    #[test]
     fn persisted_expiry_and_exhaustion_are_terminal_without_native_dispatch() {
         let directory = tempfile::tempdir().unwrap();
         let store = Store::isolated(&directory.path().join("state")).unwrap();
@@ -532,9 +635,9 @@ mod tests {
             Some(Blocker::Boundary { .. })
         ));
         assert_eq!(once(&store, "driver").unwrap(), stopped);
-        crate::tests::valid("scenario-store-v15.json", &store.read().unwrap());
+        crate::tests::valid("scenario-store-v16.json", &store.read().unwrap());
         let mut retired = serde_json::to_value(store.read().unwrap()).unwrap();
-        retired["schema"] = serde_json::json!("af/scenario-store@13");
+        retired["schema"] = serde_json::json!("af/scenario-store@15");
         retired.as_object_mut().unwrap().remove("drivers");
         assert!(serde_json::from_value::<crate::store::World>(retired).is_err());
     }

@@ -125,7 +125,27 @@ def bounded_command(argv, cwd, env, data, timeout, directory, maximum=STATE_LIMI
             before_spawn()
         remaining = timeout - (time.monotonic() - started)
         need(remaining > 0, "bounded native authorization exhausted before spawn")
-        result = subprocess.run(argv, cwd=cwd, env=env, input=data, stdout=output, stderr=error, timeout=remaining)
+        observing_base = "ls-remote" in argv
+        try:
+            result = subprocess.run(argv, cwd=cwd, env=env, input=data, stdout=output, stderr=error, timeout=remaining)
+        except subprocess.TimeoutExpired as exc:
+            if observing_base and output.tell() <= maximum and error.tell() <= STATE_LIMIT:
+                raise TransportUnavailable("remote base observation timed out") from exc
+            raise
+        if observing_base and result.returncode != 0 and output.tell() <= maximum and error.tell() <= STATE_LIMIT:
+            error.seek(0)
+            diagnostic = error.read(STATE_LIMIT + 1)
+            # Deliberately closed allowlist of SSH transport diagnostics. Unknown Git,
+            # host-key, permission, repository and malformed-output failures are refused.
+            if any(message in diagnostic for message in (
+                    b"Host key verification failed", b"REMOTE HOST IDENTIFICATION HAS CHANGED")):
+                raise Refused("remote base SSH integrity refused")
+            if b"Permission denied (publickey)" in diagnostic:
+                raise CredentialsRefused("remote base SSH credential rejected")
+            if any(message in diagnostic for message in (
+                    b"Could not resolve hostname", b"Connection timed out", b"Connection refused",
+                    b"Network is unreachable", b"No route to host", b"Connection reset by peer")):
+                raise TransportUnavailable("remote base transport unavailable")
         need(result.returncode == 0 and output.tell() <= maximum and error.tell() <= STATE_LIMIT,
              "bounded native operation failed; retain receipts and reconcile")
         output.seek(0)
@@ -854,6 +874,17 @@ class WorkspaceAdapter:
         return self.common.publication(subject_value, revision)
 
     def startup_preflight(self, r):
+        # The request identity is checked before a typed negative receipt can name it.
+        fields(r, ("schema", "scope_id", "scope"))
+        need(r["schema"] == "af/implementation-startup-preflight@2"
+             and r["scope_id"] == digest(canonical(r["scope"])), "startup request identity differs")
+        try:
+            return self.startup_observe(r)
+        except (TransportUnavailable, CredentialsRefused) as exc:
+            return dict(schema="af/implementation-startup-failure@1", scope_id=r["scope_id"],
+                        kind="transport" if isinstance(exc, TransportUnavailable) else "credentials")
+
+    def startup_observe(self, r):
         fields(r, ("schema", "scope_id", "scope"))
         need(r["schema"] == "af/implementation-startup-preflight@2", "unsupported startup preflight")
         scope, c = r["scope"], self.config
@@ -1136,6 +1167,7 @@ def workspace_schema_documents():
         task_id=text(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}"), result_id=dig, snapshot_id=dig, source_snapshot=dig, source_predecessor=dict(anyOf=[dict(type="null"), dig]),
         source_commit=sha, branch=text(), base=text(), commit=sha, tree=sha, worktree=path,
         title=text(maximum=200), body=text(maximum=48000))
+    doc("implementation-startup-failure", dict(scope_id=dig, kind={"enum": ["transport", "credentials", "refused"]}))
     doc("git-workspace-prepared", prepared)
     doc("git-workspace-content", dict(title=text(maximum=200), body=text(maximum=48000)))
     doc("performance-pr-content", dict(title=text(maximum=200)))

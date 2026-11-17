@@ -232,6 +232,37 @@ class AdapterTests(unittest.TestCase):
             api.request("POST", "/repos/octo/project/pulls", payload(), before_send=guard)
         self.assertEqual(events, ["connect", "guard", ("timeout", 1), "send", "close"])
 
+    def test_preflight_transport_classification_never_retries_unknown_or_tls_refusals(self):
+        original = MOCK.GitHubFixtureConnection
+        for status, error in ((401, A.CredentialsRefused), (408, A.TransportUnavailable),
+                (429, A.TransportUnavailable), (500, A.TransportUnavailable), (502, A.TransportUnavailable),
+                (503, A.TransportUnavailable), (504, A.TransportUnavailable),
+                (403, A.Refused), (404, A.Refused), (302, A.Refused)):
+            class Connection(original):
+                def getresponse(self):
+                    class Response:
+                        pass
+                    response = Response()
+                    response.status = status
+                    return response
+            with self.subTest(status=status), patch.object(A.http.client, "HTTPSConnection", Connection):
+                with self.assertRaises(error) as raised:
+                    A.GitHub(self.config).request("GET", "/user")
+                self.assertIs(type(raised.exception), error)
+        for failure, error in ((TimeoutError(), A.TransportUnavailable),
+                (ConnectionRefusedError(), A.TransportUnavailable),
+                (A.socket.gaierror(), A.TransportUnavailable),
+                (A.ssl.SSLCertVerificationError(), A.Refused),
+                (OSError(A.errno.EPERM, "local refusal"), A.Refused),
+                (A.http.client.BadStatusLine("malformed"), A.Refused)):
+            class Connection(original):
+                def connect(self):
+                    raise failure
+            with self.subTest(failure=type(failure)), patch.object(A.http.client, "HTTPSConnection", Connection):
+                with self.assertRaises(error) as raised:
+                    A.GitHub(self.config).request("GET", "/user")
+                self.assertIs(type(raised.exception), error)
+
     def test_transport_refuses_exhaustion_disconnection_and_missing_mutation_guard(self):
         original = MOCK.GitHubFixtureConnection
         for fault in ("connect-expiry", "guard-expiry", "guard-disconnect", "connect-disconnect", "no-guard"):

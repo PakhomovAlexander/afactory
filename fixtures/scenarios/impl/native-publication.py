@@ -68,7 +68,8 @@ class Service:
             return state['prs'][0]
         assert method == 'GET'
         if path == '/user':
-            if state.get('credentials_unavailable'): raise a.Refused('controlled credential boundary')
+            if state.get('transport_unavailable'): raise a.TransportUnavailable('controlled transport outage')
+            if state.get('credentials_unavailable'): raise a.CredentialsRefused('controlled credential boundary')
             return dict(id=state.get('actor_id', 7), login='owner')
         if path == '/repos/octo/project':
             if state.get('source_after_actor') is not None:

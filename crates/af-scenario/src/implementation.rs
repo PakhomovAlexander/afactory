@@ -214,9 +214,40 @@ impl Scope {
     }
 }
 
+/// Only a positively classified transport observation is retryable. Unknown failures
+/// remain refused; diagnostic prose never supplies retry authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreflightError {
+    Transport(String),
+    Credentials(String),
+    Refused(String),
+}
+impl From<String> for PreflightError {
+    fn from(value: String) -> Self {
+        Self::Refused(value)
+    }
+}
+impl From<&str> for PreflightError {
+    fn from(value: &str) -> Self {
+        Self::Refused(value.into())
+    }
+}
+impl From<PreflightError> for String {
+    fn from(value: PreflightError) -> Self {
+        match value {
+            PreflightError::Transport(s) => {
+                format!("Startup transport observation unavailable: {s}")
+            }
+            PreflightError::Credentials(s) => format!("Startup credentials refused: {s}"),
+            PreflightError::Refused(s) => s,
+        }
+    }
+}
+pub type PreflightResult = std::result::Result<(), PreflightError>;
+
 /// Complete preflight is separate from replay: inspection validates retained identities without
 /// invoking credentials; live admission and every drive recheck native and machine prerequisites.
-pub fn preflight(host: &dyn crate::Host, pin: &Pin) -> Result<()> {
+pub fn preflight(host: &dyn crate::Host, pin: &Pin) -> PreflightResult {
     let Some(scope) = &pin.policy.implementation_startup else {
         return Ok(());
     };
@@ -245,7 +276,7 @@ pub fn preflight(host: &dyn crate::Host, pin: &Pin) -> Result<()> {
             .ok_or("Startup adapter missing")?;
         host.preflight_implementation_adapter(installed, scope)?;
     }
-    scope.live(host)
+    scope.live(host).map_err(Into::into)
 }
 
 /// A read-only live capability check. Only an intent in the retained owner-confirmed Run can
@@ -373,7 +404,7 @@ mod tests {
     use super::*;
     use crate::{
         Host,
-        state::Run,
+        state::{Run, Status},
         store::Store,
         tests::{DAY, START, TestHost, valid},
     };
@@ -462,6 +493,15 @@ mod tests {
             "implementation-startup-ready-v2.json",
             &serde_json::json!({"schema":"af/implementation-startup-ready@2", "scope_id":hash(pin.policy.implementation_startup.as_ref().unwrap()).unwrap()}),
         );
+        for kind in ["transport", "credentials", "refused"] {
+            valid(
+                "implementation-startup-failure-v1.json",
+                &serde_json::json!({
+                    "schema": "af/implementation-startup-failure@1",
+                    "scope_id": hash(pin.policy.implementation_startup.as_ref().unwrap()).unwrap(), "kind": kind
+                }),
+            );
+        }
         valid("scenario-pin-v10.json", &pin);
         let host = TestHost {
             startup_reject: Some(repair.clone()),
@@ -704,6 +744,147 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("adapter preflight"));
         assert_eq!(host.native_dispatches.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn typed_preflight_wait_reopens_without_refunding_cadence_and_stops_at_boundaries() {
+        use std::sync::{Arc, Mutex};
+        for boundary in [
+            "recover",
+            "credentials",
+            "scope",
+            "busy-prose",
+            "expiry",
+            "exhaustion",
+        ] {
+            let (mut pin, _) = fixture();
+            let grant = Grant {
+                adapter: "workspace".into(),
+                operation: Operation::Observe,
+                destination: "github:owner/project".into(),
+            };
+            pin.bundle
+                .definitions
+                .get_mut("main")
+                .unwrap()
+                .authority
+                .grants
+                .insert(grant.clone());
+            pin.policy.adapters.insert(
+                "workspace".into(),
+                Adapter {
+                    executable: "/installed/workspace".into(),
+                    digest: digest(b"adapter"),
+                    operations: [Operation::Observe].into(),
+                    destinations: [grant.destination.clone()].into(),
+                    max_wall_ms: 1000,
+                    max_output_bytes: 4096,
+                },
+            );
+            let scope = pin.policy.implementation_startup.as_mut().unwrap();
+            scope.grants.insert(grant);
+            scope.recipe_id = hash(&pin.bundle).unwrap();
+            let host = Arc::new(TestHost {
+                startup_adapter: Some(Mutex::new(Ok(()))),
+                planned_tasks: Some(Mutex::default()),
+                settle_all_planned: true,
+                ..TestHost::default()
+            });
+            let pin = Pin::new(host.as_ref(), pin.bundle, pin.policy).unwrap();
+            let run = Run::new(
+                host.as_ref(),
+                "transient".into(),
+                pin.clone(),
+                BTreeMap::new(),
+                pin.bundle.definitions["main"].limits.clone(),
+                START,
+                None,
+            )
+            .unwrap();
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("state");
+            let mut store = Store::isolated(&path).unwrap();
+            store.host = host.clone();
+            store.update(|w| w.admit_run(run)).unwrap();
+            *host.startup_adapter.as_ref().unwrap().lock().unwrap() =
+                Err(PreflightError::Transport("outage".into()));
+            let waiting = crate::driver::once(&store, "transient").unwrap();
+            assert!(waiting.status.active());
+            assert_eq!(waiting.dispatches, 0);
+            assert_eq!(host.native_dispatches.load(Ordering::Relaxed), 0);
+            let retained = store.read().unwrap().drivers["transient"].clone();
+            assert_eq!(retained.resumes, 1);
+            assert_eq!(
+                retained.preflight_wait,
+                Some(crate::driver::PreflightWait::Transport)
+            );
+            drop(store);
+            let mut store = Store::isolated(&path).unwrap();
+            store.host = host.clone();
+            assert_eq!(crate::driver::once(&store, "transient").unwrap(), waiting);
+            assert_eq!(store.read().unwrap().drivers["transient"], retained);
+            *host.startup_adapter.as_ref().unwrap().lock().unwrap() = match boundary {
+                "credentials" => Err(PreflightError::Credentials("rejected".into())),
+                "scope" => Err(PreflightError::Refused("scope changed".into())),
+                "busy-prose" => Err(PreflightError::Refused(
+                    "Scenario Run is already executing: diagnostic is not authority".into(),
+                )),
+                _ => Ok(()),
+            };
+            let at = if boundary == "expiry" {
+                START + DAY
+            } else {
+                START + retained.poll_ms
+            };
+            host.startup_time.store(at, Ordering::Relaxed);
+            if boundary == "exhaustion" {
+                // Consume every remaining reservation during a continued outage, never paid work.
+                *host.startup_adapter.as_ref().unwrap().lock().unwrap() =
+                    Err(PreflightError::Transport("outage".into()));
+                for n in 1..=crate::driver::MAX_RESUMES {
+                    host.startup_time
+                        .store(START + u64::from(n) * retained.poll_ms, Ordering::Relaxed);
+                    crate::driver::once(&store, "transient").unwrap();
+                }
+            }
+            let result = crate::driver::once(&store, "transient").unwrap();
+            if boundary == "recover" {
+                assert_eq!(result.status, Status::Succeeded);
+                assert!(
+                    store.read().unwrap().drivers["transient"]
+                        .preflight_wait
+                        .is_none()
+                );
+                assert_eq!(host.native_dispatches.load(Ordering::Relaxed), 1);
+                let charges = result.task_charges.clone();
+                assert_eq!(
+                    crate::driver::once(&store, "transient")
+                        .unwrap()
+                        .task_charges,
+                    charges
+                );
+                assert_eq!(host.native_dispatches.load(Ordering::Relaxed), 1);
+            } else {
+                assert_eq!(result.status, Status::Failed, "{boundary}");
+                assert_eq!(host.native_dispatches.load(Ordering::Relaxed), 0);
+                assert_eq!(result.dispatches, 0);
+                assert!(store.read().unwrap().drivers["transient"].blocker.is_some());
+            }
+            let world = store.read().unwrap();
+            let driver = &world.drivers["transient"];
+            assert_eq!(driver.poll_ms, retained.poll_ms);
+            assert_eq!(world.runs["transient"].created_unix_ms, START);
+            assert_eq!(world.runs["transient"].pin, pin);
+            match boundary {
+                "exhaustion" => {
+                    assert_eq!(driver.resumes, crate::driver::MAX_RESUMES);
+                    assert_eq!(driver.blocker, Some(crate::driver::Blocker::Exhausted));
+                }
+                "expiry" => assert_eq!(driver.resumes, 1),
+                _ => assert_eq!(driver.resumes, 2),
+            }
+            valid("scenario-store-v16.json", &world);
+        }
     }
 
     #[test]

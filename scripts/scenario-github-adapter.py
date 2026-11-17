@@ -5,6 +5,8 @@ Install with install-scenario-github-adapter.py. The source checkout is inert. T
 trusted machine extension: af verifies signed decisions and pins this entire executable.
 """
 import contextlib
+import errno
+import socket
 import fcntl
 import hashlib
 import http.client
@@ -49,6 +51,14 @@ PAYLOAD_SCHEMAS = {
 
 class Refused(RuntimeError):
     """Safe bounded diagnostic; never holds remote response bytes or credentials."""
+
+
+class TransportUnavailable(Refused):
+    """A positively identified network observation failure; never an identity refusal."""
+
+
+class CredentialsRefused(Refused):
+    """The server explicitly rejected the installed credential."""
 
 
 def need(ok, message):
@@ -493,6 +503,11 @@ class GitHub:
                 "Content-Type": "application/json", "User-Agent": "af-scenario-github-v1",
             })
             response = conn.getresponse()
+            # Only explicit transport/service failures are retryable during preflight.
+            if response.status in (408, 429, 500, 502, 503, 504):
+                raise TransportUnavailable("GitHub service temporarily unavailable")
+            if response.status == 401:
+                raise CredentialsRefused("GitHub credentials rejected")
             # Never follow redirects or log returned URLs, headers, bodies or tokens.
             need(response.status == (200 if method == "GET" or path == "/graphql" else 201),
                  "GitHub request not successful; outcome remains unknown")
@@ -516,8 +531,16 @@ class GitHub:
             need(size is None or len(raw) == int(size), "truncated API response")
             data = decode(raw, HTTP_LIMIT)
             return data
+        except ssl.SSLError as exc:
+            raise Refused("GitHub TLS integrity refused") from exc
         except (OSError, http.client.HTTPException) as exc:
-            raise Refused("GitHub transport uncertain; reconcile the same intent") from exc
+            if isinstance(exc, (TimeoutError, ConnectionError, socket.gaierror,
+                                http.client.RemoteDisconnected, http.client.IncompleteRead)) or (
+                    isinstance(exc, OSError) and exc.errno in (
+                        errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ENETDOWN,
+                        errno.ECONNRESET, errno.ECONNREFUSED, errno.ETIMEDOUT)):
+                raise TransportUnavailable("GitHub transport uncertain; reconcile the same intent") from exc
+            raise Refused("GitHub transport or response refused") from exc
         finally:
             conn.close()
 

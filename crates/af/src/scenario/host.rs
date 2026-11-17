@@ -22,7 +22,7 @@ impl Host for AfHost {
         &self,
         adapter: &Adapter,
         scope: &af_scenario::implementation::Scope,
-    ) -> Result<()> {
+    ) -> af_scenario::implementation::PreflightResult {
         require(
             digest(&af_scenario::store::read(&adapter.executable, MAX_BYTES)?) == adapter.digest,
             "Startup adapter executable changed",
@@ -46,15 +46,44 @@ impl Host for AfHost {
         );
         require(
             result.status.as_ref().is_ok_and(|status| status.success()),
-            "Startup adapter prerequisite or credentials refused",
+            "Startup adapter failed without a typed prerequisite receipt",
         )?;
         let response: serde_json::Value = serde_json::from_slice(&result.stdout)
             .map_err(|_| "Invalid startup adapter receipt")?;
+        if response.get("schema").and_then(|s| s.as_str())
+            == Some("af/implementation-startup-failure@1")
+        {
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Failure {
+                schema: String,
+                scope_id: String,
+                kind: String,
+            }
+            let failure: Failure =
+                serde_json::from_value(response).map_err(|_| "Invalid startup failure receipt")?;
+            require(
+                failure.schema == "af/implementation-startup-failure@1"
+                    && failure.scope_id == scope_id,
+                "Startup failure scope differs",
+            )?;
+            use af_scenario::implementation::PreflightError;
+            return Err(match failure.kind.as_str() {
+                "transport" => {
+                    PreflightError::Transport("read-only prerequisite unavailable".into())
+                }
+                "credentials" => {
+                    PreflightError::Credentials("confirmed adapter credential refusal".into())
+                }
+                "refused" => PreflightError::Refused("Startup adapter prerequisite refused".into()),
+                _ => return Err("Invalid startup failure kind".into()),
+            });
+        }
         require(
             response
                 == serde_json::json!({"schema":"af/implementation-startup-ready@2", "scope_id":scope_id}),
             "Startup adapter scope differs",
-        )
+        ).map_err(Into::into)
     }
 
     fn check_repair(

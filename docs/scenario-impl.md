@@ -268,8 +268,24 @@ diagnosis, and finish or discard it using the release that wrote it. Do not edit
 start another paid Run to repair missing authority. Ordinary native code failures keep the existing fresh,
 bounded repair routing. Repeated scoped Wait polls no longer consume dispatch allowance.
 
-The complete startup pool is probed once per foreground service process. Native per-Task admission
-and final push/POST/PATCH fresh guards remain live after blocking observations. No signing key,
+The complete startup pool is probed before each reserved drive, including immediate checkpoints.
+A positively typed transport/service observation failure retains `preflight_wait: "transport"`
+in driver 2 and consumes its exact reservation, with no Task or effect dispatch. The next retry
+uses the retained cadence and original Run, active-frame and startup deadlines. CLI restart
+cannot refund that reservation or reuse a checkpoint to bypass the delay. Successful complete
+preflight is mandatory before runtime dispatch. Confirmed credentials, changed identity/scope,
+unknown refusals, corrupt evidence, exhausted reservations and elapsed/expiry boundaries remain
+terminal. Nonzero or malformed adapter output is never interpreted as a transient outage.
+
+Admission checks each reachable invocation path, including shared children under differently
+bounded parents. Two polls must fit strictly inside every enclosing Scenario, invocation, Run
+and publication-step bound; equality is refused. See the
+[preflight and schedule decision](adr/2026-11-17-retry-typed-startup-observations-within-enclosing-bounds.md).
+
+The Scenario journal is `af/scenario-store@16`; driver status is `af/scenario-driver@2`.
+Prior Store/driver shapes are refused without migration. The new bounded startup failure receipt
+is `af/implementation-startup-failure@1`; the exact successful ready receipt is unchanged.
+Native per-Task admission and final push/POST/PATCH fresh guards remain live after blocking observations. No signing key,
 new publication authority or merge capability is introduced. See the
 [driver decision](adr/2026-11-16-drive-scoped-implementation-with-retained-progress.md).
 

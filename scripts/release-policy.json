@@ -1,6 +1,6 @@
 {
   "schema": "af.dev-release-policy/3",
-  "compatibility": "Breaking combined Scenario/Ant and publication shapes: Scenario definitions/bundles 9, policy 8, pins/runs/list 10, Store 15 with retained driver 1; Ant definition 10, pin/tick 11, state/list 12, inspection 7; adapter request 7/response 3, workspace config 3/state 5 and GitHub journal 8, native Git candidate request/export 2. Nightly config/publish 2 and native nightly service/job/completion 1 retain separate release scope and external signing permission. Implementation startup scope 2 retains exact native scoped publication, finite progress and bounded repairs. Generic signed and performance authority stay separate. Finish or discard prior-release state; no migration or replay of retired shapes. Review and commit authority and refresh its lock before adoption. Performance executor 5, history 2, equivalence 2 and schedule 3 remain required.",
+  "compatibility": "Breaking combined Scenario/Ant and publication shapes: Scenario definitions/bundles 9, policy 8, pins/runs/list 10, Store 16 with retained driver 2 and typed bounded preflight waits; Ant definition 10, pin/tick 11, state/list 12, inspection 7; adapter request 7/response 3, workspace config 3/state 5 and GitHub journal 8, native Git candidate request/export 2. Nightly config/publish 2 and native nightly service/job/completion 1 retain separate release scope and external signing permission. Implementation startup scope 2 retains exact native scoped publication, finite progress and bounded repairs. Generic signed and performance authority stay separate. Finish or discard prior-release state; no migration or replay of retired shapes. Review and commit authority and refresh its lock before adoption. Performance executor 5, history 2, equivalence 2 and schedule 3 remain required.",
   "required_features": {
     "crates/af-scenario/src/retention.rs": [
       "settlement",
@@ -10,11 +10,11 @@
       "roadmap"
     ],
     "crates/af-scenario/src/store.rs": [
-      "af/scenario-store@15",
+      "af/scenario-store@16",
       "run_capacity"
     ],
-    "schemas/scenario-store-v15.json": [
-      "af/scenario-store@15"
+    "schemas/scenario-store-v16.json": [
+      "af/scenario-store@16"
     ],
     "schemas/scenario-v9.json": [
       "af/scenario@9"
@@ -100,12 +100,12 @@
       "implementation_live"
     ],
     "crates/af-scenario/src/driver.rs": [
-      "af/scenario-driver@1",
+      "af/scenario-driver@2",
       "DEFAULT_POLL_MS",
       "MAX_RESUMES"
     ],
-    "schemas/scenario-driver-v1.json": [
-      "af/scenario-driver@1"
+    "schemas/scenario-driver-v2.json": [
+      "af/scenario-driver@2"
     ],
     "schemas/scenario-adapter-response-v3.json": [
       "af/scenario-adapter-response@3"
@@ -133,6 +133,9 @@
     ],
     "schemas/nightly-completion-v1.json": [
       "af/nightly-completion@1"
+    ],
+    "schemas/implementation-startup-failure-v1.json": [
+      "af/implementation-startup-failure@1"
     ]
   },
   "targets": [

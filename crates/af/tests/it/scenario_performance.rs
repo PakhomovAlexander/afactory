@@ -1911,8 +1911,18 @@ fn native_scoped_default30s_repairs_rejected_whole_goal_verification_before_publ
 }
 
 #[test]
+fn native_scoped_driver_recovers_transient_preflight_after_process_restart() {
+    native_scoped_implementation(false, true, true, None, "transport");
+}
+
+#[test]
 fn native_scoped_driver_stops_on_native_budget_exhaustion_with_exact_charge() {
     native_scoped_implementation(false, true, false, None, "budget");
+}
+
+#[test]
+fn native_scoped_driver_retains_startup_scope_refusal_before_any_task_dispatch() {
+    native_scoped_implementation(false, true, false, None, "scope-startup");
 }
 
 #[test]
@@ -2216,11 +2226,15 @@ fn native_scoped_implementation(
         assert_eq!(cancelled["status"], "cancelled");
         return;
     }
-    if matches!(native_mode, "budget" | "credentials") {
-        if native_mode == "credentials" {
+    if matches!(native_mode, "budget" | "credentials" | "scope-startup") {
+        if matches!(native_mode, "credentials" | "scope-startup") {
             let mut state: Value =
                 serde_json::from_slice(&std::fs::read(&service_file).unwrap()).unwrap();
-            state["credentials_unavailable"] = json!(true);
+            if native_mode == "credentials" {
+                state["credentials_unavailable"] = json!(true);
+            } else {
+                state["actor_id"] = json!(99);
+            }
             write(&service_file, &state);
         }
         let stopped = p.cli(&p.f.state, &["scenario", "drive", "scoped"]);
@@ -2389,7 +2403,7 @@ fn native_scoped_implementation(
     let typed_request: af_scenario::adapter::Request =
         serde_json::from_value(request.clone()).unwrap();
     let world = af_scenario::store::World {
-        schema: "af/scenario-store@15".into(),
+        schema: "af/scenario-store@16".into(),
         writer_version: env!("CARGO_PKG_VERSION").into(),
         runs: std::collections::BTreeMap::from([(captured.id.clone(), captured.clone())]),
         run_capacity: Default::default(),
@@ -2486,8 +2500,11 @@ fn native_scoped_implementation(
 fn assert_native_scoped_accounting(p: &Performance, run: &Value, service_file: &Path) {
     let service: Value = serde_json::from_slice(&std::fs::read(service_file).unwrap()).unwrap();
     assert_eq!(service["posts"], 1, "{service}");
-    let ci_repair = p.home.join("scoped-mode").exists()
-        && std::fs::read_to_string(p.home.join("scoped-mode")).unwrap() == "native";
+    let mode = std::fs::read_to_string(p.home.join("scoped-mode")).unwrap();
+    let ci_repair = mode == "native";
+    // The transport regression isolates the interrupted publication of one independently
+    // verified candidate. The existing native/gate/review modes retain all repair coverage.
+    let expected_tasks = if mode == "transport" { 2 } else { 4 };
     assert_eq!(
         service["pushes"],
         if ci_repair { 2 } else { 1 },
@@ -2500,8 +2517,10 @@ fn assert_native_scoped_accounting(p: &Performance, run: &Value, service_file: &
     );
     assert_eq!(service["prs"].as_array().unwrap().len(), 1);
     assert_eq!(service["prs"][0]["merged"], false);
-    assert_eq!(run["fresh_tasks"].as_object().unwrap().len(), 4);
-    let mode = std::fs::read_to_string(p.home.join("scoped-mode")).unwrap();
+    assert_eq!(
+        run["fresh_tasks"].as_object().unwrap().len(),
+        expected_tasks
+    );
     let outcomes = run["frames"]["root"]["steps"]
         .as_array()
         .unwrap()
@@ -2509,6 +2528,7 @@ fn assert_native_scoped_accounting(p: &Performance, run: &Value, service_file: &
         .filter_map(|s| s["outputs"]["result"]["value"]["outcome"].as_str())
         .collect::<Vec<_>>();
     let expected = match mode.as_str() {
+        "transport" => vec!["verified", "verified"],
         "gate-review" => vec!["gate_failed", "changes_requested", "verified", "verified"],
         "verifier" => vec!["verified", "changes_requested", "verified", "verified"],
         _ => vec!["verified", "verified", "verified", "verified"],
@@ -2523,7 +2543,7 @@ fn assert_native_scoped_accounting(p: &Performance, run: &Value, service_file: &
             let exported: Value =
                 serde_json::from_slice(&std::fs::read(path.join("source.json")).unwrap()).unwrap();
             valid("git-candidate-source-v2.json", &exported);
-            if mode != "native" {
+            if !matches!(mode.as_str(), "native" | "transport") {
                 assert_ne!(
                     exported["source_snapshot"], exported["task_source_snapshot"],
                     "a native repair exports its whole original baseline, separately from its immediate source"
@@ -2578,7 +2598,7 @@ fn assert_native_scoped_accounting(p: &Performance, run: &Value, service_file: &
         assert!(task.get("unknown_usage_attempts").is_none(), "{task}");
     }
     let charges = run["task_charges"].as_object().unwrap();
-    assert_eq!(charges.len(), 4);
+    assert_eq!(charges.len(), expected_tasks);
     assert_eq!(
         charges
             .values()
@@ -2594,7 +2614,7 @@ fn assert_native_scoped_accounting(p: &Performance, run: &Value, service_file: &
     assert_eq!(calls.lines().count() as u64, model_calls);
     assert_eq!(total, model_calls * 5);
     let status = p.cli(&p.f.state, &["scenario", "driver-status", "scoped"]);
-    valid("scenario-driver-v1.json", &status);
+    valid("scenario-driver-v2.json", &status);
     assert_eq!(status["poll_ms"], 30_000);
     assert_eq!(
         status["frontiers"].as_object().unwrap().len(),
@@ -2651,7 +2671,59 @@ fn drive_native_scoped(p: &Performance, service_file: &Path, interrupt: bool) ->
                 retained, before,
                 "killing the CLI must not refund its reservation"
             );
+            let before_run = p.cli(&p.f.state, &["scenario", "show", "scoped"]);
+            let transport =
+                std::fs::read_to_string(p.home.join("scoped-mode")).unwrap() == "transport";
+            if transport {
+                let mut state: Value =
+                    serde_json::from_slice(&std::fs::read(service_file).unwrap()).unwrap();
+                state["transport_unavailable"] = json!(true);
+                write(service_file, &state);
+            }
             service = spawn();
+            if std::fs::read_to_string(p.home.join("scoped-mode")).unwrap() == "transport" {
+                let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+                let retained = loop {
+                    let status = p.cli(&p.f.state, &["scenario", "driver-status", "scoped"]);
+                    if status["preflight_wait"] == "transport" {
+                        break status;
+                    }
+                    assert!(service.0.try_wait().unwrap().is_none());
+                    assert!(std::time::Instant::now() < until, "{status}");
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                };
+                let waiting = p.cli(&p.f.state, &["scenario", "show", "scoped"]);
+                assert!(before_run["dispatches"].as_u64().unwrap() > 0);
+                for key in ["execution_id", "dispatches", "fresh_tasks", "task_charges"] {
+                    assert_eq!(
+                        waiting[key], before_run[key],
+                        "preflight must not duplicate native work: {key}"
+                    );
+                }
+                assert_eq!(
+                    retained["resumes"].as_u64().unwrap(),
+                    before["resumes"].as_u64().unwrap() + 1
+                );
+                service.0.kill().unwrap();
+                service.0.wait().unwrap();
+                assert_eq!(
+                    p.cli(&p.f.state, &["scenario", "driver-status", "scoped"]),
+                    retained
+                );
+                // A standalone restart before the due tick neither dispatches nor refunds the reservation.
+                p.cli(&p.f.state, &["scenario", "drive", "scoped", "--once"]);
+                assert_eq!(
+                    p.cli(&p.f.state, &["scenario", "driver-status", "scoped"]),
+                    retained
+                );
+                let mut state: Value =
+                    serde_json::from_slice(&std::fs::read(service_file).unwrap()).unwrap();
+                assert_eq!(state["posts"], 0);
+                assert_eq!(state["pushes"], 0);
+                state["transport_unavailable"] = json!(false);
+                write(service_file, &state);
+                service = spawn();
+            }
             interrupted = true;
         }
         let run = p.cli(&p.f.state, &["scenario", "show", "scoped"]);

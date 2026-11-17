@@ -541,7 +541,7 @@ Creation refuses an existing label. Replay checks the revision chain and account
 missing ownership and corrupt journals fail closed.
 
 Roadmaps share `runs/scenarios.sqlite`, its immediate transactions, private ownership and checksum
-with Runs and Ants. The journal is now `af/scenario-store@15`; the previous Store shape is refused
+with Runs and Ants. The journal is now `af/scenario-store@16`; the previous Store shape is refused
 without migration. The unchanged 16 MiB document bound includes all roadmap history; the Ant
 retention policy above does not erase goal provenance or roadmap revisions. The ordinary
 machine Storage Budget counts these bytes as retained Store remainder; pruning never silently
@@ -660,7 +660,7 @@ Task/source receipts. It reads no owner-supplied JSON artifact file and launches
 Fresh Task planning requires the exact durable native template-pin record in the selected Task
 Store before creating a Task. An authorized template digest alone cannot substitute authority from
 another committed source. The combined current contracts are Scenario/Bundle 9, Policy 8,
-Pin/Run/List 10, Ant 10, Ant Pin/Tick 11, State/List 12, inspection 7 and Store 15. Earlier
+Pin/Run/List 10, Ant 10, Ant Pin/Tick 11, State/List 12, inspection 7 and Store 16 with driver 2. Earlier
 shapes are refused. The [composition decision](adr/2026-11-17-compose-scoped-implementation-and-native-nightly-contracts.md)
 records both parents and the separately scoped implementation and nightly capabilities.
 
