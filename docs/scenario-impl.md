@@ -281,3 +281,11 @@ They compare Scenario charges to distinct native settled Attempt receipts, inclu
 probe charges and zero-token checks. They do not establish paid live-provider behavior, external
 GitHub publication, physical VM reboot or mid-Worker termination. The original issue's final
 integration and independent base verification remain separate operator steps.
+
+The driver considers elapsed limits only for unfinished Scenario frames. A completed child's
+retained evidence does not impose its former deadline on a later parent Wait. The isolated
+`driver::tests::completed_child_deadline_does_not_expire_parent_wait_after_restart` regression
+completes a native child, reopens its journal after that child's deadline, and resumes the parent's
+Wait without new dispatch or charges. It also checks that the parent's own deadline still produces
+a retained boundary blocker. This journal-reopen test does not simulate power loss.
+See the [active-frame decision](adr/2026-11-17-bound-implementation-driving-to-active-frames.md).

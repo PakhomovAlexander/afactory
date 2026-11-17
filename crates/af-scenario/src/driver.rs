@@ -248,6 +248,28 @@ pub fn once(store: &Store, id: &str) -> Result<Run> {
     once_inner(store, id, true)
 }
 
+/// Completed child frames retain evidence, not a deadline on subsequent parent work.
+/// Use the same frontier for expiry and sleeping so an expired completed child cannot
+/// either stop the Run or turn the service's next wake into an immediate busy loop.
+fn deadline(run: &Run) -> u64 {
+    let mut due = run.created_unix_ms + run.limits.max_wall_ms;
+    if let Some(scope) = &run.pin.policy.implementation_startup {
+        due = due.min(scope.expires_unix_ms);
+    }
+    for frame in run.frames.values().filter(|frame| frame.outputs.is_none()) {
+        due = due.min(
+            frame.started_unix_ms
+                + run.pin.bundle.definitions[&frame.scenario]
+                    .limits
+                    .max_wall_ms,
+        );
+        for progress in frame.steps.iter().filter(|p| p.status.active()) {
+            due = due.min(progress.deadline_unix_ms);
+        }
+    }
+    due
+}
+
 fn once_inner(store: &Store, id: &str, preflight: bool) -> Result<Run> {
     let _driver = store.lock_driver(id)?;
     let at = store.host.authorization_time()?;
@@ -269,23 +291,7 @@ fn once_inner(store: &Store, id: &str, preflight: bool) -> Result<Run> {
             .drivers
             .get_mut(id)
             .ok_or("Scenario driver was not admitted at startup")?;
-        let expired = run.frames.values().any(|frame| {
-            frame.started_unix_ms
-                + run.pin.bundle.definitions[&frame.scenario]
-                    .limits
-                    .max_wall_ms
-                <= at
-                || frame
-                    .steps
-                    .iter()
-                    .any(|p| p.status.active() && p.deadline_unix_ms <= at)
-        }) || run.created_unix_ms + run.limits.max_wall_ms <= at
-            || run
-                .pin
-                .policy
-                .implementation_startup
-                .as_ref()
-                .is_some_and(|scope| scope.expires_unix_ms <= at);
+        let expired = deadline(run) <= at;
         if run.status.active() && expired {
             let diagnostic =
                 "Scenario driver reached immutable elapsed-time or startup expiry boundary"
@@ -399,23 +405,7 @@ pub fn drive_until(store: &Store, id: &str, stop: impl Fn() -> bool) -> Result<R
             continue;
         }
         let now = store.host.authorization_time()?;
-        let mut due = driver
-            .next_unix_ms
-            .min(run.created_unix_ms + run.limits.max_wall_ms);
-        if let Some(scope) = &run.pin.policy.implementation_startup {
-            due = due.min(scope.expires_unix_ms);
-        }
-        for frame in run.frames.values() {
-            due = due.min(
-                frame.started_unix_ms
-                    + run.pin.bundle.definitions[&frame.scenario]
-                        .limits
-                        .max_wall_ms,
-            );
-            for progress in frame.steps.iter().filter(|p| p.status.active()) {
-                due = due.min(progress.deadline_unix_ms);
-            }
-        }
+        let due = driver.next_unix_ms.min(deadline(&run));
         let delay = due.saturating_sub(now).min(30_000);
         let mut delay = delay;
         while delay > 0 && !stop() {
@@ -429,7 +419,7 @@ pub fn drive_until(store: &Store, id: &str, stop: impl Fn() -> bool) -> Result<R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::{START, TestHost, limits, simple};
+    use crate::tests::{DAY, START, TestHost, limits, simple};
 
     fn run() -> Run {
         let (bundle, policy) = simple();
@@ -547,5 +537,72 @@ mod tests {
         retired["schema"] = serde_json::json!("af/scenario-store@13");
         retired.as_object_mut().unwrap().remove("drivers");
         assert!(serde_json::from_value::<crate::store::World>(retired).is_err());
+    }
+
+    #[test]
+    fn completed_child_deadline_does_not_expire_parent_wait_after_restart() {
+        let at = crate::runtime::now().unwrap();
+        let started = at - 2 * DAY;
+        let (mut bundle, policy) = simple();
+        let mut child = bundle.definitions["main"].clone();
+        child.limits.max_wall_ms = DAY;
+        child.steps[0].timeout_ms = DAY;
+        child.steps[0].when = Some(Binding::Literal {
+            value: Box::new(Datum::Boolean(false)),
+        });
+        let parent = bundle.definitions.get_mut("main").unwrap();
+        let mut invoke = parent.steps[0].clone();
+        invoke.id = "child".into();
+        invoke.inputs.clear();
+        invoke.outputs = child.outputs.clone();
+        invoke.timeout_ms = DAY;
+        invoke.operation = Kind::Scenario {
+            scenario: "child".into(),
+        };
+        parent.steps.insert(0, invoke);
+        bundle.definitions.insert("child".into(), child);
+        let host = std::sync::Arc::new(TestHost::default());
+        host.startup_time
+            .store(at, std::sync::atomic::Ordering::Relaxed);
+        let run = Run::new(
+            host.as_ref(),
+            "parent".into(),
+            Pin::new(host.as_ref(), bundle, policy).unwrap(),
+            BTreeMap::new(),
+            limits(),
+            started,
+            None,
+        )
+        .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state");
+        let mut store = Store::isolated(&path).unwrap();
+        store.host = host.clone();
+        store.update(|w| w.admit_run(run)).unwrap();
+        let waiting = crate::runtime::resume(&store, "parent", Some(started)).unwrap();
+        assert_eq!(waiting.status, Status::Waiting);
+        assert!(waiting.frames["root/child"].outputs.is_some());
+        assert_eq!(deadline(&waiting), started + 9 * DAY);
+        let original_child = waiting.frames["root/child"].clone();
+        drop(store);
+
+        let mut store = Store::isolated(&path).unwrap();
+        store.host = host.clone();
+        let resumed = once(&store, "parent").unwrap();
+        assert_eq!(resumed.status, Status::Waiting);
+        assert_eq!(resumed.frames["root/child"], original_child);
+        assert_eq!(resumed.dispatches, waiting.dispatches);
+        assert_eq!(resumed.task_charges, waiting.task_charges);
+        assert!(store.read().unwrap().drivers["parent"].blocker.is_none());
+
+        // The active parent's own immutable deadline still stops the Run exactly.
+        host.startup_time
+            .store(started + 9 * DAY, std::sync::atomic::Ordering::Relaxed);
+        let stopped = once(&store, "parent").unwrap();
+        assert_eq!(stopped.status, Status::Failed);
+        assert!(matches!(
+            store.read().unwrap().drivers["parent"].blocker,
+            Some(Blocker::Boundary { .. })
+        ));
     }
 }
