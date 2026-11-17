@@ -80,6 +80,11 @@ path = "junit.xml"
 #   creation, through two processes' wake-ups (the writer's consumer thread, tail's 250 ms
 #   look). Seen failing in a full gate beside the suite (issue #331); its other assertions measure
 #   nothing. Alone it took 8-12 s under 14 CPU-bound and 2 spawning workers at load 70-267.
+# - the six native publication/recovery fixtures below: they assert the real 240 s
+#   driver bound, 120 s publication-step deadlines and 30 s adapter calls. In macOS CI
+#   six failed while sharing threads; three passed alone before the existing isolation
+#   rerun budget expired. Hold the suite's threads under the same real-time rule;
+#   keep every deadline, fault, cadence and accounting assertion intact.
 # The guarded kernel measurement is manual (`make perf-kernel-measure`).
 # Its refusal half runs in the ordinary perf class without exclusivity (ADR-0252).
 [[profile.default.overrides]]
@@ -98,6 +103,12 @@ test(/::identity_rechecks_cancel_an_inflight_status_process$/)
 | test(/::targeted_starter_repair_uses_current_evidence$/)
 | test(/concurrent_short_commands_complete_within_their_real_time_bounds$/)
 | test(/::telemetry_tail_follows_a_live_run_within_the_flush_latency$/)
+| test(/^scenario::performance::native_scoped_default30s_service_publishes_one_pr_with_exact_native_accounting$/)
+| test(/^scenario::performance::native_scoped_default30s_service_recovers_a_killed_driver_reservation$/)
+| test(/^scenario::performance::native_scoped_default30s_routes_gate_and_review_findings_through_two_fresh_repairs$/)
+| test(/^scenario::performance::native_scoped_default30s_repairs_rejected_whole_goal_verification_before_publication$/)
+| test(/^scenario::performance::native_scoped_driver_recovers_transient_preflight_after_process_restart$/)
+| test(/^scenario::performance::shipped_performance_loop_delivers_research_and_publishes_verified_improvement_with_recovery$/)
 '''
 threads-required = "num-test-threads"
 priority = 100
