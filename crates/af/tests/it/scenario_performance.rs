@@ -2760,7 +2760,16 @@ fn drive_native_scoped(p: &Performance, service_file: &Path, interrupt: bool) ->
             run["waiting"],
             std::fs::read_to_string(service_file).unwrap_or_default()
         );
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        // Each observation opens and validates the native Store in a new CLI process.
+        // After observing the injected interruption, inspect at most once per second
+        // rather than competing continuously with native settlement on CI runners.
+        // Keep the short poll while waiting to kill the driver at its fixture barrier.
+        let observation_delay = if interrupt && !interrupted {
+            100
+        } else {
+            1_000
+        };
+        std::thread::sleep(std::time::Duration::from_millis(observation_delay));
     };
     assert_eq!(interrupted, interrupt);
     let cancelled = p.cli(
@@ -2776,7 +2785,12 @@ fn drive_native_scoped(p: &Performance, service_file: &Path, interrupt: bool) ->
     assert_eq!(cancelled["status"], "cancelled");
     // Service shutdown follows the retained due reservation, not a status != waiting shortcut.
     while service.0.try_wait().unwrap().is_none() {
-        assert!(std::time::Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "cancelled driver did not settle: retained={}, stderr={}",
+            p.cli(&p.f.state, &["scenario", "driver-status", "scoped"]),
+            std::fs::read_to_string(p.f.machine.join("driver-stderr")).unwrap()
+        );
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     run
