@@ -129,7 +129,7 @@ def command(name, supervisor, docker="docker", lab=LAB):
 
 def run(supervisor, owner=None):
     """Invoked means required: provisioning, assertion and removal failures all fail."""
-    name = "af-contained-flow-probe-" + secrets.token_hex(8)
+    name = "af-perf-telemetry-flow-probe-" + secrets.token_hex(8)
     if owner is not None:
         owner.begin(name)
     try:
