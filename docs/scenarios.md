@@ -660,8 +660,9 @@ Task/source receipts. It reads no owner-supplied JSON artifact file and launches
 Fresh Task planning requires the exact durable native template-pin record in the selected Task
 Store before creating a Task. An authorized template digest alone cannot substitute authority from
 another committed source. The combined current contracts are Scenario/Bundle 9, Policy 8,
-Pin/Run/List 10, Ant 10, Ant Pin/Tick 11, State/List 12, inspection 7 and Store 16 with driver 2. Earlier
-shapes are refused. The [composition decision](adr/2026-11-17-compose-scoped-implementation-and-native-nightly-contracts.md)
+Pin/Run/List 10, Ant 10, Ant Pin/Tick 11, State/List 12, inspection 7 and Store 16 with driver 2.
+Earlier shapes are refused. The
+[composition decision](adr/2026-11-17-compose-scoped-implementation-and-native-nightly-contracts.md)
 records both parents and the separately scoped implementation and nightly capabilities.
 
 Nightly releases use a validated `nightly_tag` scalar and `nightly_tag_text` projection. Daily
