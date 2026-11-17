@@ -8,6 +8,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 
 sys.dont_write_bytecode = True
@@ -269,6 +270,66 @@ class ReleaseContract(unittest.TestCase):
             from perflab.telemetry_exec import Outcome
             smoke.failed_task_document(self.root,
                 Outcome(1, b'', 0, b'0.99.0 is named by no fixture contract', 52, 0))
+
+    def test_disk_refusal_smoke_requires_incomplete_and_preserves_guards(self):
+        smoke = telemetry_lab.script_module('scripts/performance/tests/telemetry_runtime_smoke.py')
+        registry, _ = telemetry_lab.load_registry()
+        config = telemetry_lab.configuration(registry, 'pr', rounds=1, pairs=1,
+                                             scale='smoke', corpus_runs=10)
+        document = {
+            'phase': {'kind': 'finished'},
+            'result': {'execution': 'incomplete', 'acceptance': 'inconclusive'},
+            'attempts': 1,
+            'run_reports': [{'report': {'nodes': [
+                {'node': 'root.nodes.check', 'outcome': {'kind': 'completed'}}]}}],
+            'runtime_observations': [],
+        }
+        diagnostic = b'insufficient_disk: finished/gate_failed/preflight_failed'
+        for case in ('valid', 'exhausted', 'completed', 'accepted', 'attempts', 'phase',
+                     'check', 'evidence', 'runtime', 'disk', 'cause', 'cleanup'):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                receipt = json.loads(json.dumps(document))
+                stderr = diagnostic
+                if case in ('exhausted', 'completed'):
+                    receipt['result']['execution'] = case
+                elif case == 'accepted':
+                    receipt['result']['acceptance'] = 'satisfied'
+                elif case == 'attempts':
+                    receipt['attempts'] = 2
+                elif case == 'phase':
+                    receipt['phase']['kind'] = 'running'
+                elif case == 'check':
+                    receipt['run_reports'][0]['report']['nodes'][0]['outcome']['kind'] = 'failed'
+                elif case == 'evidence':
+                    receipt['run_reports'][0]['report']['error'] = 'Task runtime evidence cannot be empty'
+                elif case == 'runtime':
+                    receipt['runtime_observations'] = [{}]
+                elif case == 'disk':
+                    stderr = b'finished/gate_failed/preflight_failed'
+                elif case == 'cause':
+                    stderr = b'insufficient_disk:'
+
+                calls = []
+                def run(execution):
+                    calls.append(execution)
+                    path = Path(execution.cwd) / 'bench/telemetry-bench-concurrent/00-off'
+                    path.mkdir(parents=True)
+                    (path / 'stdout').write_text(json.dumps(receipt))
+                    (path / 'stderr').write_bytes(stderr)
+                    return smoke.telemetry_exec.Outcome(
+                        code=1, cleanup='uncertain' if case == 'cleanup' else 'confirmed')
+
+                own = Path(directory) / 'execution'
+                executor = SimpleNamespace(directory=str(own), python=sys.executable, run=run)
+                if case == 'valid':
+                    smoke.exercise(executor, registry, config, '/unused/af', refuse=True)
+                    self.assertFalse(own.exists())
+                else:
+                    with self.assertRaises(AssertionError):
+                        smoke.exercise(executor, registry, config, '/unused/af', refuse=True)
+                    self.assertTrue(own.exists(), 'failed evidence must be retained')
+                self.assertEqual(len(calls), 1)
+                self.assertIn('--keep', calls[0].argv)
 
     def test_real_preflight_cli_and_schema_writer_refuse_drift(self):
         shutil.copy(ROOT / 'scripts/release-contract.py', self.root / 'scripts')

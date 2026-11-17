@@ -3977,8 +3977,8 @@
   },
   {
    "path": "scripts/performance/tests/telemetry_runtime_smoke.py",
-   "sha256": "sha256:ac2f24a988cca0e63a25a21c19dbbd60bba890fe0e6b2f94e0c03304ab159db3",
-   "size": 9584
+   "sha256": "sha256:11848eeb67cb59dfd82e8c3da0c5b505a74af0bf349d636d1db9fb125d11e8bc",
+   "size": 9676
   },
   {
    "path": "scripts/performance/tests/telemetry_subreaper.py",
@@ -4306,7 +4306,7 @@
    "size": 6781
   }
  ],
- "harness_digest": "sha256:54662141127c6304f3977e75e16e0902e19c4f448a6fe48136a5d5c4accff8c9",
+ "harness_digest": "sha256:732c9af2eacf3984e3866931a07561b1512147d2a065a1666afb003f59744797",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",

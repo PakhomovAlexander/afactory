@@ -402,6 +402,7 @@ fn unstarted_check_keeps_its_original_disk_refusal_without_empty_runtime_evidenc
         text(&output)
     );
     let shown = document(&output);
+    assert_eq!(shown["result"]["execution"], "incomplete", "{shown}");
     assert_eq!(shown["result"]["acceptance"], "inconclusive", "{shown}");
     assert!(shown.get("runtime_observations").is_none(), "{shown}");
     let node = shown["run_reports"][0]["report"]["nodes"]
