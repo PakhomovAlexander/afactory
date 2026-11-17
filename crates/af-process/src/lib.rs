@@ -21,17 +21,17 @@ mod spawn;
 use capture::{Caps, captured_inner, run_supervised_inner};
 pub use capture::{
     SupervisedCapture, run_supervised_captured, run_supervised_captured_bounded,
-    run_supervised_captured_bounded_observed, run_supervised_captured_bounded_until,
-    run_supervised_captured_cancellable, run_supervised_captured_cancellable_with_policy,
-    run_supervised_captured_observed, run_supervised_captured_streaming,
-    run_supervised_captured_with_policy,
+    run_supervised_captured_bounded_observed, run_supervised_captured_bounded_settling_until,
+    run_supervised_captured_bounded_until, run_supervised_captured_cancellable,
+    run_supervised_captured_cancellable_with_policy, run_supervised_captured_observed,
+    run_supervised_captured_streaming, run_supervised_captured_with_policy,
 };
 use drain::{collect_after_kill, collect_stderr, drain_async};
 pub use live::{kill_live_process_groups, live_process_groups};
 pub use observe::{ObservedChunk, ObservedOutput, ObservedStream, OutputObserver, observer};
 pub use reaper::{TREE_VARIABLE, descendant_cleanup_fallback};
 pub use rusage::Rusage;
-pub use spawn::spawn;
+pub use spawn::{SpawnAdmission, spawn};
 
 const STDIN_EXIT_GRACE: Duration = Duration::from_millis(500);
 const OUTPUT_DRAIN_GRACE: Duration = Duration::from_secs(5);

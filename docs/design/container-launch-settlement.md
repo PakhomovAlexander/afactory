@@ -9,6 +9,13 @@ This is a client launch boundary: scheduling inside an admitted OS spawn or daem
 provide an atomic daemon-side wall-clock guarantee. Existing post-launch supervision still kills
 and reaps the owned process group, preserving output and usage evidence.
 
+Create clients use the same admission boundary with the original execution deadline and caller
+cancellation, including after scheduling, the platform lock and executable-busy retries. Once
+admitted, their supervision uses a separate settlement deadline and internal stop signal so an
+in-flight acknowledgement can survive caller expiry or cancellation. A typed pre-spawn refusal
+has no PID and can close its empty intent; any post-spawn failure remains uncertain without an
+acknowledged identity. Payload and export admission still use execution authority.
+
 Creation settlement and removal retain the existing shared cleanup deadline. A failed removal of
 an acknowledged full ID may mean a previous removal succeeded before the owner deleted its CID
 journal. One same-context `ps --all --no-trunc --quiet --filter id=FULL_ID` can establish absence
@@ -18,7 +25,8 @@ object or truncated response retains the journal and writable roots. Pending, ma
 intents remain refused before probing. No persisted shape changes in this repair.
 
 Portable regressions cover deadline/cancellation after durable acknowledgement, zero/expired
-spawn admission, and retained worker/export/helper journals after removal, including failed,
+spawn admission, deterministic busy-retry refusal and delayed create acknowledgement after
+expiry/cancellation, and retained worker/export/helper journals after removal, including failed,
 nonempty and truncated absence evidence. The cancellation transport models a still-present full
 ID after failed removal and checks the exact probe arguments without launching a payload. The
 existing live 250 ms timeout probe remains unchanged; only the native operator gate can validate

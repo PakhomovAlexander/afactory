@@ -29,9 +29,13 @@ pub(super) fn create(
         let (send, receive) = std::sync::mpsc::sync_channel(1);
         let stop = &stop;
         scope.spawn(move || {
-            let capture = af_process::run_supervised_captured_bounded_until(
+            let capture = af_process::run_supervised_captured_bounded_settling_until(
                 command,
                 None,
+                af_process::SpawnAdmission {
+                    deadline,
+                    cancellation,
+                },
                 deadline + CLEANUP_TIMEOUT,
                 ExitPolicy::KillDescendants,
                 Some(stop),
@@ -268,6 +272,15 @@ fn launch_after_ack(
             creation.id = None;
         }
     }
+    // These typed errors with no PID prove that the shared spawn boundary admitted no
+    // client. An admitted client's failed or lost acknowledgement never proves cleanup.
+    let not_admitted = creation.capture.pid.is_none()
+        && matches!(
+            creation.capture.status,
+            Err(SupervisedError::Spawn(_)
+                | SupervisedError::Cancelled
+                | SupervisedError::TimedOut { .. })
+        );
     after_ack();
     let mut capture = if creation.id.is_some() {
         let mut start = std::process::Command::new(runtime);
@@ -302,7 +315,7 @@ fn launch_after_ack(
     }
     let clean = match creation.id {
         Some(id) => remove(runtime, &id, home, cleanup_deadline).is_ok(),
-        None => matches!(capture.status, Err(SupervisedError::Spawn(_))),
+        None => not_admitted,
     };
     if clean {
         if let Some(path) = journal {
@@ -398,21 +411,22 @@ esac
     // cancellation. No elapsed-time guess determines which side of the race we exercise.
     #[test]
     fn delayed_create_is_settled_before_exact_removal_and_never_starts_after_cancellation() {
-        for worker in [false, true] {
-            for acknowledge in [false, true] {
-                let root = tempfile::tempdir().unwrap();
-                let runtime = root.path().join("runtime");
-                for name in ["ready", "release"] {
-                    nix::unistd::mkfifo(
-                        &root.path().join(name),
-                        nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
-                    )
-                    .unwrap();
-                }
-                super::super::tests::write_runtime(
-                    &runtime,
-                    &format!(
-                        r#"#!/bin/sh
+        for expire in [false, true] {
+            for worker in [false, true] {
+                for acknowledge in [false, true] {
+                    let root = tempfile::tempdir().unwrap();
+                    let runtime = root.path().join("runtime");
+                    for name in ["ready", "release"] {
+                        nix::unistd::mkfifo(
+                            &root.path().join(name),
+                            nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+                        )
+                        .unwrap();
+                    }
+                    super::super::tests::write_runtime(
+                        &runtime,
+                        &format!(
+                            r#"#!/bin/sh
 cd "$(dirname "$0")" || exit 90
 case "$1" in
 info) exit 0;;
@@ -430,90 +444,124 @@ rm)
 ps) exit 0;;
 esac
 "#
-                    ),
-                );
-                let flag = AtomicBool::new(false);
-                std::thread::scope(|scope| {
-                    scope.spawn(|| {
-                        let mut ready = String::new();
-                        std::fs::File::open(root.path().join("ready"))
-                            .unwrap()
-                            .read_to_string(&mut ready)
-                            .unwrap();
-                        assert_eq!(ready, "ready");
-                        // Model the old helper's misleading rm/absence result while daemon
-                        // creation is blocked. This must grant the new lifecycle no authority.
-                        let output = std::process::Command::new(&runtime)
-                            .args(["rm", "-f", "af-gate-race"])
-                            .output()
-                            .unwrap();
-                        assert!(output.status.success());
-                        assert!(!root.path().join("daemon").exists());
-                        flag.store(true, Ordering::Release);
-                        std::fs::File::create(root.path().join("release"))
-                            .unwrap()
-                            .write_all(b"commit\n")
-                            .unwrap();
-                    });
-                    let provider = ContainerProvider::with_runtime(&runtime);
-                    if worker {
-                        std::fs::create_dir(root.path().join("package")).unwrap();
-                        std::fs::create_dir(root.path().join("empty")).unwrap();
-                        let capture = provider
-                            .with_worker_layout(WorkerContainerLayout {
-                                package: root.path().join("package"),
-                                roots: vec![],
-                                source_writable: true,
-                                base: None,
-                                processes: 32,
-                                disk_bytes: 4096,
-                                probe_shell: "/bin/sh".into(),
-                            })
-                            .with_identity_probe_root(&root.path().join("empty"))
-                            .exec_worker_captured(
-                                root.path(),
-                                "/bin/true",
-                                &[],
-                                &[],
-                                vec![],
-                                Instant::now() + Duration::from_secs(120),
+                        ),
+                    );
+                    let flag = AtomicBool::new(false);
+                    let deadline = Instant::now() + Duration::from_secs(2);
+                    std::thread::scope(|scope| {
+                        scope.spawn(|| {
+                            let mut ready = String::new();
+                            std::fs::File::open(root.path().join("ready"))
+                                .unwrap()
+                                .read_to_string(&mut ready)
+                                .unwrap();
+                            assert_eq!(ready, "ready");
+                            // Model the old helper's misleading rm/absence result while daemon
+                            // creation is blocked. This must grant the new lifecycle no authority.
+                            let output = std::process::Command::new(&runtime)
+                                .args(["rm", "-f", "af-gate-race"])
+                                .output()
+                                .unwrap();
+                            assert!(output.status.success());
+                            assert!(!root.path().join("daemon").exists());
+                            if expire {
+                                let (_send, receive) = std::sync::mpsc::channel::<()>();
+                                assert!(matches!(
+                                    receive.recv_timeout(
+                                        deadline.saturating_duration_since(Instant::now())
+                                    ),
+                                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                                ));
+                            } else {
+                                flag.store(true, Ordering::Release);
+                            }
+                            std::fs::File::create(root.path().join("release"))
+                                .unwrap()
+                                .write_all(b"commit\n")
+                                .unwrap();
+                        });
+                        let provider = ContainerProvider::with_runtime(&runtime);
+                        if worker {
+                            std::fs::create_dir(root.path().join("package")).unwrap();
+                            std::fs::create_dir(root.path().join("empty")).unwrap();
+                            let capture = provider
+                                .with_worker_layout(WorkerContainerLayout {
+                                    package: root.path().join("package"),
+                                    roots: vec![],
+                                    source_writable: true,
+                                    base: None,
+                                    processes: 32,
+                                    disk_bytes: 4096,
+                                    probe_shell: "/bin/sh".into(),
+                                })
+                                .with_identity_probe_root(&root.path().join("empty"))
+                                .exec_worker_captured(
+                                    root.path(),
+                                    "/bin/true",
+                                    &[],
+                                    &[],
+                                    vec![],
+                                    deadline,
+                                    Some(&flag),
+                                )
+                                .unwrap();
+                            assert_eq!(capture.cleanup_confirmed, acknowledge);
+                            assert_eq!(capture.filesystem_exported, acknowledge);
+                            assert!(if expire {
+                                matches!(
+                                    capture.capture.status,
+                                    Err(SupervisedError::TimedOut { .. })
+                                )
+                            } else {
+                                matches!(capture.capture.status, Err(SupervisedError::Cancelled))
+                            });
+                            if !acknowledge {
+                                assert_eq!(capture.capture.stderr, b"acknowledgement lost");
+                            }
+                        } else if expire {
+                            let (capture, clean, _) = launch(
+                                &runtime,
+                                vec!["run".into()],
+                                None,
+                                None,
+                                deadline,
                                 Some(&flag),
-                            )
-                            .unwrap();
-                        assert_eq!(capture.cleanup_confirmed, acknowledge);
-                        assert_eq!(capture.filesystem_exported, acknowledge);
-                        assert!(matches!(
-                            capture.capture.status,
-                            Err(SupervisedError::Cancelled)
-                        ));
-                        if !acknowledge {
-                            assert_eq!(capture.capture.stderr, b"acknowledgement lost");
+                                4096,
+                                None,
+                                false,
+                                ExitPolicy::KillDescendants,
+                            );
+                            assert!(matches!(
+                                capture.status,
+                                Err(SupervisedError::TimedOut { .. })
+                            ));
+                            assert_eq!(clean, acknowledge);
+                        } else {
+                            let error = provider
+                                .exec_evidenced_controlled(
+                                    root.path(),
+                                    "/bin/true",
+                                    &[],
+                                    &[],
+                                    deadline.saturating_duration_since(Instant::now()),
+                                    Some(&flag),
+                                )
+                                .unwrap_err();
+                            assert_eq!(error.cleanup_confirmed(), acknowledge, "{error}");
                         }
-                    } else {
-                        let error = provider
-                            .exec_evidenced_controlled(
-                                root.path(),
-                                "/bin/true",
-                                &[],
-                                &[],
-                                Duration::from_secs(120),
-                                Some(&flag),
-                            )
-                            .unwrap_err();
-                        assert_eq!(error.cleanup_confirmed(), acknowledge, "{error}");
-                    }
-                });
-                assert!(!root.path().join("started").exists());
-                assert_eq!(root.path().join("daemon").exists(), !acknowledge);
-                let removals = std::fs::read_to_string(root.path().join("removals")).unwrap();
-                assert_eq!(
-                    removals,
-                    if acknowledge {
-                        format!("af-gate-race\n{ID}\n")
-                    } else {
-                        "af-gate-race\n".into()
-                    }
-                );
+                    });
+                    assert!(!root.path().join("started").exists());
+                    assert_eq!(root.path().join("daemon").exists(), !acknowledge);
+                    let removals = std::fs::read_to_string(root.path().join("removals")).unwrap();
+                    assert_eq!(
+                        removals,
+                        if acknowledge {
+                            format!("af-gate-race\n{ID}\n")
+                        } else {
+                            "af-gate-race\n".into()
+                        }
+                    );
+                }
             }
         }
     }

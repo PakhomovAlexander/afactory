@@ -10,3 +10,6 @@
   complete exact-ID listing in the same private daemon context; uncertain intents remain preserved.
 - Model exact-ID presence probes in the cancellation test transport without starting a payload,
   preserving the existing cancellation and cleanup confirmation bounds.
+- Separate create-client admission from settlement: original expiry/cancellation closes every
+  spawn attempt and busy retry, while an admitted client may still acknowledge within the shared
+  cleanup allowance. Preserve uncertain post-spawn ownership and test both sides of this boundary.
