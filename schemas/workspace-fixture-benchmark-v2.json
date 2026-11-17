@@ -11,11 +11,12 @@
     "runs",
     "valid",
     "errors",
+    "timing_comparability",
     "comparison"
   ],
   "properties": {
     "schema": {
-      "const": "af/workspace-fixture-benchmark@1"
+      "const": "af/workspace-fixture-benchmark@2"
     },
     "suite": {
       "const": "scripts/test-scenario-git-workspace.py"
@@ -220,6 +221,30 @@
         "type": "string"
       }
     },
+    "timing_comparability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "reason"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "comparable",
+            "non_comparable",
+            "invalid"
+          ]
+        },
+        "reason": {
+          "enum": [
+            "equal_test_counts",
+            "added_passing_tests",
+            "invalid_evidence"
+          ]
+        }
+      }
+    },
     "comparison": {
       "anyOf": [
         {
@@ -257,5 +282,5 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:workspace-fixture-benchmark:1"
+  "$id": "urn:af:schema:workspace-fixture-benchmark:2"
 }

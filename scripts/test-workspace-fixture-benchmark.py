@@ -47,7 +47,7 @@ class BenchmarkTests(unittest.TestCase):
             ' def test_second(self):\n  self.assertTrue(True)\n' + extra +
             "if __name__ == '__main__': unittest.main()\n")
 
-    def run_benchmark(self):
+    def run_benchmark(self, timeout=600):
         self.git('add', '.')
         self.git('commit', '--allow-empty', '-qm', 'head fixture')
         head = self.git('rev-parse', 'HEAD')
@@ -56,14 +56,20 @@ class BenchmarkTests(unittest.TestCase):
         output = self.root / 'evidence'
         result = subprocess.run([sys.executable, '-I', '-S', '-B', str(ROOT / 'scripts/benchmark-workspace-fixtures.py'),
             '--repo', str(self.repo), '--base', self.base, '--head', head, '--output', str(output),
-            '--summary', str(self.root / 'job-summary.md')], env=self.env, capture_output=True, text=True)
+            '--summary', str(self.root / 'job-summary.md'), '--timeout', str(timeout)], env=self.env, capture_output=True, text=True)
         self.assertTrue((output / 'benchmark.json').exists(), result.stderr)
         report = B.read_report(output / 'benchmark.json')
         self.assertEqual([(r['pair'], r['side']) for r in report['runs']],
                          [(1, 'base'), (1, 'head'), (2, 'head'), (2, 'base'), (3, 'base'), (3, 'head')])
         for run in report['runs']:
-            self.assertTrue((output / run['log']).read_text())
-            self.assertEqual(json.loads((output / run['receipt']).read_text()), run['counts'])
+            self.assertTrue((output / run['log']).is_file())
+            if run['counts'] is not None:
+                self.assertTrue((output / run['log']).read_text())
+            receipt = output / run['receipt']
+            if receipt.exists():
+                self.assertEqual(json.loads(receipt.read_text()), run['counts'])
+            else:
+                self.assertIsNone(run['counts'])
             self.assertGreater(run['wall_seconds'], 0)
         self.assertEqual(report['sources']['base']['commit'], self.base)
         self.assertEqual(report['sources']['head']['commit'], head)
@@ -79,6 +85,8 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual([r['counts']['tests'] for r in report['runs']], [2] * 6)
         self.assertEqual([r['exit_code'] for r in report['runs']], [0] * 6)
         self.assertIsNotNone(report['comparison'])
+        self.assertEqual(report['timing_comparability'],
+                         dict(status='comparable', reason='equal_test_counts'))
 
     def test_failing_complete_head_retains_all_six_runs_and_refuses_comparison(self):
         self.write_suite('self.fail("fixture failure")')
@@ -89,11 +97,70 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual([r['exit_code'] for r in report['runs'] if r['side'] == 'head'], [1] * 3)
         self.assertEqual([r['counts']['tests'] for r in report['runs']], [2] * 6)
 
-    def test_unequal_complete_counts_refuse_comparison(self):
+    def test_added_passing_tests_succeed_without_timing_comparison(self):
         self.write_suite(extra=' def test_extra(self):\n  self.assertTrue(True)\n')
         result, report = self.run_benchmark()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(report['errors'], [])
+        self.assertTrue(report['valid'])
+        self.assertEqual(report['timing_comparability'],
+                         dict(status='non_comparable', reason='added_passing_tests'))
+        text = B.summary(report)
+        self.assertIn('non-comparable (added passing tests', text)
+        for forbidden in ('median', 'Head minus base', '%', 'speedup'):
+            self.assertNotIn(forbidden, text)
+        self.assertIsNone(report['comparison'])
+
+    def test_reduced_complete_head_is_refused(self):
+        self.write_suite()
+        self.script.write_text(self.script.read_text().replace('def test_second', 'def helper_second'))
+        result, report = self.run_benchmark()
         self.assertEqual(result.returncode, 1, result.stderr)
-        self.assertIn('unequal or absent test counts', report['errors'])
+        self.assertIn('head test count decreased', report['errors'])
+        self.assertIsNone(report['comparison'])
+
+    def test_per_side_drift_is_refused(self):
+        counter = self.root / 'counter'
+        self.script.write_text("import pathlib, unittest\n"
+            + f"counter = pathlib.Path({str(counter)!r})\n"
+            + "n = int(counter.read_text()) + 1 if counter.exists() else 1\n"
+              "counter.write_text(str(n))\n"
+              "class Complete(unittest.TestCase): pass\n"
+              "for i in range(n + 2): setattr(Complete, 'test_' + str(i), lambda self: None)\n"
+              "if __name__ == '__main__': unittest.main()\n")
+        result, report = self.run_benchmark()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('unstable or absent per-side test counts', report['errors'])
+        self.assertIsNone(report['comparison'])
+
+    def test_missing_skipped_and_timed_out_real_processes_are_refused(self):
+        # Every case goes through the pinned export, six processes, writer and reader.
+        cases = [('missing', 'raise SystemExit(0)\n'),
+                 ('skip', 'self.skipTest("fixture skip")'),
+                 ('timeout', 'import time; time.sleep(30)')]
+        for name, body in cases:
+            with self.subTest(case=name):
+                fixture = BenchmarkTests('runTest')
+                fixture.setUp()
+                try:
+                    if name == 'missing':
+                        fixture.script.write_text(body)
+                    else:
+                        fixture.write_suite(body)
+                    result, report = fixture.run_benchmark(timeout=1)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertFalse(report['valid'])
+                    self.assertIsNone(report['comparison'])
+                    self.assertEqual(report['timing_comparability']['status'], 'invalid')
+                finally:
+                    fixture.doCleanups()
+
+    def test_mutated_export_is_refused_even_with_passing_receipts(self):
+        self.write_suite("import pathlib; p=pathlib.Path(__file__); p.chmod(0o600); "
+                         "p.write_text(p.read_text() + '# mutated\\n')")
+        result, report = self.run_benchmark()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('head source export changed during benchmark', report['errors'])
         self.assertIsNone(report['comparison'])
 
     def test_early_successful_exit_is_incomplete_evidence(self):

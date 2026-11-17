@@ -277,13 +277,18 @@ Three pairs run base/head, head/base, base/head by default (`--pairs` accepts at
 `--timeout` bounds each complete suite process at 600 seconds by default; existing test deadlines
 and assertions remain intact. These are wall-clock runs without profiling.
 
-`benchmark.json` (`af/workspace-fixture-benchmark@1`) records platform, interpreter path/version
+`benchmark.json` (`af/workspace-fixture-benchmark@2`) records platform, interpreter path/version
 and binary digest, commit/tree/export/suite identities, individual wall times, exit codes, unittest
 counts and log names. Each sample also retains its full combined output and a versioned unittest
-receipt. Any failed, timed-out, skipped, incomplete or unequal-count suite invalidates the evidence;
-no median comparison is emitted for invalid evidence and the command fails. Valid evidence includes
-base/head medians, signed head-minus-base differences and the median paired difference. Timings
-are observations; the command asserts no hard performance threshold. `summary.md` carries the same
+receipt. Any failed, timed-out, skipped or incomplete suite, missing receipt, per-side count drift
+or decreased head test count invalidates the evidence and the command fails. Stable complete
+passing suites with additional head tests succeed as valid evidence, with `timing_comparability`
+status `non_comparable` and reason `added_passing_tests`; `comparison` is null. No timing comparison
+or speedup is claimed for unequal workloads. Equal stable passing counts have status `comparable`
+and reason `equal_test_counts`, with base/head medians, signed head-minus-base differences and the
+median paired difference. Invalid evidence has status `invalid`, reason `invalid_evidence` and no
+comparison. Writer and reader derive these fields from all samples; version 1 reports are refused.
+Timings are observations; the command asserts no hard performance threshold. `summary.md` carries the same
 results for people; `--summary FILE` also appends them to a GitHub job summary.
 
 The advisory `Workspace fixture benchmark` PR workflow runs that command on macOS and Linux for

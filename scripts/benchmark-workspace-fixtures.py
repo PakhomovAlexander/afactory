@@ -17,7 +17,7 @@ import tempfile
 import time
 
 sys.dont_write_bytecode = True
-KIND = 'af/workspace-fixture-benchmark@1'
+KIND = 'af/workspace-fixture-benchmark@2'
 SUITE = 'scripts/test-scenario-git-workspace.py'
 # Passed as code to the selected Python, never imported from the older source tree.
 RECORDER = r'''
@@ -135,7 +135,7 @@ def evaluate(runs, pairs):
                       for side in (('base', 'head') if pair % 2 else ('head', 'base'))]
     if [(r['pair'], r['side']) for r in runs] != expected_order:
         reasons.append('incomplete or non-alternating paired runs')
-    totals = set()
+    totals = {'base': set(), 'head': set()}
     for r in runs:
         c = r['counts']
         if r['exit_code'] != 0 or r['timed_out']:
@@ -148,13 +148,15 @@ def evaluate(runs, pairs):
                 or any(c[k] != 0 for k in ('failures', 'errors', 'skipped', 'expected_failures', 'unexpected_successes'))):
             reasons.append(f"{r['pair']}-{r['side']}: missing, incomplete or failing unittest receipt")
         else:
-            totals.add(c['tests'])
+            totals[r['side']].add(c['tests'])
         if not math.isfinite(r['wall_seconds']) or r['wall_seconds'] <= 0:
             reasons.append('invalid wall time')
-    if len(totals) != 1:
-        reasons.append('unequal or absent test counts')
+    if any(len(counts) != 1 for counts in totals.values()):
+        reasons.append('unstable or absent per-side test counts')
+    elif next(iter(totals['head'])) < next(iter(totals['base'])):
+        reasons.append('head test count decreased')
     comparison = None
-    if not reasons:
+    if not reasons and totals['base'] == totals['head']:
         base = statistics.median(r['wall_seconds'] for r in runs if r['side'] == 'base')
         head = statistics.median(r['wall_seconds'] for r in runs if r['side'] == 'head')
         deltas = [next(r['wall_seconds'] for r in runs if r['pair'] == p and r['side'] == 'head') -
@@ -164,6 +166,14 @@ def evaluate(runs, pairs):
                           head_minus_base_seconds=head - base, head_minus_base_percent=100 * (head - base) / base,
                           paired_head_minus_base_median_seconds=statistics.median(deltas))
     return reasons, comparison
+
+
+def timing_comparability(errors, comparison):
+    if errors:
+        return dict(status='invalid', reason='invalid_evidence')
+    if comparison is None:
+        return dict(status='non_comparable', reason='added_passing_tests')
+    return dict(status='comparable', reason='equal_test_counts')
 
 
 def suite_schema():
@@ -206,9 +216,11 @@ def report_schema():
             exit_code=dict(type=['integer', 'null']), timed_out=dict(type='boolean'),
             counts=dict(anyOf=[counts, dict(type='null')]), log=string, receipt=string))),
         valid=dict(type='boolean'), errors=dict(type='array', items=string),
+        timing_comparability=obj(dict(status=dict(enum=['comparable', 'non_comparable', 'invalid']),
+            reason=dict(enum=['equal_test_counts', 'added_passing_tests', 'invalid_evidence']))),
         comparison=dict(anyOf=[comparison, dict(type='null')])))
     return dict(schema, **{'$schema': 'https://json-schema.org/draft/2020-12/schema',
-                          '$id': 'urn:af:schema:workspace-fixture-benchmark:1'})
+                          '$id': 'urn:af:schema:workspace-fixture-benchmark:2'})
 
 
 def check_shape(value, schema):
@@ -255,6 +267,8 @@ def read_report(path):
         raise ValueError('benchmark validity differs from recorded evidence')
     if report['comparison'] != (comparison if report['valid'] else None):
         raise ValueError('benchmark comparison differs from recorded evidence')
+    if report['timing_comparability'] != timing_comparability(report['errors'], comparison):
+        raise ValueError('benchmark comparability differs from recorded evidence')
     return report
 
 
@@ -268,12 +282,15 @@ def summary(report):
     for r in report['runs']:
         count = (r['counts'] or {}).get('tests', 'missing')
         lines.append(f"| {r['pair']} | {r['side']} | {r['wall_seconds']:.3f} | {r['exit_code']} | {count} |")
-    if report['valid']:
+    if report['valid'] and report['comparison'] is not None:
         c = report['comparison']
         lines += ['', f"Base median {c['base_median_seconds']:.3f}s; head median {c['head_median_seconds']:.3f}s.",
                   f"Head minus base: {c['head_minus_base_seconds']:+.3f}s ({c['head_minus_base_percent']:+.2f}%).",
                   f"Median paired head minus base: {c['paired_head_minus_base_median_seconds']:+.3f}s.",
                   'Observed timings only; no performance threshold is asserted.']
+    elif report['valid']:
+        lines += ['', 'Timing: non-comparable (added passing tests on head).',
+                  'No timing comparison is reported for unequal workloads.']
     else:
         lines += ['', *report['errors']]
     return '\n'.join(lines) + '\n'
@@ -297,7 +314,8 @@ def main(argv=None):
     python = Path(sys.executable).resolve(strict=True)
     report = dict(schema=KIND, suite=SUITE, pairs=args.pairs, platform=platform.platform(),
                   interpreter=dict(path=str(python), version=sys.version, sha256=digest(python.read_bytes())),
-                  sources={}, runs=[], valid=False, errors=[], comparison=None)
+                  sources={}, runs=[], valid=False, errors=[], comparison=None,
+                  timing_comparability=timing_comparability(['not run'], None))
     with tempfile.TemporaryDirectory(prefix='workspace-benchmark-') as tmp:
         roots = {side: Path(tmp).resolve() / side for side in commits}
         for side, root in roots.items():
@@ -316,6 +334,7 @@ def main(argv=None):
                     report['errors'].append(side + ' source export changed during benchmark')
             report['valid'] = not report['errors']
             report['comparison'] = comparison if report['valid'] else None
+            report['timing_comparability'] = timing_comparability(report['errors'], comparison)
     path = output / 'benchmark.json'
     path.write_text(json.dumps(report, indent=2, allow_nan=False) + '\n')
     text = summary(read_report(path))
