@@ -598,26 +598,27 @@ Campaign selectors and their inspection documents are retired. Review plan captu
 Task plan; --authority selects trusted authority independently of source/base selectors.
 
 Scenario and Ant documents (ADR-0274; `af help scenarios`):
-  scenario validate: af/scenario-pin@6; start, show, resume, decide, cancel: af/scenario-run@6.
-  scenario decision-payload: af/scenario-decision@1; list: af/scenario-list@6.
-  ant validate: af/ant-pin@7; add, enable, pause, disable: af/ant-state@8;
-  ant show: af/ant-inspection@3; ant scheduler status/stop: af/ant-scheduler@1;
-  ant list: af/ant-list@8; tick: af/ant-tick@7.
+  scenario validate: af/scenario-pin@7; start, show, resume, decide, cancel: af/scenario-run@7.
+  scenario decision-payload: af/scenario-decision@1; list: af/scenario-list@7.
+  ant validate: af/ant-pin@8; add, enable, pause, disable: af/ant-state@9;
+  ant show: af/ant-inspection@4; ant scheduler status/stop: af/ant-scheduler@1;
+  ant list: af/ant-list@9; tick: af/ant-tick@8.
   Result presentation: af/result-document@1; rendered metadata: af/result-snapshot@1.
-  Definitions and machine policy: af/scenario@6, af/scenario-bundle@6, af/scenario-policy@5,
-  af/ant@7; signed envelopes: af/scenario-signed-decision@1.
+  Definitions and machine policy: af/scenario@7, af/scenario-bundle@7, af/scenario-policy@6,
+  af/ant@8; signed envelopes: af/scenario-signed-decision@1.
   Roadmaps: af/scenario-roadmap-proposal@2 (input), af/scenario-roadmap-revision@2 (validate),
   af/scenario-roadmap@3 (create, show, revise), af/scenario-roadmap-list@3 (list).
   Fresh templates: af/scenario-task-template@2; capture: af/scenario-template-pin@2.
-  Journal: af/scenario-store@10. Owned file envelope: af/scenario-owned-file@1.
+  Journal: af/scenario-store@11. Owned file envelope: af/scenario-owned-file@1.
   Research evidence: af/scenario-evidence-source@1.
   Experiment source: af/scenario-experiment-source-request@1 and af/scenario-experiment-source@1.
   Accepted Git candidates: af/git-candidate-source-request@1 and af/git-candidate-source@1.
   Performance publication: af/performance-pr-proof-request@1, af/performance-pr-proof@1,
   af/performance-pr-content@1, af/performance-publication-activation@1, af/github-performance-pr@1.
   Installed Git workspaces: af/git-workspace-config@2, af/git-workspace-content@1,
-  af/git-workspace-prepared@1 and af/git-workspace-state@2.
-  Bounded adapters: af/scenario-adapter-request@4 and af/scenario-adapter-response@1.
+  af/git-workspace-prepared@1 and af/git-workspace-state@3.
+  Native nightly service: af/nightly-service@1, af/nightly-job@1, af/nightly-completion@1.
+  Bounded adapters: af/scenario-adapter-request@5 and af/scenario-adapter-response@1.
   `af schema show ID` prints each schema; semantic admission additionally checks authority,
   exact bindings, signatures, budgets, lifecycle and transitive identity.
 

@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:performance-nightly-config:1",
-  "title": "af.nightly-config/1",
+  "$id": "urn:af:schema:performance-nightly-config:2",
+  "title": "af.nightly-config/2",
   "description": "The owner's nightly build configuration as parsed TOML (ADR-0265): the repository, the bare mirror and builds root, the pinned musl build image, the aarch64 user-mode runner, the nightly signing key pair, the check runs a green commit must carry and how far back the walk may go, the report's executor configuration and trend (ADR-0271), and, for publishing (ADR-0272), the write token, the optional Telegram bot and chat and how many nightly releases stay; for the systemd chain (ADR-0273), the root of the report directories and how long the measurement waits.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "af.nightly-config/1"
+      "const": "af.nightly-config/2"
     },
     "repository": {
       "type": "string",
@@ -64,6 +64,18 @@
       "type": "integer",
       "minimum": 1,
       "maximum": 200
+    },
+    "baseline_ref": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "maxLength": 256,
+          "pattern": "^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$"
+        }
+      ]
     },
     "github_token_file": {
       "type": "string",

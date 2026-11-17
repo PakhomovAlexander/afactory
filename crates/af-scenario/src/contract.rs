@@ -63,6 +63,7 @@ where
 #[serde(rename_all = "snake_case")]
 pub enum Port {
     Text,
+    NightlyTag,
     Boolean,
     Integer,
     Task,
@@ -81,6 +82,7 @@ pub enum Port {
 )]
 pub enum Datum {
     Text(String),
+    NightlyTag(String),
     Boolean(bool),
     Integer(u64),
     Task(TaskReceipt),
@@ -93,6 +95,7 @@ impl Datum {
     pub fn port(&self) -> Port {
         match self {
             Self::Text(_) => Port::Text,
+            Self::NightlyTag(_) => Port::NightlyTag,
             Self::Boolean(_) => Port::Boolean,
             Self::Integer(_) => Port::Integer,
             Self::Task(_) => Port::Task,
@@ -103,11 +106,15 @@ impl Datum {
         }
     }
     pub fn scalar(&self) -> bool {
-        matches!(self, Self::Text(_) | Self::Boolean(_) | Self::Integer(_))
+        matches!(
+            self,
+            Self::Text(_) | Self::NightlyTag(_) | Self::Boolean(_) | Self::Integer(_)
+        )
     }
     pub fn validate(&self) -> Result<()> {
         match self {
             Self::Text(s) => text(s),
+            Self::NightlyTag(s) => super::nightly::validate_tag(s),
             Self::Integer(n) => require(
                 *n <= af_contracts::json::SAFE_INTEGER_MAX as u64,
                 "Unsafe integer",
@@ -238,6 +245,7 @@ pub enum Binding {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Projection {
     ActionIntent,
+    NightlyTagText,
     WorkspaceSubject,
     WorkspaceRevision,
     WorkspacePublication,
@@ -253,6 +261,7 @@ pub enum Projection {
 impl Projection {
     fn types(&self) -> Result<(Port, Port)> {
         Ok(match self {
+            Self::NightlyTagText => (Port::NightlyTag, Port::Text),
             Self::ActionIntent
             | Self::WorkspaceSubject
             | Self::WorkspaceRevision
@@ -270,6 +279,10 @@ impl Projection {
     }
     pub fn apply(&self, value: Datum) -> Result<Datum> {
         Ok(match (self, value) {
+            (Self::NightlyTagText, Datum::NightlyTag(s)) => {
+                super::nightly::validate_tag(&s)?;
+                Datum::Text(s)
+            }
             (Self::WorkspaceSubject, Datum::Action(a)) => {
                 Datum::Text(super::workspace::Prepared::parse(&a)?.subject()?)
             }
@@ -356,8 +369,10 @@ impl Binding {
             Self::Equals { left, right } => {
                 let p = left.port(inputs, previous)?;
                 require(
-                    matches!(p, Port::Text | Port::Boolean | Port::Integer)
-                        && p == right.port(inputs, previous)?,
+                    matches!(
+                        p,
+                        Port::Text | Port::NightlyTag | Port::Boolean | Port::Integer
+                    ) && p == right.port(inputs, previous)?,
                     "Equality requires two scalars of the same type",
                 )?;
                 Ok(Port::Boolean)
@@ -408,6 +423,10 @@ impl Limits {
 #[serde(rename_all = "snake_case")]
 pub enum Operation {
     PublishPr,
+    NightlyBuildV1,
+    NightlyCompareV1,
+    NightlyReportV1,
+    PublishNightlyV1,
     PublishPerformancePrV1,
     Followup,
     Notify,
@@ -565,7 +584,7 @@ fn decision_origin(
 impl Bundle {
     pub fn validate(&self, host: &dyn crate::Host) -> Result<()> {
         require(
-            self.schema == "af/scenario-bundle@6"
+            self.schema == "af/scenario-bundle@7"
                 && !self.definitions.is_empty()
                 && self.definitions.len() <= 64,
             "Unsupported or oversized Scenario bundle",
@@ -709,7 +728,7 @@ impl Bundle {
 impl Scenario {
     fn validate(&self, bundle: &Bundle, host: &dyn crate::Host) -> Result<()> {
         require(
-            self.schema == "af/scenario@6"
+            self.schema == "af/scenario@7"
                 && !self.outputs.is_empty()
                 && self.outputs.len() <= 32
                 && self.inputs.len() <= 32
@@ -884,6 +903,21 @@ impl Scenario {
                         "Publication requires an exact human decision",
                     )?;
                     match grant.operation {
+                        Operation::NightlyBuildV1
+                        | Operation::NightlyCompareV1
+                        | Operation::NightlyReportV1
+                        | Operation::PublishNightlyV1 => {
+                            require(
+                                !requires_decision
+                                    && required_condition.as_deref()
+                                        == super::nightly::predecessor(grant.operation),
+                                "Nightly action requires its exact predecessor condition",
+                            )?;
+                            expected.insert("subject".into(), Port::Text);
+                            expected.insert("revision".into(), Port::Text);
+                            expected.insert("nightly_tag".into(), Port::NightlyTag);
+                            output = Port::Action;
+                        }
                         Operation::PublishPerformancePrV1 => {
                             require(
                                 !requires_decision && required_condition.is_none(),
@@ -1004,6 +1038,8 @@ pub struct Policy {
     pub task_templates: BTreeSet<String>,
     pub decision_keys: BTreeMap<String, String>,
     #[serde(default)]
+    pub nightly_releases: BTreeMap<String, super::nightly::Scope>,
+    #[serde(default)]
     pub performance_publications: BTreeMap<String, super::performance::Scope>,
     #[serde(deserialize_with = "unique")]
     pub file_roots: BTreeSet<PathBuf>,
@@ -1011,7 +1047,7 @@ pub struct Policy {
 impl Policy {
     pub fn validate(&self) -> Result<()> {
         require(
-            self.schema == "af/scenario-policy@5"
+            self.schema == "af/scenario-policy@6"
                 && self.adapters.len() <= 32
                 && self.decision_keys.len() <= 32
                 && self.task_templates.len() <= 256
@@ -1081,6 +1117,7 @@ impl Policy {
                 "Performance publication needs explicit machine standing scope",
             )?;
         }
+        super::nightly::validate_policy(self)?;
         for (owner, key) in &self.decision_keys {
             name(owner)?;
             minisign_verify::PublicKey::decode(key).map_err(|e| e.to_string())?;
@@ -1165,7 +1202,7 @@ impl Pin {
             .collect::<Result<_>>()?;
         let revision = hash(&(&bundle, &policy))?;
         Ok(Self {
-            schema: "af/scenario-pin@6".into(),
+            schema: "af/scenario-pin@7".into(),
             bundle,
             policy,
             revision,

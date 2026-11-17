@@ -51,8 +51,8 @@ FLOOR="0.8.0"
 RELEASE_PUB='untrusted comment: minisign public key 0FA9BDD8A1D67165
 RWRlcdah2L2pD6l9dkQHwwqt2PjfdxZTyuAZwArbnqaVkKPrkIGOmqAL'
 # crates/af/keys/nightly.pub — the separate key every nightly is signed with.
-NIGHTLY_PUB='untrusted comment: minisign public key 9FE7A5BA31A0FF7D
-RWR9/6AxuqXnnya4LimXyNrf+h51OTWMD0n7CNNM2GaLQra85ahJYtRn'
+NIGHTLY_PUB='untrusted comment: minisign public key 0596484DC93A8A62
+RWRiijrJTUiWBXElP+lR/MigoVbJl0ocR8kdyTnWAiTxWTqsEDPC+bWW'
 if [ "$channel" = nightly ] && [ -z "${AF_INSTALL_VERSION:-}" ] && [ -z "${AF_INSTALL_NIGHTLY_KEY:-}" ] && [ -z "$NIGHTLY_PUB" ]; then
   echo "af: this installer carries no nightly key (crates/af/keys/nightly.pub), so it cannot verify a nightly — fix: AF_INSTALL_NIGHTLY_KEY=<the nightly .pub file>, or leave AF_INSTALL_CHANNEL unset to install the newest release" >&2
   exit 1

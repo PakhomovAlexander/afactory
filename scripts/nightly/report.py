@@ -88,7 +88,7 @@ def now_ms():
 # Configuration ------------------------------------------------------------------------------
 
 def load_config(path):
-    """The af.nightly-config/1 TOML at `path` with its `[report]` table, defaults applied."""
+    """The af.nightly-config/2 TOML at `path` with its `[report]` table, defaults applied."""
     try:
         with open(path, "rb") as stream:
             data = stream.read(toml_file.MAX_TOML_BYTES + 1)
@@ -313,6 +313,11 @@ class Journal:
         if request["work"] != "telemetry" or request["submission"]["tag"] != tag:
             raise Unavailable("the original %s is refused: its request is no telemetry "
                               "nightly of %s" % (key, tag))
+        bind(request, key, record["head_sha"], record)
+        return self.telemetry_figures(record, request)
+
+    def telemetry_figures(self, record, request):
+        key = request["request_id"]
         bind(request, key, record["head_sha"], record)
         result_id = "local_" + request["request_id"][4:]
         path = os.path.join(self.root, "local-telemetry-history", "history.json")
@@ -677,7 +682,7 @@ def trend_section(journal, tag, nights, headline, current, current_reason):
     return {"nights": nights, "instances": instances, "refused": refused}
 
 
-def compose(config, date, github, host, clock):
+def compose(config, date, github, host, clock, comparison_core=None, comparison_telemetry=None):
     """The af.nightly-daily/1 document of the night `date`."""
     record = read_night(config, date)
     tag = record["tag"]
@@ -741,7 +746,7 @@ def compose(config, date, github, host, clock):
     else:
         core_error = None
         try:
-            found = journal.core(tag)
+            found = comparison_core if comparison_core is not None else journal.core(tag)
             bind(found[0], "nightly:%s:core" % tag, record["head_sha"], record)
             core = found
             sections["performance"] = performance_section(core, shipped)
@@ -750,7 +755,7 @@ def compose(config, date, github, host, clock):
             core_error = error
             mark("performance", error)
         try:
-            sections["telemetry"] = journal.telemetry(record)
+            sections["telemetry"] = comparison_telemetry if comparison_telemetry is not None else journal.telemetry(record)
             mark("telemetry")
         except Unavailable as error:
             mark("telemetry", error)
@@ -1249,7 +1254,7 @@ def parse(argv):
     commands.required = True
     command = commands.add_parser("compose", help="compose daily.json, report.html and "
                                   "digest.md of one night into a new directory")
-    command.add_argument("--config", required=True, help="the af.nightly-config/1 TOML with "
+    command.add_argument("--config", required=True, help="the af.nightly-config/2 TOML with "
                          "its [report] table")
     nightly_chain.add_night_options(command)
     directory = command.add_mutually_exclusive_group()

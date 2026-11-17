@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:performance-nightly-publish:1",
-  "title": "af.nightly-publish/1",
+  "$id": "urn:af:schema:performance-nightly-publish:2",
+  "title": "af.nightly-publish/2",
   "description": "What publishing one night did, builds_root/<date>/publish.json (ADR-0272): the pre-release of its tag with each asset's name, size and digest as GitHub reports them, or nothing for a skipped night; the Telegram message id or why there is none; the nightly pre-releases pruned, each whose release went but whose tag deletion failed, and the nightly-named releases refused as foreign; how many times the night was amended and when.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "af.nightly-publish/1"
+      "const": "af.nightly-publish/2"
     },
     "status": {
       "type": "string",
@@ -170,6 +170,34 @@
       "maxItems": 1024,
       "uniqueItems": true
     },
+    "failures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "stage": {
+            "type": "string",
+            "enum": [
+              "notification",
+              "pruning",
+              "foreign"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
+        },
+        "required": [
+          "stage",
+          "reason"
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 1026
+    },
     "amendments": {
       "type": "integer",
       "minimum": 0,
@@ -195,6 +223,7 @@
     "pruned",
     "prune_failures",
     "foreign",
+    "failures",
     "amendments",
     "published_unix_ms"
   ],
