@@ -44,7 +44,7 @@ class Preflight(unittest.TestCase):
         self.assertEqual(before, self.inspection)
         retired = copy.deepcopy(self.inspection)
         retired["schema"] = "af/task-inspection@18"
-        with self.assertRaisesRegex(ValueError, r"expected af task explain --json \(@20\)"):
+        with self.assertRaisesRegex(ValueError, r"expected af task explain --json \(@21\)"):
             MODULE.report(retired, self.checklist, self.now)
 
     def test_retired_campaign_plan_is_refused_without_a_reader(self):

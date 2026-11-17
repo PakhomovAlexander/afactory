@@ -23,13 +23,13 @@ macro_rules! schema {
 /// Every shipped schema: its document id (the `schema` field the document carries), its file
 /// under `schemas/`, and its bytes.
 pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
-    schema!("ant-inspection", 7),
-    schema!("ant-list", 12),
-    schema!("ant-pin", 11),
+    schema!("ant-inspection", 8),
+    schema!("ant-list", 13),
+    schema!("ant-pin", 12),
     schema!("ant-scheduler", 1),
-    schema!("ant-state", 12),
-    schema!("ant-tick", 11),
-    schema!("ant", 10),
+    schema!("ant-state", 13),
+    schema!("ant-tick", 12),
+    schema!("ant", 11),
     schema!("command-catalog", 1),
     schema!("error", 2),
     schema!("findings-sarif", 1),
@@ -38,7 +38,7 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("git-workspace-config", 3),
     schema!("git-workspace-content", 1),
     schema!("git-workspace-prepared", 1),
-    schema!("git-workspace-state", 5),
+    schema!("git-workspace-state", 6),
     schema!("github-performance-pr", 1),
     schema!("help-topic", 1),
     schema!("implementation-pr-live", 1),
@@ -62,44 +62,44 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("result-document", 1),
     schema!("result-snapshot", 1),
     schema!("review-decision-context", 1),
-    schema!("review-ledger", 2),
-    schema!("scenario-adapter-request", 7),
+    schema!("review-ledger", 3),
+    schema!("scenario-adapter-request", 8),
     schema!("scenario-adapter-response", 3),
-    schema!("scenario-bundle", 9),
+    schema!("scenario-bundle", 10),
     schema!("scenario-decision", 1),
     schema!("scenario-driver", 2),
     schema!("scenario-evidence-source", 1),
     schema!("scenario-experiment-source-request", 1),
     schema!("scenario-experiment-source", 1),
-    schema!("scenario-list", 10),
+    schema!("scenario-list", 11),
     schema!("scenario-owned-file", 1),
-    schema!("scenario-pin", 10),
+    schema!("scenario-pin", 11),
     schema!("scenario-policy", 8),
     schema!("scenario-roadmap-list", 3),
     schema!("scenario-roadmap-proposal", 2),
     schema!("scenario-roadmap-revision", 2),
     schema!("scenario-roadmap", 3),
-    schema!("scenario-run", 10),
+    schema!("scenario-run", 11),
     schema!("scenario-signed-decision", 1),
-    schema!("scenario-store", 16),
+    schema!("scenario-store", 17),
     schema!("scenario-task-template", 2),
     schema!("scenario-template-pin", 2),
-    schema!("scenario", 9),
-    schema!("task-attention", 1),
-    schema!("task-cancelled", 2),
-    schema!("task-checks", 3),
-    schema!("task-collected-inspection", 3),
-    schema!("task-detached", 3),
+    schema!("scenario", 10),
+    schema!("task-attention", 2),
+    schema!("task-cancelled", 3),
+    schema!("task-checks", 4),
+    schema!("task-collected-inspection", 4),
+    schema!("task-detached", 4),
     schema!("task-diff", 1),
-    schema!("task-event", 2),
-    schema!("task-findings", 2),
-    schema!("task-inspection", 20),
-    schema!("task-list-entry", 4),
-    schema!("task-list", 4),
+    schema!("task-event", 3),
+    schema!("task-findings", 3),
+    schema!("task-inspection", 21),
+    schema!("task-list-entry", 5),
+    schema!("task-list", 5),
     schema!("task-materialized", 1),
-    schema!("task-report", 3),
+    schema!("task-report", 4),
     schema!("task-selection", 3),
-    schema!("task-status", 2),
+    schema!("task-status", 3),
 ];
 
 /// `af schema show [ID]`: the schema `id` names, byte for byte, or without an id every id with
@@ -247,16 +247,16 @@ mod tests {
     fn an_unshipped_id_names_the_versions_that_are_shipped() {
         assert_eq!(
             refusal("af/task-status@1"),
-            "this af ships no schema af/task-status@1, only af/task-status@2; run af schema \
-             show af/task-status@2"
+            "this af ships no schema af/task-status@1, only af/task-status@3; run af schema \
+             show af/task-status@3"
         );
         assert_eq!(
-            refusal("task-status-v2.json"),
-            "this af ships no schema task-status-v2.json; `af schema show` lists the ids it ships"
+            refusal("task-status-v3.json"),
+            "this af ships no schema task-status-v3.json; `af schema show` lists the ids it ships"
         );
-        assert!(refusal("af/task-inspection@18").contains("only af/task-inspection@20"));
+        assert!(refusal("af/task-inspection@18").contains("only af/task-inspection@21"));
         let listing = listing();
         assert_eq!(listing.lines().count(), SCHEMAS.len());
-        assert!(listing.starts_with("af/ant-inspection@7  "), "{listing}");
+        assert!(listing.starts_with("af/ant-inspection@8  "), "{listing}");
     }
 }

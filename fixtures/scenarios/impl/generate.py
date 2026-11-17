@@ -73,6 +73,9 @@ if stage >= 2 or MODE == 'native-verifier':
     Path('NOTES.md').write_text('paginate(items, offset, limit) returns one page.\n')
 print(json.dumps({'schema':'af.worker-reply/1','outputs':{'report':[{'summary':'Native stage ' + str(stage)}]}}))
 """.replace('MODE', repr(mode))
+    if role == 'implementer' and mode == 'native-kernel':
+        # A real unchanged candidate makes native diff review refuse an empty Subject.
+        program = "import json; print(json.dumps({'schema':'af.worker-reply/1','outputs':{'report':[{'summary':'Unchanged candidate'}]}}))"
     if role == 'implementer' and mode == 'native-exhausted':
         # The native Attempt wall ends actual execution and seals its available partial tree.
         program = program.replace("print(json.dumps(", "import time; time.sleep(60)\nprint(json.dumps(")

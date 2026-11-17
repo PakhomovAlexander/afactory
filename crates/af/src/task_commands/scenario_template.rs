@@ -794,7 +794,7 @@ pub(crate) fn terminal_outcome(
                 .and_then(|p| p.snapshot_id.clone())
         });
     let value = TaskOutcome {
-        schema: "af/scenario-task-outcome@1".into(),
+        schema: "af/scenario-task-outcome@2".into(),
         receipt,
         outcome: view
             .state

@@ -337,7 +337,7 @@ print(json.dumps(source))
         return dict(type="text", value=value)
 
     def request(self, op, key, inputs, method="execute"):
-        return dict(schema="af/scenario-adapter-request@7", operation=op, intent_id="sha256:" + key * 64,
+        return dict(schema="af/scenario-adapter-request@8", operation=op, intent_id="sha256:" + key * 64,
                     input_digest=D, destination="github:octo/project", method=method, inputs=inputs)
 
     def adapter(self):
@@ -991,7 +991,7 @@ print(json.dumps(source))
     def test_independent_schemas_match_the_installed_writer(self):
         for name, value in A.workspace_schema_documents().items():
             self.assertEqual(json.loads((ROOT / "schemas" / name).read_text()), value)
-        for version in range(7):
+        for version in range(8):
             old = copy.deepcopy(self.prepare_req)
             old["schema"] = "af/scenario-adapter-request@%d" % version
             with self.assertRaises(A.Refused):
@@ -1464,10 +1464,10 @@ os.execve(''' + repr(git) + ''',[''' + repr(git) + ''']+args,os.environ)
                         candidate=ref("candidate"),verification=ref("verification"),report=ref("report"),measurement=ref("measurement")),
                     outputs=dict(result="action"),when=None,max_attempts=1,timeout_ms=30000,on_timeout="fail"))
                 limits = dict(max_tokens=32000000,max_wall_ms=691200000,max_dispatches=16)
-                definition = dict(schema="af/scenario@9",inputs={},outputs=dict(publication="action"),admission=None,steps=stages,
+                definition = dict(schema="af/scenario@10",inputs={},outputs=dict(publication="action"),admission=None,steps=stages,
                     result=dict(publication=ref("publish")),completion=[dict(source="literal",value=dict(type="boolean",value=True))],
                     authority=dict(task_plans=sorted({t["plan_id"] for t in (candidate,verification,report)}),task_templates=[],grants=[grant,observed],decision_owners=[]),limits=limits)
-                bundle = dict(schema="af/scenario-bundle@9",root="publish",definitions=dict(publish=definition))
+                bundle = dict(schema="af/scenario-bundle@10",root="publish",definitions=dict(publish=definition))
                 policy = dict(schema="af/scenario-policy@8",adapters=dict(publication=dict(executable=str(controlled),digest=A.file_digest(controlled),
                     operations=[A.PERFORMANCE_OP],destinations=[req["destination"]],max_wall_ms=30000,max_output_bytes=65536),lab=native["lab"]),
                     task_plans=definition["authority"]["task_plans"],task_templates=[],decision_keys={},file_roots=[],performance_publications=dict(publication=scope))

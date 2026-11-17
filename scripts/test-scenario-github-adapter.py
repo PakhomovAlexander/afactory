@@ -52,7 +52,7 @@ def request(operation="publish_pr", intent="a", publication=None):
     inputs = {"subject": {"type": "text", "value": subject}, "revision": {"type": "text", "value": SHA},
               "body": {"type": "text", "value": A.canonical(p).decode()},
               "decision": {"type": "decision", "value": decision}}
-    return {"schema": "af/scenario-adapter-request@7", "method": "reconcile", "intent_id": "sha256:" + intent * 64,
+    return {"schema": "af/scenario-adapter-request@8", "method": "reconcile", "intent_id": "sha256:" + intent * 64,
             "input_digest": "sha256:" + "b" * 64, "operation": operation, "destination": "github:octo/project", "inputs": inputs}
 
 
@@ -136,7 +136,7 @@ class AdapterTests(unittest.TestCase):
         return req["inputs"]["subject"]["value"]
 
     def observe(self, publication, condition="checks_passed"):
-        req = {"schema": "af/scenario-adapter-request@7", "method": "observe", "operation": "observe",
+        req = {"schema": "af/scenario-adapter-request@8", "method": "observe", "operation": "observe",
                "intent_id": "sha256:" + "e" * 64, "input_digest": "sha256:" + "f" * 64,
                "destination": "github:octo/project", "inputs": {
                    "subject": {"type": "text", "value": publication}, "revision": {"type": "text", "value": SHA},
@@ -735,12 +735,12 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual((ROOT / "schemas" / name).read_text(), rendered)
         with self.assertRaises(A.Refused):
             A.validate_config({**self.config, "schema": "af/github-adapter-config@0"})
-        for version in range(7):
+        for version in range(8):
             earlier = request()
             earlier["schema"] = "af/scenario-adapter-request@%d" % version
             with self.assertRaises(A.Refused):
                 A.validate_request(earlier, self.config)
-        for version in range(8):
+        for version in range(9):
             state = A.empty_state(self.config_digest)
             state["schema"] = "af/github-adapter-state@%d" % version
             A.atomic_write(self.root / "receipts/state.json", A.state_bytes(state))

@@ -870,7 +870,7 @@ pub fn envelope(
         delivery_identity(&subscription.subscription_id, &observation.observation_id)?;
     let payload_digest = String::new();
     let mut value = WakeEnvelopeV1 {
-        schema: WAKE_ENVELOPE_V1.into(),
+        schema: WAKE_ENVELOPE_V2.into(),
         subscription_id: subscription.subscription_id.clone(),
         delivery_id,
         payload_digest,

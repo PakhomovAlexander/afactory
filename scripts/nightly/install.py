@@ -49,15 +49,15 @@ def bundle(digest, repository):
             on_timeout='fail', operation=dict(kind='wait', grant=observe, condition=runtime.CONDITIONS[op])))
     grants.append(observe)
     final = dict(source='step', step='wait_3', port='result')
-    return dict(schema='af/scenario-bundle@9', root='nightly-release', definitions={'nightly-release': dict(
-        schema='af/scenario@9', inputs=dict(nightly_tag='nightly_tag'), outputs=dict(release='observation'),
+    return dict(schema='af/scenario-bundle@10', root='nightly-release', definitions={'nightly-release': dict(
+        schema='af/scenario@10', inputs=dict(nightly_tag='nightly_tag'), outputs=dict(release='observation'),
         steps=steps, result=dict(release=final), completion=[dict(source='project', value=final,
             projection=dict(kind='observation_satisfied'))], admission=None,
         authority=dict(task_plans=[], task_templates=[], grants=grants, decision_owners=[]), limits=LIMITS)})
 
 
 def ant(definition, start):
-    return dict(schema='af/ant@10', id='nightly-release', scenario=definition, inputs={},
+    return dict(schema='af/ant@11', id='nightly-release', scenario=definition, inputs={},
         occurrence_inputs=dict(nightly_tag='scheduled_nightly_tag'),
         schedule=dict(kind='daily', timezone='Europe/Moscow', hour=3, minute=0, start_unix_ms=start), owner='owner',
         notification='local:nightly-operator-journal', execution=dict(overlap='skip', missed='skip',

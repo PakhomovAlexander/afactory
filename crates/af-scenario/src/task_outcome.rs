@@ -54,7 +54,7 @@ impl TaskOutcome {
     }
     pub fn validate(&self) -> Result<()> {
         require(
-            self.schema == "af/scenario-task-outcome@1",
+            self.schema == "af/scenario-task-outcome@2",
             "Unsupported native Task outcome",
         )?;
         let r = &self.receipt;
@@ -117,7 +117,7 @@ mod tests {
     // Contract fixtures, not executed native Task or Provider evidence.
     fn terminal() -> TaskOutcome {
         serde_json::from_value(json!({
-            "schema":"af/scenario-task-outcome@1",
+            "schema":"af/scenario-task-outcome@2",
             "receipt":{"task_id":"failed","plan_id":digest(b"plan"),"revision_id":digest(b"revision"),
                 "result_id":digest(b"result"),"charged_tokens":17,
                 "result":{"task_revision_id":digest(b"revision"),"execution":"incomplete",
@@ -133,7 +133,7 @@ mod tests {
     fn terminal_evidence_roundtrips_without_satisfying_accepted_task_contract() {
         let value = terminal();
         value.validate().unwrap();
-        crate::tests::valid("scenario-v9.json#/$defs/TaskOutcome", &value);
+        crate::tests::valid("scenario-v10.json#/$defs/TaskOutcome", &value);
         let wire = serde_json::to_value(&value).unwrap();
         assert_eq!(
             serde_json::from_value::<TaskOutcome>(wire.clone()).unwrap(),
@@ -149,14 +149,21 @@ mod tests {
         );
         assert_eq!(
             Projection::TaskRepairable
-                .apply(Datum::TaskOutcome(value))
+                .apply(Datum::TaskOutcome(value.clone()))
                 .unwrap(),
             Datum::Boolean(true)
+        );
+        let mut retired = value.clone();
+        retired.schema = "af/scenario-task-outcome@1".into();
+        assert!(retired.validate().is_err());
+        assert!(
+            !crate::tests::schema("scenario-v10.json#/$defs/TaskOutcome")
+                .is_valid(&serde_json::to_value(retired).unwrap())
         );
         for field in ["schema", "extra"] {
             let mut bad = wire.clone();
             bad[field] = json!("unknown");
-            assert!(!crate::tests::schema("scenario-v9.json#/$defs/TaskOutcome").is_valid(&bad));
+            assert!(!crate::tests::schema("scenario-v10.json#/$defs/TaskOutcome").is_valid(&bad));
             assert!(
                 serde_json::from_value::<TaskOutcome>(bad).map_or(true, |v| v.validate().is_err())
             );
@@ -201,6 +208,7 @@ mod tests {
     #[test]
     fn terminal_boundaries_and_missing_or_unknown_evidence_never_authorize_repair() {
         for (outcome, cause) in [
+            (Outcome::ExecutionFailed, Cause::KernelExecution),
             (Outcome::Cancelled, Cause::HostCancelled),
             (Outcome::Exhausted, Cause::Budget),
             (Outcome::Expired, Cause::Deadline),
@@ -212,6 +220,7 @@ mod tests {
             value.outcome = outcome;
             value.cause = Some(cause);
             value.validate().unwrap();
+            crate::tests::valid("scenario-v10.json#/$defs/TaskOutcome", &value);
             assert!(!value.repairable(), "{outcome:?}/{cause:?}");
             assert!(!value.accepted());
         }

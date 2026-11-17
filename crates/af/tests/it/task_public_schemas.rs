@@ -124,7 +124,7 @@ fn task_file_and_catalog_schemas_match_real_fixtures_and_cli_refusals() {
         planned["selection"]["assessment"]["decision"]["kind"],
         "selected"
     );
-    valid(&validator("task-inspection-v20.json"), &planned);
+    valid(&validator("task-inspection-v21.json"), &planned);
     let cases = [
         ("/schema", json!("af.task-file/2")),
         ("/task_id", json!("bad/task")),
@@ -232,7 +232,7 @@ fn compiled_task_schema_matches_real_graph_and_closed_rust_variants() {
         cli(&repo, &state, &["task", "plan", "--file", "ticket.json"]),
         0,
     );
-    valid(&validator("task-inspection-v20.json"), &inspection);
+    valid(&validator("task-inspection-v21.json"), &inspection);
     let schema = validator("compiled-task-v6.json");
     let graph = &inspection["graph"];
     valid(&schema, graph);
@@ -292,14 +292,14 @@ fn compiled_task_schema_matches_real_graph_and_closed_rust_variants() {
 fn inspection_and_list_schemas_preserve_actual_output_and_exact_record_types() {
     let directory = tempfile::tempdir().unwrap();
     let (repo, state) = task_cli::fixture_named(directory.path(), "pagination");
-    let inspection_schema = validator("task-inspection-v20.json");
-    let list_schema = validator("task-list-entry-v4.json");
+    let inspection_schema = validator("task-inspection-v21.json");
+    let list_schema = validator("task-list-entry-v5.json");
     let planned = json_output(
         cli(&repo, &state, &["task", "plan", "--file", "ticket.json"]),
         0,
     );
     valid(&inspection_schema, &planned);
-    assert_eq!(planned["schema"], "af/task-inspection@20");
+    assert_eq!(planned["schema"], "af/task-inspection@21");
     for old in ["af/task-inspection@17", "af/task-inspection@18"] {
         let mut retired = planned.clone();
         retired["schema"] = json!(old);
@@ -319,7 +319,7 @@ fn inspection_and_list_schemas_preserve_actual_output_and_exact_record_types() {
         ),
         0,
     );
-    let plan_schema = validator("task-plan-inspection-v6.json");
+    let plan_schema = validator("task-plan-inspection-v7.json");
     valid(&plan_schema, &exact);
     for old in ["af/task-plan-inspection@3", "af/task-plan-inspection@4"] {
         let mut retired = exact.clone();
@@ -348,7 +348,7 @@ fn inspection_and_list_schemas_preserve_actual_output_and_exact_record_types() {
         0,
     );
     valid(&inspection_schema, &finished);
-    assert_eq!(finished["schema"], "af/task-inspection@20");
+    assert_eq!(finished["schema"], "af/task-inspection@21");
     assert!(
         !finished["runtime_observations"]
             .as_array()

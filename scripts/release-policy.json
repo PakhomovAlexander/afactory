@@ -1,6 +1,6 @@
 {
   "schema": "af.dev-release-policy/3",
-  "compatibility": "Breaking combined Scenario/Ant and publication shapes: Scenario definitions/bundles 9, policy 8, pins/runs/list 10, Store 16 with retained driver 2 and typed bounded preflight waits; Ant definition 10, pin/tick 11, state/list 12, inspection 7; adapter request 7/response 3, workspace config 3/state 5 and GitHub journal 8, native Git candidate request/export 2. Nightly config/publish 2 and native nightly service/job/completion 1 retain separate release scope and external signing permission. Implementation startup scope 2 retains exact native scoped publication, finite progress and bounded repairs. Generic signed and performance authority stay separate. Finish or discard prior-release state; no migration or replay of retired shapes. Review and commit authority and refresh its lock before adoption. Performance executor 5, history 2, equivalence 2 and schedule 3 remain required.",
+  "compatibility": "Breaking combined Scenario/Ant and publication shapes: Scenario definitions/bundles 10, policy 8, pins/runs/list 11, Store 17 with retained driver 2 and typed bounded preflight waits; Ant definition 11, pin/tick 12, state/list 13, inspection 8; adapter request 8/response 3, workspace config 3/state 6 and GitHub journal 9, native Git candidate request/export 2. Nightly config/publish 2 and native nightly service/job/completion 1 retain separate release scope and external signing permission. Implementation startup scope 2 retains exact native scoped publication, finite progress and bounded repairs. Generic signed and performance authority stay separate. Finish or discard prior-release state; no migration or replay of retired shapes. Review and commit authority and refresh its lock before adoption. Performance executor 5, history 2, equivalence 2 and schedule 3 remain required. Native Task kernel failures are execution_failed/kernel_execution (exit 8); Task state/status/findings 3, inspection 21 and report/checks 4 replace their earlier public formats. Scenario terminal outcome 2 carries that failure without repair or publication authority.",
   "required_features": {
     "crates/af-scenario/src/retention.rs": [
       "settlement",
@@ -10,44 +10,44 @@
       "roadmap"
     ],
     "crates/af-scenario/src/store.rs": [
-      "af/scenario-store@16",
+      "af/scenario-store@17",
       "run_capacity"
     ],
-    "schemas/scenario-store-v16.json": [
-      "af/scenario-store@16"
+    "schemas/scenario-store-v17.json": [
+      "af/scenario-store@17"
     ],
-    "schemas/scenario-v9.json": [
-      "af/scenario@9"
+    "schemas/scenario-v10.json": [
+      "af/scenario@10"
     ],
-    "schemas/scenario-bundle-v9.json": [
-      "af/scenario-bundle@9"
+    "schemas/scenario-bundle-v10.json": [
+      "af/scenario-bundle@10"
     ],
-    "schemas/scenario-pin-v10.json": [
-      "af/scenario-pin@10"
+    "schemas/scenario-pin-v11.json": [
+      "af/scenario-pin@11"
     ],
-    "schemas/scenario-run-v10.json": [
-      "af/scenario-run@10"
+    "schemas/scenario-run-v11.json": [
+      "af/scenario-run@11"
     ],
-    "schemas/scenario-list-v10.json": [
-      "af/scenario-list@10"
+    "schemas/scenario-list-v11.json": [
+      "af/scenario-list@11"
     ],
-    "schemas/ant-v10.json": [
-      "af/ant@10"
+    "schemas/ant-v11.json": [
+      "af/ant@11"
     ],
-    "schemas/ant-pin-v11.json": [
-      "af/ant-pin@11"
+    "schemas/ant-pin-v12.json": [
+      "af/ant-pin@12"
     ],
-    "schemas/ant-tick-v11.json": [
-      "af/ant-tick@11"
+    "schemas/ant-tick-v12.json": [
+      "af/ant-tick@12"
     ],
-    "schemas/ant-state-v12.json": [
-      "af/ant-state@12"
+    "schemas/ant-state-v13.json": [
+      "af/ant-state@13"
     ],
-    "schemas/ant-inspection-v7.json": [
-      "af/ant-inspection@7"
+    "schemas/ant-inspection-v8.json": [
+      "af/ant-inspection@8"
     ],
-    "schemas/ant-list-v12.json": [
-      "af/ant-list@12"
+    "schemas/ant-list-v13.json": [
+      "af/ant-list@13"
     ],
     "schemas/scenario-task-template-v2.json": [
       "af/scenario-task-template@2",
@@ -110,8 +110,8 @@
     "schemas/scenario-adapter-response-v3.json": [
       "af/scenario-adapter-response@3"
     ],
-    "schemas/github-adapter-state-v8.json": [
-      "af/github-adapter-state@8"
+    "schemas/github-adapter-state-v9.json": [
+      "af/github-adapter-state@9"
     ],
     "schemas/git-candidate-source-request-v2.json": [
       "af/git-candidate-source-request@2"
@@ -119,11 +119,11 @@
     "schemas/git-candidate-source-v2.json": [
       "af/git-candidate-source@2"
     ],
-    "schemas/scenario-adapter-request-v7.json": [
-      "af/scenario-adapter-request@7"
+    "schemas/scenario-adapter-request-v8.json": [
+      "af/scenario-adapter-request@8"
     ],
-    "schemas/git-workspace-state-v5.json": [
-      "af/git-workspace-state@5"
+    "schemas/git-workspace-state-v6.json": [
+      "af/git-workspace-state@6"
     ],
     "schemas/nightly-service-v1.json": [
       "af/nightly-service@1"

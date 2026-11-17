@@ -143,7 +143,7 @@ fn wake_cli_registration_launch_crashes_immediate_finish_and_codex_queue_are_dur
     };
     let mut parent = spawn();
     wait_ready(&before);
-    let inspected = document(&wake(&["inspect"]), 0, Some("task-wake-status-v1.json"));
+    let inspected = document(&wake(&["inspect"]), 0, Some("task-wake-status-v2.json"));
     assert_eq!(inspected["subscriptions"].as_array().unwrap().len(), 1);
     assert_eq!(
         inspected["subscriptions"][0]["registration"]["launch_intent"],
@@ -183,7 +183,7 @@ fn wake_cli_registration_launch_crashes_immediate_finish_and_codex_queue_are_dur
             &["task", "wait", "gc-older", "--timeout", "60", "--json"],
         ),
         0,
-        Some("task-status-v2.json"),
+        Some("task-status-v3.json"),
     );
     parent.kill().unwrap();
     parent.wait().unwrap();
@@ -198,7 +198,7 @@ fn wake_cli_registration_launch_crashes_immediate_finish_and_codex_queue_are_dur
     assert!(!argv[4].contains("Implement offset/limit"));
     assert_eq!(argv[5], "--remote");
     assert_eq!(argv[6], format!("unix://{}", socket.display()));
-    let inspected = document(&wake(&["inspect"]), 0, Some("task-wake-status-v1.json"));
+    let inspected = document(&wake(&["inspect"]), 0, Some("task-wake-status-v2.json"));
     assert_eq!(
         inspected["uncertain_session_fences"]
             .as_array()
@@ -485,7 +485,7 @@ fn wake_cli_detached_pi_receiver_authenticates_parent_and_replays_without_resend
     };
     let mut parent = spawn();
     ready(&before);
-    let status = document(&wake(&["inspect"]), 0, Some("task-wake-status-v1.json"));
+    let status = document(&wake(&["inspect"]), 0, Some("task-wake-status-v2.json"));
     assert_eq!(
         status["subscriptions"][0]["registration"]["launch_intent"],
         true
@@ -514,7 +514,7 @@ fn wake_cli_detached_pi_receiver_authenticates_parent_and_replays_without_resend
             &["task", "wait", "gc-older", "--timeout", "60", "--json"],
         ),
         0,
-        Some("task-status-v2.json"),
+        Some("task-status-v3.json"),
     );
     // The authoritative completion precedes detach returning; lose that parent's response.
     parent.kill().unwrap();
@@ -546,7 +546,7 @@ fn wake_cli_detached_pi_receiver_authenticates_parent_and_replays_without_resend
     // Discard the first return, reopen another authenticated host process: no native retry.
     let replay = document(&pull(), 0, Some("task-wake-pi-next-v1.json"));
     assert_eq!(replay["message"], Value::Null);
-    let status = document(&wake(&["inspect"]), 0, Some("task-wake-status-v1.json"));
+    let status = document(&wake(&["inspect"]), 0, Some("task-wake-status-v2.json"));
     assert_eq!(status["deliveries"][0]["state"], "admission_unknown");
     assert_eq!(
         status["deliveries"][0]["receipts"]
@@ -3586,7 +3586,7 @@ fn ids_elided(text: &str) -> String {
 }
 
 /// Item 1: per reviewer each finding with its severity, confidence, title, location, evidence
-/// and fix, grouped by severity, then the evaluator's verdict; one `af/task-findings@2` under
+/// and fix, grouped by severity, then the evaluator's verdict; one `af/task-findings@3` under
 /// `--json`; a Task without a review round says so with its state; a round it did not record is
 /// refused by its number.
 #[test]
@@ -3602,7 +3602,7 @@ fn findings_print_each_reviewers_findings_by_severity_and_the_evaluators_verdict
     let previous = document(
         &af(&repo, &state, &["task", "report", "chain-base", "--json"]),
         0,
-        Some("task-report-v3.json"),
+        Some("task-report-v4.json"),
     );
     let recorded_check = previous["tasks"][0]["nodes"]
         .as_array()
@@ -3665,9 +3665,9 @@ next: af task deliver chain-base --branch af/chain-base --worktree ../chain-base
     let value = document(
         &af(&repo, &state, &["task", "findings", "chain-base", "--json"]),
         0,
-        Some("task-findings-v2.json"),
+        Some("task-findings-v3.json"),
     );
-    assert_eq!(value["schema"], "af/task-findings@2");
+    assert_eq!(value["schema"], "af/task-findings@3");
     assert_eq!(value["rounds"], 1);
     let round = &value["round"];
     assert_eq!(
@@ -3814,7 +3814,7 @@ next: af task deliver chain-base --branch af/chain-base --worktree ../chain-base
     let none = document(
         &af(&repo, &state, &["task", "findings", "gc-older", "--json"]),
         0,
-        Some("task-findings-v2.json"),
+        Some("task-findings-v3.json"),
     );
     assert_eq!(
         (none["rounds"].clone(), none["round"].clone()),
@@ -4555,17 +4555,17 @@ fn bounded_follower(
     }
 }
 
-/// The lines of `af task events`, each one `af/task-event@2` document, its events numbered
+/// The lines of `af task events`, each one `af/task-event@3` document, its events numbered
 /// without a gap from `first` and at most one terminal record, the last line.
 fn event_lines(text: &str, first: u64) -> Vec<Value> {
-    let schema = schemas::validator("task-event-v2.json");
+    let schema = schemas::validator("task-event-v3.json");
     let lines: Vec<Value> = text
         .lines()
         .map(|line| serde_json::from_str(line).unwrap_or_else(|_| panic!("not one line: {line}")))
         .collect();
     for (at, line) in lines.iter().enumerate() {
         schemas::valid(&schema, line);
-        assert_eq!(line["schema"], "af/task-event@2", "{line}");
+        assert_eq!(line["schema"], "af/task-event@3", "{line}");
         if line["record"] == "terminal" {
             assert_eq!(
                 at + 1,
@@ -4625,7 +4625,7 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
         .env("AF_TEST_HEARTBEAT_MS", "300")
         .output()
         .unwrap();
-    let value = document(&detached, 0, Some("task-detached-v3.json"));
+    let value = document(&detached, 0, Some("task-detached-v4.json"));
     assert!(
         started.elapsed() < Duration::from_secs(60),
         "returned at once"
@@ -4697,7 +4697,7 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
     let held = document(
         &af(&repo, &state, &["task", "status", task, "--json"]),
         0,
-        Some("task-status-v2.json"),
+        Some("task-status-v3.json"),
     );
     assert_eq!(held["run"]["pid"], pid, "{held:#}");
     std::fs::remove_file(&refused_path).unwrap();
@@ -4707,7 +4707,7 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
     document(
         &af(&repo, &state, &["task", "status", task, "--json"]),
         0,
-        Some("task-status-v2.json"),
+        Some("task-status-v3.json"),
     );
     // Both readers observe the same live prefix independently. Running their existing
     // one-second observations together leaves the Task's unchanged wall for its resume.
@@ -4799,12 +4799,12 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
     let cancelled = document(
         &af(&repo, &state, &["task", "cancel", task, "--json"]),
         0,
-        Some("task-cancelled-v2.json"),
+        Some("task-cancelled-v3.json"),
     );
     let mut notified = waiter.0.take().unwrap().wait_with_output().unwrap();
     notified.stderr.extend_from_slice(first.as_bytes());
     std::io::Read::read_to_end(&mut waiting, &mut notified.stderr).unwrap();
-    let waited = document(&notified, 4, Some("task-status-v2.json"));
+    let waited = document(&notified, 4, Some("task-status-v3.json"));
     assert_eq!(waited["state"]["cause"], "host_cancelled", "{waited}");
     assert_eq!(cancelled["request"]["pid"], pid);
     assert_eq!(
@@ -4993,7 +4993,7 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
     let settled = document(
         &af(&repo, &state, &["task", "wait", task, "--json"]),
         0,
-        Some("task-status-v2.json"),
+        Some("task-status-v3.json"),
     );
     assert_eq!(settled["state"]["outcome"], "verified");
     // The resumed run's events follow the cancelled stream's last sequence, under one terminal.
@@ -5107,7 +5107,7 @@ fn a_planned_task_whose_starting_run_died_is_refused_at_a_later_poll() {
     std::io::BufRead::read_line(&mut stdout, &mut first).unwrap();
     let first: Value = serde_json::from_str(&first)
         .unwrap_or_else(|_| panic!("not one line at the first poll: {first:?}"));
-    assert_eq!(first["schema"], "af/task-event@2", "{first}");
+    assert_eq!(first["schema"], "af/task-event@3", "{first}");
     assert_eq!(first["record"], "event", "{first}");
     run.kill().unwrap();
     run.wait().unwrap();
@@ -5308,7 +5308,7 @@ fn completion_inside_wait_observation(point: &str, refreshed: bool, initially_ru
     );
     std::fs::write(final_barrier.join("proceed"), []).unwrap();
     let output = waiter.0.take().unwrap().wait_with_output().unwrap();
-    let waited = document(&output, 0, Some("task-status-v2.json"));
+    let waited = document(&output, 0, Some("task-status-v3.json"));
     assert_eq!(waited["state"]["phase"], "finished", "{waited}");
     assert!(
         !err(&output).contains("still runs after"),
@@ -5318,7 +5318,7 @@ fn completion_inside_wait_observation(point: &str, refreshed: bool, initially_ru
     let current = document(
         &af(&repo, &state, &["task", "status", task, "--json"]),
         0,
-        Some("task-status-v2.json"),
+        Some("task-status-v3.json"),
     );
     assert_eq!(
         waited, current,
@@ -5556,7 +5556,7 @@ fn winning_history_inside_wait_discovery(previously_matching: bool) {
     );
     std::fs::write(barrier.join("proceed"), []).unwrap();
     let output = waiter.0.take().unwrap().wait_with_output().unwrap();
-    let waited = document(&output, 124, Some("task-status-v2.json"));
+    let waited = document(&output, 124, Some("task-status-v3.json"));
     assert_eq!(
         waited["state"], baseline["state"],
         "the waited Task stays running"
@@ -5645,7 +5645,7 @@ fn a_detached_run_not_admitted_in_time_is_not_claimed_to_run() {
         .env("AF_TEST_DETACHED_START_DELAY_MS", "3000")
         .output()
         .unwrap();
-    let value = document(&detached, 4, Some("task-detached-v3.json"));
+    let value = document(&detached, 4, Some("task-detached-v4.json"));
     let pid = u32::try_from(value["pid"].as_u64().unwrap()).unwrap();
     let _leftovers = leftovers(&[pid]);
     assert_eq!(value["admitted"], false, "{value:#}");
@@ -5784,7 +5784,7 @@ impl WakeFairFixture {
         document(
             &self.wake(&["inspect"]),
             0,
-            Some("task-wake-status-v1.json"),
+            Some("task-wake-status-v2.json"),
         )
     }
     fn drain_one(&self) {

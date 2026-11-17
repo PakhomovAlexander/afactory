@@ -142,7 +142,7 @@ impl WakeDeliveryV1 {
     pub fn validate(&self) -> Result<(), String> {
         self.envelope.validate()?;
         require(
-            self.schema == "af/task-wake-delivery@1"
+            self.schema == "af/task-wake-delivery@2"
                 && is_digest(&self.route_id)
                 && self.attempts <= 8
                 && safe_number(self.epoch)

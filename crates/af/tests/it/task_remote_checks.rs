@@ -454,7 +454,7 @@ fn a_finished_remote_check_task_closes_its_gate_pull_request_and_deletes_its_bra
     fixture.map("");
     let done = run_remote_task(&fixture, TASK);
     crate::schemas::valid(
-        &crate::schemas::validator("task-inspection-v20.json"),
+        &crate::schemas::validator("task-inspection-v21.json"),
         &done,
     );
     let [cleanup] = done["gate_cleanups"].as_array().unwrap().as_slice() else {
@@ -1279,7 +1279,7 @@ fn a_task_with_gate_leftovers_is_collected_only_after_its_cleanup_is_done() {
     );
     assert_eq!(code, 0, "{stderr}\n{stdout}");
     let collected: Value = serde_json::from_str(stdout.trim()).unwrap();
-    crate::schemas::valid(&crate::schemas::validator("task-gc-v1.json"), &collected);
+    crate::schemas::valid(&crate::schemas::validator("task-gc-v2.json"), &collected);
     assert_eq!(collected["applied"]["tombstoned"], json!([]), "{collected}");
     assert!(
         stderr.contains("is not collected before its gate cleanup is done"),

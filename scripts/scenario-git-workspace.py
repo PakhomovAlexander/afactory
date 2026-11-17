@@ -11,7 +11,7 @@ import ctypes
 
 WORKSPACE_MAX_RECORDS = 32
 WORKSPACE_CONFIG = "af/git-workspace-config@3"
-WORKSPACE_STATE = "af/git-workspace-state@5"
+WORKSPACE_STATE = "af/git-workspace-state@6"
 RESERVATION_SLOTS = 4
 PREPARED = "af/git-workspace-prepared@1"
 PERFORMANCE_OP = "publish_performance_pr_v1"
@@ -242,7 +242,7 @@ def performance_subject(p):
 
 def workspace_validate_request(r, c):
     fields(r, ("schema", "method", "intent_id", "input_digest", "operation", "destination", "inputs"))
-    need(r["schema"] == "af/scenario-adapter-request@7", "unsupported workspace request")
+    need(r["schema"] == "af/scenario-adapter-request@8", "unsupported workspace request")
     for key in ("intent_id", "input_digest"):
         string(r[key], DIGEST)
     op, i = r["operation"], r["inputs"]
@@ -439,7 +439,7 @@ class WorkspaceAdapter:
         fields(proof, ("schema", "request_digest", "source_snapshot", "candidate_snapshot", "body"))
         need(proof["schema"] == "af/performance-pr-proof@1" and proof["request_digest"] == digest(canonical(native_request))
              and proof["candidate_snapshot"] == datum(inputs, "revision"), "native publication proof differs")
-        lab_request = dict(schema="af/scenario-adapter-request@7", method="observe", intent_id=request["intent_id"],
+        lab_request = dict(schema="af/scenario-adapter-request@8", method="observe", intent_id=request["intent_id"],
             input_digest=request["input_digest"], operation="observe", destination=lab["destination"],
             inputs={key: dict(type="text", value=value) for key, value in
                 dict(subject=observation["subject"], revision=observation["revision"], condition="native_verified").items()})
@@ -953,7 +953,7 @@ class WorkspaceAdapter:
                         p = rec["prepared"]
                         self.configure_github()
                         self.common.actor()
-                        publication = dict(schema="af/scenario-adapter-request@7", method=r["method"],
+                        publication = dict(schema="af/scenario-adapter-request@8", method=r["method"],
                             intent_id=r["intent_id"], input_digest=r["input_digest"], operation=PERFORMANCE_OP,
                             destination=r["destination"], inputs={key: dict(type="text", value=value) for key, value in
                                 dict(subject=performance_subject(p), revision=p["commit"], body=canonical(performance_payload(p)).decode()).items()})
@@ -1171,7 +1171,7 @@ def workspace_schema_documents():
     doc("git-workspace-prepared", prepared)
     doc("git-workspace-content", dict(title=text(maximum=200), body=text(maximum=48000)))
     doc("performance-pr-content", dict(title=text(maximum=200)))
-    doc("git-candidate-source-request", dict(receipt={"$ref": "urn:af:schema:scenario:9#/$defs/TaskReceipt"},
+    doc("git-candidate-source-request", dict(receipt={"$ref": "urn:af:schema:scenario:10#/$defs/TaskReceipt"},
         source_commit=sha, candidate_snapshot_id=dig, predecessor_snapshot_id=dict(anyOf=[dict(type="null"), dig])), version=2)
     doc("git-candidate-source", dict(request_digest=dig, repository_id=text(maximum=4096), source_snapshot=dig, task_source_snapshot=dig,
         candidate_snapshot=dig, predecessor_snapshot=dict(anyOf=[dict(type="null"), dig]), source_content_digest=dig, source_commit=sha, candidate_tree=sha,
@@ -1192,9 +1192,9 @@ def workspace_schema_documents():
     doc("git-workspace-config", config, version=3)
     schemas["git-workspace-config-v3.json"]["required"].remove("performance")
     schemas["git-workspace-config-v3.json"]["required"].remove("implementation_state")
-    request = obj(dict(schema={"const": "af/scenario-adapter-request@7"}, intent_id=dig, input_digest=dig,
+    request = obj(dict(schema={"const": "af/scenario-adapter-request@8"}, intent_id=dig, input_digest=dig,
         operation={"enum": sorted(OPS - {"observe"})}, destination=text(), inputs={"type": "object",
-            "additionalProperties": {"$ref": "urn:af:schema:scenario:9#/$defs/Datum"}}))
+            "additionalProperties": {"$ref": "urn:af:schema:scenario:10#/$defs/Datum"}}))
     rec = obj(dict(request=request, phase={"enum": ["reserved", "started", "done"]},
         prepared=dict(anyOf=[dict(type="null"), obj(dict(schema={"const": PREPARED}, **prepared))]),
         inode=nullable_int, device=nullable_int,
@@ -1204,6 +1204,6 @@ def workspace_schema_documents():
         cleaned=array(dig, WORKSPACE_MAX_RECORDS), cleanup_pending=dict(anyOf=[dict(type="null"), dig]),
         progress=array({"enum": ["branch", "remote"]}, 2)))
     doc("git-workspace-state", dict(config_digest=dig, checksum=dig, records={"type": "object", "maxProperties": WORKSPACE_MAX_RECORDS,
-        "propertyNames": dig, "additionalProperties": rec}), version=5)
+        "propertyNames": dig, "additionalProperties": rec}), version=6)
     return schemas
 

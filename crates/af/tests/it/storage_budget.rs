@@ -236,8 +236,8 @@ fn action_only_scenario_start_resume_and_ant_tick_install_and_sweep_the_storage_
     let literal =
         |kind: &str, data: Value| json!({"source":"literal","value":{"type":kind,"value":data}});
     let bundle = json!({
-        "schema":"af/scenario-bundle@9","root":"main","definitions":{"main":{
-            "schema":"af/scenario@9","inputs":{"file":"text"},"outputs":{"ok":"boolean"},
+        "schema":"af/scenario-bundle@10","root":"main","definitions":{"main":{
+            "schema":"af/scenario@10","inputs":{"file":"text"},"outputs":{"ok":"boolean"},
             "steps":[{"id":"write","operation":{"kind":"action","grant":grant,
                 "requires_decision":false,"required_condition":null},
                 "inputs":{"file":{"source":"input","port":"file"},
@@ -304,7 +304,7 @@ fn action_only_scenario_start_resume_and_ant_tick_install_and_sweep_the_storage_
             _ => {
                 write(
                     &ant_file,
-                    &json!({"schema":"af/ant@10","id":"daily","scenario":bundle,
+                    &json!({"schema":"af/ant@11","id":"daily","scenario":bundle,
                     "inputs":{"file":{"type":"text","value":id}},
                     "schedule":{"kind":"daily","timezone":"UTC","hour":12,"minute":0,"start_unix_ms":due},
                     "owner":"owner","notification":"local:owner","execution":{"overlap":"skip",
@@ -1030,7 +1030,7 @@ fn the_sweep_that_ends_a_run_is_an_observation_of_its_task() {
     let (stdout, stderr) = text(&newer);
     assert!(newer.status.success(), "{stdout}\n{stderr}");
     let shown = json(&show("gc-newer", true));
-    schemas::valid(&schemas::validator("task-inspection-v20.json"), &shown);
+    schemas::valid(&schemas::validator("task-inspection-v21.json"), &shown);
     let [sweep] = shown["storage_sweeps"].as_array().unwrap().as_slice() else {
         panic!("one storage sweep: {shown}");
     };
@@ -1396,7 +1396,7 @@ fn a_sweep_whose_remainder_cannot_be_measured_leaves_a_replayable_receipt_on_its
         machine.af(&repo, &[], &args)
     };
     let shown = json(&show(true));
-    schemas::valid(&schemas::validator("task-inspection-v20.json"), &shown);
+    schemas::valid(&schemas::validator("task-inspection-v21.json"), &shown);
     let [sweep] = shown["storage_sweeps"].as_array().unwrap().as_slice() else {
         panic!("one storage sweep: {shown}");
     };

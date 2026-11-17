@@ -173,8 +173,8 @@ fn run_case(case: &str) {
                 serde_json::from_value(json!({
                     "name": "syntax",
                     "command": af_contracts::Command::new(
-                        if case == "unavailable" { "/no-such-check" } else { "/usr/bin/true" },
-                        vec![],
+                        if case == "unavailable" { "/no-such-check" } else { "/usr/bin/python3" },
+                        if case == "unavailable" { vec![] } else { vec![af_contracts::Arg::literal("-c"), af_contracts::Arg::literal("pass")] },
                     ),
                     "required": true,
                 }))
@@ -998,11 +998,14 @@ print(json.dumps({{'schema':'af.worker-reply/1','outputs':{{'result':[stage]}}}}
             return;
         }
         if case == "independent" {
-            assert!(report.outcomes.iter().any(|(node, outcome)| {
-                node.ends_with(".nodes.independent_failure")
-                    && matches!(outcome, af_graph::NodeOutcome::Failed { .. })
-            }));
-            assert_eq!(result.execution, TaskExecutionV1::Exhausted);
+            assert!(
+                report.outcomes.iter().any(|(node, outcome)| {
+                    node.ends_with(".nodes.independent_failure")
+                        && matches!(outcome, af_graph::NodeOutcome::Failed { .. })
+                }),
+                "{report:?}"
+            );
+            assert_eq!(result.execution, TaskExecutionV1::Exhausted, "{report:?}");
             assert_eq!(result.acceptance, TaskAcceptanceV1::Inconclusive);
             assert!(result.missing_obligations.is_empty());
             let receipt: TaskReviewRoundV1 = serde_json::from_value(

@@ -282,7 +282,12 @@ bounded parents. Two polls must fit strictly inside every enclosing Scenario, in
 and publication-step bound; equality is refused. See the
 [preflight and schedule decision](adr/2026-11-17-retry-typed-startup-observations-within-enclosing-bounds.md).
 
-The Scenario journal is `af/scenario-store@16`; driver status is `af/scenario-driver@2`.
+The Scenario journal is `af/scenario-store@17`; driver status is `af/scenario-driver@2`.
+Terminal evidence is `af/scenario-task-outcome@2`, including native
+`execution_failed/kernel_execution` (Task exit 8). That failure never authorizes code repair
+or publication, even when candidate/check/findings evidence is present. Ordinary gate and review
+failures retain their exact native repair admission. See the
+[kernel-failure composition decision](adr/2026-11-17-compose-scenario-terminal-evidence-with-kernel-failures.md).
 Prior Store/driver shapes are refused without migration. The new bounded startup failure receipt
 is `af/implementation-startup-failure@1`; the exact successful ready receipt is unchanged.
 Native per-Task admission and final push/POST/PATCH fresh guards remain live after blocking observations. No signing key,

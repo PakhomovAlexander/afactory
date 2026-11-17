@@ -11,7 +11,7 @@ defines the authority boundary.
 ## Review, record, drive
 
 Definitions use TOML for authoring and JSON for their versioned wire documents, with schema
-`af/scenario@9`. A bundle (`af/scenario-bundle@9`) names its
+`af/scenario@10`. A bundle (`af/scenario-bundle@10`) names its
 `root` and maps names to definitions. See the inert examples in `fixtures/scenarios/` and the
 schemas from `af schema show`. Definitions have explicit `inputs`, `outputs`, ordered `steps`,
 `result` bindings, boolean `completion` conditions, `authority`, and `limits`.
@@ -166,7 +166,7 @@ environment plus sanitized PATH, HOME and XDG_CONFIG_HOME,
 and supervised process-tree termination. It must own its credential access and enforce its
 operation/destination scope. This is a trusted machine extension, not isolation of hostile code.
 
-Requests (`af/scenario-adapter-request@7`) carry `method` (`reconcile`, `execute`, `observe`),
+Requests (`af/scenario-adapter-request@8`) carry `method` (`reconcile`, `execute`, `observe`),
 `intent_id`, `input_digest`, `operation`, `destination`, and typed `inputs`. Observations also
 carry an injected text `condition` input. Responses (`af/scenario-adapter-response@3`) must echo
 both identities and supply `outcome`, bounded `evidence`, and `observation` (null for actions).
@@ -216,7 +216,7 @@ script does not change native Wait behavior or complete a native Scenario Run.
 
 ## Ant scheduling
 
-An `af/ant@10` definition has `id`, `scenario` (bundle), typed `inputs`, `owner`, `notification`,
+An `af/ant@11` definition has `id`, `scenario` (bundle), typed `inputs`, `owner`, `notification`,
 `schedule` (`kind: daily`, `timezone`, `hour`, `minute`, `start_unix_ms`), and `execution`. The
 notification is
 an accountable routing label retained in inspection; sending a notification is an explicit
@@ -541,7 +541,7 @@ Creation refuses an existing label. Replay checks the revision chain and account
 missing ownership and corrupt journals fail closed.
 
 Roadmaps share `runs/scenarios.sqlite`, its immediate transactions, private ownership and checksum
-with Runs and Ants. The journal is now `af/scenario-store@16`; the previous Store shape is refused
+with Runs and Ants. The journal is now `af/scenario-store@17`; the previous Store shape is refused
 without migration. The unchanged 16 MiB document bound includes all roadmap history; the Ant
 retention policy above does not erase goal provenance or roadmap revisions. The ordinary
 machine Storage Budget counts these bytes as retained Store remainder; pruning never silently
@@ -659,8 +659,8 @@ Task/source receipts. It reads no owner-supplied JSON artifact file and launches
 
 Fresh Task planning requires the exact durable native template-pin record in the selected Task
 Store before creating a Task. An authorized template digest alone cannot substitute authority from
-another committed source. The combined current contracts are Scenario/Bundle 9, Policy 8,
-Pin/Run/List 10, Ant 10, Ant Pin/Tick 11, State/List 12, inspection 7 and Store 16 with driver 2.
+another committed source. The combined current contracts are Scenario/Bundle 10, Policy 8,
+Pin/Run/List 11, Ant 11, Ant Pin/Tick 12, State/List 13, inspection 8 and Store 17 with driver 2.
 Earlier shapes are refused. The
 [composition decision](adr/2026-11-17-compose-scoped-implementation-and-native-nightly-contracts.md)
 records both parents and the separately scoped implementation and nightly capabilities.

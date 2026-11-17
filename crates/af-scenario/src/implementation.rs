@@ -288,7 +288,7 @@ pub fn authorize<'a>(
     live: bool,
 ) -> Result<(&'a crate::state::Run, &'a Scope)> {
     require(
-        request.schema == "af/scenario-adapter-request@7"
+        request.schema == "af/scenario-adapter-request@8"
             && request.operation == Operation::PublishImplementationPrV1
             && matches!(
                 request.method,
@@ -502,7 +502,7 @@ mod tests {
                 }),
             );
         }
-        valid("scenario-pin-v10.json", &pin);
+        valid("scenario-pin-v11.json", &pin);
         let host = TestHost {
             startup_reject: Some(repair.clone()),
             ..Default::default()
@@ -530,7 +530,7 @@ mod tests {
             None,
         )
         .unwrap();
-        valid("scenario-run-v10.json", &run);
+        valid("scenario-run-v11.json", &run);
         assert_eq!(
             run.pin.policy.implementation_startup,
             pin.policy.implementation_startup
@@ -883,7 +883,7 @@ mod tests {
                 "expiry" => assert_eq!(driver.resumes, 1),
                 _ => assert_eq!(driver.resumes, 2),
             }
-            valid("scenario-store-v16.json", &world);
+            valid("scenario-store-v17.json", &world);
         }
     }
 
@@ -928,6 +928,7 @@ mod tests {
             "af/scenario-pin@6",
             "af/scenario-pin@7",
             "af/scenario-pin@9",
+            "af/scenario-pin@10",
         ] {
             old = pin.clone();
             old.schema = retired.into();
@@ -963,6 +964,7 @@ mod tests {
             "af/scenario-store@10",
             "af/scenario-store@11",
             "af/scenario-store@14",
+            "af/scenario-store@16",
         ] {
             old.schema = retired.into();
             assert!(old.validate(host.as_ref()).is_err());
@@ -972,6 +974,7 @@ mod tests {
             "af/scenario-run@6",
             "af/scenario-run@7",
             "af/scenario-run@9",
+            "af/scenario-run@10",
         ] {
             old_run.schema = retired.into();
             assert!(old_run.validate(host.as_ref()).is_err());

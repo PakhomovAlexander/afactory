@@ -137,7 +137,7 @@ class Service:
 
     def request(self, request):
         require(isinstance(request, dict) and set(request) == {'schema', 'method', 'intent_id', 'input_digest',
-                'operation', 'destination', 'inputs'} and request['schema'] == 'af/scenario-adapter-request@7',
+                'operation', 'destination', 'inputs'} and request['schema'] == 'af/scenario-adapter-request@8',
                 'unsupported adapter request')
         for key in ('intent_id', 'input_digest'):
             wire.DIGEST.validate(request[key], key)

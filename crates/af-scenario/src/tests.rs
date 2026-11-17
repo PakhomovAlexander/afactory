@@ -46,7 +46,7 @@ pub fn simple() -> (Bundle, Policy) {
         },
     };
     let def = Scenario {
-        schema: "af/scenario@9".into(),
+        schema: "af/scenario@10".into(),
         inputs: BTreeMap::new(),
         outputs: BTreeMap::from([("ok".into(), Port::Boolean)]),
         steps: vec![step],
@@ -63,7 +63,7 @@ pub fn simple() -> (Bundle, Policy) {
     };
     (
         Bundle {
-            schema: "af/scenario-bundle@9".into(),
+            schema: "af/scenario-bundle@10".into(),
             root: "main".into(),
             definitions: BTreeMap::from([("main".into(), def)]),
         },
@@ -126,7 +126,7 @@ fn publication() -> (Bundle, Policy) {
 pub fn ant(timezone: &str, hour: u8, minute: u8) -> AntState {
     let (scenario, policy) = simple();
     let definition = Ant {
-        schema: "af/ant@10".into(),
+        schema: "af/ant@11".into(),
         id: "daily".into(),
         scenario,
         inputs: BTreeMap::new(),
@@ -164,7 +164,7 @@ pub fn schema(name: &str) -> jsonschema::Validator {
         .join("schemas");
     let mut registry = jsonschema::Registry::new();
     for file in [
-        "scenario-v9.json",
+        "scenario-v10.json",
         "scenario-driver-v2.json",
         "implementation-startup-scope-v2.json",
         "task-contracts-v4.json",
@@ -215,7 +215,7 @@ fn scenario_task_receipts_resolve_current_task_contracts_and_keep_closed_results
     }))
     .unwrap();
     Datum::Task(receipt.clone()).validate().unwrap();
-    let validator = schema("scenario-v9.json#/$defs/TaskReceipt");
+    let validator = schema("scenario-v10.json#/$defs/TaskReceipt");
     let mut wire = serde_json::to_value(&receipt).unwrap();
     let errors: Vec<_> = validator
         .iter_errors(&wire)
@@ -250,30 +250,30 @@ fn contracts_roundtrip_schemas_and_old_versions_fail_closed() {
     let ant = ant("UTC", 12, 0);
     for (file, value) in [
         (
-            "scenario-v9.json",
+            "scenario-v10.json",
             serde_json::to_value(&bundle.definitions["main"]).unwrap(),
         ),
-        ("scenario-bundle-v9.json", json!(bundle)),
+        ("scenario-bundle-v10.json", json!(bundle)),
         ("scenario-policy-v8.json", json!(policy)),
-        ("scenario-pin-v10.json", json!(pin)),
-        ("scenario-run-v10.json", json!(run)),
-        ("ant-v10.json", json!(ant.pin.definition)),
-        ("ant-pin-v11.json", json!(ant.pin)),
-        ("ant-state-v12.json", json!(ant)),
+        ("scenario-pin-v11.json", json!(pin)),
+        ("scenario-run-v11.json", json!(run)),
+        ("ant-v11.json", json!(ant.pin.definition)),
+        ("ant-pin-v12.json", json!(ant.pin)),
+        ("ant-state-v13.json", json!(ant)),
         (
-            "scenario-list-v10.json",
-            json!({"schema":"af/scenario-list@10","runs":{"run":run}}),
+            "scenario-list-v11.json",
+            json!({"schema":"af/scenario-list@11","runs":{"run":run}}),
         ),
         (
-            "ant-list-v12.json",
-            json!({"schema":"af/ant-list@12","ants":{"daily":{
-                "schema":"af/ant-inspection@7", "pin":ant.pin,"state":ant.state,"changes":ant.changes,"next_day":ant.next_day,"last_tick_unix_ms":ant.last_tick_unix_ms,"occurrences":ant.occurrences,"retention":ant.retention,
+            "ant-list-v13.json",
+            json!({"schema":"af/ant-list@13","ants":{"daily":{
+                "schema":"af/ant-inspection@8", "pin":ant.pin,"state":ant.state,"changes":ant.changes,"next_day":ant.next_day,"last_tick_unix_ms":ant.last_tick_unix_ms,"occurrences":ant.occurrences,"retention":ant.retention,
                 "scheduler":{"schema":"af/ant-scheduler@1","running":false,"started_unix_ms":null,"heartbeat_unix_ms":null,"stop_requested":false,"error":null},"next_due_unix_ms":START,"next_due_error":null,"active_run":null,"last_lateness_ms":null
             }}}),
         ),
         (
-            "ant-tick-v11.json",
-            json!({"schema":"af/ant-tick@11","now_unix_ms":START,"started":[],"busy":[],"refused":{},"runs":{}}),
+            "ant-tick-v12.json",
+            json!({"schema":"af/ant-tick@12","now_unix_ms":START,"started":[],"busy":[],"refused":{},"runs":{}}),
         ),
     ] {
         valid(file, &value);
@@ -309,7 +309,7 @@ fn contracts_roundtrip_schemas_and_old_versions_fail_closed() {
     wrong["extra"] = json!(true);
     assert!(serde_json::from_value::<Bundle>(wrong).is_err());
     let request = Request {
-        schema: "af/scenario-adapter-request@7".into(),
+        schema: "af/scenario-adapter-request@8".into(),
         method: Method::Reconcile,
         intent_id: digest(b"intent"),
         input_digest: digest(b"inputs"),
@@ -325,7 +325,7 @@ fn contracts_roundtrip_schemas_and_old_versions_fail_closed() {
         evidence: "no prior effect".into(),
         observation: None,
     };
-    valid("scenario-adapter-request-v7.json", &request);
+    valid("scenario-adapter-request-v8.json", &request);
     valid("scenario-adapter-response-v3.json", &response);
     let mut retired = json!(response);
     retired["schema"] = json!("af/scenario-adapter-response@1");
@@ -1243,7 +1243,7 @@ fn simultaneous_scheduler_transactions_admit_one_occurrence_and_locks_exclude_tw
     let id = world.runs.keys().next().unwrap();
     let _held = store.lock_run(id).unwrap();
     assert!(store.lock_run(id).is_err());
-    valid("scenario-store-v16.json", &world);
+    valid("scenario-store-v17.json", &world);
 }
 
 #[test]
@@ -1753,7 +1753,7 @@ fn inert_performance_bundles_have_native_typed_ports_feasible_whole_loop_bounds_
             &std::fs::read(root.join("fixtures/scenarios").join(file)).unwrap(),
         )
         .unwrap();
-        valid("scenario-bundle-v9.json", &value);
+        valid("scenario-bundle-v10.json", &value);
         let bundle: Bundle = serde_json::from_value(value).unwrap();
         bundle.validate(&TestHost::default()).unwrap();
         let definition = &bundle.definitions["performance"];
@@ -1796,7 +1796,7 @@ fn typed_selection_is_lazy_across_skips_and_keeps_decision_ownership_static() {
     def.result.insert("ok".into(), selection.clone());
     def.completion = vec![selection];
     bundle.validate(&TestHost::default()).unwrap();
-    valid("scenario-bundle-v9.json", &bundle);
+    valid("scenario-bundle-v10.json", &bundle);
     let mut run = Run::new(
         &TestHost::default(),
         "selection".into(),

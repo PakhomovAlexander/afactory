@@ -173,8 +173,8 @@ contents inside the exact owned build directory belong to that reservation. Task
 
 ## Recovery and bounds
 
-The workspace journal is `af/git-workspace-state@5`. Its separate `github.json` is the ordinary
-`af/github-adapter-state@8`; both share the stable workspace lock. Both are owner-only,
+The workspace journal is `af/git-workspace-state@6`. Its separate `github.json` is the ordinary
+`af/github-adapter-state@9`; both share the stable workspace lock. Both are owner-only,
 checksummed, no-follow and fsynced. Missing/corrupt/foreign journals refuse dispatch. The local
 journal admits 32 intents and at most 32 explicit lineage members; the production journal keeps
 its existing bounds. Native exports admit 32768 entries, 4096-byte paths and 64 MiB of content.

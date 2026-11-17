@@ -16,16 +16,16 @@
       "const": "af/implementation-pr-live@1"
     },
     "request_digest": {
-      "$ref": "urn:af:schema:scenario:9#/$defs/digest"
+      "$ref": "urn:af:schema:scenario:10#/$defs/digest"
     },
     "scope_id": {
-      "$ref": "urn:af:schema:scenario:9#/$defs/digest"
+      "$ref": "urn:af:schema:scenario:10#/$defs/digest"
     },
     "execution_id": {
-      "$ref": "urn:af:schema:scenario:9#/$defs/digest"
+      "$ref": "urn:af:schema:scenario:10#/$defs/digest"
     },
     "pin_id": {
-      "$ref": "urn:af:schema:scenario:9#/$defs/digest"
+      "$ref": "urn:af:schema:scenario:10#/$defs/digest"
     }
   }
 }

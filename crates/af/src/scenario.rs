@@ -800,7 +800,7 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
         ScenarioCommand::List { inspect } => {
             let world = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?.read()?;
             print(
-                &serde_json::json!({"schema":"af/scenario-list@10","runs":world.runs}),
+                &serde_json::json!({"schema":"af/scenario-list@11","runs":world.runs}),
                 &inspect,
             )
         }
@@ -961,7 +961,7 @@ pub(crate) fn ant(command: AntCommand) -> Result<i32> {
                 .map(|(id, ant)| Ok((id.clone(), ant_inspection(ant, &world, &scheduler)?)))
                 .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
             print(
-                &serde_json::json!({"schema":"af/ant-list@12","ants":ants}),
+                &serde_json::json!({"schema":"af/ant-list@13","ants":ants}),
                 &inspect,
             )
         }
@@ -978,7 +978,7 @@ pub(crate) fn ant(command: AntCommand) -> Result<i32> {
                 runs: results,
             } = runtime::tick(&store, now, inspect.now)?;
             print(
-                &serde_json::json!({"schema":"af/ant-tick@11","now_unix_ms":now,"started":started,"busy":busy,"refused":refused,"runs":results}),
+                &serde_json::json!({"schema":"af/ant-tick@12","now_unix_ms":now,"started":started,"busy":busy,"refused":refused,"runs":results}),
                 &inspect,
             )
         }
@@ -990,7 +990,7 @@ fn ant_inspection(
     scheduler: &serde_json::Value,
 ) -> Result<serde_json::Value> {
     let mut value = serde_json::to_value(ant).map_err(|e| e.to_string())?;
-    value["schema"] = serde_json::json!("af/ant-inspection@7");
+    value["schema"] = serde_json::json!("af/ant-inspection@8");
     value["scheduler"] = scheduler.clone();
     let next_due = ant.next_due_unix_ms();
     value["next_due_unix_ms"] = serde_json::json!(next_due.as_ref().ok().copied().flatten());

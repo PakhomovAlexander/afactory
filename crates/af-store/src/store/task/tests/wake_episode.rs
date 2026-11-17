@@ -104,7 +104,7 @@ fn wake_retained_history_checks_the_latest_lease_at_the_exact_covered_prefix() {
         for (index, event) in events.iter().enumerate() {
             digest = history_prefix_hash(&digest, event).unwrap();
             let checkpoint = WakeCheckpointV1 {
-                schema: "af/task-wake-checkpoint@1".into(),
+                schema: "af/task-wake-checkpoint@2".into(),
                 configuration_digest: format!("sha256:{}", "2".repeat(64)),
                 run_facts_digest: format!("sha256:{}", "3".repeat(64)),
                 through: boundary(index),

@@ -276,6 +276,9 @@ pub fn node_cause(
         ) {
             return TaskCauseV1::MalformedReply;
         }
+        if kind == NodeKind::Kernel && class != TaskFailureClassV1::Resources {
+            return TaskCauseV1::KernelExecution;
+        }
         if let Some(cause) = attempt_error.and_then(TaskCauseV1::of_diagnostic) {
             return cause;
         }
@@ -290,12 +293,15 @@ pub fn node_cause(
             TaskCauseV1::Budget
         };
     }
+    if kind == NodeKind::Kernel {
+        return TaskCauseV1::KernelExecution;
+    }
     match (TaskCauseV1::of_diagnostic(&text), kind) {
         (Some(cause), _) => cause,
         (None, NodeKind::Worker) => TaskCauseV1::MalformedReply,
         (None, NodeKind::Admission) => TaskCauseV1::IdentityUnverified,
         (None, NodeKind::Check) => TaskCauseV1::PreflightFailed,
-        (None, NodeKind::Kernel) => TaskCauseV1::Budget,
+        (None, NodeKind::Kernel) => TaskCauseV1::KernelExecution,
     }
 }
 fn failure_causes(cas: &Cas, state: &TaskProjection) -> Result<Vec<Option<TaskCauseV1>>, String> {
@@ -395,8 +401,19 @@ pub fn semantic_state(
             );
             let cause = if result.acceptance == TaskAcceptanceV1::Satisfied && !concluded {
                 None
+            } else if result.execution == TaskExecutionV1::Exhausted
+                && state
+                    .execution
+                    .as_ref()
+                    .is_some_and(|execution| execution.budget.breached())
+            {
+                Some(TaskCauseV1::Budget)
             } else if let Some(cause) = last_gate_cause(cas, state)? {
                 Some(cause)
+            } else if cancelled == Some(state.lease_epoch())
+                && result.execution == TaskExecutionV1::Incomplete
+            {
+                Some(TaskCauseV1::HostCancelled)
             } else if concluded && reviewed_with_findings(cas, state)? {
                 Some(TaskCauseV1::ReviewerFindings)
             } else {
@@ -405,7 +422,17 @@ pub fn semantic_state(
                         if concluded || result.acceptance == TaskAcceptanceV1::Unsatisfied {
                             TaskCauseV1::EvaluatorRejected
                         } else {
-                            planning_cause(cas, state).unwrap_or(TaskCauseV1::Budget)
+                            planning_cause(cas, state).unwrap_or(
+                                if result.execution == TaskExecutionV1::Incomplete {
+                                    TaskCauseV1::KernelExecution
+                                } else {
+                                    // A completed domain operation can return inconclusive
+                                    // evidence without failing a kernel node. Keep its
+                                    // existing terminal disposition, distinct from a failed
+                                    // native invocation and its diagnostic.
+                                    TaskCauseV1::Budget
+                                },
+                            )
                         },
                     )
                 })

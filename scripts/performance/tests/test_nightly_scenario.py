@@ -70,7 +70,7 @@ class ServiceFixture(TempDir):
         index = runtime.OPS.index(op)
         if index:
             inputs['evidence'] = dict(type='observation', value=self.service.observation(self.service.job(tag), runtime.OPS[index-1])[1])
-        return dict(schema='af/scenario-adapter-request@7', method=method, intent_id=D, input_digest=D,
+        return dict(schema='af/scenario-adapter-request@8', method=method, intent_id=D, input_digest=D,
                     operation=op, destination='github:owner/af', inputs=inputs)
 
 

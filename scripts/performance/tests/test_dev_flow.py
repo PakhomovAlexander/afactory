@@ -42,6 +42,22 @@ class FlowEvidence(TempDir):
                 dev_flow.validate_transferred(files, treatment=opposite)
         self.assertLessEqual(len(files), 64)
 
+    def test_retired_flow_and_embedded_cli_schemas_fail_closed(self):
+        doc, _ = self.transfer()
+        # Exercise the actual validator before artifact comparison, with one retired
+        # identity at a time, so an equality mismatch cannot mask schema admission.
+        for field, retired, message in (
+                (None, "af.perf-dev-flow/1", "not an af.perf-dev-flow/2"),
+                ("result", "af/task-inspection@20", "unsupported inspection schema"),
+                ("check_document", "af/task-checks@3", "unsupported check view"),
+                ("findings", "af/task-findings@2", "unsupported Findings document")):
+            with self.subTest(schema=retired):
+                bad = copy.deepcopy(doc)
+                target = bad if field is None else bad["rounds"][0][field]
+                target["schema"] = retired
+                with self.assertRaisesRegex(ValueError, message):
+                    dev_flow.validate(bad)
+
     def test_missing_malformed_unexpected_oversized_and_semantically_false_evidence_fails(self):
         doc, files = self.transfer()
         changes = [lambda f: f.pop("work/evidence/round-0-checks.json"),

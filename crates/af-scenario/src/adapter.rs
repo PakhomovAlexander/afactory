@@ -175,7 +175,7 @@ pub(crate) fn dispatch(
         ),
         Kind::Wait { grant, condition } => {
             let request = Request {
-                schema: "af/scenario-adapter-request@7".into(),
+                schema: "af/scenario-adapter-request@8".into(),
                 method: Method::Observe,
                 intent_id: dispatch.intent.id.clone(),
                 input_digest: dispatch.intent.input_digest.clone(),
@@ -240,7 +240,7 @@ pub(crate) fn dispatch(
                     .get(&scope.evidence_adapter)
                     .ok_or("Missing pinned native evidence adapter")?;
                 let observation_request = Request {
-                    schema: "af/scenario-adapter-request@7".into(),
+                    schema: "af/scenario-adapter-request@8".into(),
                     method: Method::Observe,
                     intent_id: dispatch.intent.id.clone(),
                     input_digest: dispatch.intent.input_digest.clone(),
@@ -271,7 +271,7 @@ pub(crate) fn dispatch(
                 )?;
             }
             let mut request = Request {
-                schema: "af/scenario-adapter-request@7".into(),
+                schema: "af/scenario-adapter-request@8".into(),
                 method: Method::Reconcile,
                 intent_id: dispatch.intent.id.clone(),
                 input_digest: dispatch.intent.input_digest.clone(),

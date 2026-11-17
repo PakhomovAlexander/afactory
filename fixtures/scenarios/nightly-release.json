@@ -1,9 +1,9 @@
 {
-  "schema": "af/scenario-bundle@9",
+  "schema": "af/scenario-bundle@10",
   "root": "nightly-release",
   "definitions": {
     "nightly-release": {
-      "schema": "af/scenario@9",
+      "schema": "af/scenario@10",
       "inputs": {
         "nightly_tag": "nightly_tag"
       },

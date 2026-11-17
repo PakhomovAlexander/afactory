@@ -163,7 +163,7 @@ fn start(fixture: &Fixture, task_id: &str, files: Value, expected: i32) -> Value
     );
     assert_eq!(code, expected, "{stderr}\n{stdout}");
     let outcome: Value = serde_json::from_str(stdout.trim()).unwrap();
-    schemas::valid(&schemas::validator("task-inspection-v20.json"), &outcome);
+    schemas::valid(&schemas::validator("task-inspection-v21.json"), &outcome);
     outcome
 }
 
@@ -432,6 +432,10 @@ fn a_regressing_or_unchanged_candidate_fails_its_comparison_and_is_never_evaluat
 fn too_few_repetitions_make_the_comparison_inconclusive() {
     let fixture = fixture(&[policy("\nrepetitions = 3\n", "\nrepetitions = 1\n")]);
     let outcome = start(&fixture, "once", json!({"size.txt": "50\n"}), 4);
+    assert_eq!(outcome["result"]["execution"], "completed");
+    assert_eq!(outcome["result"]["acceptance"], "inconclusive");
+    assert_eq!(outcome["state"]["outcome"], "exhausted");
+    assert_eq!(outcome["state"]["cause"], "budget");
     let cas = cas(&fixture);
     assert_eq!(measurement(&cas, &outcome, "candidate").runs.len(), 1);
     let recorded = comparison(&cas, &outcome);
