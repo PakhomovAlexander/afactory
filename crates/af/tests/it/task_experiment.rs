@@ -164,11 +164,13 @@ fn start(fixture: &Fixture, task_id: &str, files: Value, expected: i32) -> Value
     assert_eq!(code, expected, "{stderr}\n{stdout}");
     let outcome: Value = serde_json::from_str(stdout.trim()).unwrap();
     schemas::valid(&schemas::validator("task-inspection-v21.json"), &outcome);
-    if expected == 8 {
-        // Preserve the public state of a kernel measurement/comparison failure.
+    if expected == 4 {
+        // Completed domain evidence retains its disposition, distinct from a failed
+        // native invocation. Main's generic kernel-failure expectation does not apply.
+        assert_eq!(outcome["result"]["execution"], "completed");
         assert_eq!(outcome["state"]["phase"], "finished");
-        assert_eq!(outcome["state"]["outcome"], "execution_failed");
-        assert_eq!(outcome["state"]["cause"], "kernel_execution");
+        assert_eq!(outcome["state"]["outcome"], "exhausted");
+        assert_eq!(outcome["state"]["cause"], "budget");
     }
     outcome
 }
@@ -418,7 +420,7 @@ fn a_regressing_or_unchanged_candidate_fails_its_comparison_and_is_never_evaluat
         ("unchanged", "100\n", "unchanged"),
         ("marginal", "95\n", "below_threshold"),
     ] {
-        let outcome = start(&fixture, task, json!({"size.txt": size}), 8);
+        let outcome = start(&fixture, task, json!({"size.txt": size}), 4);
         let cas = cas(&fixture);
         let recorded = comparison(&cas, &outcome);
         assert_eq!(conclusion(&recorded), expected, "{task}");
@@ -437,7 +439,11 @@ fn a_regressing_or_unchanged_candidate_fails_its_comparison_and_is_never_evaluat
 #[test]
 fn too_few_repetitions_make_the_comparison_inconclusive() {
     let fixture = fixture(&[policy("\nrepetitions = 3\n", "\nrepetitions = 1\n")]);
-    let outcome = start(&fixture, "once", json!({"size.txt": "50\n"}), 8);
+    let outcome = start(&fixture, "once", json!({"size.txt": "50\n"}), 4);
+    assert_eq!(outcome["result"]["execution"], "completed");
+    assert_eq!(outcome["result"]["acceptance"], "inconclusive");
+    assert_eq!(outcome["state"]["outcome"], "exhausted");
+    assert_eq!(outcome["state"]["cause"], "budget");
     let cas = cas(&fixture);
     assert_eq!(measurement(&cas, &outcome, "candidate").runs.len(), 1);
     let recorded = comparison(&cas, &outcome);
@@ -474,7 +480,7 @@ fn a_failed_measurement_is_never_partial_and_is_never_evaluated() {
             "Check mutated its input Snapshot",
         ),
     ] {
-        let outcome = start(&fixture, task, json!({"mode.txt": mode}), 8);
+        let outcome = start(&fixture, task, json!({"mode.txt": mode}), 4);
         let cas = cas(&fixture);
         let candidate = measurement(&cas, &outcome, "candidate");
         assert_eq!(serde_json::to_value(candidate.outcome).unwrap(), "failed");
@@ -547,7 +553,7 @@ fn an_even_sample_median_is_the_exact_mean_of_its_middle_values() {
     ]);
     // Every run writes one more byte than the last: 100 and 101 for the baseline, 102 and
     // 103 for the unchanged candidate.
-    let outcome = start(&fixture, "even", json!({"size.txt": "100\n"}), 8);
+    let outcome = start(&fixture, "even", json!({"size.txt": "100\n"}), 4);
     let cas = cas(&fixture);
     let baseline = measurement(&cas, &outcome, "baseline");
     assert_eq!(
@@ -577,7 +583,7 @@ fn an_even_sample_median_is_the_exact_mean_of_its_middle_values() {
 #[test]
 fn a_zero_baseline_is_inconclusive_against_a_non_zero_candidate() {
     let fixture = fixture(&[("size.txt", "0\n".into())]);
-    let outcome = start(&fixture, "zero", json!({"size.txt": "5\n"}), 8);
+    let outcome = start(&fixture, "zero", json!({"size.txt": "5\n"}), 4);
     let cas = cas(&fixture);
     let recorded = comparison(&cas, &outcome);
     let row = &recorded.metrics["bytes_written"];
@@ -1215,7 +1221,7 @@ fn warm_measurements_of_a_then_b_then_a_on_one_key_each_build_their_own_snapshot
 fn a_repetition_past_its_wall_is_a_timeout_that_keeps_what_it_printed() {
     let (path, text) = policy("wall_ms = 20000", "wall_ms = 1000");
     let fixture = fixture(&[(path, text), ("mode.txt", "sleep\n".into())]);
-    let outcome = start(&fixture, "sleeps", json!({"size.txt": "80\n"}), 8);
+    let outcome = start(&fixture, "sleeps", json!({"size.txt": "80\n"}), 4);
     let cas = cas(&fixture);
     let baseline = measurement(&cas, &outcome, "baseline");
     assert_eq!(serde_json::to_value(baseline.outcome).unwrap(), "failed");

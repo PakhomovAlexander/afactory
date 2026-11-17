@@ -35,7 +35,7 @@ def main(af, comparison_proof=None):
             + 'sys.argv=["scenario.py","adapter","--service",' + repr(str(fixture.file)) + ']\n'
             + 'with trusted_mounts(): raise SystemExit(scenario.main())\n')
         adapter.chmod(0o700)
-        policy = dict(schema='af/scenario-policy@6', adapters=dict(nightly=dict(executable=str(adapter),
+        policy = dict(schema='af/scenario-policy@8', adapters=dict(nightly=dict(executable=str(adapter),
             digest=sha256_bytes(adapter.read_bytes()), operations=[*runtime.OPS, 'observe'], destinations=['github:owner/af'],
             max_wall_ms=30000, max_output_bytes=65536)), task_plans=[], task_templates=[], decision_keys={}, file_roots=[],
             performance_publications={}, nightly_releases=dict(nightly=dict(repository='owner/af', configuration_digest=fixture.service.digest)))

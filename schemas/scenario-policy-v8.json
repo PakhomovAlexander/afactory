@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:scenario-policy:8",
+  "title": "scenario-policy v8",
+  "description": "ADR-0274. Cross-port types, identity, authority, budget, signature and lifecycle invariants also require semantic admission.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "adapters",
+    "task_plans",
+    "decision_keys",
+    "file_roots",
+    "task_templates"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/scenario-policy@8"
+    },
+    "adapters": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:scenario:10#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "urn:af:schema:scenario:10#/$defs/Adapter"
+      },
+      "maxProperties": 32
+    },
+    "task_plans": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:af:schema:scenario:10#/$defs/digest"
+      },
+      "uniqueItems": true,
+      "maxItems": 256
+    },
+    "decision_keys": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:scenario:10#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "urn:af:schema:scenario:10#/$defs/text"
+      },
+      "maxProperties": 32
+    },
+    "file_roots": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:af:schema:scenario:10#/$defs/path"
+      },
+      "uniqueItems": true,
+      "maxItems": 32
+    },
+    "task_templates": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 256,
+      "items": {
+        "$ref": "urn:af:schema:scenario:10#/$defs/digest"
+      }
+    },
+    "performance_publications": {
+      "type": "object",
+      "maxProperties": 32,
+      "propertyNames": {
+        "$ref": "urn:af:schema:scenario:10#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "urn:af:schema:scenario:10#/$defs/PerformancePublicationScope"
+      }
+    },
+    "implementation_startup": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "urn:af:schema:implementation-startup-scope:2"
+        }
+      ]
+    },
+    "nightly_releases": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:scenario:10#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "urn:af:schema:scenario:10#/$defs/NightlyReleaseScope"
+      },
+      "maxProperties": 32
+    }
+  }
+}

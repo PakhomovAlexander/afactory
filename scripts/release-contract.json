@@ -1,8 +1,8 @@
 {
   "schema": "af.dev-release-contract/1",
   "version": "0.15.1-rc.3",
-  "source": "sha256:ce24c697f0e1b7136fa7068081d8bc5a495d725b8ee8145d991b16933c8d0d4c",
-  "capabilities": "sha256:77c40ea0cdac9e4694266473fc5dde6ef768de2c6dfbdfb52ff4c4f66c817955",
+  "source": "sha256:439d365292a1f652aef88bdc5cbd45875c81a2f67fc7d33b24a2d5c9b3a07ff4",
+  "capabilities": "sha256:040554dc4754d70088414938f50963b7bff668bb4f8ad65cb261b982e6b6f383",
   "contract": "native-task-review@1",
   "receipt": "af/TaskCheckReceipt@2"
 }

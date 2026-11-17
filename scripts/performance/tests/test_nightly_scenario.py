@@ -70,7 +70,7 @@ class ServiceFixture(TempDir):
         index = runtime.OPS.index(op)
         if index:
             inputs['evidence'] = dict(type='observation', value=self.service.observation(self.service.job(tag), runtime.OPS[index-1])[1])
-        return dict(schema='af/scenario-adapter-request@5', method=method, intent_id=D, input_digest=D,
+        return dict(schema='af/scenario-adapter-request@8', method=method, intent_id=D, input_digest=D,
                     operation=op, destination='github:owner/af', inputs=inputs)
 
 
@@ -245,7 +245,11 @@ class Prerequisites(ServiceFixture):
             self.commands.append(argv)
             return SimpleNamespace(returncode=0, stdout=json.dumps(dict(commit='a' * 12)).encode())
         self.run = run
-        for patcher in (mock.patch.object(build, 'load_config', return_value=self.nightly),
+        # Model the production worker host alongside tools and storage. The test runner
+        # itself may be macOS; the installer must still refuse an actual unsupported host.
+        for patcher in (mock.patch.object(install.platform, 'system', return_value='Linux'),
+                        mock.patch.object(install.platform, 'machine', return_value='x86_64'),
+                        mock.patch.object(build, 'load_config', return_value=self.nightly),
                         mock.patch.object(install.executor, 'load_config', return_value=self.lab),
                         mock.patch.object(install, 'immutable_control'),
                         mock.patch.object(install, 'immutable_path'),
@@ -274,6 +278,15 @@ class Prerequisites(ServiceFixture):
         self.assertFalse(Path(self.args.output).exists())
         self.assertFalse(Path(self.args.root).exists())
         self.assertTrue(all('add' not in argv and 'enable' not in argv for argv in self.commands))
+
+    def test_unsupported_worker_host_refuses_before_writing_authority(self):
+        self.provision()
+        for system, machine in [('Darwin', 'arm64'), ('Linux', 'aarch64')]:
+            with mock.patch.object(install.platform, 'system', return_value=system), \
+                    mock.patch.object(install.platform, 'machine', return_value=machine):
+                self.assertIn('Linux x86_64 worker host', install.dependency_errors(self.args, self.run))
+            self.assertFalse(Path(self.args.output).exists())
+            self.assertFalse(Path(self.args.root).exists())
 
     def test_installer_writes_reviewable_authority_only_after_prerequisites(self):
         self.provision()

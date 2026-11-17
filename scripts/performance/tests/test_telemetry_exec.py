@@ -561,6 +561,25 @@ class ContainedBase(TempDir):
 
 class Contained(ContainedBase):
 
+    def test_live_smoke_home_is_private_under_ordinary_ci_umask(self):
+        from tests.telemetry_measurement_smoke import execution_directories
+
+        previous = os.umask(0o022)
+        try:
+            work, _ = execution_directories(self.executor)
+        finally:
+            os.umask(previous)
+        self.assertEqual(work.stat().st_mode & 0o777, 0o700)
+        doc = execution(self, [sys.executable, "-I", "-c", "print('private home')"],
+                        cwd=str(work))
+        result = self.executor.run(doc)
+        self.assertEqual((result.code, result.stdout), (0, b"private home\n"))
+        self.assertEqual(result.cleanup, "confirmed")
+        passwd = next(work.glob("account-*/passwd"))
+        self.assertIn(":%s:/bin/false" % work, passwd.read_text())
+        self.assertTrue(any("dst=/etc/passwd,readonly" in arg
+                            for call in self.calls() for arg in call))
+
     def test_volume_admission_refuses_before_any_candidate_launch(self):
         with mock.patch.object(self.executor.image, "refuse_implicit_volumes",
                                side_effect=ContractError("implicit writable volumes")):

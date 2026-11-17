@@ -1007,6 +1007,7 @@ class ReleaseToolsIgnoreNightlies(TempDir):
                                 stderr=subprocess.PIPE)
         self.assertEqual(result.returncode, 1)
         self.assertIn(b"tag nightly-2026.10.29 does not match version 0.14.0", result.stderr)
+        self.assertNotIn(b"Traceback", result.stderr)
         self.assertFalse(os.path.exists(self.path("output")))
 
 

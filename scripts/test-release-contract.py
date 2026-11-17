@@ -8,6 +8,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 
 sys.dont_write_bytecode = True
@@ -136,10 +137,15 @@ class ReleaseContract(unittest.TestCase):
 
     def test_current_scenario_contracts_are_declared_and_drift_is_refused(self):
         policy = json.loads((ROOT / 'scripts/release-policy.json').read_text())
-        expected = {'scenario-store': 11, 'scenario': 7, 'scenario-bundle': 7,
-                    'scenario-pin': 7, 'scenario-run': 7, 'scenario-list': 7,
-                    'ant': 8, 'ant-pin': 8, 'ant-tick': 8, 'ant-state': 9,
-                    'ant-inspection': 4, 'ant-list': 9,
+        # Independent expectations: do not infer the current generation from either the
+        # declaration or the schemas being checked. Both can drift together.
+        expected = {'scenario-store': 17, 'scenario-driver': 2,
+                    'scenario-adapter-response': 3, 'github-adapter-state': 9,
+                    'git-candidate-source-request': 2, 'git-candidate-source': 2, 'scenario': 10, 'scenario-bundle': 10,
+                    'scenario-pin': 11, 'scenario-run': 11, 'scenario-list': 11,
+                    'ant': 11, 'ant-pin': 12, 'ant-tick': 12, 'ant-state': 13,
+                    'ant-inspection': 8, 'ant-list': 13,
+                    'scenario-policy': 8, 'implementation-startup-scope': 2, 'implementation-startup-failure': 1,
                     'scenario-task-template': 2, 'scenario-template-pin': 2}
         for name, version in expected.items():
             relative = 'schemas/%s-v%s.json' % (name, version)
@@ -149,11 +155,20 @@ class ReleaseContract(unittest.TestCase):
                 original = path.read_bytes()
                 document = json.loads(original)
                 self.assertEqual(document['properties']['schema']['const'], 'af/%s@%s' % (name, version))
-                document['properties']['schema']['const'] = 'af/foreign@1'
-                path.write_text(json.dumps(document))
+                for invalid in ('af/foreign@1', 'af/%s@%s' % (name, version - 1)):
+                    document['properties']['schema']['const'] = invalid
+                    path.write_text(json.dumps(document))
+                    with self.assertRaisesRegex(ValueError, 'capabilities differ'):
+                        PREFLIGHT.check(self.root)
+                    path.write_bytes(original)
+                retired = self.root / ('schemas/%s-v%s.json' % (name, version - 1))
+                self.assertFalse(retired.exists(), 'retired schema must not remain published')
+                # Adding the old filename also changes release capabilities, even if its
+                # bytes were copied from the current schema instead of using an old writer.
+                retired.write_bytes(original)
                 with self.assertRaisesRegex(ValueError, 'capabilities differ'):
                     PREFLIGHT.check(self.root)
-                path.write_bytes(original)
+                retired.unlink()
         template = json.loads((self.root / 'schemas/scenario-task-template-v2.json').read_text())
         self.assertIn('authority_id', template['required'])
         self.assertIn('bindings', template['required'])
@@ -165,6 +180,10 @@ class ReleaseContract(unittest.TestCase):
         expected = {
             'task-wake-route-v1.json': 'af/task-wake-route@1',
             'task-wake-status-v2.json': 'af/task-wake-status@2',
+            'scenario-v10.json': 'af/scenario@10',
+            'scenario-store-v17.json': 'af/scenario-store@17',
+            'scenario-driver-v2.json': 'af/scenario-driver@2',
+            'implementation-startup-scope-v2.json': 'af/implementation-startup-scope@2',
             'performance-executor-v5.json': 'af.perf-executor/5',
             'performance-history-v2.json': 'af.perf-history/2',
             'performance-equivalence-v2.json': 'af.perf-equivalence/2',
@@ -251,6 +270,66 @@ class ReleaseContract(unittest.TestCase):
             from perflab.telemetry_exec import Outcome
             smoke.failed_task_document(self.root,
                 Outcome(1, b'', 0, b'0.99.0 is named by no fixture contract', 52, 0))
+
+    def test_disk_refusal_smoke_requires_incomplete_and_preserves_guards(self):
+        smoke = telemetry_lab.script_module('scripts/performance/tests/telemetry_runtime_smoke.py')
+        registry, _ = telemetry_lab.load_registry()
+        config = telemetry_lab.configuration(registry, 'pr', rounds=1, pairs=1,
+                                             scale='smoke', corpus_runs=10)
+        document = {
+            'phase': {'kind': 'finished'},
+            'result': {'execution': 'incomplete', 'acceptance': 'inconclusive'},
+            'attempts': 1,
+            'run_reports': [{'report': {'nodes': [
+                {'node': 'root.nodes.check', 'outcome': {'kind': 'completed'}}]}}],
+            'runtime_observations': [],
+        }
+        diagnostic = b'insufficient_disk: finished/gate_failed/preflight_failed'
+        for case in ('valid', 'exhausted', 'completed', 'accepted', 'attempts', 'phase',
+                     'check', 'evidence', 'runtime', 'disk', 'cause', 'cleanup'):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                receipt = json.loads(json.dumps(document))
+                stderr = diagnostic
+                if case in ('exhausted', 'completed'):
+                    receipt['result']['execution'] = case
+                elif case == 'accepted':
+                    receipt['result']['acceptance'] = 'satisfied'
+                elif case == 'attempts':
+                    receipt['attempts'] = 2
+                elif case == 'phase':
+                    receipt['phase']['kind'] = 'running'
+                elif case == 'check':
+                    receipt['run_reports'][0]['report']['nodes'][0]['outcome']['kind'] = 'failed'
+                elif case == 'evidence':
+                    receipt['run_reports'][0]['report']['error'] = 'Task runtime evidence cannot be empty'
+                elif case == 'runtime':
+                    receipt['runtime_observations'] = [{}]
+                elif case == 'disk':
+                    stderr = b'finished/gate_failed/preflight_failed'
+                elif case == 'cause':
+                    stderr = b'insufficient_disk:'
+
+                calls = []
+                def run(execution):
+                    calls.append(execution)
+                    path = Path(execution.cwd) / 'bench/telemetry-bench-concurrent/00-off'
+                    path.mkdir(parents=True)
+                    (path / 'stdout').write_text(json.dumps(receipt))
+                    (path / 'stderr').write_bytes(stderr)
+                    return smoke.telemetry_exec.Outcome(
+                        code=1, cleanup='uncertain' if case == 'cleanup' else 'confirmed')
+
+                own = Path(directory) / 'execution'
+                executor = SimpleNamespace(directory=str(own), python=sys.executable, run=run)
+                if case == 'valid':
+                    smoke.exercise(executor, registry, config, '/unused/af', refuse=True)
+                    self.assertFalse(own.exists())
+                else:
+                    with self.assertRaises(AssertionError):
+                        smoke.exercise(executor, registry, config, '/unused/af', refuse=True)
+                    self.assertTrue(own.exists(), 'failed evidence must be retained')
+                self.assertEqual(len(calls), 1)
+                self.assertIn('--keep', calls[0].argv)
 
     def test_real_preflight_cli_and_schema_writer_refuse_drift(self):
         shutil.copy(ROOT / 'scripts/release-contract.py', self.root / 'scripts')

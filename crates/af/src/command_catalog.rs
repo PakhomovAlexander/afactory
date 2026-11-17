@@ -272,6 +272,7 @@ pub(crate) const EFFECTS: &[(&str, Effects)] = &[
     ("af scenario template-pin", writes(&[(Store, None)])),
     ("af scenario evidence-source", READS),
     ("af scenario performance-proof", READS),
+    ("af scenario implementation-proof", READS),
     ("af scenario experiment-source", writes(&[(Files, None)])),
     ("af scenario candidate-source", writes(&[(Files, None)])),
     (
@@ -301,6 +302,19 @@ pub(crate) const EFFECTS: &[(&str, Effects)] = &[
             human: &[],
         },
     ),
+    (
+        "af scenario drive",
+        Effects {
+            tokens: Tokens::Charges(None),
+            writes: &[
+                (Store, None),
+                (Files, Some("authorized file action")),
+                (Remote, Some("authorized publication adapter")),
+            ],
+            human: &[],
+        },
+    ),
+    ("af scenario driver-status", READS),
     ("af scenario cancel", writes(&[(Store, None)])),
     ("af scenario decision-payload", writes(&[(Files, None)])),
     (
@@ -782,6 +796,22 @@ mod tests {
                 "{flag}"
             );
         }
+    }
+
+    #[test]
+    fn scenario_driver_effects_match_resume_and_status_is_read_only() {
+        let effects = |command: &str| {
+            document(&["scenario".into(), command.into()]).unwrap()["commands"][0]["effects"]
+                .clone()
+        };
+        let drive = effects("drive");
+        assert_eq!(drive, effects("resume"));
+        assert_eq!(drive["tokens"], "charges");
+        assert_eq!(drive["human"], json!([]));
+        assert_eq!(
+            effects("driver-status"),
+            json!({"tokens": "free", "charges_when": null, "writes": [], "human": []})
+        );
     }
 
     /// The `writes` of one command as the catalog prints them: `(state, when)` pairs.

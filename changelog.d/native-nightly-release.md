@@ -6,10 +6,11 @@
   service chain and replace only the authorized nightly public signing identity. Refuse a selected
   source with a different embedded nightly key before build and on recovery/publication. See the
   [decision](../docs/adr/2026-11-16-orchestrate-native-nightly-releases.md).
-- Authority compatibility: Scenario family v7, machine policy v6, adapter request v5, Ant/Pin/Tick
-  v8, Ant State/List v9, inspection v4, Store v11 and nightly config v2 refuse earlier shapes.
+- Authority compatibility: Combined Scenario/Bundle v9, Policy v8, Pin/Run/List v10, adapter
+  request v7/response v3, Ant v10, Pin/Tick v11, State/List v12, inspection v7, Store v15 and
+  nightly config v2 refuse earlier shapes.
   Finish or discard prior state and review new pins; interval scheduling and retention remain.
   Existing nightly clients can explicitly override the nightly public key; the stable key is unchanged.
 
-Generic adapter receipt containers also advance to GitHub state v5 and Git workspace state v3
+Generic adapter receipt containers also advance to GitHub state v8 and Git workspace state v5
 because they persist the new request version. Their signed publication authority is unchanged.

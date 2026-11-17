@@ -1,5 +1,5 @@
 {
-  "schema": "af/scenario-policy@6",
+  "schema": "af/scenario-policy@8",
   "adapters": {},
   "task_plans": [],
   "task_templates": [],

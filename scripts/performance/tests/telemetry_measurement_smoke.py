@@ -29,6 +29,16 @@ def docker(*args):
                                    env=builds.docker_client_environment())
 
 
+def execution_directories(selected):
+    own = Path(selected.directory)
+    own.mkdir(exist_ok=True)
+    work, capture = own / "run", own / "capture"
+    # This is also the private NSS account home, independently of the CI umask.
+    work.mkdir(mode=0o700)
+    capture.mkdir()
+    return work, capture
+
+
 def main():
     assert shutil.which("docker"), "Docker unavailable: live measurement smoke was not run"
     assert os.getuid() != 0, "smoke requires a real non-root runner-owned checkout"
@@ -54,10 +64,7 @@ def main():
 
         def execute(label, script, inspect=False, selected=executor, readable=()):
             own = Path(selected.directory)
-            own.mkdir(exist_ok=True)
-            work, capture = own / "run", own / "capture"
-            work.mkdir(mode=0o700)
-            capture.mkdir()
+            work, capture = execution_directories(selected)
             env = {"PATH": "/usr/bin:/bin", "HOME": str(work), "TMPDIR": str(work),
                    "PYTHONDONTWRITEBYTECODE": "1"}
             if inspect:

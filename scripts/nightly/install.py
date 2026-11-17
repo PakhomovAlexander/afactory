@@ -49,15 +49,15 @@ def bundle(digest, repository):
             on_timeout='fail', operation=dict(kind='wait', grant=observe, condition=runtime.CONDITIONS[op])))
     grants.append(observe)
     final = dict(source='step', step='wait_3', port='result')
-    return dict(schema='af/scenario-bundle@7', root='nightly-release', definitions={'nightly-release': dict(
-        schema='af/scenario@7', inputs=dict(nightly_tag='nightly_tag'), outputs=dict(release='observation'),
+    return dict(schema='af/scenario-bundle@10', root='nightly-release', definitions={'nightly-release': dict(
+        schema='af/scenario@10', inputs=dict(nightly_tag='nightly_tag'), outputs=dict(release='observation'),
         steps=steps, result=dict(release=final), completion=[dict(source='project', value=final,
             projection=dict(kind='observation_satisfied'))], admission=None,
         authority=dict(task_plans=[], task_templates=[], grants=grants, decision_owners=[]), limits=LIMITS)})
 
 
 def ant(definition, start):
-    return dict(schema='af/ant@8', id='nightly-release', scenario=definition, inputs={},
+    return dict(schema='af/ant@11', id='nightly-release', scenario=definition, inputs={},
         occurrence_inputs=dict(nightly_tag='scheduled_nightly_tag'),
         schedule=dict(kind='daily', timezone='Europe/Moscow', hour=3, minute=0, start_unix_ms=start), owner='owner',
         notification='local:nightly-operator-journal', execution=dict(overlap='skip', missed='skip',
@@ -225,7 +225,7 @@ def install(args):
     write_new(output / 'tick', tick, executable=True)
     digest = canonical_digest(service)
     definition = bundle(digest, config['repository'])
-    policy = dict(schema='af/scenario-policy@6', adapters=dict(nightly=dict(executable=str(output / 'adapter'),
+    policy = dict(schema='af/scenario-policy@8', adapters=dict(nightly=dict(executable=str(output / 'adapter'),
         digest=sha256_bytes((output / 'adapter').read_bytes()), operations=[*runtime.OPS, 'observe'],
         destinations=['github:' + config['repository']], max_wall_ms=30000, max_output_bytes=65536)),
         task_plans=[], task_templates=[], decision_keys={}, file_roots=[], performance_publications={},

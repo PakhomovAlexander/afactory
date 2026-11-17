@@ -14,10 +14,10 @@
       "const": "af/performance-publication-activation@1"
     },
     "adapter": {
-      "$ref": "urn:af:schema:scenario:7#/$defs/Adapter"
+      "$ref": "urn:af:schema:scenario:10#/$defs/Adapter"
     },
     "scope": {
-      "$ref": "urn:af:schema:scenario:7#/$defs/PerformancePublicationScope"
+      "$ref": "urn:af:schema:scenario:10#/$defs/PerformancePublicationScope"
     },
     "title": {
       "type": "string",

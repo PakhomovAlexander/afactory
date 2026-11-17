@@ -64,6 +64,7 @@ def exercise(executor, registry, config, af, refuse=False, deadline=None):
         run, _, outcome = execute('overhead', 'overhead')
         document = failed_task_document(run, outcome)
         assert document['phase']['kind'] == 'finished'
+        # Disk preflight refusal is a non-budget node failure, not Task budget exhaustion.
         assert document['result']['execution'] == 'incomplete'
         assert document['result']['acceptance'] == 'inconclusive'
         assert document['attempts'] == 1

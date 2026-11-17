@@ -137,7 +137,7 @@ class Service:
 
     def request(self, request):
         require(isinstance(request, dict) and set(request) == {'schema', 'method', 'intent_id', 'input_digest',
-                'operation', 'destination', 'inputs'} and request['schema'] == 'af/scenario-adapter-request@5',
+                'operation', 'destination', 'inputs'} and request['schema'] == 'af/scenario-adapter-request@8',
                 'unsupported adapter request')
         for key in ('intent_id', 'input_digest'):
             wire.DIGEST.validate(request[key], key)
@@ -153,7 +153,7 @@ class Service:
         tag = typed('subject')
         self.path(tag)
         require(typed('revision') == self.digest, 'nightly service differs from pin')
-        response = dict(schema='af/scenario-adapter-response@1', intent_id=request['intent_id'],
+        response = dict(schema='af/scenario-adapter-response@3', intent_id=request['intent_id'],
             input_digest=request['input_digest'], outcome='pending', evidence='durable nightly job', observation=None)
         op, method = request['operation'], request['method']
         with lock(self.root / 'queue.lock'):
@@ -267,7 +267,7 @@ def main():
             try:
                 response = service.request(request)
             except executor.JournalBusy:
-                response = dict(schema='af/scenario-adapter-response@1', intent_id=request['intent_id'],
+                response = dict(schema='af/scenario-adapter-response@3', intent_id=request['intent_id'],
                     input_digest=request['input_digest'], outcome='pending', evidence='nightly queue busy', observation=None)
             sys.stdout.buffer.write(document_bytes(response))
     except (OSError, ContractError, RuntimeError) as error:

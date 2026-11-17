@@ -333,6 +333,59 @@ class ProvisionedProbe(unittest.TestCase):
                         self.assertTrue(image.exists())
                         self.assertTrue(mount.exists())
 
+    def test_probe_uses_durable_owner_before_launch_and_settles_exact_name(self):
+        success = subprocess.CompletedProcess(
+            [], 0, json.dumps(contained_flow_probe.EXPECTED).encode(), b"")
+        cases = ((success, True, None),
+                 (subprocess.CompletedProcess([], 1, b"", b"failed"), True, AssertionError),
+                 (subprocess.CompletedProcess([], 0, b"{}", b""), True, AssertionError),
+                 (subprocess.TimeoutExpired("docker", 600), True, subprocess.TimeoutExpired),
+                 (success, False, AssertionError))
+        for action, confirmed, error in cases:
+            with self.subTest(action=action, confirmed=confirmed), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp).resolve()
+                mount, image, control = root / "scratch", root / "image", root / "owner"
+                mount.mkdir()
+                image.write_bytes(b"fixture")
+                launched = []
+                with host_prep.TelemetryOwner(control, mount, create=True, image=image) as owner:
+                    def run(argv, **kwargs):
+                        name = argv[argv.index("--name") + 1]
+                        self.assertRegex(name, r"^af-perf-telemetry-contained-flow-probe-[0-9a-f]{16}$")
+                        doc = owner._read()  # Actual strict persisted validation before transport.
+                        self.assertEqual((doc["phase"], doc["container"], doc["launches"]),
+                                         ("active", name, 1))
+                        self.assertEqual(kwargs["timeout"], 600)
+                        launched.append(name)
+                        if isinstance(action, BaseException):
+                            raise action
+                        return action
+
+                    def remove(docker, name):
+                        self.assertEqual((docker, name), ("docker", launched[0]))
+                        self.assertEqual(owner._read()["phase"], "active")
+                        return supervise.Removal(confirmed, "gone" if confirmed else "unconfirmed")
+
+                    with mock.patch.object(contained_flow_probe.subprocess, "run", side_effect=run) as launch, \
+                         mock.patch.object(contained_flow_probe.supervise, "remove_container", side_effect=remove) as removal:
+                        if error is None:
+                            self.assertEqual(contained_flow_probe.run(image, owner), contained_flow_probe.EXPECTED)
+                        else:
+                            with self.assertRaises(error):
+                                contained_flow_probe.run(image, owner)
+                        launch.assert_called_once()
+                        removal.assert_called_once_with("docker", launched[0])
+                # Reopen the real durable fence, including uncertainty; no mocked owner.
+                with host_prep.TelemetryOwner(control, mount) as owner:
+                    self.assertEqual((owner.doc["phase"], owner.doc["container"], owner.doc["launches"]),
+                                     ("stopped" if confirmed else "uncertain", launched[0], 1))
+                    if not confirmed:
+                        with self.assertRaisesRegex(ContractError, "unsettled launch"):
+                            owner.available()
+                        with self.assertRaisesRegex(ContractError, "cleanup unconfirmed"):
+                            owner.cleanup(image)
+                        self.assertTrue(image.exists() and mount.is_dir())
+
     def test_fixture_capabilities_and_readable_binds_are_scoped_and_removed(self):
         argv = contained_flow_probe.command("name", "/binary", lab="/lab")
         self.assertIn("SYS_ADMIN", argv)

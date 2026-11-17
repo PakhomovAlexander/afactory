@@ -254,6 +254,7 @@ pub fn compact(world: &mut World) -> Result<()> {
             }
         }
     }
+    world.drivers.retain(|id, _| world.runs.contains_key(id));
     world
         .run_capacity
         .retain(|id, _| world.runs.contains_key(id));
@@ -374,6 +375,7 @@ pub fn validate_capacity(world: &World) -> Result<()> {
     )
 }
 pub fn allocate_new(world: &mut World, old: &BTreeSet<String>) -> Result<()> {
+    world.drivers.retain(|id, _| world.runs.contains_key(id));
     world
         .run_capacity
         .retain(|id, _| world.runs.contains_key(id));
@@ -541,7 +543,7 @@ mod tests {
         }
         let definition = Ant {
             occurrence_inputs: BTreeMap::new(),
-            schema: "af/ant@8".into(),
+            schema: "af/ant@11".into(),
             id: id.into(),
             scenario: bundle,
             inputs: BTreeMap::new(),
@@ -646,7 +648,7 @@ mod tests {
                 let world = store.read().unwrap();
                 assert_eq!(world, Store::isolated(root.path()).unwrap().read().unwrap());
                 assert!(serde_json::to_vec(&world).unwrap().len() as u64 <= MAX_BYTES);
-                valid("scenario-store-v11.json", &world);
+                valid("scenario-store-v17.json", &world);
             }
         }
         eprintln!(
@@ -1475,7 +1477,7 @@ mod tests {
         );
         assert_eq!(run.dispatches, 1);
         assert!(occupied(&world).unwrap() <= MAX_BYTES);
-        valid("scenario-store-v11.json", &world);
+        valid("scenario-store-v17.json", &world);
     }
 
     #[test]

@@ -6,7 +6,10 @@
 pub mod adapter;
 pub mod checks;
 pub mod contract;
+pub mod driver;
 pub mod host;
+pub mod implementation;
+pub mod nightly;
 pub mod performance;
 pub mod presentation;
 pub mod retention;
@@ -33,4 +36,4 @@ use {
     store::Store,
 };
 
-pub mod nightly;
+pub mod task_outcome;

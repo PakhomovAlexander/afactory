@@ -196,7 +196,7 @@ mod occurrence_tests {
             .insert("night".into(), OccurrenceInput::ScheduledNightlyTag);
         let (_, policy) = simple();
         let pin = AntPin::new(&host, def.clone(), policy.clone()).unwrap();
-        valid("ant-pin-v8.json", &pin);
+        valid("ant-pin-v12.json", &pin);
         let mut ant = AntState::new(pin, START).unwrap();
         ant.change(AntMode::Enabled, START).unwrap();
         let mut runs = BTreeMap::new();
@@ -286,8 +286,8 @@ mod bundle_tests {
         let bundle = definition.scenario.clone();
         let host = TestHost::default();
         definition.validate(&host).unwrap();
-        valid("ant-v8.json", &definition);
-        valid("scenario-bundle-v7.json", &bundle);
+        valid("ant-v11.json", &definition);
+        valid("scenario-bundle-v10.json", &bundle);
         let (_, mut policy) = simple();
         let operations = [
             Operation::NightlyBuildV1,
@@ -317,8 +317,8 @@ mod bundle_tests {
             },
         );
         let pin = Pin::new(&host, bundle.clone(), policy.clone()).unwrap();
-        valid("scenario-pin-v7.json", &pin);
-        valid("scenario-policy-v6.json", &policy);
+        valid("scenario-pin-v11.json", &pin);
+        valid("scenario-policy-v8.json", &policy);
         let def = &bundle.definitions[&bundle.root];
         assert_eq!(def.limits.max_tokens, 0);
         assert_eq!(def.steps.len(), 8);

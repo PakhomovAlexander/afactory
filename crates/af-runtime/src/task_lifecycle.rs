@@ -423,10 +423,14 @@ pub fn semantic_state(
                             TaskCauseV1::EvaluatorRejected
                         } else {
                             planning_cause(cas, state).unwrap_or(
-                                if result.execution == TaskExecutionV1::Exhausted {
-                                    TaskCauseV1::Budget
-                                } else {
+                                if result.execution == TaskExecutionV1::Incomplete {
                                     TaskCauseV1::KernelExecution
+                                } else {
+                                    // A completed domain operation can return inconclusive
+                                    // evidence without failing a kernel node. Keep its
+                                    // existing terminal disposition, distinct from a failed
+                                    // native invocation and its diagnostic.
+                                    TaskCauseV1::Budget
                                 },
                             )
                         },

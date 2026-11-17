@@ -335,7 +335,7 @@ mod tests {
         ))
         .unwrap();
         valid("performance-publication-activation-v1.json", &activation);
-        valid("git-workspace-config-v2.json", &workspace);
+        valid("git-workspace-config-v3.json", &workspace);
         let scope: Scope = serde_json::from_value(activation["scope"].clone()).unwrap();
         scope.validate().unwrap();
         for key in [
@@ -398,7 +398,7 @@ mod tests {
             .performance_publications
             .insert("publisher".into(), scope);
         policy.validate().unwrap();
-        valid("scenario-policy-v6.json", &policy);
+        valid("scenario-policy-v8.json", &policy);
         policy
             .performance_publications
             .get_mut("publisher")

@@ -1,5 +1,6 @@
 //! Independent public-writer histories with explicit observation clocks and expected boundaries.
 use super::*;
+#[cfg(target_os = "linux")]
 use af_contracts::task::event::TaskChangeV1;
 use af_contracts::task::wake::*;
 use af_runtime::wake::{envelope, project};

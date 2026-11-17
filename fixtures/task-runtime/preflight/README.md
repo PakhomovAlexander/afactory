@@ -1,6 +1,6 @@
 # Native preflight fixtures
 
-The helper reads current `af/task-inspection@20` and `af/task-diff@1` advisory documents.
+The helper reads current `af/task-inspection@21` and `af/task-diff@1` advisory documents.
 The bound-source example is `../bound-inputs/inspection-bound.json`; its optional evaluation
 input and conditional verifier remain unknowns in the advisory report. Tests consume that
 current captured document and actual CLI/script output, with exact refusal and schema checks.

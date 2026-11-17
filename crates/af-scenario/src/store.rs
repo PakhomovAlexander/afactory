@@ -15,6 +15,7 @@ pub struct World {
     pub schema: String,
     pub writer_version: String,
     pub runs: BTreeMap<String, Run>,
+    pub drivers: BTreeMap<String, crate::driver::Driver>,
     /// Native journal byte leases, including protected lifecycle/response capacity.
     pub run_capacity: BTreeMap<String, u64>,
     pub ants: BTreeMap<String, AntState>,
@@ -23,9 +24,10 @@ pub struct World {
 impl World {
     fn empty() -> Self {
         Self {
-            schema: "af/scenario-store@11".into(),
+            schema: "af/scenario-store@17".into(),
             writer_version: env!("CARGO_PKG_VERSION").into(),
             runs: BTreeMap::new(),
+            drivers: BTreeMap::new(),
             run_capacity: BTreeMap::new(),
             ants: BTreeMap::new(),
             roadmaps: BTreeMap::new(),
@@ -59,16 +61,23 @@ impl World {
                 );
             }
         }
+        self.drivers.insert(
+            run.id.clone(),
+            crate::driver::Driver::new(&run, crate::driver::DEFAULT_POLL_MS)?,
+        );
         self.runs.insert(run.id.clone(), run.clone());
         Ok(run)
     }
     pub fn validate(&self, host: &dyn crate::Host) -> Result<()> {
         require(
-            self.schema == "af/scenario-store@11"
+            self.schema == "af/scenario-store@17"
                 && self.writer_version == env!("CARGO_PKG_VERSION"),
             "Scenario Store was written by another release or version",
         )?;
         crate::retention::validate_capacity(self)?;
+        for (id, driver) in &self.drivers {
+            driver.validate(self.runs.get(id).ok_or("Driver lost its Run")?)?;
+        }
         let mut executions = std::collections::BTreeSet::new();
         for (id, run) in &self.runs {
             require(
@@ -267,12 +276,12 @@ impl Store {
                 .open(&marker)
                 .map_err(|e| e.to_string())?;
             use std::io::Write;
-            file.write_all(b"af/scenario-store@11\n")
+            file.write_all(b"af/scenario-store@17\n")
                 .and_then(|()| file.sync_all())
                 .map_err(|e| e.to_string())?;
         }
         require(
-            read(&marker, 128)? == b"af/scenario-store@11\n"
+            read(&marker, 128)? == b"af/scenario-store@17\n"
                 && db.is_file()
                 && path.join("events.sqlite").is_file(),
             "Invalid or incomplete Scenario Store; refusing to recreate lost state",
@@ -325,10 +334,21 @@ impl Store {
         let pending = crate::retention::pending_intents(&world);
         let old_runs: std::collections::BTreeSet<_> = world.runs.keys().cloned().collect();
         let old_roadmaps = world.roadmaps.clone();
+        let old_drivers = world.drivers.clone();
         let old_views = Self::views(&world);
         world.reconcile()?;
         let value = action(&mut world)?;
         world.reconcile()?;
+        // Ant admission inserts Runs in the same transaction without calling admit_run.
+        // Every newly recorded Run gets its schedule before any Task can be dispatched.
+        for (id, run) in &world.runs {
+            if !old_runs.contains(id) && !world.drivers.contains_key(id) {
+                world.drivers.insert(
+                    id.clone(),
+                    crate::driver::Driver::new(run, crate::driver::DEFAULT_POLL_MS)?,
+                );
+            }
+        }
         crate::retention::fit_completed_response(&mut world, &pending)?;
         for (id, old) in &old_roadmaps {
             world
@@ -351,6 +371,16 @@ impl Store {
         }
         crate::retention::compact(&mut world)?;
         crate::retention::allocate_new(&mut world, &old_runs)?;
+        for (id, old) in &old_drivers {
+            if let Some(driver) = world.drivers.get(id) {
+                driver.validate_revision_of(old)?;
+            } else {
+                require(
+                    !world.runs.contains_key(id),
+                    "Driver history cannot be removed from a retained Run",
+                )?;
+            }
+        }
         world.validate(self.host.as_ref())?;
         let document = serde_json::to_string(&world).map_err(|e| e.to_string())?;
         require(
@@ -539,6 +569,9 @@ impl Store {
     }
     pub fn lock_run(&self, id: &str) -> Result<RunGuard> {
         self.lock(id, "")
+    }
+    pub fn lock_driver(&self, id: &str) -> Result<RunGuard> {
+        self.lock(id, "-driver")
     }
     pub fn lock_cancel(&self, id: &str) -> Result<RunGuard> {
         self.lock(id, "-cancel")
