@@ -435,7 +435,7 @@ fn storage_crash_fixture_child() {
     std::fs::write(root.join("runtime-path"), runtime.path().to_str().unwrap()).unwrap();
     std::fs::write(runtime.path().join("source/original"), b"exact input").unwrap();
     // This test-only transport forwards real Engine operations. It pauses immediately before
-    // workload dispatch, while the real seeded tmpfs and keeper already exist.
+    // workload start, after its full ID is durably recorded and the seeded tmpfs/keeper exist.
     let image =
         std::env::var(STORAGE_CRASH_IMAGE).expect("parent prepared the crash fixture image");
     let provider = storage_crash_provider(&root, runtime.path(), &image);
@@ -457,7 +457,6 @@ fn storage_crash_fixture_child() {
 #[ignore = "needs a live container runtime; run via make review-kernel-container-probes"]
 fn a_crashed_storage_owner_is_swept_without_touching_live_or_immutable_state() {
     use std::os::unix::fs::PermissionsExt;
-    use std::os::unix::net::UnixListener;
     use std::os::unix::process::ExitStatusExt;
     use std::process::{Command, Stdio};
     let provider = provider();
@@ -468,10 +467,25 @@ fn a_crashed_storage_owner_is_swept_without_touching_live_or_immutable_state() {
     prepare_storage_crash_image(engine, image);
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
-    let socket = root.join("ready.sock");
-    let listener = UnixListener::bind(&socket).unwrap();
+    let barrier_path = root.join("barrier");
+    for suffix in ["ready", "release"] {
+        nix::unistd::mkfifo(
+            &barrier_path.with_extension(suffix),
+            nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+        )
+        .unwrap();
+    }
     let wrapper = root.join("runtime-wrapper");
-    std::fs::write(&wrapper, format!("#!/usr/bin/env python3\nimport os,socket,sys\na=sys.argv[1:]\nif a[:1]==['run'] and '--name' in a and a[a.index('--name')+1].endswith('-worker'):\n s=socket.socket(socket.AF_UNIX); s.connect({}); s.sendall(b'ready'); s.recv(1); sys.exit(91)\nos.execv({},[{}]+a)\n", serde_json::to_string(socket.to_str().unwrap()).unwrap(), serde_json::to_string(engine.to_str().unwrap()).unwrap(), serde_json::to_string(engine.to_str().unwrap()).unwrap())).unwrap();
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/usr/bin/env python3\nENGINE = {}\nBARRIER = {}\n{}",
+            serde_json::to_string(engine.to_str().unwrap()).unwrap(),
+            serde_json::to_string(barrier_path.to_str().unwrap()).unwrap(),
+            include_str!("fixtures/storage-crash-runtime.py"),
+        ),
+    )
+    .unwrap();
     std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
     let cas = af_store::Cas::open(root.join("cas")).unwrap();
     let id = cas.put(b"reachable immutable bytes").unwrap();
@@ -497,7 +511,16 @@ fn a_crashed_storage_owner_is_swept_without_touching_live_or_immutable_state() {
     );
     let (sender, receiver) = std::sync::mpsc::channel();
     let barrier = std::thread::spawn(move || {
-        sender.send(listener.accept().unwrap().0).unwrap();
+        use std::io::Read;
+        let mut ready = Vec::new();
+        std::fs::File::open(barrier_path.with_extension("ready"))
+            .unwrap()
+            .read_to_end(&mut ready)
+            .unwrap();
+        assert_eq!(ready, b"ready");
+        sender
+            .send(std::fs::File::create(barrier_path.with_extension("release")).unwrap())
+            .unwrap();
     });
     let connection = receiver.recv_timeout(EXEC_TIMEOUT).unwrap_or_else(|error| {
         panic!(

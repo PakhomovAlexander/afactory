@@ -155,6 +155,12 @@ Its Cargo builds stay in disposable private directories under the checkout's `ta
 gate-owned test target. `recording-runtime.py` is shared test infrastructure, never an operator
 binding or a containment backend; no Worker may select it as trusted machine authority.
 
+The transport durably records each create acknowledgement and exact command in the private
+client context. Creation executes no payload; start and removal require the full owned ID.
+Portable regressions check command/stdin fidelity, context isolation and identity reuse. The
+crash probe forwards helpers and stops at workload start only after the production CID journal
+contains that exact ID. FIFO handshakes establish this boundary without elapsed-time guesses.
+
 When a continuation producer edits source, wire its candidate through the typed `seal` operation
 and pass both the sealed `snapshot` and the admitted cache output to the next Worker on the same
 slot. The cache envelope's `subject_snapshot_id` names that output Snapshot; its payload's
