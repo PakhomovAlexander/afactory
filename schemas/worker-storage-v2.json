@@ -1,11 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://afactory.dev/schemas/worker-storage-v1.json",
+  "$id": "https://afactory.dev/schemas/worker-storage-v2.json",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "runtime", "name"],
   "properties": {
-    "schema": {"const": "af.worker-storage/1"},
+    "schema": {"const": "af.worker-storage/2"},
     "runtime": {
       "type": "string",
       "minLength": 2,

@@ -295,7 +295,7 @@ printf 'aggregate quota enforced'
     assert!(exported <= 8 * 1024 * 1024);
     for root in [first.path(), second.path()] {
         assert!(
-            !root.join("worker-storage-v1.json").exists(),
+            !root.join("worker-storage-v2.json").exists(),
             "confirmed cleanup removes the recovery intent"
         );
     }
@@ -335,7 +335,7 @@ fn sparse_worker_output_is_refused_before_any_unbounded_host_export() {
         b"unchanged"
     );
     assert!(!directory.path().join("source/huge").exists());
-    assert!(!directory.path().join("worker-storage-v1.json").exists());
+    assert!(!directory.path().join("worker-storage-v2.json").exists());
 }
 
 const STORAGE_CRASH_ROOT: &str = "AF_STORAGE_CRASH_FIXTURE_ROOT";
@@ -508,8 +508,8 @@ fn a_crashed_storage_owner_is_swept_without_touching_live_or_immutable_state() {
     barrier.join().unwrap();
     let path =
         std::path::PathBuf::from(std::fs::read_to_string(root.join("runtime-path")).unwrap());
-    let lease: af_contracts::task::development::WorkerStorageLeaseV1 =
-        serde_json::from_slice(&std::fs::read(path.join("worker-storage-v1.json")).unwrap())
+    let lease: af_contracts::task::development::WorkerStorageLeaseV2 =
+        serde_json::from_slice(&std::fs::read(path.join("worker-storage-v2.json")).unwrap())
             .unwrap();
     lease.validate().unwrap();
     let before = af_sandbox::sweep_stale_sandboxes_in(root);

@@ -2,12 +2,12 @@
 //! The keeper holds the filesystem mounted across seed, workload and read-only export. Its
 //! durable intent belongs to CheckRuntime, so the ordinary dead-owner sweep owns recovery.
 use super::*;
-use af_contracts::task::development::WorkerStorageLeaseV1;
+use af_contracts::task::development::WorkerStorageLeaseV2;
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
 
-const MARKER: &str = "worker-storage-v1.json";
-const SCHEMA: &str = "af.worker-storage/1";
+const MARKER: &str = "worker-storage-v2.json";
+const SCHEMA: &str = "af.worker-storage/2";
 const MAX_ENTRIES: usize = 16_384;
 
 pub(super) fn mount(argv: &mut Vec<String>, volume: &str, part: &str, target: &str, ro: bool) {
@@ -26,6 +26,7 @@ pub(super) struct Storage {
     marker: PathBuf,
     pub name: String,
     cleanup_attempted: std::cell::Cell<bool>,
+    cleanup_deadline: std::cell::Cell<Option<Instant>>,
 }
 
 impl Storage {
@@ -94,11 +95,12 @@ impl Storage {
             marker,
             name,
             cleanup_attempted: std::cell::Cell::new(false),
+            cleanup_deadline: std::cell::Cell::new(None),
         };
         // Persist before the first daemon operation. This marker is never mounted in a Worker.
         intent
             .write_all(
-                serde_json::to_string(&WorkerStorageLeaseV1 {
+                serde_json::to_string(&WorkerStorageLeaseV2 {
                     schema: SCHEMA.into(),
                     runtime: runtime.to_str().ok_or("Non-UTF-8 storage runtime")?.into(),
                     name: storage.name.clone(),
@@ -110,6 +112,8 @@ impl Storage {
         intent.sync_all().map_err(|error| error.to_string())?;
         std::fs::File::open(parent)
             .and_then(|directory| directory.sync_all())
+            .map_err(|error| error.to_string())?;
+        lifecycle::write_intent(&storage.intent("volume"), b"")
             .map_err(|error| error.to_string())?;
         storage.run(
             &[
@@ -129,8 +133,8 @@ impl Storage {
             deadline,
             cancellation,
         )?;
+        std::fs::remove_file(storage.intent("volume")).map_err(|error| error.to_string())?;
         let mut keeper = storage.helper(provider, "keeper", false);
-        keeper.push("--detach".into());
         keeper.extend([
             "--entrypoint".into(),
             worker.probe_shell.clone(),
@@ -190,15 +194,42 @@ impl Storage {
         deadline: Instant,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<(), String> {
-        let mut command = self.command(argv);
-        let capture = run_supervised_captured_bounded(
-            &mut command,
-            None,
-            remaining(deadline)?,
-            ExitPolicy::KillDescendants,
-            cancellation,
-            16 * 1024,
-        );
+        let capture = if argv.first().is_some_and(|arg| arg == "run") {
+            let name = argv.windows(2).find(|pair| pair[0] == "--name").unwrap()[1].clone();
+            let purpose = name
+                .strip_prefix(&format!("{}-", self.name))
+                .ok_or("Invalid helper identity")?;
+            let (capture, clean, cleanup_deadline) = lifecycle::launch(
+                &self.runtime,
+                argv.to_vec(),
+                Some(&self.home),
+                None,
+                deadline,
+                cancellation,
+                16 * 1024,
+                Some(&self.intent(purpose)),
+                purpose == "keeper",
+                ExitPolicy::KillDescendants,
+            );
+            if !clean || !capture.status.as_ref().is_ok_and(|status| status.success()) {
+                self.cleanup_deadline.set(Some(cleanup_deadline));
+            }
+            if !clean {
+                self.cleanup_attempted.set(true);
+                return Err("Worker helper cleanup unconfirmed; runtime preserved".into());
+            }
+            capture
+        } else {
+            let mut command = self.command(argv);
+            run_supervised_captured_bounded(
+                &mut command,
+                None,
+                remaining(deadline)?,
+                ExitPolicy::KillDescendants,
+                cancellation,
+                16 * 1024,
+            )
+        };
         if !capture.status.as_ref().is_ok_and(|status| status.success())
             || capture.stderr_held
             || capture.truncation.is_truncated()
@@ -264,6 +295,30 @@ impl Storage {
         deadline: Instant,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<(), String> {
+        if self.intent("worker").exists()
+            || self.intent("seed").exists()
+            || self.intent("volume").exists()
+        {
+            return Err("Worker storage operation unsettled; export refused".into());
+        }
+        for purpose in ["worker", "seed", "export", "keeper", "volume"] {
+            let path = self.intent(purpose);
+            match std::fs::symlink_metadata(&path) {
+                Ok(metadata) => {
+                    if !metadata.is_file()
+                        || metadata.file_type().is_symlink()
+                        || metadata.len() != 64
+                        || !lifecycle::valid_id(
+                            &std::fs::read_to_string(&path).map_err(|error| error.to_string())?,
+                        )
+                    {
+                        return Err("Worker creation unsettled; export refused".into());
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                Err(error) => return Err(error.to_string()),
+            }
+        }
         let worker = provider.worker.as_ref().unwrap();
         let mut outputs = Vec::new();
         if worker.source_writable {
@@ -302,7 +357,30 @@ impl Storage {
             "/disk".into(),
         ]);
         argv.extend(outputs.iter().map(|(name, _)| name.clone()));
-        let mut command = self.command(&argv);
+        remaining(deadline)?;
+        if lifecycle::cancelled(cancellation) {
+            return Err("Worker export cancelled".into());
+        }
+        let intent = self.intent("export");
+        lifecycle::write_intent(&intent, b"").map_err(|error| error.to_string())?;
+        let mut command = self.command(&lifecycle::create_args(argv));
+        let creation = lifecycle::create(&mut command, deadline, cancellation);
+        if let Some(end) = creation.cleanup_deadline {
+            self.set_cleanup_deadline(
+                self.cleanup_deadline
+                    .get()
+                    .map_or(end, |previous| previous.min(end)),
+            );
+        }
+        let id = creation
+            .id
+            .ok_or("Worker export creation unsettled; runtime preserved")?;
+        lifecycle::write_ack(&intent, id.as_bytes()).map_err(|error| error.to_string())?;
+        remaining(deadline)?;
+        if lifecycle::cancelled(cancellation) {
+            return Err("Worker export cancelled".into());
+        }
+        let mut command = self.command(&["start".into(), "--attach".into(), id]);
         let allowed = outputs.iter().map(|(name, _)| name.clone()).collect();
         let cancel = std::sync::atomic::AtomicBool::new(false);
         let result = af_process::run_supervised_duplex_cancellable(
@@ -321,6 +399,19 @@ impl Storage {
             ));
         }
         result.output.map_err(|error| error.to_string())?;
+        let cleanup_deadline = self
+            .cleanup_deadline
+            .get()
+            .unwrap_or_else(|| Instant::now() + CLEANUP_TIMEOUT)
+            .min(Instant::now() + CLEANUP_TIMEOUT);
+        self.set_cleanup_deadline(cleanup_deadline);
+        lifecycle::remove(
+            &self.runtime,
+            &std::fs::read_to_string(&intent).map_err(|error| error.to_string())?,
+            Some(&self.home),
+            cleanup_deadline,
+        )?;
+        std::fs::remove_file(&intent).map_err(|error| error.to_string())?;
         // All exported roots were validated in a private stage before replacing any input.
         // No Worker is running, no exported link can redirect this operation, and no partial
         // result can be admitted when a rename fails.
@@ -334,32 +425,53 @@ impl Storage {
         Ok(())
     }
 
-    pub fn cleanup(&self) -> Result<(), String> {
+    pub(super) fn preserve(&self) {
         self.cleanup_attempted.set(true);
-        let deadline = Instant::now() + CLEANUP_TIMEOUT;
+    }
+
+    pub(super) fn set_cleanup_deadline(&self, deadline: Instant) {
+        self.cleanup_deadline.set(Some(deadline));
+    }
+
+    pub(super) fn intent(&self, purpose: &str) -> PathBuf {
+        self.marker
+            .parent()
+            .unwrap()
+            .join(format!("{}-{purpose}.cid", self.name))
+    }
+
+    pub fn cleanup(&self) -> Result<(), String> {
+        self.cleanup_until(
+            self.cleanup_deadline
+                .get()
+                .unwrap_or_else(|| Instant::now() + CLEANUP_TIMEOUT),
+        )
+    }
+
+    pub(super) fn cleanup_until(&self, deadline: Instant) -> Result<(), String> {
+        let deadline = deadline.min(Instant::now() + CLEANUP_TIMEOUT);
+        let deadline = self
+            .cleanup_deadline
+            .get()
+            .map_or(deadline, |previous| previous.min(deadline));
+        self.cleanup_deadline.set(Some(deadline));
+        self.cleanup_attempted.set(true);
+        if self.intent("volume").exists() {
+            return Err("Worker volume creation unsettled; runtime preserved".into());
+        }
         for purpose in ["worker", "seed", "export", "keeper"] {
-            let name = format!("{}-{purpose}", self.name);
-            let mut command = self.command(&["rm".into(), "--force".into(), name.clone()]);
-            let result = run_supervised_captured_bounded(
-                &mut command,
-                None,
-                remaining(deadline)?,
-                ExitPolicy::KillDescendants,
-                None,
-                4096,
-            );
-            if !result.status.as_ref().is_ok_and(|status| status.success()) {
-                self.absent(
-                    &[
-                        "ps".into(),
-                        "--all".into(),
-                        "--filter".into(),
-                        format!("name=^/{name}$"),
-                        "--format={{.Names}}".into(),
-                    ],
-                    deadline,
-                )?;
+            let intent = self.intent(purpose);
+            let metadata = match std::fs::symlink_metadata(&intent) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.to_string()),
+            };
+            if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() != 64 {
+                return Err("Worker container creation unsettled; runtime preserved".into());
             }
+            let id = std::fs::read_to_string(&intent).map_err(|error| error.to_string())?;
+            lifecycle::remove(&self.runtime, &id, Some(&self.home), deadline)?;
+            std::fs::remove_file(intent).map_err(|error| error.to_string())?;
         }
         let mut command = self.command(&["volume".into(), "rm".into(), self.name.clone()]);
         let result = run_supervised_captured_bounded(
@@ -426,6 +538,9 @@ fn remaining(deadline: Instant) -> Result<Duration, String> {
 /// Called only for a dead runtime owner, before its ordinary identity-bound removal. A live
 /// or explicitly preserved runtime never reaches this function. Unknown markers fail closed.
 pub(crate) fn recover_worker_storage(root: &Path) -> Result<(), String> {
+    if root.join("worker-storage-v1.json").exists() {
+        return Err("Unsupported Worker storage recovery protocol".into());
+    }
     let marker = root.join(MARKER);
     let metadata = match std::fs::symlink_metadata(&marker) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -435,7 +550,7 @@ pub(crate) fn recover_worker_storage(root: &Path) -> Result<(), String> {
     if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 8192 {
         return Err("Unsafe Worker storage recovery marker".into());
     }
-    let lease: WorkerStorageLeaseV1 =
+    let lease: WorkerStorageLeaseV2 =
         serde_json::from_slice(&std::fs::read(&marker).map_err(|error| error.to_string())?)
             .map_err(|error| error.to_string())?;
     lease.validate()?;
@@ -445,6 +560,7 @@ pub(crate) fn recover_worker_storage(root: &Path) -> Result<(), String> {
         marker,
         name: lease.name,
         cleanup_attempted: std::cell::Cell::new(false),
+        cleanup_deadline: std::cell::Cell::new(None),
     };
     storage.cleanup()
 }
@@ -716,7 +832,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_storage_backend_refuses_before_any_worker_dispatch_and_cleans_intent() {
+    fn unsupported_storage_backend_refuses_before_dispatch_and_preserves_uncertain_intent() {
         let directory = tempfile::tempdir().unwrap();
         let runtime = directory.path().join("runtime");
         super::super::tests::write_runtime_within(
@@ -750,8 +866,8 @@ mod tests {
             .err()
             .unwrap();
         assert!(error.contains("local tmpfs driver unavailable"), "{error}");
-        assert!(!directory.path().join(MARKER).exists());
-        assert!(!directory.path().join("preserved").exists());
+        assert!(directory.path().join(MARKER).exists());
+        assert!(directory.path().join("preserved").exists());
         let incompatible = provider
             .with_check_runtime()
             .exec_worker_captured(
@@ -787,6 +903,61 @@ mod tests {
     }
 
     #[test]
+    fn pending_creation_refuses_export_and_recovery_even_after_a_late_daemon_commit() {
+        for purpose in ["worker", "seed", "export", "keeper", "volume"] {
+            let runtime = crate::CheckRuntime::new().unwrap();
+            let root = runtime.path().to_owned();
+            let engine = root.join("engine");
+            super::super::tests::write_runtime_within(
+                &engine,
+                "#!/bin/sh\nprintf unexpected > \"$0.called\"\nexit 0\n",
+                Duration::from_secs(120),
+            );
+            let lease = WorkerStorageLeaseV2 {
+                schema: SCHEMA.into(),
+                runtime: engine.to_str().unwrap().into(),
+                name: "af-storage-pending".into(),
+            };
+            std::fs::write(root.join(MARKER), serde_json::to_vec(&lease).unwrap()).unwrap();
+            std::fs::write(root.join(format!("af-storage-pending-{purpose}.cid")), b"").unwrap();
+            std::fs::write(root.join("source"), b"original source").unwrap();
+            let storage = Storage {
+                runtime: engine.clone(),
+                home: root.join("home"),
+                marker: root.join(MARKER),
+                name: lease.name.clone(),
+                cleanup_attempted: std::cell::Cell::new(false),
+                cleanup_deadline: std::cell::Cell::new(None),
+            };
+            let provider = ContainerProvider::with_runtime("/nonexistent/runtime");
+            assert!(
+                storage
+                    .export(
+                        &provider,
+                        &root.join("source"),
+                        Instant::now() + Duration::from_secs(120),
+                        None
+                    )
+                    .is_err()
+            );
+            drop(storage);
+            assert!(recover_worker_storage(&root).is_err());
+            // Commit is explicit and ordered, independent of scheduler timing. Neither apparent
+            // absence before it nor a daemon object afterwards settles the missing acknowledgement.
+            std::fs::write(root.join("daemon-created-late"), b"created").unwrap();
+            assert!(recover_worker_storage(&root).is_err());
+            assert!(!engine.with_extension("called").exists());
+            drop(runtime);
+            assert!(root.join("preserved").is_file());
+            assert_eq!(
+                std::fs::read(root.join("source")).unwrap(),
+                b"original source"
+            );
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
     fn unconfirmed_cleanup_preserves_the_runtime_intent_and_source_without_retrying() {
         let runtime = crate::CheckRuntime::new().unwrap();
         let root = runtime.path().to_owned();
@@ -797,12 +968,13 @@ mod tests {
             Duration::from_secs(120),
         );
         std::fs::write(root.join("source"), b"original source").unwrap();
-        let lease = WorkerStorageLeaseV1 {
+        let lease = WorkerStorageLeaseV2 {
             schema: SCHEMA.into(),
             runtime: engine.to_str().unwrap().into(),
             name: "af-storage-fixture".into(),
         };
         std::fs::write(root.join(MARKER), serde_json::to_vec(&lease).unwrap()).unwrap();
+        std::fs::write(root.join("af-storage-fixture-worker.cid"), "a".repeat(64)).unwrap();
         assert!(recover_worker_storage(&root).is_err());
         assert_eq!(
             std::fs::read(root.join("cleanup-calls")).unwrap(),

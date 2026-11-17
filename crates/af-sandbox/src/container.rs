@@ -36,6 +36,8 @@ use af_process::{
 
 use crate::{Isolation, Mode, Sandbox, SandboxTemplate};
 
+#[path = "container_lifecycle.rs"]
+mod lifecycle;
 #[path = "container_storage.rs"]
 mod storage;
 pub(crate) use storage::recover_worker_storage;
@@ -742,37 +744,45 @@ impl ContainerProvider {
             .unwrap_or_else(|| temporary_name.to_owned());
         let mut prepared = self.clone();
         prepared.storage_volume = storage.as_ref().map(|storage| storage.name.clone());
-        let mut command = std::process::Command::new(runtime);
-        command.args(prepared.invocation(sandbox_root, program, args, environment, &name));
-        private_client(&mut command, &client_home);
-        let remaining = deadline
-            .checked_duration_since(Instant::now())
-            .filter(|duration| !duration.is_zero())
-            .ok_or("Worker development deadline expired before launch")?;
-        let mut capture = run_supervised_captured_bounded(
-            &mut command,
+        let journal = storage.as_ref().map(|storage| storage.intent("worker"));
+        let (mut capture, mut cleanup_confirmed, cleanup_deadline) = lifecycle::launch(
+            runtime,
+            prepared.invocation(sandbox_root, program, args, environment, &name),
+            Some(&client_home),
             Some(input),
-            remaining,
-            ExitPolicy::KillDescendants,
+            deadline,
             cancellation,
             self.output_cap,
+            journal.as_deref(),
+            false,
+            ExitPolicy::KillDescendants,
         );
-        let mut cleanup_confirmed = if capture.status.as_ref().is_ok_and(|status| status.success())
-            && !capture.stderr_held
-        {
-            true
-        } else {
-            remove_container_with_home(runtime, &name, Some(&client_home)).is_ok()
-        };
         let mut filesystem_exported = cleanup_confirmed;
         if let Some(storage) = storage {
+            // Export is execution work under the original deadline. Normal completion must
+            // not reduce its remaining budget to ten seconds; expiry/cancellation already
+            // started settlement and must keep that exact shared cleanup ceiling.
+            let cleanup_deadline =
+                if Instant::now() < deadline && !lifecycle::cancelled(cancellation) {
+                    deadline + CLEANUP_TIMEOUT
+                } else {
+                    cleanup_deadline
+                };
+            storage.set_cleanup_deadline(cleanup_deadline);
+            if !cleanup_confirmed {
+                storage.preserve();
+            }
             if cleanup_confirmed
                 && let Err(error) = storage.export(self, sandbox_root, deadline, cancellation)
             {
-                capture.status = Err(SupervisedError::Wait(std::io::Error::other(error)));
+                // Failed export cannot erase the workload's cancellation/timeout evidence.
+                if capture.status.is_ok() {
+                    capture.status = Err(SupervisedError::Wait(std::io::Error::other(error)));
+                }
                 filesystem_exported = false;
             }
-            cleanup_confirmed = storage.cleanup().is_ok();
+            cleanup_confirmed =
+                cleanup_confirmed && storage.cleanup_until(cleanup_deadline).is_ok();
         }
         Ok(WorkerContainerCapture {
             capture,
@@ -880,37 +890,44 @@ impl ContainerProvider {
         execution_name: &str,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<ContainerExecution, ContainerExecutionError> {
+        let command_argv =
+            self.invocation(sandbox_root, program, args, environment, execution_name);
         let mut command = std::process::Command::new(runtime);
-        command.args(self.invocation(sandbox_root, program, args, environment, execution_name));
+        command.args(&command_argv);
         let span = process_span(&command, "container command");
-        let captured = span.in_scope(|| {
-            run_supervised_captured_bounded(
-                &mut command,
+        let (captured, clean, _) = span.in_scope(|| {
+            lifecycle::launch(
+                runtime,
+                command_argv,
                 None,
-                timeout,
-                ExitPolicy::PreserveProcessGroup,
+                None,
+                Instant::now() + timeout,
                 cancellation,
                 self.output_cap,
+                None,
+                false,
+                ExitPolicy::PreserveProcessGroup,
             )
         });
         let executed = container_execution(&span, captured, timeout);
-        // Cancellation stops the foreground runtime; the existing bounded rm confirms the
-        // daemon no longer owns this writable bind. Never cancel the cleanup itself.
-        match executed {
-            Ok(execution) => Ok(execution),
-            Err(error) => match remove_container(runtime, execution_name) {
-                Ok(()) => Err(ContainerExecutionError::after_launch(
-                    format!("{error}; container execution `{execution_name}` was forcibly removed"),
-                    true,
-                )),
-                Err(cleanup) => Err(ContainerExecutionError::after_launch(
-                    format!(
-                        "{error}; cleanup of container execution `{execution_name}` was not confirmed: {cleanup}"
-                    ),
-                    false,
-                )),
-            },
+        if !clean {
+            return Err(ContainerExecutionError::after_launch(
+                format!(
+                    "{}; cleanup of container execution `{execution_name}` was not confirmed",
+                    executed
+                        .err()
+                        .map(|error| error.to_string())
+                        .unwrap_or_else(|| "container command completed".into())
+                ),
+                false,
+            ));
         }
+        executed.map_err(|error| {
+            ContainerExecutionError::after_launch(
+                format!("{error}; container execution `{execution_name}` was forcibly removed"),
+                true,
+            )
+        })
     }
 }
 
@@ -970,59 +987,6 @@ fn private_client(command: &mut std::process::Command, home: &Path) {
         .env("HOME", home)
         .env("DOCKER_CONFIG", home)
         .env("XDG_CONFIG_HOME", home);
-}
-
-fn remove_container(runtime: &Path, execution_name: &str) -> Result<(), String> {
-    remove_container_with_home(runtime, execution_name, None)
-}
-
-fn remove_container_with_home(
-    runtime: &Path,
-    execution_name: &str,
-    private_home: Option<&Path>,
-) -> Result<(), String> {
-    let started = Instant::now();
-    let mut command = std::process::Command::new(runtime);
-    command.args(["rm", "-f", execution_name]);
-    if let Some(home) = private_home {
-        private_client(&mut command, home);
-    }
-    let execution = run_bounded_evidenced(command, CLEANUP_TIMEOUT, "container cleanup")
-        .map_err(|error| error.to_string())?;
-    if execution.output.status.success() {
-        return Ok(());
-    }
-    // A failed Worker may already have been removed by --rm. Confirm absence through the
-    // same private daemon context, within the original cleanup budget; never infer it from
-    // localized stderr or run cleanup against the operator's ambient remote context.
-    if let Some(home) = private_home {
-        let remaining = CLEANUP_TIMEOUT.saturating_sub(started.elapsed());
-        if !remaining.is_zero() {
-            let mut query = std::process::Command::new(runtime);
-            query.args([
-                "ps",
-                "--all",
-                "--filter",
-                &format!("name=^/{execution_name}$"),
-                "--format",
-                "{{.Names}}",
-            ]);
-            private_client(&mut query, home);
-            if let Ok(absence) =
-                run_bounded_evidenced(query, remaining, "Worker container absence check")
-                && absence.output.status.success()
-                && !absence.stderr_held
-                && absence.output.stdout.iter().all(u8::is_ascii_whitespace)
-            {
-                return Ok(());
-            }
-        }
-    }
-    Err(format!(
-        "runtime exited {:?}: {}",
-        execution.output.status.code(),
-        String::from_utf8_lossy(&execution.output.stderr).trim()
-    ))
 }
 
 fn run_probe(path: &Path, timeout: Duration) -> Result<std::process::Output, std::io::Error> {
@@ -1212,7 +1176,7 @@ mod tests {
     /// a probe or execution deadline keep the 5 s writer wall.
     const LOAD_SAFE_WALL: Duration = Duration::from_secs(120);
 
-    fn write_runtime(path: &Path, script: &str) {
+    pub(super) fn write_runtime(path: &Path, script: &str) {
         write_runtime_within(path, script, Duration::from_secs(5));
     }
 
@@ -1344,7 +1308,7 @@ mod tests {
         let fake = dir.path().join("runtime");
         write_runtime(
             &fake,
-            "#!/bin/sh\nif [ \"$1\" = info ]; then exit 0; fi\nif [ \"$1\" = rm ]; then printf '%s\\n' \"$@\" > \"$0.cleanup\"; exit 0; fi\nsleep 60\n",
+            "#!/bin/sh\nif [ \"$1\" = create ]; then printf aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; exit 0; fi\nif [ \"$1\" = info ]; then exit 0; fi\nif [ \"$1\" = rm ]; then printf '%s\\n' \"$@\" > \"$0.cleanup\"; exit 0; fi\nsleep 60\n",
         );
         let provider = ContainerProvider::with_runtime(&fake);
 
@@ -1367,7 +1331,12 @@ mod tests {
         );
         assert!(error.contains("was forcibly removed"), "{error}");
         let cleanup = std::fs::read_to_string(format!("{}.cleanup", fake.display())).unwrap();
-        assert!(cleanup.starts_with("rm\n-f\naf-gate-"), "{cleanup:?}");
+        assert!(
+            cleanup.starts_with(
+                "rm\n-f\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            "{cleanup:?}"
+        );
     }
 
     #[test]
@@ -1376,7 +1345,7 @@ mod tests {
         let fake = dir.path().join("runtime");
         write_runtime(
             &fake,
-            "#!/bin/sh\nif [ \"$1\" = info ]; then exit 0; fi\nif [ \"$1\" = rm ]; then echo 'daemon lost' >&2; exit 1; fi\nsleep 60\n",
+            "#!/bin/sh\nif [ \"$1\" = create ]; then printf aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; exit 0; fi\nif [ \"$1\" = info ]; then exit 0; fi\nif [ \"$1\" = rm ]; then echo 'daemon lost' >&2; exit 1; fi\nsleep 60\n",
         );
         let provider = ContainerProvider::with_runtime(&fake);
 
@@ -1409,7 +1378,7 @@ mod tests {
             write_runtime_within(
                 &fake,
                 &format!(
-                    "#!/bin/sh\nif [ \"$1\" = info ]; then exit 0; fi\nif [ \"$1\" = rm ]; then printf '%s\\n' \"$@\" > \"$0.cleanup\"; exit {}; fi\nprintf ready > \"$0.ready\"\nsleep 30\n",
+                    "#!/bin/sh\nif [ \"$1\" = create ]; then printf aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; exit 0; fi\nif [ \"$1\" = info ]; then exit 0; fi\nif [ \"$1\" = rm ]; then printf '%s\\n' \"$@\" > \"$0.cleanup\"; exit {}; fi\nprintf ready > \"$0.ready\"\nsleep 30\n",
                     if cleanup_ok { 0 } else { 1 }
                 ),
                 LOAD_SAFE_WALL,
@@ -1443,7 +1412,12 @@ mod tests {
             assert_eq!(error.cleanup_confirmed(), cleanup_ok);
             assert!(error.to_string().contains("cancel"), "{error}");
             let cleanup = std::fs::read_to_string(fake.with_extension("cleanup")).unwrap();
-            assert!(cleanup.starts_with("rm\n-f\naf-gate-"), "{cleanup}");
+            assert!(
+                cleanup.starts_with(
+                    "rm\n-f\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                ),
+                "{cleanup}"
+            );
         }
     }
 
@@ -1571,7 +1545,7 @@ mod tests {
         let runtime = directory.path().join("runtime");
         write_runtime(
             &runtime,
-            "#!/bin/sh\ncase \"$1\" in info|rm) exit 0;; image) printf null; exit 0;; run) for arg in \"$@\"; do test \"$arg\" != --volume || exit 91; done; exit 72;; esac\n",
+            "#!/bin/sh\ncase \"$1\" in info|rm) exit 0;; image) printf null; exit 0;; create) for arg in \"$@\"; do test \"$arg\" != --volume || exit 91; done; printf aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; exit 0;; start) exit 72;; esac\n",
         );
         let provider =
             ContainerProvider::with_runtime(&runtime).with_worker_layout(WorkerContainerLayout {
@@ -1598,12 +1572,12 @@ mod tests {
     }
 
     #[test]
-    fn worker_container_cleanup_confirms_an_already_removed_failure_in_its_private_context() {
+    fn worker_container_cleanup_uses_acknowledged_identity_in_its_private_context() {
         let directory = tempfile::tempdir().unwrap();
         let runtime = directory.path().join("runtime");
         write_runtime(
             &runtime,
-            "#!/bin/sh\ncase \"$1\" in info) printf '%s' '{\"MemoryLimit\":true,\"SwapLimit\":true,\"CpuCfsQuota\":true,\"PidsLimit\":true}'; exit 0;; rm) exit 1;; ps) test \"$HOME\" = \"$DOCKER_CONFIG\"; exit $?;; *) printf failure; exit 7;; esac\n",
+            "#!/bin/sh\ncase \"$1\" in info) printf '%s' '{\"MemoryLimit\":true,\"SwapLimit\":true,\"CpuCfsQuota\":true,\"PidsLimit\":true}'; exit 0;; create) printf aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; exit 0;; rm) test \"$HOME\" = \"$DOCKER_CONFIG\"; exit $?;; *) printf failure; exit 7;; esac\n",
         );
         for name in ["home", "package", "source"] {
             std::fs::create_dir(directory.path().join(name)).unwrap();
@@ -1637,7 +1611,7 @@ mod tests {
         assert_eq!(capture.capture.status.unwrap().code(), Some(7));
         assert!(
             capture.cleanup_confirmed,
-            "an explicit empty same-context listing proves --rm already completed"
+            "the acknowledged identity is removed through the same private daemon context"
         );
     }
 
@@ -1805,7 +1779,7 @@ mod tests {
         let fake = dir.path().join("runtime");
         write_runtime(
             &fake,
-            "#!/bin/sh\nif [ \"$1\" = info ]; then exit 0; fi\nif [ \"$1\" = rm ]; then exit 0; fi\nhead -c 10000 /dev/zero\n",
+            "#!/bin/sh\nif [ \"$1\" = create ]; then printf aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; exit 0; fi\nif [ \"$1\" = info ]; then exit 0; fi\nif [ \"$1\" = rm ]; then exit 0; fi\nhead -c 10000 /dev/zero\n",
         );
         let provider = ContainerProvider::with_runtime(&fake).with_output_cap(4096);
         let error = provider
@@ -1839,7 +1813,7 @@ mod tests {
         let fake = dir.path().join("runtime");
         write_runtime(
             &fake,
-            "#!/bin/sh\nif [ \"$1\" = info ]; then exit 0; fi\nif [ \"$1\" = rm ]; then exit 0; fi\nhead -c 10000 /dev/zero\nexit 0\n",
+            "#!/bin/sh\nif [ \"$1\" = create ]; then printf aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; exit 0; fi\nif [ \"$1\" = info ]; then exit 0; fi\nif [ \"$1\" = rm ]; then exit 0; fi\nhead -c 10000 /dev/zero\nexit 0\n",
         );
         let reason = "stdout was truncated at the 4 KiB output cap: it wrote 10000 bytes, of \
                       which only the first 4 KiB were kept";
