@@ -1863,6 +1863,7 @@ fn typed_selection_is_lazy_across_skips_and_keeps_decision_ownership_static() {
 /// native work here is a test failure, rather than a call into the operator's machine state.
 #[derive(Default)]
 pub(super) struct TestHost {
+    pub live_clock: bool,
     pub planned_tasks: Option<std::sync::Mutex<Vec<TaskTarget>>>,
     pub settle_all_planned: bool,
     pub reject_templates: std::sync::atomic::AtomicBool,
@@ -1879,6 +1880,9 @@ pub(super) struct TestHost {
 }
 impl crate::Host for TestHost {
     fn authorization_time(&self) -> Result<u64> {
+        if self.live_clock {
+            return crate::runtime::now();
+        }
         let value = self.startup_time.load(std::sync::atomic::Ordering::Relaxed);
         Ok(if value == 0 { START } else { value })
     }
