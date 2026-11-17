@@ -6,3 +6,5 @@
 - Run six native publication/recovery fixtures under the existing real-time test
   exclusivity rule. Preserve all deadlines, cadence, faults and accounting assertions;
   show retained driver status if cancellation shutdown reaches its deadline.
+- Keep native fixture source probes from writing bytecode into the shared measurement
+  library; copied measurement authority continues to reject bytecode caches.

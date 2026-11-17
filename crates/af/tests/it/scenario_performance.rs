@@ -1028,7 +1028,9 @@ fn shipped_performance_loop_delivers_research_and_publishes_verified_improvement
     let capture = || {
         // Exercise the shipped Python/native bridge, including its distinct request and CAS
         // digest domains. Replacing this bridge with a fake capture would miss that mismatch.
-        let output = std::process::Command::new("/usr/bin/python3").arg("-I").arg("-c")
+        // Do not cache these inline probes' imports in the shared measurement library:
+        // later fixtures copy it as authority and correctly refuse bytecode caches.
+        let output = std::process::Command::new("/usr/bin/python3").arg("-IB").arg("-c")
             .arg("import json,pathlib,sys; sys.path.insert(0,sys.argv[1]); from perflab import scenario_source; from perflab.values import canonical_digest; c=json.loads(pathlib.Path(sys.argv[2]).read_text()); p=sys.argv[3]; r=json.loads((pathlib.Path(p)/'source-request.json').read_text()); print(json.dumps(scenario_source.capture(c,p,canonical_digest(r))))")
             .arg(workspace().join("scripts/performance")).arg(&source_config).arg(&source_intent)
             .output().unwrap();
@@ -1083,7 +1085,7 @@ fn shipped_performance_loop_delivers_research_and_publishes_verified_improvement
     // the installed configuration. This fixture uses an unchanged frozen configuration.
     completion["request"]["configuration_digest"] = experiment["configuration_digest"].clone();
     write(&p.f.machine.join("completion.json"), &completion);
-    let checked = std::process::Command::new("/usr/bin/python3").arg("-I").arg("-c")
+    let checked = std::process::Command::new("/usr/bin/python3").arg("-IB").arg("-c")
         .arg("import pathlib,sys; sys.path.insert(0,sys.argv[1]); from perflab import contracts; contracts.read_json(pathlib.Path(sys.argv[2]).read_bytes(),'scenario-completion')")
         .arg(workspace().join("scripts/performance")).arg(p.f.machine.join("completion.json")).output().unwrap();
     assert!(
