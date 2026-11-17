@@ -2026,7 +2026,11 @@ fn a_report_warns_when_two_candidates_take_the_same_adr_number() {
     assert_eq!(script.matches(marker).count(), 1, "{script}");
     let adr = "import os\nname='second' if 'again' in json.dumps(request) else 'first'\n\
                os.makedirs('docs/adr', exist_ok=True)\n\
-               open('docs/adr/0205-%s.md' % name,'w').write('# 196\\n')\n";
+               open('docs/adr/0205-%s.md' % name,'w').write('# 196\\n')\n\
+               open('docs/adr/2026-11-05-%s.md' % name,'w').write('# distinct')\n\
+               open('docs/adr/2026-11-05-shared.md','w').write('# shared')\n\
+               open('docs/adr/2026-11-05-\\x1b[31mred\\nforged\\tend.md','w').write('# controls')\n\
+               open('docs/adr/2026-11-05-same%s.md' % ('\\x01' if name == 'first' else '\\x02'),'w').write('# distinct controls')\n";
     std::fs::write(
         &worker,
         script.replacen(marker, &format!("{adr}{marker}"), 1),
@@ -2071,6 +2075,25 @@ fn a_report_warns_when_two_candidates_take_the_same_adr_number() {
         "{said}"
     );
     assert!(flat.contains(", gc-newer (docs/adr/0205-"), "{said}");
+    assert!(
+        flat.contains("ADR 2026-11-05-shared is added by 2 Tasks"),
+        "{said}"
+    );
+    assert!(
+        flat.contains("ADR 2026-11-05-?[31mred?forged?end is added by 2 Tasks"),
+        "{said}"
+    );
+    assert!(
+        !said.contains(['\u{1b}', '\t', '\u{1}', '\u{2}']),
+        "{said:?}"
+    );
+    assert!(!flat.contains("ADR 2026-11-05-first is added"), "{said}");
+    assert!(!flat.contains("ADR 2026-11-05-second is added"), "{said}");
+    assert!(!flat.contains("ADR 2026-11-05-same? is added"), "{said}");
+    assert!(
+        !flat.contains("renumber") && !flat.contains("README"),
+        "{said}"
+    );
     for line in said.lines() {
         assert!(line.chars().count() <= 100, "{line}");
     }
