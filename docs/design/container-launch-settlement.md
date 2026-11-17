@@ -19,5 +19,7 @@ intents remain refused before probing. No persisted shape changes in this repair
 
 Portable regressions cover deadline/cancellation after durable acknowledgement, zero/expired
 spawn admission, and retained worker/export/helper journals after removal, including failed,
-nonempty and truncated absence evidence. The existing live 250 ms timeout probe remains unchanged;
-only the native operator gate can validate it in the real daemon context.
+nonempty and truncated absence evidence. The cancellation transport models a still-present full
+ID after failed removal and checks the exact probe arguments without launching a payload. The
+existing live 250 ms timeout probe remains unchanged; only the native operator gate can validate
+it in the real daemon context.

@@ -8,3 +8,5 @@
   including launch and retry time; expired or cancelled admission starts no client.
 - Recover acknowledged containers already removed before a crash by requiring a bounded, successful,
   complete exact-ID listing in the same private daemon context; uncertain intents remain preserved.
+- Model exact-ID presence probes in the cancellation test transport without starting a payload,
+  preserving the existing cancellation and cleanup confirmation bounds.

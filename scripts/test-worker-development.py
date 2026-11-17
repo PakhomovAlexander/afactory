@@ -88,6 +88,27 @@ class RuntimeTransport(unittest.TestCase):
         self.assertNotEqual(self.run_engine('rm', '-f', identity).returncode, 0)
         self.assertNotEqual(self.create('af-fixture-worker'), identity)
 
+    def test_exact_id_listing_distinguishes_present_removed_and_private_context(self):
+        identity = self.create('af-fixture-worker')
+        probe = ['ps', '--all', '--no-trunc', '--quiet', '--filter', 'id=' + identity]
+        present = self.run_engine(*probe)
+        self.assertEqual(present.returncode, 0, present.stderr)
+        self.assertEqual(present.stdout, identity + '\n')
+        self.assertFalse((self.home / 'executions').exists())
+        other_home = self.root / 'other/home'
+        other_home.mkdir(parents=True)
+        private = self.run_engine(*probe, env={**self.env, 'HOME': str(other_home)})
+        self.assertEqual(private.returncode, 0, private.stderr)
+        self.assertEqual(private.stdout, '')
+        self.assertEqual(self.run_engine('rm', '-f', identity).returncode, 0)
+        self.assertNotEqual(self.run_engine('rm', '-f', identity).returncode, 0)
+        absent = self.run_engine(*probe)
+        self.assertEqual(absent.returncode, 0, absent.stderr)
+        self.assertEqual(absent.stdout, '')
+        self.assertFalse((self.home / 'executions').exists())
+        for invalid in ('af-fixture-worker', identity[:12], '../escape'):
+            self.assertNotEqual(self.run_engine(*probe[:-1], 'id=' + invalid).returncode, 0)
+
     def test_crash_transport_stops_after_durable_ack_before_start_and_forwards_helpers(self):
         barrier = self.root / 'barrier.sock'
         wrapper = self.root / 'runtime-wrapper'

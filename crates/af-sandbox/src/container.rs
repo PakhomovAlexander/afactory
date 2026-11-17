@@ -1345,7 +1345,7 @@ mod tests {
         let fake = dir.path().join("runtime");
         write_runtime(
             &fake,
-            "#!/bin/sh\nif [ \"$1\" = create ]; then printf aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; exit 0; fi\nif [ \"$1\" = info ]; then exit 0; fi\nif [ \"$1\" = rm ]; then echo 'daemon lost' >&2; exit 1; fi\nsleep 60\n",
+            "#!/bin/sh\nif [ \"$1\" = create ]; then printf aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; exit 0; fi\nif [ \"$1\" = info ]; then exit 0; fi\nif [ \"$1\" = rm ] || [ \"$1\" = ps ]; then echo 'daemon lost' >&2; exit 1; fi\nsleep 60\n",
         );
         let provider = ContainerProvider::with_runtime(&fake);
 
@@ -1378,7 +1378,22 @@ mod tests {
             write_runtime_within(
                 &fake,
                 &format!(
-                    "#!/bin/sh\nif [ \"$1\" = create ]; then printf aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; exit 0; fi\nif [ \"$1\" = info ]; then exit 0; fi\nif [ \"$1\" = rm ]; then printf '%s\\n' \"$@\" > \"$0.cleanup\"; exit {}; fi\nprintf ready > \"$0.ready\"\nsleep 30\n",
+                    r#"#!/bin/sh
+case "$1" in
+create) printf aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;;
+info) exit 0;;
+rm) printf '%s\n' "$@" > "$0.cleanup"; exit {};;
+ps)
+  [ "$*" = 'ps --all --no-trunc --quiet --filter id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ] || exit 91
+  printf '%s\n' "$@" > "$0.probe"
+  printf aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;;
+start)
+  [ "$*" = 'start --attach --interactive aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ] || exit 92
+  printf ready > "$0.ready"
+  sleep 30;;
+*) exit 93;;
+esac
+"#,
                     if cleanup_ok { 0 } else { 1 }
                 ),
                 LOAD_SAFE_WALL,
@@ -1411,6 +1426,18 @@ mod tests {
             assert!(started.elapsed() < Duration::from_secs(3));
             assert_eq!(error.cleanup_confirmed(), cleanup_ok);
             assert!(error.to_string().contains("cancel"), "{error}");
+            let probe = fake.with_extension("probe");
+            assert_eq!(
+                probe.exists(),
+                !cleanup_ok,
+                "only failed removal needs absence evidence"
+            );
+            if !cleanup_ok {
+                assert_eq!(
+                    std::fs::read_to_string(probe).unwrap(),
+                    "ps\n--all\n--no-trunc\n--quiet\n--filter\nid=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+                );
+            }
             let cleanup = std::fs::read_to_string(fake.with_extension("cleanup")).unwrap();
             assert!(
                 cleanup.starts_with(

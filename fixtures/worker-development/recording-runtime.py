@@ -173,6 +173,14 @@ elif operation == 'start':
             record.update(status='exited', exit_code=code)
             store(identity, record)
     sys.exit(code)
+elif operation == 'ps':
+    assert len(args) == 5 and args[:4] == ['--all', '--no-trunc', '--quiet', '--filter']
+    assert args[4].startswith('id=')
+    identity = args[4][3:]
+    assert valid_id(identity), 'exact full container ID required'
+    path = containers / (identity + '.json')
+    if path.exists() and json.loads(path.read_text())['status'] != 'removed':
+        print(identity)
 elif operation == 'rm':
     assert len(args) == 2 and args[0] == '-f'
     identity = args[1]
