@@ -20,7 +20,7 @@ from .values import ContractError, format_rational, parse_rational, require
 CONFIG_SCHEMA = "af.nightly-config/2"
 PLAN_SCHEMA = "af.nightly-plan/1"
 BUILD_SCHEMA = "af.nightly-build/1"
-PUBLISH_SCHEMA = "af.nightly-publish/1"
+PUBLISH_SCHEMA = "af.nightly-publish/2"
 
 # The Linux targets a nightly ships, in the order they are built and recorded. The VM cannot
 # build macOS, so a nightly has no aarch64-apple-darwin archive.
@@ -440,6 +440,9 @@ def register(c):
                                         Field("reason", Str(min_len=1, max_len=1024))),
                                     0, 1024)),
         Field("foreign", Arr(tag_name, 0, 1024, unique=True)),
+        Field("failures", Arr(Obj(
+            Field("stage", Str(enum=("notification", "pruning", "foreign"))),
+            Field("reason", Str(min_len=1, max_len=1024))), 0, 1026)),
         Field("amendments", Int(0, 10000)),
         Field("published_unix_ms", c.UNIX_MS))
 

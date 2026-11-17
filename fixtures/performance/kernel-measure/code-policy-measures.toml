@@ -5,7 +5,7 @@
 # measured Snapshot against the digest below before any candidate import or build, then supplies
 # one judged probe-region sample per kernel repetition. `[warm]` must bind `cargo_target` (and a
 # Cargo home or Cache Snapshot holding the locked dependencies): the build is offline.
-# Protected harness digest: sha256:97384642dabe4d46296b2e5c20f9d24d77a960ac8d4389218a6559ea9b041fcc (858 files).
+# Protected harness digest: sha256:9a1c7f2ad8903a513be7895f12e8449cb2d0d1e3c5d3d96379e8c7a07981d165 (861 files).
 # The objectives compare the kernel's elapsed_ms. Inner metric: pending, because the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it.
 
 [measures.perf_canonical_serialize_small]
@@ -37,7 +37,7 @@ value = "import sys\nsys.path[:] = [entry for entry in sys.path if entry not in 
 provenance = "literal"
 
 [[measures.perf_canonical_serialize_small.command.args]]
-value = "sha256:97384642dabe4d46296b2e5c20f9d24d77a960ac8d4389218a6559ea9b041fcc"
+value = "sha256:9a1c7f2ad8903a513be7895f12e8449cb2d0d1e3c5d3d96379e8c7a07981d165"
 provenance = "literal"
 
 [[measures.perf_canonical_serialize_small.command.args]]
@@ -93,7 +93,7 @@ value = "import sys\nsys.path[:] = [entry for entry in sys.path if entry not in 
 provenance = "literal"
 
 [[measures.perf_canonical_validate_small.command.args]]
-value = "sha256:97384642dabe4d46296b2e5c20f9d24d77a960ac8d4389218a6559ea9b041fcc"
+value = "sha256:9a1c7f2ad8903a513be7895f12e8449cb2d0d1e3c5d3d96379e8c7a07981d165"
 provenance = "literal"
 
 [[measures.perf_canonical_validate_small.command.args]]
@@ -149,7 +149,7 @@ value = "import sys\nsys.path[:] = [entry for entry in sys.path if entry not in 
 provenance = "literal"
 
 [[measures.perf_cas_raw_get_small.command.args]]
-value = "sha256:97384642dabe4d46296b2e5c20f9d24d77a960ac8d4389218a6559ea9b041fcc"
+value = "sha256:9a1c7f2ad8903a513be7895f12e8449cb2d0d1e3c5d3d96379e8c7a07981d165"
 provenance = "literal"
 
 [[measures.perf_cas_raw_get_small.command.args]]
@@ -205,7 +205,7 @@ value = "import sys\nsys.path[:] = [entry for entry in sys.path if entry not in 
 provenance = "literal"
 
 [[measures.perf_cas_typed_get_small.command.args]]
-value = "sha256:97384642dabe4d46296b2e5c20f9d24d77a960ac8d4389218a6559ea9b041fcc"
+value = "sha256:9a1c7f2ad8903a513be7895f12e8449cb2d0d1e3c5d3d96379e8c7a07981d165"
 provenance = "literal"
 
 [[measures.perf_cas_typed_get_small.command.args]]

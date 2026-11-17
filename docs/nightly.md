@@ -148,7 +148,7 @@ builds_root/
       SHA256SUMS
       SHA256SUMS.minisig
     version-<target>.json      `af --version --json` of each binary
-    publish.json               af.nightly-publish/1, written by each `publish` of the night
+    publish.json               af.nightly-publish/2, written by each `publish` of the night
     logs/                      each container step's and smoke's output
     work/                      wrappers, staging, the smoke scratch and private homes
 ```
@@ -233,16 +233,19 @@ only memory of a message.
 so; publishing it again sends nothing, `--notify-again` included. A night without
 `nightly.json` refuses.
 
-**The receipt**, `builds_root/<date>/publish.json`, is `af.nightly-publish/1`
-(`schemas/performance-nightly-publish-v1.json`): `status` (`published` or `skipped`), `date`,
+**The receipt**, `builds_root/<date>/publish.json`, is `af.nightly-publish/2`
+(`schemas/performance-nightly-publish-v2.json`): `status` (`published` or `skipped`), `date`,
 `tag`, `head_sha`, `repository`, `release` (`id` and `url`, or `null`), `assets` (each one's
 `name`, `size` and `digest` as GitHub reports them, in upload order), `telegram` (the
 `message_id`, or `null`) and `telegram_reason` (why there is no message, or `null`), `pruned`
 (tags whose release and tag ref are both deleted), `prune_failures` (each `tag` whose release
 was deleted but whose tag deletion failed, with its `reason`), `foreign` (tags),
-`amendments` (0 on the first publish) and `published_unix_ms`. The reader recomputes the tag,
+`failures` (bounded structured `stage` and `reason` evidence for notification, pruning
+and foreign-release failures), `amendments` (0 on the first publish) and `published_unix_ms`. The reader recomputes the tag,
 the release URL and the asset names. A Telegram failure, a failed pruning request or a foreign
-release after the release is published still writes the receipt.
+release after the release is published still writes the receipt, including failures while
+listing releases or deleting a release. Version 1 receipts are refused; finish or discard
+earlier state under the release that wrote it.
 
 ## Exit codes
 
@@ -289,8 +292,13 @@ and publication recheck that source identity. A green source with an older key i
 The durable worker does one phase/cycle per invocation under an exclusive lock. Native comparison
 member keys reconcile retained originals across restart. A completed build record is recovered;
 an interrupted build without one fails closed instead of starting another build. Publication
-reconciles a retained receipt or positively matching remote release. An uncertain absent remote
-is never permission to repeat create. Reports publish by directory rename. An interrupted pending
+recovers only through a current-version receipt and read-only reconciliation of the exact
+remote tag, head, release identity, notes and complete asset digests against the sealed signed
+build and certified report. A failed receipt, a current tag recorded as pruned, or absent or
+changed remote evidence refuses completion. An interrupted publication without a receipt
+requires operator inspection; recovery never repeats create, upload, notification or deletion.
+Standalone `publish` retains its explicit amendment and retention policy, including pruning
+an explicitly selected old night; that outcome cannot satisfy native Scenario completion. Reports publish by directory rename. An interrupted pending
 report/export is retained for operator inspection. Failed phases stop the release; they cannot
 produce a satisfied Wait.
 

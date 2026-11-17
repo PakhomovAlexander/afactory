@@ -3359,6 +3359,25 @@
       "path": "verdict/valid-synthetic-regression.json",
       "contract": "verdict",
       "valid": true
+    },
+    {
+      "path": "nightly-publish/valid-failed-pruning.json",
+      "contract": "nightly-publish",
+      "valid": true
+    },
+    {
+      "path": "nightly-publish/invalid-failure-stage.json",
+      "contract": "nightly-publish",
+      "valid": false,
+      "error": "stage",
+      "shape": true
+    },
+    {
+      "path": "nightly-publish/invalid-empty-failure-reason.json",
+      "contract": "nightly-publish",
+      "valid": false,
+      "error": "reason",
+      "shape": true
     }
   ]
 }

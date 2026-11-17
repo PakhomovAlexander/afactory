@@ -168,23 +168,15 @@ class Native:
         runtime.trusted_key(self.config['public_key'])
         receipt_path = Path(self.config['builds_root']) / date / 'publish.json'
         if receipt_path.exists():
-            publish.verify_night(self.config, record, publish.run_command)
             receipt = contracts.read_file(str(receipt_path), 'nightly-publish')
         else:
-            github = None
-            if resumed:
-                github = publish.GitHub(self.config['repository'], publish.read_secret(
-                    self.config['publish']['github_token_file'], 'github_token_file', r'^[^\s]+$'))
-                remote = github.release_by_tag(tag)
-                require(remote is not None and remote['tag_name'] == tag and remote['target_commitish'] == record['head_sha'],
-                        'publication uncertain; no repeated create authorized')
+            require(not resumed, 'publication uncertain without receipt; no repeated mutation authorized')
             args = SimpleNamespace(date=date, report=str(output), notify_again=False)
-            receipt, failures = publish.publish(self.config, args, github, publish.https_send, publish.run_command, runtime.now_ms)
+            receipt, failures = publish.publish(self.config, args, None, publish.https_send, publish.run_command, runtime.now_ms)
             require(not failures, 'publication has failed notification/pruning steps; receipt retained')
-        require(receipt['tag'] == tag and receipt['head_sha'] == record['head_sha']
-                and receipt['repository'] == self.config['repository'] and receipt['status'] == 'published'
-                and not receipt['foreign'] and not receipt['prune_failures']
-                and (not self.config['publish'].get('telegram_token_file') or receipt['telegram'] is not None), 'publication incomplete')
+        github = publish.GitHub(self.config['repository'], publish.read_secret(
+            self.config['publish']['github_token_file'], 'github_token_file', r'^[^\s]+$'))
+        publish.reconcile(self.config, record, receipt, str(output), github, publish.run_command)
         return {'build': canonical_digest(record), 'comparison': canonical_digest(comparison),
                 'publication': canonical_digest(receipt)}, 'published signed nightly with full verified comparison'
 
