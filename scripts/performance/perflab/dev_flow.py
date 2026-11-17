@@ -244,7 +244,7 @@ def _evidence(document, transferred=None):
 
 def validate(document, treatment=None, evidence=None):
     """Validate one complete retained flow and return its cache treatment."""
-    require(document.get("schema") == "af.perf-dev-flow/1", "not an af.perf-dev-flow/1 document")
+    require(document.get("schema") == "af.perf-dev-flow/2", "not an af.perf-dev-flow/2 document")
     rounds = document.get("rounds")
     require(isinstance(rounds, list) and len(rounds) == 3, "expected exactly three rounds")
     actual_treatment = document.get("cache_treatment")
@@ -260,7 +260,7 @@ def validate(document, treatment=None, evidence=None):
         require(isinstance(round_.get("wall_ns"), int) and round_["wall_ns"] >= 0,
                 f"round {index}: invalid wall time")
         result = round_.get("result", {})
-        require(result.get("schema") == "af/task-inspection@20",
+        require(result.get("schema") == "af/task-inspection@21",
                 f"round {index}: unsupported inspection schema")
         require(result.get("state", {}).get("phase") == "finished",
                 f"round {index}: Task is not finished")
@@ -278,7 +278,7 @@ def validate(document, treatment=None, evidence=None):
             require(continuation.get("round") == 1 and continuation.get("findings") == 2,
                     f"round {index}: continuation does not carry reviewer and evaluator findings")
         checks = round_.get("check_document", {})
-        require(checks.get("schema") == "af/task-checks@3", f"round {index}: unsupported check view")
+        require(checks.get("schema") == "af/task-checks@4", f"round {index}: unsupported check view")
         require(checks.get("gate", {}).get("status") == "passed",
                 f"round {index}: gate did not pass")
         receipts = checks.get("receipt", {}).get("checks", [])
@@ -298,7 +298,7 @@ def validate(document, treatment=None, evidence=None):
                 f"round {index}: public Provider admissions are incomplete")
         if index < 2:
             findings = round_.get("findings", {})
-            require(findings.get("schema") == "af/task-findings@2",
+            require(findings.get("schema") == "af/task-findings@3",
                     f"round {index}: unsupported Findings document")
             require(findings.get("round", {}).get("conclusion") == "changes_requested",
                     f"round {index}: expected changes_requested Findings")

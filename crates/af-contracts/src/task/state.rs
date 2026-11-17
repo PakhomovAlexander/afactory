@@ -70,6 +70,8 @@ pub enum TaskOutcomeV1 {
     GateFailed,
     /// A Worker's Provider or process failed, or its reply was not admissible.
     ProviderFailed,
+    /// A kernel operation failed before execution could complete.
+    ExecutionFailed,
     /// The run was stopped before it finished: an interrupt, or a writer that lost its lease.
     Cancelled,
     /// A token, Attempt or reserve limit ran out before the Task could finish.
@@ -79,11 +81,12 @@ pub enum TaskOutcomeV1 {
 }
 
 impl TaskOutcomeV1 {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Verified,
         Self::ChangesRequested,
         Self::GateFailed,
         Self::ProviderFailed,
+        Self::ExecutionFailed,
         Self::Cancelled,
         Self::Exhausted,
         Self::Expired,
@@ -95,6 +98,7 @@ impl TaskOutcomeV1 {
             Self::ChangesRequested => "changes_requested",
             Self::GateFailed => "gate_failed",
             Self::ProviderFailed => "provider_failed",
+            Self::ExecutionFailed => "execution_failed",
             Self::Cancelled => "cancelled",
             Self::Exhausted => "exhausted",
             Self::Expired => "expired",
@@ -111,6 +115,7 @@ impl TaskOutcomeV1 {
             Self::GateFailed => 5,
             Self::ProviderFailed => 6,
             Self::Expired => 7,
+            Self::ExecutionFailed => 8,
         }
     }
 
@@ -129,6 +134,7 @@ impl TaskOutcomeV1 {
             Self::Cancelled => "the run stopped before it finished; `af task run` resumes it",
             Self::Exhausted => "a token, Attempt or verification-reserve limit ran out",
             Self::Expired => "the Task's wall clock ran out",
+            Self::ExecutionFailed => "a kernel operation failed before execution could complete",
         }
     }
 }
@@ -139,6 +145,7 @@ impl TaskOutcomeV1 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskCauseV1 {
+    KernelExecution,
     ReviewerFindings,
     EvaluatorRejected,
     CheckFailed,
@@ -165,7 +172,8 @@ pub enum TaskCauseV1 {
 }
 
 impl TaskCauseV1 {
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 20] = [
+        Self::KernelExecution,
         Self::ReviewerFindings,
         Self::EvaluatorRejected,
         Self::CheckFailed,
@@ -189,6 +197,7 @@ impl TaskCauseV1 {
 
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::KernelExecution => "kernel_execution",
             Self::ReviewerFindings => "reviewer_findings",
             Self::EvaluatorRejected => "evaluator_rejected",
             Self::CheckFailed => "check_failed",
@@ -215,6 +224,7 @@ impl TaskCauseV1 {
     /// whatever outcome the collected Task had.
     pub fn outcome(self) -> Option<TaskOutcomeV1> {
         Some(match self {
+            Self::KernelExecution => TaskOutcomeV1::ExecutionFailed,
             Self::ReviewerFindings | Self::EvaluatorRejected => TaskOutcomeV1::ChangesRequested,
             Self::CheckFailed | Self::CheckFlakyThenFailed | Self::PreflightFailed => {
                 TaskOutcomeV1::GateFailed
@@ -236,6 +246,9 @@ impl TaskCauseV1 {
 
     pub fn description(self) -> &'static str {
         match self {
+            Self::KernelExecution => {
+                "a kernel operation failed; inspect its recorded diagnostic and correct the Task inputs or pipeline"
+            }
             Self::ReviewerFindings => "the review recorded findings at or above its gate",
             Self::EvaluatorRejected => "the independent evaluator did not accept the result",
             Self::CheckFailed => {
@@ -552,7 +565,9 @@ impl TaskAttentionV1 {
             Self::GateFailed => "gate_failed: a required check failed or could not run",
             Self::Findings => "changes_requested: reviewer findings or the evaluator",
             Self::Deliver => "verified, with `af task deliver` as its next command",
-            Self::Stopped => "abandoned, provider_failed, cancelled, exhausted, expired",
+            Self::Stopped => {
+                "abandoned, provider_failed, execution_failed, cancelled, exhausted, expired"
+            }
             Self::Running => "a writer holds its lease; no next command until it ends",
             Self::Nothing => "delivered, verified with nothing to deliver, or collected",
         }
@@ -716,6 +731,7 @@ mod tests {
             TaskOutcomeV1::GateFailed,
             TaskOutcomeV1::ProviderFailed,
             TaskOutcomeV1::Expired,
+            TaskOutcomeV1::ExecutionFailed,
         ]
         .map(TaskOutcomeV1::exit_code);
         let distinct: std::collections::BTreeSet<_> = codes.iter().collect();

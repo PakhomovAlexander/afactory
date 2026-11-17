@@ -57,7 +57,7 @@ pub(super) fn explain_plan(
     }
     let graph: CompiledTask = artifact(cas, &plan.compiled_graph_id, COMPILED_TASK_V4)?;
     let value = json!({
-        "schema":"af/task-plan-inspection@6", "task_id":task_id, "plan_id":plan_id,
+        "schema":"af/task-plan-inspection@7", "task_id":task_id, "plan_id":plan_id,
         "task_revision_id":plan.task_revision_id,
         "current_plan":state.plan_id.as_deref() == Some(plan_id),
         "recorded_event_ids":recorded_event_ids, "revision":revision, "plan":plan, "graph":graph,

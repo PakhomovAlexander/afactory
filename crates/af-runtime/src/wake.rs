@@ -85,7 +85,7 @@ pub fn restore_checkpoint_with_run_facts(
         prefix_digest: wire.prefix_digest,
         clock_observed: wire.clock_observed,
     };
-    if expected.schema != "af/task-wake-checkpoint@1"
+    if expected.schema != "af/task-wake-checkpoint@2"
         || store
             .latest_run_sequence(&subscription.task.task_run_id)?
             .is_none_or(|last| expected.through.sequence > last)
@@ -430,7 +430,7 @@ fn project_inner(
     let scan_last = stop_at.map_or(last, |(sequence, _)| sequence).min(last);
     let run_facts_digest = facts_digest(facts)?;
     if cursor.is_some_and(|c| {
-        c.schema != "af/task-wake-checkpoint@1"
+        c.schema != "af/task-wake-checkpoint@2"
             || c.configuration_digest != subscription.configuration_digest
             || c.run_facts_digest != run_facts_digest
             || c.through.sequence > scan_last
@@ -582,7 +582,7 @@ fn project_inner(
         return Err(StoreError::WakeReconcileChanged);
     }
     let checkpoint = WakeCheckpoint {
-        schema: "af/task-wake-checkpoint@1".into(),
+        schema: "af/task-wake-checkpoint@2".into(),
         configuration_digest: subscription.configuration_digest.clone(),
         run_facts_digest: facts_digest(facts)?,
         through: last_boundary.clone(),
@@ -643,7 +643,7 @@ fn emit(
     };
     let observation_id = content_id(&json!({"domain":"af/wake-observation/1","task":task,"causal":causal,"revision":state.revision_id,"episode":episode,"kind":kind,"evidence":evidence})).map_err(|e| error(e.to_string()))?;
     let observation = WakeObservationV1 {
-        schema: WAKE_OBSERVATION_V1.into(),
+        schema: WAKE_OBSERVATION_V2.into(),
         task: task.clone(),
         observation_id,
         causal: causal.clone(),

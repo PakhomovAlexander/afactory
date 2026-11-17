@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:task-wake-delivery:1",
+  "$id": "urn:af:schema:task-wake-delivery:2",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -17,10 +17,10 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/task-wake-delivery@1"
+      "const": "af/task-wake-delivery@2"
     },
     "envelope": {
-      "$ref": "urn:af:schema:task-wake-envelope:1"
+      "$ref": "urn:af:schema:task-wake-envelope:2"
     },
     "route_id": {
       "type": "string",

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:task-state:2",
+  "$id": "urn:af:schema:task-state:3",
   "title": "The Task state every af task rendering prints",
   "$comment": "One state model behind `af task list`, `show`, `report` and `run`, text and --json alike (`af help task-states`): a phase, a terminal outcome present exactly when the Task ended, a cause from a closed vocabulary present exactly when that outcome is not `verified` or the Task was collected, and the one af command to run next. Derived from the Store each time it is read, never persisted. The gate is the last check receipt's summary; a failure is one failed node of the last run report.",
   "$defs": {
@@ -291,7 +291,8 @@
                   "deadline",
                   "budget",
                   "attempt_wall",
-                  "host_cancelled"
+                  "host_cancelled",
+                  "kernel_execution"
                 ]
               }
             }
@@ -300,6 +301,25 @@
             "properties": {
               "next_action": {
                 "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "execution_failed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "cause": {
+                "enum": [
+                  "kernel_execution",
+                  "collected"
+                ]
               }
             }
           }
@@ -314,7 +334,8 @@
         "provider_failed",
         "cancelled",
         "exhausted",
-        "expired"
+        "expired",
+        "execution_failed"
       ]
     },
     "cause": {
@@ -337,7 +358,8 @@
         "budget",
         "attempt_wall",
         "collected",
-        "host_cancelled"
+        "host_cancelled",
+        "kernel_execution"
       ]
     },
     "gate": {

@@ -24,7 +24,7 @@ def document(root, treatment):
                 units.append({"package": crate, "target": crate.replace("-", "_"),
                               "test_profile": bool(target), "fresh": not is_dirty})
         result = {
-            "schema": "af/task-inspection@20",
+            "schema": "af/task-inspection@21",
             "state": {"phase": "finished", "outcome": dev_flow.OUTCOMES[index]},
             "result": {"domain_conclusion": dev_flow.OUTCOMES[index]},
             "review_rounds": [{"conclusion": dev_flow.REVIEW_CONCLUSIONS[index]}],
@@ -39,7 +39,7 @@ def document(root, treatment):
         findings = None
         if index < 2:
             findings = {
-                "schema": "af/task-findings@2",
+                "schema": "af/task-findings@3",
                 "round": {"conclusion": "changes_requested", "counts": {"major": 1}},
                 "evaluation": {"outcome": "failed"},
             }
@@ -47,7 +47,7 @@ def document(root, treatment):
         (evidence / f"round-{index}-run.json").write_text(json.dumps(result))
         (evidence / f"round-{index}-inspection.json").write_text(json.dumps(result))
         check_document = {
-            "schema": "af/task-checks@3",
+            "schema": "af/task-checks@4",
             "gate": {"status": "passed"},
             "receipt": {"checks": [
                 {"name": "kernel", "status": "passed", "exit_code": 0},
@@ -104,7 +104,7 @@ def document(root, treatment):
             {"role": "evaluator", "outcome": "failed" if index < 2 else "passed"},
         ])
     return {
-        "schema": "af.perf-dev-flow/1",
+        "schema": "af.perf-dev-flow/2",
         "cache_treatment": treatment,
         "host": {"cpu_count": 4, "af_binary_sha256": "sha256:af",
                  "fixture_sha256": "sha256:fixture", "load_1m_start": 1.0,

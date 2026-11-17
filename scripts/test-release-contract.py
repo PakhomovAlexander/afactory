@@ -164,7 +164,7 @@ class ReleaseContract(unittest.TestCase):
         policy = json.loads((ROOT / 'scripts/release-policy.json').read_text())
         expected = {
             'task-wake-route-v1.json': 'af/task-wake-route@1',
-            'task-wake-status-v1.json': 'af/task-wake-status@1',
+            'task-wake-status-v2.json': 'af/task-wake-status@2',
             'performance-executor-v5.json': 'af.perf-executor/5',
             'performance-history-v2.json': 'af.perf-history/2',
             'performance-equivalence-v2.json': 'af.perf-equivalence/2',

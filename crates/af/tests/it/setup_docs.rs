@@ -116,7 +116,7 @@ fn preflight_guide_separates_empty_plan_inspection_from_the_run_guard() {
     let guide = collapsed(&workspace_file("docs/task-execution/preflight.md"));
     for statement in [
         "af task explain TASK_ID --repo /path/to/repository --json > /tmp/task-explain.json",
-        "`af/task-inspection@20` with `plan` and `graph` present",
+        "`af/task-inspection@21` with `plan` and `graph` present",
         "An export can be edited or stale",
         "None means accepted, approved or safe to dispatch",
         "Native Review planning and execution refuse an empty Diff before Gates, Provider admission or Workers",

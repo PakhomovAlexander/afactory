@@ -241,7 +241,7 @@ Task's state and next command, `Task ID: phase/outcome/cause; next: COMMAND`, in
 `--json`.
 
 `af task run ID --detach` runs the same command in the background and returns once that run holds
-the Task and its plan is admitted, printing its pid, its host and its log (`af/task-detached@3`
+the Task and its plan is admitted, printing its pid, its host and its log (`af/task-detached@4`
 under `--json`, `admitted: true`). A run that is not admitted within 2 minutes is not claimed to
 run: the command exits 4 with `admitted: false` and `af task status ID` as the next command. The
 run has no terminal, survives the shell that started it, and writes its
@@ -263,7 +263,7 @@ last comparable recorded Gate duration when available, and the run that holds th
 It puts the next command on its own line, broken between its arguments to fit 100 columns.
 `af task wait ID` blocks
 until the Task settles and exits with its exit code, or with 124 when `--timeout S` passes first;
-both print `af/task-status@2` under `--json`. A comparable Gate uses the same check name, captured
+both print `af/task-status@3` under `--json`. A comparable Gate uses the same check name, captured
 code policy and source repository; no recorded check span means no hint. `af task wait --bell`
 rings terminal stderr on completion. `--notify` tries the OS notifier and warns if unavailable
 while preserving the Task exit code. `af task cancel ID` stops the `af task run` the Task's
@@ -271,7 +271,7 @@ writer lease names: it finds the process by the lease's writer in the run record
 another host with its pid and host, records who asked in `runs/ID-N.cancel.json`, and signals that
 recorded pid only, which stops its Worker processes as Ctrl-C does. The Task is then
 `abandoned/cancelled/host_cancelled`, `af task show` names who cancelled it, and `af task run ID`
-resumes it. `af task events ID` follows the Task as JSON lines, one `af/task-event@2` document per
+resumes it. `af task events ID` follows the Task as JSON lines, one `af/task-event@3` document per
 event of its log with the Store's own gap-free `sequence`, and once the Task settles one terminal
 record with its state and exit code; `--after N` prints only the events after sequence N, so a
 follower that reconnects gets the rest, and the command takes no `--json`
@@ -286,6 +286,13 @@ state is `phase/outcome/cause`, for example `finished/gate_failed/check_failed`;
 present once the Task ended and `cause` once that outcome is not `verified`. Under `--json` it is
 the `state` object: `phase`, `outcome`, `cause` and `next_action`, `null` where absent
 (`af help task-states` prints the same tables).
+
+A native operation that fails before review completes, such as binding a candidate identical to
+its Diff Base, ends `execution_failed/kernel_execution`, with exit 8. `af task show ID` names
+the failed node and its diagnostic; inspect and correct the Task inputs or pipeline before
+planning a new Task. Passing checks do not admit an empty Diff Subject or complete the review.
+A failed kernel operation uses its typed failure class and recorded execution facts; its
+diagnostic does not establish budget exhaustion.
 
 ```text
   planned --af task run--> running --> finished
@@ -308,6 +315,7 @@ the `state` object: `phase`, `outcome`, `cause` and `next_action`, `null` where 
 | `verified` | 0 | all declared acceptance obligations met; inspect the domain conclusion |
 | `changes_requested` | 3 | the review or the evaluator ran to completion and asked for changes |
 | `gate_failed` | 5 | a required check of the gate failed or could not run |
+| `execution_failed` | 8 | a kernel operation failed before execution could complete |
 | `provider_failed` | 6 | a Worker's Provider or process failed, or its reply was not admissible |
 | `cancelled` | 4 | the run stopped before it finished; `af task run` resumes it |
 | `exhausted` | 4 | a token, Attempt or verification-reserve limit ran out |
@@ -320,6 +328,7 @@ the `state` object: `phase`, `outcome`, `cause` and `next_action`, `null` where 
 | `check_failed` | `gate_failed` | a required check ran and failed, or the kernel stopped it at its wall |
 | `check_flaky_then_failed` | `gate_failed` | a required check failed; some of its tests were flaky before |
 | `preflight_failed` | `gate_failed` | a required check stopped at a step before its tests, or never started |
+| `kernel_execution` | `execution_failed` | a kernel operation failed; inspect its recorded diagnostic and correct the Task inputs or pipeline |
 | `malformed_reply` | `provider_failed` | a Worker's process failed or its reply broke its output contract |
 | `provider_network` | `provider_failed` | a request to the Provider failed on the network |
 | `provider_capacity` | `provider_failed` | the Provider's model was at capacity or its rate limit was reached |
@@ -363,7 +372,7 @@ warm or cold directories, its warm layer when the policy has `[warm]` (the key, 
 by it, the source groups it rebuilt, its build and test phases and an eviction with its cause,
 [Warm checks](task-execution/warm-checks.md)), the step that stopped it, its failing and flaky
 tests and the last 40 lines of its stderr; `--json` prints one
-[`af/task-checks@3`](../schemas/task-checks-v3.json) document. The gate's failed and flaky tests
+[`af/task-checks@4`](../schemas/task-checks-v4.json) document. The gate's failed and flaky tests
 and the step that stopped a check come from its report when the check writes one, and from the
 text scan of its output only for a check without one (absent or refused): the runner's `FAIL`,
 `TIMEOUT` and `SIGABRT` lines, its `flaky:` lines and its step log. A check line that prints this
@@ -436,7 +445,7 @@ command) each time the Store is read; nothing is recorded. Each Task is in exact
 | `gate_failed` | Failed gate | yes | gate_failed: a required check failed or could not run |
 | `findings` | Findings to answer | yes | changes_requested: reviewer findings or the evaluator |
 | `deliver` | Verified, ready to deliver | yes | verified, with `af task deliver` as its next command |
-| `stopped` | Stopped | yes | abandoned, provider_failed, cancelled, exhausted, expired |
+| `stopped` | Stopped | yes | abandoned, provider_failed, execution_failed, cancelled, exhausted, expired |
 | `running` | Running | no | a writer holds its lease; no next command until it ends |
 | `nothing` | Nothing to do | no | delivered, verified with nothing to deliver, or collected |
 
@@ -454,9 +463,9 @@ Running (1): docs-index
 Nothing to do (2): `af task list` shows every Task
 ```
 
-`--json` prints one [`af/task-attention@1`](../schemas/task-attention-v1.json) document with all
+`--json` prints one [`af/task-attention@2`](../schemas/task-attention-v2.json) document with all
 seven groups in this order, the `running` and `nothing` groups included, each with its `group`,
-`needs_you` and `tasks`, every Task the same `af/task-list-entry@4` that `af task list --json`
+`needs_you` and `tasks`, every Task the same `af/task-list-entry@5` that `af task list --json`
 prints. `--attention` lists no sizes: with `--sizes` it is a usage error (exit 2). In the
 browser (`af` alone at a terminal) the Tasks folder opens on the same groups under `NEEDS YOU`
 ([TUI design](design/tui.md#55-tasks)).
@@ -526,7 +535,7 @@ and when the plan's approval or deadline has passed or the limits leave no room.
 severity, confidence, title, location, the quoted evidence and the proposed fix, grouped by
 severity, then the evaluator's verdict on that round (the one the Task log recorded after it)
 and its reason; `--round N` reads an earlier round with its own verdict, and `--json` prints
-`af/task-findings@2`, whose findings each carry an `agent_prompt` and whose round says what it
+`af/task-findings@3`, whose findings each carry an `agent_prompt` and whose round says what it
 covered: a reviewer that did not run shows as `not reviewed`, never as `no findings`.
 `--format sarif` prints the same findings as SARIF 2.1.0
 ([ADR-0248](adr/0248-hand-review-findings-to-the-agent-that-will-fix-them.md)). `af task diff ID` prints the candidate's change against the
@@ -579,7 +588,7 @@ round the selected Pipeline must declare `findings` (the installed
 [`bugfix/default-codex`](#the-default-pipeline) and
 [`bugfix/light-codex`](#the-light-default-pipeline) do), or the
 plan is refused with the reason. `af task show NEW` prints `continues TASK round N`, `--json`
-carries `continues` (`af/task-inspection@20`), and `af task report` names it in NEW's row.
+carries `continues` (`af/task-inspection@21`), and `af task report` names it in NEW's row.
 
 ### An Attempt wall keeps the edits
 
@@ -1127,7 +1136,7 @@ after a heading, a thematic break, a fence, an HTML block or a list item. Provid
 and a recorded model that is not a model identity (a path or a URL, say) reads `unknown`: the
 report never carries a Provider label, a path, a credential, a prompt or Worker output.
 `--json` prints the same figures as one
-[`af/task-report@3`](../schemas/task-report-v3.json) document, with exact decimal tokens and
+[`af/task-report@4`](../schemas/task-report-v4.json) document, with exact decimal tokens and
 times in milliseconds, the `pipelines` with their steps, and each Task's `round`, `state`,
 `detail` and `findings`;
 an unknown figure is absent there.
