@@ -360,6 +360,7 @@ jobs:
         with:
           python-version: '3.x'
           check-latest: true
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Pull the pinned telemetry build image
         timeout-minutes: 4
         run: docker pull --quiet ghcr.io/pakhomovalexander/afactory-perf-gnu@sha256:26b0c708b9cdffdeb4731da33161f148b419af3c9e656ae9dc51d318215ae8b2
