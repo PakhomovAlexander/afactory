@@ -8,3 +8,5 @@
   show retained driver status if cancellation shutdown reaches its deadline.
 - Keep native fixture source probes from writing bytecode into the shared measurement
   library; copied measurement authority continues to reject bytecode caches.
+- Notice recorded Scenario cancellation during the existing idle sleep chunks and drain
+  its checked handoff without consuming or refunding the next dispatch reservation.

@@ -2776,7 +2776,8 @@ fn drive_native_scoped(p: &Performance, service_file: &Path, interrupt: bool) ->
         ],
     );
     assert_eq!(cancelled["status"], "cancelled");
-    // Service shutdown follows the retained due reservation, not a status != waiting shortcut.
+    let retained = p.cli(&p.f.state, &["scenario", "driver-status", "scoped"]);
+    // Cancellation must settle without consuming or refunding a dispatch reservation.
     while service.0.try_wait().unwrap().is_none() {
         assert!(
             std::time::Instant::now() < deadline,
@@ -2786,5 +2787,10 @@ fn drive_native_scoped(p: &Performance, service_file: &Path, interrupt: bool) ->
         );
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
+    assert_eq!(
+        p.cli(&p.f.state, &["scenario", "driver-status", "scoped"]),
+        retained,
+        "cancellation shutdown must preserve the retained driver reservation"
+    );
     run
 }

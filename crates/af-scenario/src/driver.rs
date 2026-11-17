@@ -430,11 +430,30 @@ pub fn drive_until(store: &Store, id: &str, stop: impl Fn() -> bool) -> Result<R
         let now = store.host.authorization_time()?;
         let due = driver.next_unix_ms.min(deadline(&run));
         let delay = due.saturating_sub(now).min(30_000);
-        let mut delay = delay;
-        while delay > 0 && !stop() {
-            let chunk = delay.min(1_000);
-            std::thread::sleep(std::time::Duration::from_millis(chunk));
-            delay -= chunk;
+        let wake = std::time::Instant::now() + std::time::Duration::from_millis(delay);
+        while !stop() {
+            let remaining = wake.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            std::thread::sleep(remaining.min(std::time::Duration::from_secs(1)));
+            if stop() {
+                break;
+            }
+            // Cancellation is a checked handoff, not another dispatch reservation.
+            // Re-enter once_inner to reconcile it; never return an unchecked status.
+            // One elapsed deadline includes journal reads without extending idle cadence.
+            if std::time::Instant::now() < wake
+                && store
+                    .read()?
+                    .runs
+                    .get(id)
+                    .ok_or("Scenario Run disappeared")?
+                    .cancellation
+                    .is_some()
+            {
+                break;
+            }
         }
     }
 }
@@ -456,6 +475,90 @@ mod tests {
             None,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn cancellation_wakes_idle_driver_without_refunding_its_due_reservation() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+            mpsc,
+        };
+        use std::time::Duration;
+
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = Store::isolated(&directory.path().join("state")).unwrap();
+        let at = crate::runtime::now().unwrap();
+        store.host = Arc::new(TestHost {
+            live_clock: true,
+            ..TestHost::default()
+        });
+        let (bundle, policy) = simple();
+        let pin = Pin::new(store.host.as_ref(), bundle, policy).unwrap();
+        let run = Run::new(
+            store.host.as_ref(),
+            "cancel-wait".into(),
+            pin,
+            BTreeMap::new(),
+            limits(),
+            at,
+            None,
+        )
+        .unwrap();
+        store.update(|world| world.admit_run(run)).unwrap();
+        let waiting = once(&store, "cancel-wait").unwrap();
+        assert_eq!(waiting.status, Status::Waiting);
+        let before = store.read().unwrap().drivers["cancel-wait"].clone();
+        assert_eq!(before.resumes, 1);
+        assert!(before.next_unix_ms >= at + DEFAULT_POLL_MS);
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let (sleeping_tx, sleeping_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let owned_store = store.clone();
+        let owned_stop = stop.clone();
+        let worker = std::thread::spawn(move || {
+            let checks = AtomicUsize::new(0);
+            let result = drive_until(&owned_store, "cancel-wait", || {
+                // The first check starts the loop; the second enters its retained wait.
+                if checks.fetch_add(1, Ordering::SeqCst) == 1 {
+                    let _ = sleeping_tx.send(());
+                }
+                owned_stop.load(Ordering::SeqCst)
+            });
+            let _ = finished_tx.send(result);
+        });
+        let outcome = (|| -> Result<Run> {
+            sleeping_rx
+                .recv_timeout(Duration::from_secs(3))
+                .map_err(|why| {
+                    let result = match finished_rx.try_recv() {
+                        Ok(Err(error)) => error,
+                        Ok(Ok(run)) => format!("Driver stopped with {:?}", run.status),
+                        Err(error) => error.to_string(),
+                    };
+                    format!("Driver did not enter its retained wait: {why}; {result}")
+                })?;
+            crate::runtime::cancel(
+                &store,
+                "cancel-wait",
+                "Stop the recorded Run".into(),
+                crate::runtime::now()?,
+            )?;
+            finished_rx
+                .recv_timeout(Duration::from_secs(3))
+                .map_err(|_| "Cancelled driver slept until its next dispatch reservation")?
+        })();
+        // Even the unfixed driver's failure path releases its thread promptly.
+        stop.store(true, Ordering::SeqCst);
+        worker.join().unwrap();
+        let cancelled = outcome.unwrap();
+        assert_eq!(cancelled.status, Status::Cancelled);
+        assert!(cancelled.cancellation.is_some());
+        let after = store.read().unwrap();
+        assert_eq!(after.drivers["cancel-wait"], before);
+        assert_eq!(after.runs["cancel-wait"].dispatches, waiting.dispatches);
+        assert_eq!(after.runs["cancel-wait"].task_charges, waiting.task_charges);
     }
 
     #[test]
