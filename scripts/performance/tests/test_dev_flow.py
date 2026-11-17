@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from perflab import calibration, cli_cases, contracts, dev_flow, executor, git_refs, planning, runner, schedule, stats, supervise, suite
+from perflab import calibration, cli_cases, contracts, dev_flow, executor, git_refs, host_prep, planning, runner, schedule, stats, supervise, suite
 from perflab.values import ContractError
 from tests import contained_flow_probe, dev_flow_fixture
 from tests.support import ROOT, TempDir, lab_repo, observe_json
@@ -278,6 +278,61 @@ class LongPlanning(TempDir):
 
 
 class ProvisionedProbe(unittest.TestCase):
+    def test_generated_name_is_admitted_and_settled_by_real_owner(self):
+        for confirmed in (True, False):
+            with self.subTest(confirmed=confirmed), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp).resolve()
+                binary, image, mount = root / "supervisor", root / "scratch.img", root / "scratch"
+                binary.write_bytes(b"fixture")
+                image.write_bytes(b"scratch fixture")
+                mount.mkdir()
+                with host_prep.TelemetryOwner(root / "owner", mount, create=True,
+                                              image=image) as owner:
+                    names = []
+
+                    def launch(argv, **kwargs):
+                        name = argv[argv.index("--name") + 1]
+                        names.append(name)
+                        doc = owner._read()  # Read the actual schema-checked durable fence.
+                        self.assertEqual((doc["phase"], doc["container"], doc["launches"]),
+                                         ("active", name, 1))
+                        return subprocess.CompletedProcess(argv, 0,
+                            json.dumps(contained_flow_probe.EXPECTED).encode(), b"")
+
+                    removal = supervise.Removal(confirmed, "fixture removal")
+                    with mock.patch.object(contained_flow_probe.subprocess, "run", side_effect=launch), \
+                         mock.patch.object(contained_flow_probe.supervise, "remove_container", return_value=removal) as remove:
+                        if confirmed:
+                            self.assertEqual(contained_flow_probe.run(binary, owner),
+                                             contained_flow_probe.EXPECTED)
+                        else:
+                            with self.assertRaisesRegex(AssertionError, "fixture removal"):
+                                contained_flow_probe.run(binary, owner)
+                    remove.assert_called_once_with("docker", names[0])
+                    self.assertEqual(owner._read()["phase"], "stopped" if confirmed else "uncertain")
+                    # These are ordinary fixture files, not a mounted filesystem. Simulate
+                    # only umount; real cleanup removes the exact owned image and directory.
+                    commands = []
+
+                    def host_run(argv):
+                        commands.append(argv)
+                        if argv == ["sudo", "-n", "umount", str(mount)]:
+                            return 0, ""
+                        return host_prep._run(argv)
+
+                    host = host_prep.Host(run=host_run)
+                    if confirmed:
+                        self.assertEqual(owner.cleanup(str(image), host), [])
+                        self.assertEqual(owner.doc["phase"], "removed")
+                        self.assertFalse(image.exists())
+                        self.assertFalse(mount.exists())
+                    else:
+                        with self.assertRaisesRegex(ContractError, "cleanup unconfirmed"):
+                            owner.cleanup(str(image), host)
+                        self.assertEqual(commands, [])
+                        self.assertTrue(image.exists())
+                        self.assertTrue(mount.exists())
+
     def test_fixture_capabilities_and_readable_binds_are_scoped_and_removed(self):
         argv = contained_flow_probe.command("name", "/binary", lab="/lab")
         self.assertIn("SYS_ADMIN", argv)

@@ -42,7 +42,7 @@ const SCHEMAS: [&str; 251] = [
     "implementation-test-evidence-v1.json",
     "implementation-evaluation-input-v1.json",
     "worker-development-v3.json",
-    "worker-storage-v1.json",
+    "worker-storage-v2.json",
     "worker-knowledge-v1.json",
     "knowledge-index-v1.json",
     "knowledge-query-v1.json",

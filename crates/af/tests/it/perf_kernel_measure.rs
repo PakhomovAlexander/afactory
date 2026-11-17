@@ -398,6 +398,12 @@ impl Consumer {
             self.explain(&outcome)
         );
         schemas::valid(&schemas::validator("task-inspection-v21.json"), &outcome);
+        if expected == 8 {
+            // Preserve the public state of a kernel measurement/comparison failure.
+            assert_eq!(outcome["state"]["phase"], "finished");
+            assert_eq!(outcome["state"]["outcome"], "execution_failed");
+            assert_eq!(outcome["state"]["cause"], "kernel_execution");
+        }
         self.retain(task_id, code, &outcome);
         outcome
     }
@@ -1494,7 +1500,7 @@ fn guarded_kernel_experiments_refuse_every_tampered_harness() {
             restore.insert(path.clone(), original);
         }
         consumer.commit_source(&files, task);
-        let outcome = consumer.start(task, json!({"NOTES.md": "unmeasured\n"}), 4);
+        let outcome = consumer.start(task, json!({"NOTES.md": "unmeasured\n"}), 8);
         let cas = consumer.cas();
         let baseline = measurement(&cas, &outcome, "baseline");
         assert_eq!(outcome_of(&baseline.outcome), "failed", "{task}");
@@ -1556,7 +1562,7 @@ fn guarded_kernel_experiments_refuse_every_tampered_harness() {
         1,
     );
     consumer.commit(&[(".af/code-policy.toml", edited)], "refused-case");
-    let outcome = consumer.start("refused-case", json!({"NOTES.md": "unmeasured\n"}), 4);
+    let outcome = consumer.start("refused-case", json!({"NOTES.md": "unmeasured\n"}), 8);
     let cas = consumer.cas();
     let baseline = measurement(&cas, &outcome, "baseline");
     assert_eq!(outcome_of(&baseline.outcome), "failed", "refused-case");
@@ -1630,7 +1636,7 @@ fn guarded_kernel_experiments_refuse_every_tampered_harness() {
         &[(".af/code-policy.toml", policy.clone())],
         "restore the staged policy",
     );
-    let outcome = consumer.start("missing-inputs", json!({"NOTES.md": "unmeasured\n"}), 4);
+    let outcome = consumer.start("missing-inputs", json!({"NOTES.md": "unmeasured\n"}), 8);
     let cas = consumer.cas();
     let baseline = measurement(&cas, &outcome, "baseline");
     assert_eq!(outcome_of(&baseline.outcome), "failed");
@@ -1674,7 +1680,7 @@ fn guarded_kernel_experiments_measure_one_judged_sample() {
     let (mut consumer, canonical, digest) = guarded_consumer();
     // Create the kernel's bound warm-home key before copying offline dependencies into it.
     // The refusal test checks this setup failure; only the judged Task is exported here.
-    consumer.start("missing-inputs", json!({"NOTES.md": "unmeasured\n"}), 4);
+    consumer.start("missing-inputs", json!({"NOTES.md": "unmeasured\n"}), 8);
     consumer.receipts.clear();
     seed_cargo_home(
         &consumer.repo.join("Cargo.lock"),
@@ -1878,7 +1884,7 @@ fn guarded_kernel_experiments_measure_one_judged_sample() {
         ),
     ];
     for (task, files, why) in tampered {
-        let outcome = consumer.start(task, files, 4);
+        let outcome = consumer.start(task, files, 8);
         let cas = consumer.cas();
         let baseline = measurement(&cas, &outcome, "baseline");
         assert_eq!(outcome_of(&baseline.outcome), "passed", "{task}");
@@ -1941,7 +1947,7 @@ fn guarded_kernel_experiments_measure_one_judged_sample() {
         ),
     ] {
         consumer.commit(&[(".af/code-policy.toml", edited)], task);
-        let outcome = consumer.start(task, json!({"NOTES.md": "unmeasured\n"}), 4);
+        let outcome = consumer.start(task, json!({"NOTES.md": "unmeasured\n"}), 8);
         let cas = consumer.cas();
         let baseline = measurement(&cas, &outcome, "baseline");
         assert_eq!(outcome_of(&baseline.outcome), "failed", "{task}");
