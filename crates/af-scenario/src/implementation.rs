@@ -257,7 +257,7 @@ pub fn authorize<'a>(
     live: bool,
 ) -> Result<(&'a crate::state::Run, &'a Scope)> {
     require(
-        request.schema == "af/scenario-adapter-request@6"
+        request.schema == "af/scenario-adapter-request@7"
             && request.operation == Operation::PublishImplementationPrV1
             && matches!(
                 request.method,
@@ -462,7 +462,7 @@ mod tests {
             "implementation-startup-ready-v2.json",
             &serde_json::json!({"schema":"af/implementation-startup-ready@2", "scope_id":hash(pin.policy.implementation_startup.as_ref().unwrap()).unwrap()}),
         );
-        valid("scenario-pin-v9.json", &pin);
+        valid("scenario-pin-v10.json", &pin);
         let host = TestHost {
             startup_reject: Some(repair.clone()),
             ..Default::default()
@@ -490,7 +490,7 @@ mod tests {
             None,
         )
         .unwrap();
-        valid("scenario-run-v9.json", &run);
+        valid("scenario-run-v10.json", &run);
         assert_eq!(
             run.pin.policy.implementation_startup,
             pin.policy.implementation_startup
@@ -743,7 +743,11 @@ mod tests {
         let mut old = pin.clone();
         old.policy.schema = "af/scenario-policy@5".into();
         assert!(old.validate(&TestHost::default()).is_err());
-        for retired in ["af/scenario-pin@6", "af/scenario-pin@7"] {
+        for retired in [
+            "af/scenario-pin@6",
+            "af/scenario-pin@7",
+            "af/scenario-pin@9",
+        ] {
             old = pin.clone();
             old.schema = retired.into();
             assert!(old.validate(&TestHost::default()).is_err());
@@ -774,12 +778,20 @@ mod tests {
         host.startup_time.store(START + DAY, Ordering::Relaxed);
         assert!(store.read().is_ok());
         let mut old = store.read().unwrap();
-        for retired in ["af/scenario-store@10", "af/scenario-store@11"] {
+        for retired in [
+            "af/scenario-store@10",
+            "af/scenario-store@11",
+            "af/scenario-store@14",
+        ] {
             old.schema = retired.into();
             assert!(old.validate(host.as_ref()).is_err());
         }
         let mut old_run = old.runs["expired"].clone();
-        for retired in ["af/scenario-run@6", "af/scenario-run@7"] {
+        for retired in [
+            "af/scenario-run@6",
+            "af/scenario-run@7",
+            "af/scenario-run@9",
+        ] {
             old_run.schema = retired.into();
             assert!(old_run.validate(host.as_ref()).is_err());
         }

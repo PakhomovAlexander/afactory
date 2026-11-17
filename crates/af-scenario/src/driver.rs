@@ -532,7 +532,7 @@ mod tests {
             Some(Blocker::Boundary { .. })
         ));
         assert_eq!(once(&store, "driver").unwrap(), stopped);
-        crate::tests::valid("scenario-store-v14.json", &store.read().unwrap());
+        crate::tests::valid("scenario-store-v15.json", &store.read().unwrap());
         let mut retired = serde_json::to_value(store.read().unwrap()).unwrap();
         retired["schema"] = serde_json::json!("af/scenario-store@13");
         retired.as_object_mut().unwrap().remove("drivers");

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:scenario-run:9",
-  "title": "scenario-run v9",
+  "$id": "urn:af:schema:scenario-run:10",
+  "title": "scenario-run v10",
   "description": "ADR-0274. Cross-port types, identity, authority, budget, signature and lifecycle invariants also require semantic admission.",
   "type": "object",
   "additionalProperties": false,
@@ -26,19 +26,19 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/scenario-run@9"
+      "const": "af/scenario-run@10"
     },
     "id": {
-      "$ref": "urn:af:schema:scenario:8#/$defs/name"
+      "$ref": "urn:af:schema:scenario:9#/$defs/name"
     },
     "execution_id": {
-      "$ref": "urn:af:schema:scenario:8#/$defs/digest"
+      "$ref": "urn:af:schema:scenario:9#/$defs/digest"
     },
     "pin": {
-      "$ref": "urn:af:schema:scenario:8#/$defs/Pin"
+      "$ref": "urn:af:schema:scenario:9#/$defs/Pin"
     },
     "limits": {
-      "$ref": "urn:af:schema:scenario:8#/$defs/Limits"
+      "$ref": "urn:af:schema:scenario:9#/$defs/Limits"
     },
     "created_unix_ms": {
       "type": "integer",
@@ -51,12 +51,12 @@
       "maximum": 9007199254740991
     },
     "status": {
-      "$ref": "urn:af:schema:scenario:8#/$defs/Status"
+      "$ref": "urn:af:schema:scenario:9#/$defs/Status"
     },
     "waiting": {
       "anyOf": [
         {
-          "$ref": "urn:af:schema:scenario:8#/$defs/Waiting"
+          "$ref": "urn:af:schema:scenario:9#/$defs/Waiting"
         },
         {
           "type": "null"
@@ -66,13 +66,13 @@
     "frames": {
       "type": "object",
       "additionalProperties": {
-        "$ref": "urn:af:schema:scenario:8#/$defs/Frame"
+        "$ref": "urn:af:schema:scenario:9#/$defs/Frame"
       }
     },
     "task_charges": {
       "type": "object",
       "additionalProperties": {
-        "$ref": "urn:af:schema:scenario:8#/$defs/TaskCharge"
+        "$ref": "urn:af:schema:scenario:9#/$defs/TaskCharge"
       }
     },
     "dispatches": {
@@ -83,7 +83,7 @@
     "failure": {
       "anyOf": [
         {
-          "$ref": "urn:af:schema:scenario:8#/$defs/text"
+          "$ref": "urn:af:schema:scenario:9#/$defs/text"
         },
         {
           "type": "null"
@@ -93,7 +93,7 @@
     "cancellation": {
       "anyOf": [
         {
-          "$ref": "urn:af:schema:scenario:8#/$defs/Cancellation"
+          "$ref": "urn:af:schema:scenario:9#/$defs/Cancellation"
         },
         {
           "type": "null"
@@ -103,7 +103,7 @@
     "ant": {
       "anyOf": [
         {
-          "$ref": "urn:af:schema:scenario:8#/$defs/name"
+          "$ref": "urn:af:schema:scenario:9#/$defs/name"
         },
         {
           "type": "null"
@@ -113,7 +113,7 @@
     "goal_claim": {
       "anyOf": [
         {
-          "$ref": "urn:af:schema:scenario:8#/$defs/Claim"
+          "$ref": "urn:af:schema:scenario:9#/$defs/Claim"
         },
         {
           "type": "null"
@@ -123,7 +123,7 @@
     "fresh_tasks": {
       "type": "object",
       "additionalProperties": {
-        "$ref": "urn:af:schema:scenario:8#/$defs/TaskTarget"
+        "$ref": "urn:af:schema:scenario:9#/$defs/TaskTarget"
       }
     }
   }

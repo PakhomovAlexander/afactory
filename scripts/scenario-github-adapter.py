@@ -36,7 +36,7 @@ LOGIN = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?"
 REPO = r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}"
 PUB = r"github-pr:sha256:[0-9a-f]{64}"
 CONFIG_SCHEMA = "af/github-adapter-config@1"
-STATE_SCHEMA = "af/github-adapter-state@7"
+STATE_SCHEMA = "af/github-adapter-state@8"
 PR_OPERATIONS = ("publish_pr", "publish_performance_pr_v1", "publish_implementation_pr_v1")
 PAYLOAD_SCHEMAS = {
     "publish_implementation_pr_v1": "af/github-publish-pr@1",
@@ -242,7 +242,7 @@ def validate_payload(operation, value, config):
 
 def validate_request(request, config):
     fields(request, ("schema", "method", "intent_id", "input_digest", "operation", "destination", "inputs"))
-    need(request["schema"] == "af/scenario-adapter-request@6", "unsupported request version")
+    need(request["schema"] == "af/scenario-adapter-request@7", "unsupported request version")
     for key in ("intent_id", "input_digest"):
         string(request[key], DIGEST)
     op = request["operation"]
@@ -860,7 +860,7 @@ class Adapter:
 
     def handle(self, request):
         texts, _ = validate_request(request, self.config)
-        response = {"schema": "af/scenario-adapter-response@2", "intent_id": request["intent_id"],
+        response = {"schema": "af/scenario-adapter-response@3", "intent_id": request["intent_id"],
                     "input_digest": request["input_digest"], "outcome": "pending",
                     "evidence": "Reconcile the retained intent", "observation": None}
         try:
@@ -914,7 +914,7 @@ def schema_documents():
     def document(name, value):
         if name == "github-performance-pr":
             value = dict(title="Performance pull request v1", **value)
-        version = 7 if name == "github-adapter-state" else 1
+        version = 8 if name == "github-adapter-state" else 1
         documents[name + "-v%d.json" % version] = {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "$id": "urn:af:schema:" + name + ":%d" % version,
@@ -942,11 +942,11 @@ def schema_documents():
         else:
             props.update(title=text(maximum=200), body=text(maximum=48000))
         document(schema.split("/")[1].split("@")[0], obj(props))
-    request = obj({"schema": {"const": "af/scenario-adapter-request@6"},
+    request = obj({"schema": {"const": "af/scenario-adapter-request@7"},
                    "intent_id": text(DIGEST), "input_digest": text(DIGEST),
                    "operation": {"enum": list(PAYLOAD_SCHEMAS)}, "destination": text(),
                    "inputs": {"type": "object", "additionalProperties": {
-                       "$ref": "urn:af:schema:scenario:8#/$defs/Datum"}}})
+                       "$ref": "urn:af:schema:scenario:9#/$defs/Datum"}}})
     record = obj({"publication_checkpoint": {"enum": [None, "native_proof_ready", "publication_prepared"]}, "request": request, "request_digest": text(DIGEST),
                   "phase": {"enum": ["prepared", "dispatched", "done", "failed"]}, "metadata_dispatched": {"type":"boolean"},
                   "object": {"anyOf": [{"type": "null"}, obj({"id": positive, "number": positive})]},

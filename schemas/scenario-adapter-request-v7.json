@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:scenario-adapter-request:6",
-  "title": "scenario-adapter-request v6",
+  "$id": "urn:af:schema:scenario-adapter-request:7",
+  "title": "scenario-adapter-request v7",
   "description": "ADR-0274. Cross-port types, identity, authority, budget, signature and lifecycle invariants also require semantic admission.",
   "type": "object",
   "additionalProperties": false,
@@ -16,7 +16,7 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/scenario-adapter-request@6"
+      "const": "af/scenario-adapter-request@7"
     },
     "method": {
       "enum": [
@@ -26,24 +26,24 @@
       ]
     },
     "intent_id": {
-      "$ref": "urn:af:schema:scenario:8#/$defs/digest"
+      "$ref": "urn:af:schema:scenario:9#/$defs/digest"
     },
     "input_digest": {
-      "$ref": "urn:af:schema:scenario:8#/$defs/digest"
+      "$ref": "urn:af:schema:scenario:9#/$defs/digest"
     },
     "operation": {
-      "$ref": "urn:af:schema:scenario:8#/$defs/Operation"
+      "$ref": "urn:af:schema:scenario:9#/$defs/Operation"
     },
     "destination": {
-      "$ref": "urn:af:schema:scenario:8#/$defs/text"
+      "$ref": "urn:af:schema:scenario:9#/$defs/text"
     },
     "inputs": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:scenario:8#/$defs/name"
+        "$ref": "urn:af:schema:scenario:9#/$defs/name"
       },
       "additionalProperties": {
-        "$ref": "urn:af:schema:scenario:8#/$defs/Datum"
+        "$ref": "urn:af:schema:scenario:9#/$defs/Datum"
       }
     }
   }

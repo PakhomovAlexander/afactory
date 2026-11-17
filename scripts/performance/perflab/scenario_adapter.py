@@ -100,12 +100,12 @@ class Adapter:
         require(isinstance(request, dict) and set(request) == {
             "schema", "method", "intent_id", "input_digest", "operation", "destination", "inputs"},
             "invalid Scenario adapter request fields")
-        require(request["schema"] == "af/scenario-adapter-request@6"
+        require(request["schema"] == "af/scenario-adapter-request@7"
                 and request["destination"] == self.config["destination"],
                 "unsupported Scenario adapter version or destination")
         for key in ("intent_id", "input_digest"):
             contracts.DIGEST.validate(request[key], key)
-        response = dict(schema="af/scenario-adapter-response@2", intent_id=request["intent_id"],
+        response = dict(schema="af/scenario-adapter-response@3", intent_id=request["intent_id"],
                         input_digest=request["input_digest"], outcome="pending",
                         evidence="submission requires reconciliation", observation=None)
         method, inputs = request["method"], request["inputs"]

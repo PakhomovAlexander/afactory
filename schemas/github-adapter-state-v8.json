@@ -1,5 +1,5 @@
 {
-  "$id": "urn:af:schema:github-adapter-state:7",
+  "$id": "urn:af:schema:github-adapter-state:8",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "description": "GitHub Scenario adapter v1. Semantic validation also binds exact identities, scope and durable state.",
@@ -93,7 +93,7 @@
               },
               "inputs": {
                 "additionalProperties": {
-                  "$ref": "urn:af:schema:scenario:8#/$defs/Datum"
+                  "$ref": "urn:af:schema:scenario:9#/$defs/Datum"
                 },
                 "type": "object"
               },
@@ -113,7 +113,7 @@
                 ]
               },
               "schema": {
-                "const": "af/scenario-adapter-request@6"
+                "const": "af/scenario-adapter-request@7"
               }
             },
             "required": [
@@ -154,7 +154,7 @@
       "type": "object"
     },
     "schema": {
-      "const": "af/github-adapter-state@7"
+      "const": "af/github-adapter-state@8"
     }
   },
   "required": [

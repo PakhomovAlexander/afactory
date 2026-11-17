@@ -910,11 +910,11 @@ same tag is refused as a reused key. `--work profile` is refused. A core nightly
 unless the configuration's `core.tier` is `nightly`, naming the tier it found, so the quick
 configuration cannot take one by mistake.
 
-On the VM, [`scripts/nightly/measure.py`](../scripts/nightly/measure.py) is what submits and
-cycles nightlies: its unit, `af-nightly-measure.service`, runs the two submissions above for
-each built night and then `status` and `cycle` until both originals end or its deadline passes
-([the nightly chain](nightly.md#the-nightly-chain), ADR-0273), so no `af-perf-executor@` unit
-runs on `/etc/af-nightly/executor.toml`.
+On the VM, the [native nightly release Scenario](nightly.md#native-release-scenario) uses the
+full release-comparison family, with exact configured baseline/source commits, verified core,
+telemetry, trace and CPU-profile lanes. Its external worker alone drives the nightly executor;
+never run an `af-perf-executor@` service on that configuration. The legacy measure script remains
+an explicit diagnostic command, and its old automatic service chain is retired.
 
 Shards still run one after another. A core nightly is one build, then four shards of at most
 15 sampling minutes each. The plan freezes the tier's 180-minute run deadline, counted from the

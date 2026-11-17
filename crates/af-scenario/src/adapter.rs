@@ -54,7 +54,7 @@ pub struct Response {
 impl Response {
     fn validate(&self, request: &Request) -> Result<()> {
         require(
-            self.schema == "af/scenario-adapter-response@2"
+            self.schema == "af/scenario-adapter-response@3"
                 && self.intent_id == request.intent_id
                 && self.input_digest == request.input_digest,
             "Adapter returned stale or unrelated evidence",
@@ -175,7 +175,7 @@ pub(crate) fn dispatch(
         ),
         Kind::Wait { grant, condition } => {
             let request = Request {
-                schema: "af/scenario-adapter-request@6".into(),
+                schema: "af/scenario-adapter-request@7".into(),
                 method: Method::Observe,
                 intent_id: dispatch.intent.id.clone(),
                 input_digest: dispatch.intent.input_digest.clone(),
@@ -213,6 +213,7 @@ pub(crate) fn dispatch(
         }
         Kind::Action { grant, .. } if grant.adapter == "builtin" => file_action(dispatch, grant),
         Kind::Action { grant, .. } => {
+            super::nightly::validate_dispatch(policy, grant, &dispatch.inputs)?;
             let started = Instant::now();
             let remaining = || {
                 dispatch.timeout_ms.saturating_sub(
@@ -239,7 +240,7 @@ pub(crate) fn dispatch(
                     .get(&scope.evidence_adapter)
                     .ok_or("Missing pinned native evidence adapter")?;
                 let observation_request = Request {
-                    schema: "af/scenario-adapter-request@6".into(),
+                    schema: "af/scenario-adapter-request@7".into(),
                     method: Method::Observe,
                     intent_id: dispatch.intent.id.clone(),
                     input_digest: dispatch.intent.input_digest.clone(),
@@ -270,7 +271,7 @@ pub(crate) fn dispatch(
                 )?;
             }
             let mut request = Request {
-                schema: "af/scenario-adapter-request@6".into(),
+                schema: "af/scenario-adapter-request@7".into(),
                 method: Method::Reconcile,
                 intent_id: dispatch.intent.id.clone(),
                 input_digest: dispatch.intent.input_digest.clone(),

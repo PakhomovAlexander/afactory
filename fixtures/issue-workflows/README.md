@@ -167,7 +167,7 @@ commits/Stores, substituted pipelines and
 nonpersonal bindings. Each stage retains its own native authority ID; profiles legitimately
 capture different authority objects on the same commit.
 
-Create an owner-only `af/scenario-policy@7` file outside the checkout, containing exactly those
+Create an owner-only `af/scenario-policy@8` file outside the checkout, containing exactly those
 `template_id` values under `task_templates`, and empty `adapters`, `task_plans`, `decision_keys`
 and `file_roots`. Validate using `af scenario validate --file workflow.json --authority policy.json
 --json`. Review the exact pin before `af scenario start ... --confirm-pin PIN --execute`.

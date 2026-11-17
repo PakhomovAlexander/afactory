@@ -1316,7 +1316,7 @@ class ReleaseCLI(unittest.TestCase):
     def test_exact_native_and_performance_schema_identities_are_admitted(self):
         policy = json.loads((ROOT / 'scripts/release-policy.json').read_text())
         expected = {
-            'schemas/scenario-v8.json': 'af/scenario@8',
+            'schemas/scenario-v9.json': 'af/scenario@9',
             'schemas/performance-executor-v5.json': 'af.perf-executor/5',
             'schemas/performance-history-v2.json': 'af.perf-history/2',
             'schemas/performance-equivalence-v2.json': 'af.perf-equivalence/2',
@@ -1377,7 +1377,7 @@ class ReleaseCLI(unittest.TestCase):
         self.cli('plan')
 
     def test_malformed_required_schema_identity_is_refused(self):
-        for name in ('schemas/scenario-v8.json', 'schemas/performance-executor-v5.json'):
+        for name in ('schemas/scenario-v9.json', 'schemas/performance-executor-v5.json'):
             path = self.source / name
             original = path.read_bytes()
             for content in ('null', '{}', '{"properties": []}',

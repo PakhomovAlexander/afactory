@@ -598,20 +598,20 @@ Campaign selectors and their inspection documents are retired. Review plan captu
 Task plan; --authority selects trusted authority independently of source/base selectors.
 
 Scenario and Ant documents (ADR-0274; `af help scenarios`):
-  scenario validate: af/scenario-pin@9; start, show, resume, decide, cancel: af/scenario-run@9.
-  scenario decision-payload: af/scenario-decision@1; list: af/scenario-list@9.
-  ant validate: af/ant-pin@10; add, enable, pause, disable: af/ant-state@11;
-  ant show: af/ant-inspection@6; ant scheduler status/stop: af/ant-scheduler@1;
-  ant list: af/ant-list@11; tick: af/ant-tick@10.
+  scenario validate: af/scenario-pin@10; start, show, resume, decide, cancel: af/scenario-run@10.
+  scenario decision-payload: af/scenario-decision@1; list: af/scenario-list@10.
+  ant validate: af/ant-pin@11; add, enable, pause, disable: af/ant-state@12;
+  ant show: af/ant-inspection@7; ant scheduler status/stop: af/ant-scheduler@1;
+  ant list: af/ant-list@12; tick: af/ant-tick@11.
   Result presentation: af/result-document@1; rendered metadata: af/result-snapshot@1.
-  Definitions and machine policy: af/scenario@8, af/scenario-bundle@8, af/scenario-policy@7,
+  Definitions and machine policy: af/scenario@9, af/scenario-bundle@9, af/scenario-policy@8,
   Scoped implementation publication: af/implementation-pr-proof@1, af/implementation-pr-live@1.
   Startup scope: af/implementation-startup-scope@2.
-  af/ant@9; signed envelopes: af/scenario-signed-decision@1.
+  af/ant@10; signed envelopes: af/scenario-signed-decision@1.
   Roadmaps: af/scenario-roadmap-proposal@2 (input), af/scenario-roadmap-revision@2 (validate),
   af/scenario-roadmap@3 (create, show, revise), af/scenario-roadmap-list@3 (list).
   Fresh templates: af/scenario-task-template@2; capture: af/scenario-template-pin@2.
-  Driver status: af/scenario-driver@1. Journal: af/scenario-store@14.
+  Driver status: af/scenario-driver@1. Journal: af/scenario-store@15.
   Owned file envelope: af/scenario-owned-file@1.
   Research evidence: af/scenario-evidence-source@1.
   Experiment source: af/scenario-experiment-source-request@1 and af/scenario-experiment-source@1.
@@ -619,8 +619,9 @@ Scenario and Ant documents (ADR-0274; `af help scenarios`):
   Performance publication: af/performance-pr-proof-request@1, af/performance-pr-proof@1,
   af/performance-pr-content@1, af/performance-publication-activation@1, af/github-performance-pr@1.
   Installed Git workspaces: af/git-workspace-config@3, af/git-workspace-content@1,
-  af/git-workspace-prepared@1 and af/git-workspace-state@4.
-  Bounded adapters: af/scenario-adapter-request@6 and af/scenario-adapter-response@2.
+  af/git-workspace-prepared@1 and af/git-workspace-state@5.
+  Native nightly service: af/nightly-service@1, af/nightly-job@1, af/nightly-completion@1.
+  Bounded adapters: af/scenario-adapter-request@7 and af/scenario-adapter-response@3.
   `af schema show ID` prints each schema; semantic admission additionally checks authority,
   exact bindings, signatures, budgets, lifecycle and transitive identity.
 

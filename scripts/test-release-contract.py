@@ -138,13 +138,13 @@ class ReleaseContract(unittest.TestCase):
         policy = json.loads((ROOT / 'scripts/release-policy.json').read_text())
         # Independent expectations: do not infer the current generation from either the
         # declaration or the schemas being checked. Both can drift together.
-        expected = {'scenario-store': 14, 'scenario-driver': 1,
-                    'scenario-adapter-response': 2, 'github-adapter-state': 7,
-                    'git-candidate-source-request': 2, 'git-candidate-source': 2, 'scenario': 8, 'scenario-bundle': 8,
-                    'scenario-pin': 9, 'scenario-run': 9, 'scenario-list': 9,
-                    'ant': 9, 'ant-pin': 10, 'ant-tick': 10, 'ant-state': 11,
-                    'ant-inspection': 6, 'ant-list': 11,
-                    'scenario-policy': 7, 'implementation-startup-scope': 2,
+        expected = {'scenario-store': 15, 'scenario-driver': 1,
+                    'scenario-adapter-response': 3, 'github-adapter-state': 8,
+                    'git-candidate-source-request': 2, 'git-candidate-source': 2, 'scenario': 9, 'scenario-bundle': 9,
+                    'scenario-pin': 10, 'scenario-run': 10, 'scenario-list': 10,
+                    'ant': 10, 'ant-pin': 11, 'ant-tick': 11, 'ant-state': 12,
+                    'ant-inspection': 7, 'ant-list': 12,
+                    'scenario-policy': 8, 'implementation-startup-scope': 2,
                     'scenario-task-template': 2, 'scenario-template-pin': 2}
         for name, version in expected.items():
             relative = 'schemas/%s-v%s.json' % (name, version)
@@ -179,8 +179,8 @@ class ReleaseContract(unittest.TestCase):
         expected = {
             'task-wake-route-v1.json': 'af/task-wake-route@1',
             'task-wake-status-v1.json': 'af/task-wake-status@1',
-            'scenario-v8.json': 'af/scenario@8',
-            'scenario-store-v14.json': 'af/scenario-store@14',
+            'scenario-v9.json': 'af/scenario@9',
+            'scenario-store-v15.json': 'af/scenario-store@15',
             'scenario-driver-v1.json': 'af/scenario-driver@1',
             'implementation-startup-scope-v2.json': 'af/implementation-startup-scope@2',
             'performance-executor-v5.json': 'af.perf-executor/5',

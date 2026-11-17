@@ -1,5 +1,5 @@
 {
-  "schema": "af.nightly-publish/1",
+  "schema": "af.nightly-publish/2",
   "status": "skipped",
   "date": "2026-10-30",
   "tag": "nightly-2026.10.30",
@@ -13,5 +13,6 @@
   "prune_failures": [],
   "foreign": [],
   "amendments": 1,
-  "published_unix_ms": 1761796800000
+  "published_unix_ms": 1761796800000,
+  "failures": []
 }

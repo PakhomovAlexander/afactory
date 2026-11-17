@@ -1,5 +1,5 @@
 {
-  "$id": "urn:af:schema:git-workspace-state:4",
+  "$id": "urn:af:schema:git-workspace-state:5",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
@@ -282,7 +282,7 @@
               },
               "inputs": {
                 "additionalProperties": {
-                  "$ref": "urn:af:schema:scenario:8#/$defs/Datum"
+                  "$ref": "urn:af:schema:scenario:9#/$defs/Datum"
                 },
                 "type": "object"
               },
@@ -300,7 +300,7 @@
                 ]
               },
               "schema": {
-                "const": "af/scenario-adapter-request@6"
+                "const": "af/scenario-adapter-request@7"
               }
             },
             "required": [
@@ -384,7 +384,7 @@
       "type": "object"
     },
     "schema": {
-      "const": "af/git-workspace-state@4"
+      "const": "af/git-workspace-state@5"
     }
   },
   "required": [
@@ -393,6 +393,6 @@
     "checksum",
     "records"
   ],
-  "title": "git-workspace-state v4",
+  "title": "git-workspace-state v5",
   "type": "object"
 }

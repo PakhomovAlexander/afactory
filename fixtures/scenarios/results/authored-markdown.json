@@ -1,9 +1,9 @@
 {
-  "schema": "af/scenario-bundle@8",
+  "schema": "af/scenario-bundle@9",
   "root": "library",
   "definitions": {
     "library": {
-      "schema": "af/scenario@8",
+      "schema": "af/scenario@9",
       "inputs": {},
       "outputs": {
         "report": "text",

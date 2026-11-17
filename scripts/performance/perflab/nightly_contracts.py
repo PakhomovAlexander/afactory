@@ -17,10 +17,10 @@ from .spec import (Arr, Bool, COUNT, Const, DIGEST, Field, GIT_SHA, ID, Int, Map
                    RATIONAL, Str, UNIT)
 from .values import ContractError, format_rational, parse_rational, require
 
-CONFIG_SCHEMA = "af.nightly-config/1"
+CONFIG_SCHEMA = "af.nightly-config/2"
 PLAN_SCHEMA = "af.nightly-plan/1"
 BUILD_SCHEMA = "af.nightly-build/1"
-PUBLISH_SCHEMA = "af.nightly-publish/1"
+PUBLISH_SCHEMA = "af.nightly-publish/2"
 
 # The Linux targets a nightly ships, in the order they are built and recorded. The VM cannot
 # build macOS, so a nightly has no aarch64-apple-darwin archive.
@@ -366,6 +366,7 @@ def register(c):
         Field("sign_key", path), Field("public_key", path),
         Field("required_checks", Arr(check_name, 0, 64, unique=True)),
         Field("max_walk", Int(1, 200), required=False),
+        Field("baseline_ref", Nullable(Str(pattern=r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$", max_len=256)), required=False),
         Field("github_token_file", path, required=False),
         # Where `compose` writes and `publish` reads a night's report directories when the
         # command line names neither a directory nor a root (ADR-0273).
@@ -439,6 +440,9 @@ def register(c):
                                         Field("reason", Str(min_len=1, max_len=1024))),
                                     0, 1024)),
         Field("foreign", Arr(tag_name, 0, 1024, unique=True)),
+        Field("failures", Arr(Obj(
+            Field("stage", Str(enum=("notification", "pruning", "foreign"))),
+            Field("reason", Str(min_len=1, max_len=1024))), 0, 1026)),
         Field("amendments", Int(0, 10000)),
         Field("published_unix_ms", c.UNIX_MS))
 

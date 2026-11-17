@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:scenario-policy:7",
-  "title": "scenario-policy v7",
+  "$id": "urn:af:schema:scenario-policy:8",
+  "title": "scenario-policy v8",
   "description": "ADR-0274. Cross-port types, identity, authority, budget, signature and lifecycle invariants also require semantic admission.",
   "type": "object",
   "additionalProperties": false,
@@ -15,22 +15,22 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/scenario-policy@7"
+      "const": "af/scenario-policy@8"
     },
     "adapters": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:scenario:8#/$defs/name"
+        "$ref": "urn:af:schema:scenario:9#/$defs/name"
       },
       "additionalProperties": {
-        "$ref": "urn:af:schema:scenario:8#/$defs/Adapter"
+        "$ref": "urn:af:schema:scenario:9#/$defs/Adapter"
       },
       "maxProperties": 32
     },
     "task_plans": {
       "type": "array",
       "items": {
-        "$ref": "urn:af:schema:scenario:8#/$defs/digest"
+        "$ref": "urn:af:schema:scenario:9#/$defs/digest"
       },
       "uniqueItems": true,
       "maxItems": 256
@@ -38,17 +38,17 @@
     "decision_keys": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:scenario:8#/$defs/name"
+        "$ref": "urn:af:schema:scenario:9#/$defs/name"
       },
       "additionalProperties": {
-        "$ref": "urn:af:schema:scenario:8#/$defs/text"
+        "$ref": "urn:af:schema:scenario:9#/$defs/text"
       },
       "maxProperties": 32
     },
     "file_roots": {
       "type": "array",
       "items": {
-        "$ref": "urn:af:schema:scenario:8#/$defs/path"
+        "$ref": "urn:af:schema:scenario:9#/$defs/path"
       },
       "uniqueItems": true,
       "maxItems": 32
@@ -58,17 +58,17 @@
       "uniqueItems": true,
       "maxItems": 256,
       "items": {
-        "$ref": "urn:af:schema:scenario:8#/$defs/digest"
+        "$ref": "urn:af:schema:scenario:9#/$defs/digest"
       }
     },
     "performance_publications": {
       "type": "object",
       "maxProperties": 32,
       "propertyNames": {
-        "$ref": "urn:af:schema:scenario:8#/$defs/name"
+        "$ref": "urn:af:schema:scenario:9#/$defs/name"
       },
       "additionalProperties": {
-        "$ref": "urn:af:schema:scenario:8#/$defs/PerformancePublicationScope"
+        "$ref": "urn:af:schema:scenario:9#/$defs/PerformancePublicationScope"
       }
     },
     "implementation_startup": {
@@ -80,6 +80,16 @@
           "$ref": "urn:af:schema:implementation-startup-scope:2"
         }
       ]
+    },
+    "nightly_releases": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:scenario:9#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "urn:af:schema:scenario:9#/$defs/NightlyReleaseScope"
+      },
+      "maxProperties": 32
     }
   }
 }

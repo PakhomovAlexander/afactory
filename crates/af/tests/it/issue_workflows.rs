@@ -999,7 +999,7 @@ assert values[-1]['result']['acceptance'] == 'satisfied'
         let bundle = temp.path().join(format!("bundle-{i}.json"));
         std::fs::write(&bundle, output.stdout).unwrap();
         let policy = temp.path().join(format!("policy-{i}.json"));
-        std::fs::write(&policy,serde_json::to_vec(&json!({"schema":"af/scenario-policy@7","adapters":{},"task_plans":[],"task_templates":ids,"file_roots":[],"decision_keys":{}})).unwrap()).unwrap();
+        std::fs::write(&policy,serde_json::to_vec(&json!({"schema":"af/scenario-policy@8","adapters":{},"task_plans":[],"task_templates":ids,"file_roots":[],"decision_keys":{}})).unwrap()).unwrap();
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&policy, std::fs::Permissions::from_mode(0o600)).unwrap();

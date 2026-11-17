@@ -22,25 +22,25 @@
       "const": "af/scenario-decision@1"
     },
     "run_id": {
-      "$ref": "urn:af:schema:scenario:8#/$defs/name"
+      "$ref": "urn:af:schema:scenario:9#/$defs/name"
     },
     "execution_id": {
-      "$ref": "urn:af:schema:scenario:8#/$defs/digest"
+      "$ref": "urn:af:schema:scenario:9#/$defs/digest"
     },
     "pin_id": {
-      "$ref": "urn:af:schema:scenario:8#/$defs/digest"
+      "$ref": "urn:af:schema:scenario:9#/$defs/digest"
     },
     "step": {
-      "$ref": "urn:af:schema:scenario:8#/$defs/text"
+      "$ref": "urn:af:schema:scenario:9#/$defs/text"
     },
     "subject": {
-      "$ref": "urn:af:schema:scenario:8#/$defs/text"
+      "$ref": "urn:af:schema:scenario:9#/$defs/text"
     },
     "revision": {
-      "$ref": "urn:af:schema:scenario:8#/$defs/text"
+      "$ref": "urn:af:schema:scenario:9#/$defs/text"
     },
     "owner": {
-      "$ref": "urn:af:schema:scenario:8#/$defs/name"
+      "$ref": "urn:af:schema:scenario:9#/$defs/name"
     },
     "approve": {
       "type": "boolean"

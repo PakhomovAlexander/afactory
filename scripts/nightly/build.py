@@ -64,7 +64,7 @@ CONTAINER_HOME = "/home/nightly"
 # Configuration ------------------------------------------------------------------------------
 
 def load_config(path):
-    """The af.nightly-config/1 TOML at `path`, validated, with `max_walk` defaulted."""
+    """The af.nightly-config/2 TOML at `path`, validated, with `max_walk` defaulted."""
     try:
         with open(path, "rb") as stream:
             data = stream.read(toml_file.MAX_TOML_BYTES + 1)
@@ -339,7 +339,13 @@ def make_plan(config, date, git, github, previous):
     manifest = git.read_file(head, "Cargo.toml")
     require(manifest is not None, "%s has no Cargo.toml" % head)
     cargo_version = workspace_version(manifest.decode("utf-8"))
-    baseline_tag, baseline_sha = git_refs.nightly_baseline(git, head)
+    baseline_tag = config.get("baseline_ref")
+    if baseline_tag is None:
+        baseline_tag, baseline_sha = git_refs.nightly_baseline(git, head)
+    else:
+        baseline_sha = git.exact_ref("refs/tags/" + baseline_tag, "configured comparison baseline")
+        require(baseline_sha is not None, "configured baseline tag is absent; no fallback authorized")
+        require(git.is_ancestor(baseline_sha, head), "configured baseline is not an ancestor of the chosen source")
     tag = nightly_tag(date)
     skipped = previous is not None and previous["head_sha"] == head
     plan = {
@@ -717,7 +723,7 @@ def parse(argv):
     for name, text in (("plan", "choose the commit and print the plan; build nothing"),
                        ("build", "build, package, smoke and sign the plan's commit")):
         command = commands.add_parser(name, help=text)
-        command.add_argument("--config", required=True, help="the af.nightly-config/1 TOML")
+        command.add_argument("--config", required=True, help="the af.nightly-config/2 TOML")
         nightly_chain.add_night_options(command)
         command.add_argument("--previous", help="the previous night's nightly.json, built or "
                              "skipped, instead of the newest one under builds_root")
@@ -734,7 +740,7 @@ def emit(doc):
 
 
 def main(argv=None, github=None, host=None, clock=now_ms, environ=None,
-         show=nightly_chain.systemctl_show):
+         show=nightly_chain.systemctl_show, source_check=None):
     args = parse(argv)
     environ = os.environ if environ is None else environ
     try:
@@ -755,6 +761,8 @@ def main(argv=None, github=None, host=None, clock=now_ms, environ=None,
         if args.only_plan:
             emit(plan)
             return EXIT_SKIPPED if skipped else EXIT_BUILT
+        if source_check is not None and not skipped:
+            source_check(git, plan["head_sha"])
         night = Night(config, dict((key, value) for key, value in plan.items()
                                    if key not in ("schema", "status")),
                       host or Host(), clock, environ)

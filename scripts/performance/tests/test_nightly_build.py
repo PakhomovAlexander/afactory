@@ -171,7 +171,7 @@ class History(TempDir):
                   "sign_key": self.path("sign.key"), "public_key": self.path("sign.pub"),
                   "required_checks": ["check / lint"], "max_walk": 20}
         values.update(overrides)
-        lines = ['schema = "af.nightly-config/1"']
+        lines = ['schema = "af.nightly-config/2"']
         for key, value in values.items():
             lines.append("%s = %s" % (key, json.dumps(value)))
         with open(self.config, "w") as stream:
@@ -208,6 +208,20 @@ class History(TempDir):
 
 
 class GreenWalk(History):
+    def test_explicit_prerelease_baseline_is_pinned_and_never_falls_back(self):
+        self.write_config(baseline_ref="v0.14.0-rc.3")
+        code, plan, err, _ = self.plan({self.tip: GREEN})
+        self.assertEqual(code, 0, err)
+        self.assertEqual((plan["baseline_tag"], plan["baseline_sha"]), ("v0.14.0-rc.3", self.rc))
+        self.write_config(baseline_ref="v9.9.9-rc.1")
+        code, _, err, _ = self.plan({self.tip: GREEN})
+        self.assertEqual(code, 1)
+        self.assertIn("configured baseline tag is absent", err)
+        self.write_config(baseline_ref="main")
+        code, _, err, _ = self.plan({self.tip: GREEN})
+        self.assertEqual(code, 1)
+        self.assertIn("baseline_ref", err)
+
     def test_a_red_tip_chooses_its_green_parent_and_records_the_tip(self):
         code, plan, err, _ = self.plan({self.tip: LINT_FAILED, self.parent: GREEN})
         self.assertEqual(code, 0, err)
