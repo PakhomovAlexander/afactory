@@ -398,6 +398,14 @@ impl Consumer {
             self.explain(&outcome)
         );
         schemas::valid(&schemas::validator("task-inspection-v21.json"), &outcome);
+        if expected == 4 {
+            // Completed domain evidence retains its disposition, distinct from a failed
+            // native invocation. Preserve the source runtime's public result.
+            assert_eq!(outcome["result"]["execution"], "completed");
+            assert_eq!(outcome["state"]["phase"], "finished");
+            assert_eq!(outcome["state"]["outcome"], "exhausted");
+            assert_eq!(outcome["state"]["cause"], "budget");
+        }
         self.retain(task_id, code, &outcome);
         outcome
     }

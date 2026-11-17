@@ -164,6 +164,14 @@ fn start(fixture: &Fixture, task_id: &str, files: Value, expected: i32) -> Value
     assert_eq!(code, expected, "{stderr}\n{stdout}");
     let outcome: Value = serde_json::from_str(stdout.trim()).unwrap();
     schemas::valid(&schemas::validator("task-inspection-v21.json"), &outcome);
+    if expected == 4 {
+        // Completed domain evidence retains its disposition, distinct from a failed
+        // native invocation. Main's generic kernel-failure expectation does not apply.
+        assert_eq!(outcome["result"]["execution"], "completed");
+        assert_eq!(outcome["state"]["phase"], "finished");
+        assert_eq!(outcome["state"]["outcome"], "exhausted");
+        assert_eq!(outcome["state"]["cause"], "budget");
+    }
     outcome
 }
 

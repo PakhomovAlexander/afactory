@@ -19,6 +19,152 @@ EXAMPLES = ROOT / 'fixtures/worker-development'
 DIGEST = 'sha256:' + 'a' * 64
 
 
+class RuntimeTransport(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.home = self.root / 'private/home'
+        self.home.mkdir(parents=True)
+        self.env = {'HOME': str(self.home), 'PATH': os.environ.get('PATH', os.defpath),
+                    'XDG_CONFIG_HOME': str(self.home / 'config')}
+        self.engine = self.root / 'engine'
+        shutil.copyfile(EXAMPLES / 'recording-runtime.py', self.engine)
+        self.engine.chmod(0o700)
+        self.image = 'fixture.invalid/toolchain@' + DIGEST
+
+    def run_engine(self, *args, env=None):
+        return subprocess.run([str(self.engine), *args], env=env or self.env,
+                              capture_output=True, text=True, timeout=30)
+
+    def command(self, name):
+        return ['create', '--name', name, '--interactive', '--pull=never',
+                '--network=none', '--cap-drop=ALL', '--read-only',
+                '--volume', f'{self.root}:/work:ro',
+                '--volume', f'{self.home.parent}:/af/state:ro',
+                '--workdir', '/work', '-e', 'HOME=/af/state/home',
+                '--entrypoint', sys.executable, self.image, '-c',
+                'import os,sys; from pathlib import Path; '
+                'p=Path(os.environ["HOME"])/"executions"; '
+                'p.write_text(p.read_text()+"x" if p.exists() else "x"); '
+                'print(sys.argv[1:]); print(sys.stdin.read())', '--rm', 'literal argument']
+
+    def create(self, name):
+        result = self.run_engine(*self.command(name))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        identity = result.stdout.strip()
+        self.assertEqual(len(identity), 64)
+        self.assertTrue(all(c in '0123456789abcdef' for c in identity))
+        return identity
+
+    def record(self, identity):
+        return json.loads((self.home.parent / 'fixture-containers' /
+                           (identity + '.json')).read_text())
+
+    def test_create_records_exact_command_without_execution_and_start_runs_only_owned_identity(self):
+        identity = self.create('af-fixture-worker')
+        self.assertEqual(self.record(identity)['argv'], self.command('af-fixture-worker')[1:])
+        self.assertEqual(self.record(identity)['status'], 'created')
+        self.assertFalse((self.home / 'executions').exists())
+        for invalid in ('af-fixture-worker', identity[:12], '../escape', 'f' * 64):
+            self.assertNotEqual(self.run_engine('start', '--attach', invalid).returncode, 0)
+            self.assertNotEqual(self.run_engine('rm', '-f', invalid).returncode, 0)
+        other_home = self.root / 'other/home'
+        other_home.mkdir(parents=True)
+        self.assertNotEqual(self.run_engine('start', identity,
+                                           env={**self.env, 'HOME': str(other_home)}).returncode, 0)
+        self.assertNotEqual(self.run_engine(*self.command('af-fixture-worker')).returncode, 0)
+        for count in ('x', 'xx'):
+            result = subprocess.run([str(self.engine), 'start', '--attach', '--interactive', identity],
+                                    env=self.env, input='exact stdin\n', capture_output=True,
+                                    text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "['--rm', 'literal argument']\nexact stdin\n\n")
+            self.assertEqual((self.home / 'executions').read_text(), count)
+            self.assertEqual(self.record(identity)['status'], 'exited')
+        self.assertEqual(self.run_engine('rm', '-f', identity).returncode, 0)
+        self.assertEqual(self.record(identity)['status'], 'removed')
+        self.assertNotEqual(self.run_engine('start', identity).returncode, 0)
+        self.assertNotEqual(self.run_engine('rm', '-f', identity).returncode, 0)
+        self.assertNotEqual(self.create('af-fixture-worker'), identity)
+
+    def test_exact_id_listing_distinguishes_present_removed_and_private_context(self):
+        identity = self.create('af-fixture-worker')
+        probe = ['ps', '--all', '--no-trunc', '--quiet', '--filter', 'id=' + identity]
+        present = self.run_engine(*probe)
+        self.assertEqual(present.returncode, 0, present.stderr)
+        self.assertEqual(present.stdout, identity + '\n')
+        self.assertFalse((self.home / 'executions').exists())
+        other_home = self.root / 'other/home'
+        other_home.mkdir(parents=True)
+        private = self.run_engine(*probe, env={**self.env, 'HOME': str(other_home)})
+        self.assertEqual(private.returncode, 0, private.stderr)
+        self.assertEqual(private.stdout, '')
+        self.assertEqual(self.run_engine('rm', '-f', identity).returncode, 0)
+        self.assertNotEqual(self.run_engine('rm', '-f', identity).returncode, 0)
+        absent = self.run_engine(*probe)
+        self.assertEqual(absent.returncode, 0, absent.stderr)
+        self.assertEqual(absent.stdout, '')
+        self.assertFalse((self.home / 'executions').exists())
+        for invalid in ('af-fixture-worker', identity[:12], '../escape'):
+            self.assertNotEqual(self.run_engine(*probe[:-1], 'id=' + invalid).returncode, 0)
+
+    def test_crash_transport_stops_after_durable_ack_before_start_and_forwards_helpers(self):
+        barrier = self.root / 'barrier.sock'
+        wrapper = self.root / 'runtime-wrapper'
+        source = ROOT / 'crates/af-sandbox/tests/fixtures/storage-crash-runtime.py'
+        wrapper.write_text('#!/usr/bin/env python3\nENGINE = ' + repr(str(self.engine)) +
+                           '\nBARRIER = ' + repr(str(barrier)) + '\n' + source.read_text())
+        wrapper.chmod(0o700)
+        self.engine, engine = wrapper, self.engine
+        identity = self.create('af-fixture-worker')
+        self.assertEqual(self.record(identity)['status'], 'created')
+        # Starting before the production journal is durable must fail, never claim a barrier.
+        premature = self.run_engine('start', '--attach', '--interactive', identity)
+        self.assertNotEqual(premature.returncode, 0)
+        self.assertFalse((self.home / 'executions').exists())
+        # Helper operations carry exact flags/image/argv in the same private client context.
+        helper = self.create('af-fixture-seed')
+        self.assertEqual(self.run_engine('start', '--attach', '--interactive', helper).returncode, 0)
+        self.assertEqual((self.home / 'executions').read_text(), 'x')
+        self.assertEqual(self.run_engine('rm', '-f', helper).returncode, 0)
+        self.assertEqual(self.record(helper)['status'], 'removed')
+        self.assertEqual(self.record(identity)['argv'], self.command('af-fixture-worker')[1:])
+        journal = self.home.parent / 'af-fixture-worker.cid'
+        with journal.open('wb') as stream:
+            stream.write(identity.encode('ascii'))
+            stream.flush()
+            os.fsync(stream.fileno())
+        import select
+        for suffix in ('.ready', '.release'):
+            os.mkfifo(str(barrier) + suffix)
+        ready = os.open(str(barrier) + '.ready', os.O_RDWR | os.O_NONBLOCK)
+        release = os.open(str(barrier) + '.release', os.O_RDWR)
+        child = subprocess.Popen([str(wrapper), 'start', '--attach', '--interactive', identity],
+                                 env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            self.assertEqual(select.select([ready], [], [], 30)[0], [ready])
+            self.assertEqual(os.read(ready, 5), b'ready')
+            self.assertEqual(journal.read_text(), identity)
+            self.assertEqual(self.record(identity)['status'], 'created')
+            self.assertEqual((self.home / 'executions').read_text(), 'x')
+            # Release only after the workload's durable ID and withheld execution are checked.
+            os.write(release, b'x')
+            stdout, stderr = child.communicate(timeout=30)
+            self.assertEqual(child.returncode, 91, stderr)
+            self.assertEqual(stdout, b'')
+        finally:
+            os.close(ready)
+            os.close(release)
+            if child.poll() is None:
+                child.kill()
+                child.communicate(timeout=30)
+        self.assertEqual((self.home / 'executions').read_text(), 'x')
+        self.assertEqual(self.run_engine('rm', '-f', identity).returncode, 0)
+        self.assertEqual(self.record(identity)['status'], 'removed')
+        self.assertTrue(engine.exists())
+
+
 class Development(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
