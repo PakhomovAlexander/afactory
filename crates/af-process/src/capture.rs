@@ -200,6 +200,27 @@ pub fn run_supervised_captured_bounded(
     )
 }
 
+/// Bounded capture under the caller's original absolute execution deadline.
+/// Spawn admission and retries check expiry/cancellation; launch time consumes the allowance.
+pub fn run_supervised_captured_bounded_until(
+    command: &mut Command,
+    input: Option<Vec<u8>>,
+    deadline: Instant,
+    exit_policy: ExitPolicy,
+    cancellation: Option<&AtomicBool>,
+    cap: usize,
+) -> SupervisedCapture {
+    captured_until(
+        command,
+        input,
+        deadline,
+        exit_policy,
+        cancellation,
+        None,
+        Caps::both(cap),
+    )
+}
+
 /// [`run_supervised_captured_bounded`] whose drains also offer every chunk they read to
 /// `observer` when one is given ([`run_supervised_captured_observed`]): the one call a Worker's
 /// harness makes, capped as evidence and observed by Telemetry at once.
@@ -243,7 +264,7 @@ where
     let capture = run_supervised_controlled(
         command,
         Some(writer),
-        timeout,
+        Instant::now() + timeout,
         exit_policy,
         cancellation,
         None,
@@ -261,6 +282,27 @@ pub(crate) fn captured_inner(
     observer: Option<&OutputObserver>,
     caps: Caps,
 ) -> SupervisedCapture {
+    captured_until(
+        command,
+        input,
+        Instant::now() + timeout,
+        exit_policy,
+        cancellation,
+        observer,
+        caps,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn captured_until(
+    command: &mut Command,
+    input: Option<Vec<u8>>,
+    deadline: Instant,
+    exit_policy: ExitPolicy,
+    cancellation: Option<&AtomicBool>,
+    observer: Option<&OutputObserver>,
+    caps: Caps,
+) -> SupervisedCapture {
     let writer = input.map(|input| {
         move |stdin: &mut dyn Write| match stdin.write_all(&input) {
             Ok(()) => Ok(()),
@@ -271,7 +313,7 @@ pub(crate) fn captured_inner(
     run_supervised_controlled(
         command,
         writer,
-        timeout,
+        deadline,
         exit_policy,
         cancellation,
         observer,
@@ -408,7 +450,7 @@ where
     run_supervised_controlled(
         command,
         writer,
-        timeout,
+        Instant::now() + timeout,
         exit_policy,
         None,
         None,
@@ -419,7 +461,7 @@ where
 fn run_supervised_controlled<E, F>(
     command: &mut Command,
     writer: Option<F>,
-    timeout: Duration,
+    deadline: Instant,
     exit_policy: ExitPolicy,
     cancellation: Option<&AtomicBool>,
     observer: Option<&OutputObserver>,
@@ -447,9 +489,9 @@ where
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    let mut child = match crate::spawn::spawn(command) {
+    let mut child = match crate::spawn::spawn_until(command, deadline, cancellation.as_slice()) {
         Ok(child) => child,
-        Err(error) => return StreamCapture::empty(SupervisedError::Spawn(error)),
+        Err(error) => return StreamCapture::empty(error),
     };
     let stdin_pipe = child.stdin.take();
     let stdout_pipe = child.stdout.take().expect("stdout was piped");
@@ -475,7 +517,6 @@ where
         };
         let stdout = drain_observed(stdout_pipe, caps.stdout, tap(ObservedStream::Stdout));
         let stderr = drain_observed(stderr_pipe, caps.stderr, tap(ObservedStream::Stderr));
-        let deadline = Instant::now() + timeout;
         let waited =
             wait_exact_cancellable(deadline, cancellation, &leader, exit_policy.kills_group());
         if let Some(tree) = &tree {
@@ -557,6 +598,58 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expired_and_zero_allowances_refuse_spawn_without_pid_or_usage() {
+        for absolute in [false, true] {
+            let mut command = Command::new("/path/that/must/never/be/spawned");
+            let capture = if absolute {
+                run_supervised_captured_bounded_until(
+                    &mut command,
+                    None,
+                    Instant::now(),
+                    ExitPolicy::KillDescendants,
+                    None,
+                    32,
+                )
+            } else {
+                run_supervised_captured_bounded(
+                    &mut command,
+                    None,
+                    Duration::ZERO,
+                    ExitPolicy::KillDescendants,
+                    None,
+                    32,
+                )
+            };
+            assert!(matches!(
+                capture.status,
+                Err(SupervisedError::TimedOut { .. })
+            ));
+            assert!(capture.pid.is_none());
+            assert!(capture.rusage.is_none());
+        }
+    }
+
+    #[test]
+    fn expired_duplex_admission_runs_neither_process_nor_protocol_callbacks() {
+        let result = crate::run_supervised_duplex_cancellable_until(
+            &mut Command::new("/path/that/must/never/be/spawned"),
+            Instant::now(),
+            ExitPolicy::KillDescendants,
+            &AtomicBool::new(false),
+            |_| -> Result<(), ()> { panic!("writer must not run") },
+            |_| -> usize { panic!("reader must not run") },
+        );
+        assert!(matches!(
+            result,
+            Err(SupervisedError::TimedOut {
+                pid: None,
+                rusage: None,
+                ..
+            })
+        ));
+    }
 
     fn status() -> ExitStatus {
         crate::reap::status(std::process::Command::new("/bin/sh").args(["-c", "exit 0"])).unwrap()

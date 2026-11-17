@@ -221,10 +221,10 @@ impl Storage {
             capture
         } else {
             let mut command = self.command(argv);
-            run_supervised_captured_bounded(
+            af_process::run_supervised_captured_bounded_until(
                 &mut command,
                 None,
-                remaining(deadline)?,
+                deadline,
                 ExitPolicy::KillDescendants,
                 cancellation,
                 16 * 1024,
@@ -383,9 +383,9 @@ impl Storage {
         let mut command = self.command(&["start".into(), "--attach".into(), id]);
         let allowed = outputs.iter().map(|(name, _)| name.clone()).collect();
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        let result = af_process::run_supervised_duplex_cancellable(
+        let result = af_process::run_supervised_duplex_cancellable_until(
             &mut command,
-            remaining(deadline)?,
+            deadline,
             ExitPolicy::KillDescendants,
             cancellation.unwrap_or(&cancel),
             |_| Ok::<_, std::io::Error>(()),
@@ -474,10 +474,10 @@ impl Storage {
             std::fs::remove_file(intent).map_err(|error| error.to_string())?;
         }
         let mut command = self.command(&["volume".into(), "rm".into(), self.name.clone()]);
-        let result = run_supervised_captured_bounded(
+        let result = af_process::run_supervised_captured_bounded_until(
             &mut command,
             None,
-            remaining(deadline)?,
+            deadline.min(Instant::now() + PROBE_TIMEOUT),
             ExitPolicy::KillDescendants,
             None,
             4096,
@@ -500,10 +500,10 @@ impl Storage {
 
     fn absent(&self, argv: &[String], deadline: Instant) -> Result<(), String> {
         let mut command = self.command(argv);
-        let capture = run_supervised_captured_bounded(
+        let capture = af_process::run_supervised_captured_bounded_until(
             &mut command,
             None,
-            remaining(deadline)?,
+            deadline.min(Instant::now() + PROBE_TIMEOUT),
             ExitPolicy::KillDescendants,
             None,
             4096,
@@ -900,6 +900,81 @@ mod tests {
         std::os::unix::fs::symlink(&outside, directory.path().join(MARKER)).unwrap();
         assert!(recover_worker_storage(directory.path()).is_err());
         assert_eq!(std::fs::read(&outside).unwrap(), b"private");
+    }
+
+    #[test]
+    fn acknowledged_removal_crash_window_recovers_only_with_complete_exact_absence() {
+        for purpose in ["worker", "export", "keeper", "seed"] {
+            for answer in ["absent", "present", "failure", "truncated"] {
+                let directory = tempfile::tempdir().unwrap();
+                let root = directory.path();
+                std::fs::create_dir(root.join("home")).unwrap();
+                let engine = root.join("engine");
+                let id = "a".repeat(64);
+                super::super::tests::write_runtime_within(
+                    &engine,
+                    &format!(
+                        r#"#!/bin/sh
+[ "$HOME" = '{home}' ] || exit 92
+case "$1" in
+rm)
+  [ "$2:$3" = '-f:{id}' ] || exit 93
+  if [ -e "$HOME/../daemon-object" ]; then
+    rm "$HOME/../daemon-object" || exit 94
+    exit 0
+  fi
+  exit 1;;
+ps)
+  [ "$*" = 'ps --all --no-trunc --quiet --filter id={id}' ] || exit 95
+  printf probed > "$HOME/../probed"
+  case '{answer}' in
+    absent) exit 0;;
+    present) printf '{id}';;
+    failure) exit 7;;
+    truncated) i=0; while [ "$i" -lt 5000 ]; do printf ' '; i=$((i+1)); done;;
+  esac;;
+volume) [ "$2" = rm ] || exit 96;;
+*) exit 97;;
+esac
+"#,
+                        home = root.join("home").display()
+                    ),
+                    Duration::from_secs(120),
+                );
+                let lease = WorkerStorageLeaseV2 {
+                    schema: SCHEMA.into(),
+                    runtime: engine.to_str().unwrap().into(),
+                    name: "af-storage-crash".into(),
+                };
+                std::fs::write(root.join(MARKER), serde_json::to_vec(&lease).unwrap()).unwrap();
+                let journal = root.join(format!("af-storage-crash-{purpose}.cid"));
+                std::fs::write(&journal, &id).unwrap();
+                std::fs::write(root.join("source"), b"retained source").unwrap();
+                std::fs::write(root.join("daemon-object"), b"acknowledged").unwrap();
+                lifecycle::remove(
+                    &engine,
+                    &id,
+                    Some(&root.join("home")),
+                    Instant::now() + Duration::from_secs(120),
+                )
+                .unwrap();
+                assert!(!root.join("daemon-object").exists());
+                assert!(journal.exists(), "crash before journal deletion");
+                let result = recover_worker_storage(root);
+                assert_eq!(
+                    result.is_ok(),
+                    answer == "absent",
+                    "{purpose}/{answer}: {result:?}"
+                );
+                assert!(root.join("probed").exists());
+                assert_eq!(journal.exists(), answer != "absent");
+                assert_eq!(root.join(MARKER).exists(), answer != "absent");
+                assert_eq!(
+                    std::fs::read(root.join("source")).unwrap(),
+                    b"retained source"
+                );
+            }
+        }
     }
 
     #[test]

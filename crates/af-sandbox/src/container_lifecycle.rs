@@ -29,10 +29,10 @@ pub(super) fn create(
         let (send, receive) = std::sync::mpsc::sync_channel(1);
         let stop = &stop;
         scope.spawn(move || {
-            let capture = run_supervised_captured_bounded(
+            let capture = af_process::run_supervised_captured_bounded_until(
                 command,
                 None,
-                deadline.saturating_duration_since(Instant::now()) + CLEANUP_TIMEOUT,
+                deadline + CLEANUP_TIMEOUT,
                 ExitPolicy::KillDescendants,
                 Some(stop),
                 16 * 1024,
@@ -116,19 +116,54 @@ pub(super) fn remove(
     if let Some(home) = home {
         private_client(&mut command, home);
     }
-    let execution = run_bounded_evidenced(
-        command,
-        deadline.saturating_duration_since(Instant::now()),
-        "container cleanup",
-    )
-    .map_err(|error| error.to_string())?;
-    if execution.output.status.success() && !execution.stderr_held {
+    let execution = af_process::run_supervised_captured_bounded_until(
+        &mut command,
+        None,
+        deadline.min(Instant::now() + PROBE_TIMEOUT),
+        ExitPolicy::KillDescendants,
+        None,
+        4096,
+    );
+    if execution
+        .status
+        .as_ref()
+        .is_ok_and(|status| status.success())
+        && !execution.stderr_held
+        && !execution.truncation.is_truncated()
+    {
+        return Ok(());
+    }
+    // Creation has settled and the durable journal binds the full ID. A complete successful
+    // same-daemon listing can therefore close the rm-to-journal-deletion crash window.
+    // Failed inspect (including a daemon failure) would not establish absence.
+    let mut probe = std::process::Command::new(runtime);
+    probe.args([
+        "ps",
+        "--all",
+        "--no-trunc",
+        "--quiet",
+        "--filter",
+        &format!("id={id}"),
+    ]);
+    if let Some(home) = home {
+        private_client(&mut probe, home);
+    }
+    let capture = af_process::run_supervised_captured_bounded_until(
+        &mut probe,
+        None,
+        deadline.min(Instant::now() + PROBE_TIMEOUT),
+        ExitPolicy::KillDescendants,
+        None,
+        4096,
+    );
+    if capture.status.as_ref().is_ok_and(|status| status.success())
+        && !capture.stderr_held
+        && !capture.truncation.is_truncated()
+        && capture.stdout.iter().all(u8::is_ascii_whitespace)
+    {
         Ok(())
     } else {
-        Err(format!(
-            "container identity removal failed: {}",
-            String::from_utf8_lossy(&execution.output.stderr)
-        ))
+        Err("container identity removal or exact-ID absence was not confirmed".into())
     }
 }
 
@@ -180,6 +215,35 @@ pub(super) fn launch(
     detached: bool,
     exit_policy: ExitPolicy,
 ) -> (SupervisedCapture, bool, Instant) {
+    launch_after_ack(
+        runtime,
+        argv,
+        home,
+        input,
+        deadline,
+        cancellation,
+        cap,
+        journal,
+        detached,
+        exit_policy,
+        || {},
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn launch_after_ack(
+    runtime: &Path,
+    argv: Vec<String>,
+    home: Option<&Path>,
+    input: Option<Vec<u8>>,
+    deadline: Instant,
+    cancellation: Option<&AtomicBool>,
+    cap: usize,
+    journal: Option<&Path>,
+    detached: bool,
+    exit_policy: ExitPolicy,
+    after_ack: impl FnOnce(),
+) -> (SupervisedCapture, bool, Instant) {
     if Instant::now() >= deadline || cancelled(cancellation) {
         let mut capture = empty_capture(SupervisedError::Cancelled);
         refusal(&mut capture, deadline, cancellation);
@@ -204,32 +268,32 @@ pub(super) fn launch(
             creation.id = None;
         }
     }
-    let mut capture =
-        if creation.id.is_some() && Instant::now() < deadline && !cancelled(cancellation) {
-            let mut start = std::process::Command::new(runtime);
-            start.arg("start");
-            if !detached {
-                start.args(["--attach", "--interactive"]);
-            }
-            start.arg(creation.id.as_ref().unwrap());
-            if let Some(home) = home {
-                private_client(&mut start, home);
-            }
-            run_supervised_captured_bounded(
-                &mut start,
-                input,
-                deadline.saturating_duration_since(Instant::now()),
-                exit_policy,
-                cancellation,
-                cap,
-            )
-        } else {
-            refusal(&mut creation.capture, deadline, cancellation);
-            creation.capture
-        };
+    after_ack();
+    let mut capture = if creation.id.is_some() {
+        let mut start = std::process::Command::new(runtime);
+        start.arg("start");
+        if !detached {
+            start.args(["--attach", "--interactive"]);
+        }
+        start.arg(creation.id.as_ref().unwrap());
+        if let Some(home) = home {
+            private_client(&mut start, home);
+        }
+        af_process::run_supervised_captured_bounded_until(
+            &mut start,
+            input,
+            deadline,
+            exit_policy,
+            cancellation,
+            cap,
+        )
+    } else {
+        refusal(&mut creation.capture, deadline, cancellation);
+        creation.capture
+    };
     let cleanup_deadline = creation
         .cleanup_deadline
-        .unwrap_or_else(|| Instant::now() + CLEANUP_TIMEOUT);
+        .unwrap_or_else(|| (Instant::now() + CLEANUP_TIMEOUT).min(deadline + CLEANUP_TIMEOUT));
     if detached
         && capture.status.as_ref().is_ok_and(|status| status.success())
         && !capture.stderr_held
@@ -275,6 +339,60 @@ mod tests {
     use std::io::{Read, Write};
 
     const ID: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    #[test]
+    fn expiry_or_cancellation_after_durable_ack_refuses_start_at_launch_boundary() {
+        for cancel in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let runtime = root.path().join("runtime");
+            let journal = root.path().join("worker.cid");
+            super::super::tests::write_runtime(
+                &runtime,
+                &format!(
+                    r#"#!/bin/sh
+case "$1" in
+create) printf '{ID}';;
+start) touch "$0.started";;
+rm) exit 0;;
+*) exit 91;;
+esac
+"#
+                ),
+            );
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let flag = AtomicBool::new(false);
+            let (capture, clean, _) = launch_after_ack(
+                &runtime,
+                vec!["run".into()],
+                None,
+                None,
+                deadline,
+                Some(&flag),
+                4096,
+                Some(&journal),
+                false,
+                ExitPolicy::KillDescendants,
+                || {
+                    assert_eq!(std::fs::read_to_string(&journal).unwrap(), ID);
+                    if cancel {
+                        flag.store(true, Ordering::Release);
+                    } else {
+                        let (_send, receive) = std::sync::mpsc::channel::<()>();
+                        assert!(matches!(
+                            receive
+                                .recv_timeout(deadline.saturating_duration_since(Instant::now())),
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                        ));
+                    }
+                },
+            );
+            assert!(capture.status.is_err());
+            assert!(capture.pid.is_none(), "no start process admitted");
+            assert!(clean);
+            assert!(!runtime.with_extension("started").exists());
+            assert!(!journal.exists());
+        }
+    }
 
     // FIFO handshakes put the daemon commit strictly after the apparent name removal and
     // cancellation. No elapsed-time guess determines which side of the race we exercise.

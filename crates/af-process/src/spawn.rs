@@ -43,3 +43,96 @@ pub fn spawn(command: &mut Command) -> std::io::Result<Child> {
         }
     }
 }
+
+/// Admit a launch only while the caller's absolute allowance and cancellation permit it.
+/// The final check precedes the OS spawn call; it is not a daemon-side atomic deadline.
+pub(crate) fn spawn_until(
+    command: &mut Command,
+    deadline: std::time::Instant,
+    signals: &[&std::sync::atomic::AtomicBool],
+) -> Result<Child, crate::SupervisedError> {
+    spawn_at_admission(command, deadline, signals, || {})
+}
+
+fn spawn_at_admission(
+    command: &mut Command,
+    deadline: std::time::Instant,
+    signals: &[&std::sync::atomic::AtomicBool],
+    before_admission: impl FnOnce(),
+) -> Result<Child, crate::SupervisedError> {
+    let _creation = creation();
+    before_admission();
+    let mut busy_retries = 0;
+    loop {
+        if signals
+            .iter()
+            .any(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+        {
+            return Err(crate::SupervisedError::Cancelled);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(crate::SupervisedError::TimedOut {
+                stdout: vec![],
+                stderr: vec![],
+                pid: None,
+                rusage: None,
+            });
+        }
+        match command.spawn() {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && busy_retries < BUSY_RETRIES =>
+            {
+                busy_retries += 1;
+                std::thread::sleep(
+                    BUSY_RETRY_DELAY
+                        .min(deadline.saturating_duration_since(std::time::Instant::now())),
+                );
+            }
+            result => return result.map_err(crate::SupervisedError::Spawn),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expiry_and_cancellation_at_spawn_admission_never_launch_a_process() {
+        for cancel in [false, true] {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            let flag = std::sync::atomic::AtomicBool::new(false);
+            let result = spawn_at_admission(
+                &mut Command::new("/path/that/must/never/be/spawned"),
+                deadline,
+                &[&flag],
+                || {
+                    if cancel {
+                        flag.store(true, std::sync::atomic::Ordering::Release);
+                    } else {
+                        let (_send, receive) = std::sync::mpsc::channel::<()>();
+                        assert!(matches!(
+                            receive.recv_timeout(
+                                deadline.saturating_duration_since(std::time::Instant::now())
+                            ),
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                        ));
+                    }
+                },
+            );
+            if cancel {
+                assert!(matches!(result, Err(crate::SupervisedError::Cancelled)));
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(crate::SupervisedError::TimedOut {
+                        pid: None,
+                        rusage: None,
+                        ..
+                    })
+                ));
+            }
+        }
+    }
+}

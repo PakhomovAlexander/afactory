@@ -21,9 +21,10 @@ mod spawn;
 use capture::{Caps, captured_inner, run_supervised_inner};
 pub use capture::{
     SupervisedCapture, run_supervised_captured, run_supervised_captured_bounded,
-    run_supervised_captured_bounded_observed, run_supervised_captured_cancellable,
-    run_supervised_captured_cancellable_with_policy, run_supervised_captured_observed,
-    run_supervised_captured_streaming, run_supervised_captured_with_policy,
+    run_supervised_captured_bounded_observed, run_supervised_captured_bounded_until,
+    run_supervised_captured_cancellable, run_supervised_captured_cancellable_with_policy,
+    run_supervised_captured_observed, run_supervised_captured_streaming,
+    run_supervised_captured_with_policy,
 };
 use drain::{collect_after_kill, collect_stderr, drain_async};
 pub use live::{kill_live_process_groups, live_process_groups};
@@ -269,7 +270,14 @@ where
     F: FnOnce(&mut dyn Write) -> Result<(), I> + Send,
     G: FnOnce(&mut dyn Read) -> R + Send,
 {
-    run_supervised_duplex_inner(command, timeout, exit_policy, &[], writer, reader)
+    run_supervised_duplex_inner(
+        command,
+        Instant::now() + timeout,
+        exit_policy,
+        &[],
+        writer,
+        reader,
+    )
 }
 
 /// Cancelled work terminates the same owned process group as deadline expiration. Existing
@@ -290,7 +298,7 @@ where
 {
     run_supervised_duplex_inner(
         command,
-        timeout,
+        Instant::now() + timeout,
         exit_policy,
         &[cancellation],
         writer,
@@ -314,12 +322,44 @@ where
     F: FnOnce(&mut dyn Write) -> Result<(), I> + Send,
     G: FnOnce(&mut dyn Read) -> R + Send,
 {
-    run_supervised_duplex_inner(command, timeout, exit_policy, signals, writer, reader)
+    run_supervised_duplex_inner(
+        command,
+        Instant::now() + timeout,
+        exit_policy,
+        signals,
+        writer,
+        reader,
+    )
+}
+
+/// Duplex transport under an absolute deadline, including process launch time.
+pub fn run_supervised_duplex_cancellable_until<I, R, F, G>(
+    command: &mut std::process::Command,
+    deadline: Instant,
+    exit_policy: ExitPolicy,
+    cancellation: &std::sync::atomic::AtomicBool,
+    writer: F,
+    reader: G,
+) -> Result<SupervisedDuplexOutput<I, R>, SupervisedError>
+where
+    I: Send,
+    R: Send,
+    F: FnOnce(&mut dyn Write) -> Result<(), I> + Send,
+    G: FnOnce(&mut dyn Read) -> R + Send,
+{
+    run_supervised_duplex_inner(
+        command,
+        deadline,
+        exit_policy,
+        &[cancellation],
+        writer,
+        reader,
+    )
 }
 
 fn run_supervised_duplex_inner<I, R, F, G>(
     command: &mut std::process::Command,
-    timeout: Duration,
+    deadline: Instant,
     exit_policy: ExitPolicy,
     signals: &[&std::sync::atomic::AtomicBool],
     writer: F,
@@ -331,7 +371,6 @@ where
     F: FnOnce(&mut dyn Write) -> Result<(), I> + Send,
     G: FnOnce(&mut dyn Read) -> R + Send,
 {
-    let deadline = Instant::now() + timeout;
     if signals
         .iter()
         .any(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
@@ -347,7 +386,7 @@ where
         command.process_group(0);
     }
 
-    let mut child = spawn::spawn(command).map_err(SupervisedError::Spawn)?;
+    let mut child = spawn::spawn_until(command, deadline, signals)?;
     let mut stdin = child.stdin.take().expect("stdin was piped");
     let mut stdout = child.stdout.take().expect("stdout was piped");
     let stderr_pipe = child.stderr.take().expect("stderr was piped");
