@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:task-wake-status:1",
+  "$id": "urn:af:schema:task-wake-status:2",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -13,7 +13,7 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/task-wake-status@1"
+      "const": "af/task-wake-status@2"
     },
     "driver": {
       "const": "no_service_installed_run_drain_explicitly"
@@ -72,7 +72,7 @@
             "type": "array",
             "maxItems": 4096,
             "items": {
-              "$ref": "urn:af:schema:task-wake-envelope:1"
+              "$ref": "urn:af:schema:task-wake-envelope:2"
             }
           },
           "closure": {
@@ -98,7 +98,7 @@
       "type": "array",
       "maxItems": 4096,
       "items": {
-        "$ref": "urn:af:schema:task-wake-delivery:1"
+        "$ref": "urn:af:schema:task-wake-delivery:2"
       }
     },
     "uncertain_session_fences": {

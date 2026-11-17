@@ -703,7 +703,7 @@ argv = ["{af}", "task", "wait", "perf-probe-task", "--state", "{scratch}/waiter/
 cwd = "{scratch}/repo"
 rules = [
   { kind = "exit_code", value = 124 },
-  { kind = "json_equals", path = "schema", value = "af/task-status@2" },
+  { kind = "json_equals", path = "schema", value = "af/task-status@3" },
   { kind = "json_equals", path = "task_id", value = "perf-probe-task" },
   { kind = "json_equals", path = "state.phase", value = "running" },
 ]
@@ -731,7 +731,7 @@ argv = ["{af}", "task", "wait", "perf-probe-task", "--state", "{scratch}/waiter/
 cwd = "{scratch}/repo"
 rules = [
   { kind = "exit_code", value = 124 },
-  { kind = "json_equals", path = "schema", value = "af/task-status@2" },
+  { kind = "json_equals", path = "schema", value = "af/task-status@3" },
   { kind = "json_equals", path = "task_id", value = "perf-probe-task" },
   { kind = "json_equals", path = "state.phase", value = "running" },
 ]
@@ -759,7 +759,7 @@ argv = ["{af}", "task", "wait", "perf-probe-task", "--state", "{scratch}/waiter/
 cwd = "{scratch}/repo"
 rules = [
   { kind = "exit_code", value = 124 },
-  { kind = "json_equals", path = "schema", value = "af/task-status@2" },
+  { kind = "json_equals", path = "schema", value = "af/task-status@3" },
   { kind = "json_equals", path = "task_id", value = "perf-probe-task" },
   { kind = "json_equals", path = "state.phase", value = "running" },
 ]
@@ -787,7 +787,7 @@ argv = ["{af}", "task", "wait", "perf-probe-task", "--state", "{scratch}/waiter/
 cwd = "{scratch}/repo"
 rules = [
   { kind = "exit_code", value = 124 },
-  { kind = "json_equals", path = "schema", value = "af/task-status@2" },
+  { kind = "json_equals", path = "schema", value = "af/task-status@3" },
   { kind = "json_equals", path = "task_id", value = "perf-probe-task" },
   { kind = "json_equals", path = "state.phase", value = "running" },
 ]
@@ -815,7 +815,7 @@ argv = ["{af}", "task", "wait", "perf-probe-task", "--state", "{scratch}/waiter/
 cwd = "{scratch}/repo"
 rules = [
   { kind = "exit_code", value = 124 },
-  { kind = "json_equals", path = "schema", value = "af/task-status@2" },
+  { kind = "json_equals", path = "schema", value = "af/task-status@3" },
   { kind = "json_equals", path = "task_id", value = "perf-probe-task" },
   { kind = "json_equals", path = "state.phase", value = "running" },
 ]
@@ -843,7 +843,7 @@ argv = ["{af}", "task", "wait", "perf-probe-task", "--state", "{scratch}/waiter/
 cwd = "{scratch}/repo"
 rules = [
   { kind = "exit_code", value = 124 },
-  { kind = "json_equals", path = "schema", value = "af/task-status@2" },
+  { kind = "json_equals", path = "schema", value = "af/task-status@3" },
   { kind = "json_equals", path = "task_id", value = "perf-probe-task" },
   { kind = "json_equals", path = "state.phase", value = "running" },
 ]
@@ -974,7 +974,7 @@ argv = ["{af}", "review", "ledger", "perf-review", "--state", "{scratch}/seed/na
 cwd = "{scratch}"
 rules = [
   { kind = "exit_code", value = 0 },
-  { kind = "json_equals", path = "schema", value = "af/review-ledger@2" },
+  { kind = "json_equals", path = "schema", value = "af/review-ledger@3" },
   { kind = "json_equals", path = "inspection.task_id", value = "perf-review" },
   { kind = "json_equals", path = "inspection.rounds", value = 1 },
   { kind = "json_equals", path = "inspection.round.reviewers.0.reviewer", value = "bugs" },
@@ -996,7 +996,7 @@ argv = ["{af}", "review", "report", "perf-review", "--state", "{scratch}/seed/na
 cwd = "{scratch}"
 rules = [
   { kind = "exit_code", value = 0 },
-  { kind = "json_equals", path = "schema", value = "af/task-report@3" },
+  { kind = "json_equals", path = "schema", value = "af/task-report@4" },
   { kind = "json_count", path = "tasks", value = 1 },
   { kind = "json_equals", path = "tasks.0.task_id", value = "perf-review" },
   { kind = "json_equals", path = "tasks.0.state.outcome", value = "verified" },
@@ -1054,7 +1054,7 @@ argv = ["{af}", "task", "wait", "perf-probe-task", "--state", "{scratch}/waiter/
 cwd = "{scratch}/repo"
 rules = [
   { kind = "exit_code", value = 124 },
-  { kind = "json_equals", path = "schema", value = "af/task-status@2" },
+  { kind = "json_equals", path = "schema", value = "af/task-status@3" },
   { kind = "json_equals", path = "task_id", value = "perf-probe-task" },
   { kind = "json_equals", path = "state.phase", value = "running" },
 ]
@@ -1067,7 +1067,7 @@ argv = ["{af}", "task", "wait", "perf-probe-task", "--state", "{scratch}/waiter/
 cwd = "{scratch}/repo"
 rules = [
   { kind = "exit_code", value = 124 },
-  { kind = "json_equals", path = "schema", value = "af/task-status@2" },
+  { kind = "json_equals", path = "schema", value = "af/task-status@3" },
   { kind = "json_equals", path = "task_id", value = "perf-probe-task" },
   { kind = "json_equals", path = "state.phase", value = "running" },
 ]
@@ -1080,7 +1080,7 @@ argv = ["{af}", "task", "wait", "perf-probe-task", "--state", "{scratch}/waiter/
 cwd = "{scratch}/repo"
 rules = [
   { kind = "exit_code", value = 124 },
-  { kind = "json_equals", path = "schema", value = "af/task-status@2" },
+  { kind = "json_equals", path = "schema", value = "af/task-status@3" },
   { kind = "json_equals", path = "task_id", value = "perf-probe-task" },
   { kind = "json_equals", path = "state.phase", value = "running" },
 ]
@@ -1093,7 +1093,7 @@ argv = ["{af}", "task", "wait", "perf-probe-task", "--state", "{scratch}/waiter/
 cwd = "{scratch}/repo"
 rules = [
   { kind = "exit_code", value = 124 },
-  { kind = "json_equals", path = "schema", value = "af/task-status@2" },
+  { kind = "json_equals", path = "schema", value = "af/task-status@3" },
   { kind = "json_equals", path = "task_id", value = "perf-probe-task" },
   { kind = "json_equals", path = "state.phase", value = "running" },
 ]
@@ -1106,7 +1106,7 @@ argv = ["{af}", "task", "wait", "perf-probe-task", "--state", "{scratch}/waiter/
 cwd = "{scratch}/repo"
 rules = [
   { kind = "exit_code", value = 124 },
-  { kind = "json_equals", path = "schema", value = "af/task-status@2" },
+  { kind = "json_equals", path = "schema", value = "af/task-status@3" },
   { kind = "json_equals", path = "task_id", value = "perf-probe-task" },
   { kind = "json_equals", path = "state.phase", value = "running" },
 ]
@@ -1119,7 +1119,7 @@ argv = ["{af}", "task", "wait", "perf-probe-task", "--state", "{scratch}/waiter/
 cwd = "{scratch}/repo"
 rules = [
   { kind = "exit_code", value = 124 },
-  { kind = "json_equals", path = "schema", value = "af/task-status@2" },
+  { kind = "json_equals", path = "schema", value = "af/task-status@3" },
   { kind = "json_equals", path = "task_id", value = "perf-probe-task" },
   { kind = "json_equals", path = "state.phase", value = "running" },
 ]

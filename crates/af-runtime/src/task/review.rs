@@ -1298,12 +1298,22 @@ impl ReviewTaskDomain {
         let mut result = TaskResultV1 {
             task_revision_id: state.revision_id.clone(),
             execution: if execution.budget.breached()
-                || report
-                    .outcomes
-                    .iter()
-                    .any(|(_, o)| matches!(o, NodeOutcome::Failed { .. }))
-            {
+                || report.outcomes.iter().any(|(_, o)| {
+                    matches!(
+                        o,
+                        NodeOutcome::Failed {
+                            class: Some(af_graph::NodeFailureClass::RunBudgetExhausted),
+                            ..
+                        }
+                    )
+                }) {
                 TaskExecutionV1::Exhausted
+            } else if report
+                .outcomes
+                .iter()
+                .any(|(_, o)| matches!(o, NodeOutcome::Failed { .. }))
+            {
+                TaskExecutionV1::Incomplete
             } else {
                 TaskExecutionV1::Completed
             },
@@ -1426,7 +1436,7 @@ impl ReviewTaskDomain {
         if complete {
             result.execution = TaskExecutionV1::Completed;
         } else if result.execution == TaskExecutionV1::Completed {
-            result.execution = TaskExecutionV1::Exhausted;
+            result.execution = TaskExecutionV1::Incomplete;
         }
         result.missing_obligations = missing;
         conclusion.validate_result(result.execution, result.acceptance, complete)

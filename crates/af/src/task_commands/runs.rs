@@ -386,7 +386,7 @@ fn status_document(opened: &OpenedTask, state: TaskStateV1) -> TaskStatusV2 {
         .find(|request| request.epoch == task.lease_epoch());
     let budget = task.execution.as_ref().map(|execution| &execution.budget);
     TaskStatusV2 {
-        schema: TASK_STATUS_V2.into(),
+        schema: TASK_STATUS_V3.into(),
         task_id: task.task_id.clone(),
         state,
         node: running
@@ -847,7 +847,7 @@ pub(crate) fn detach(
         Admission::Ended => view.state.next_action.clone(),
     };
     let document = TaskDetachedV3 {
-        schema: TASK_DETACHED_V3.into(),
+        schema: TASK_DETACHED_V4.into(),
         task_id: id.into(),
         run,
         pid,
@@ -1103,7 +1103,7 @@ fn cancel_document(
     }
     let (_, view) = opened.view()?;
     let document = TaskCancelledV2 {
-        schema: TASK_CANCELLED_V2.into(),
+        schema: TASK_CANCELLED_V3.into(),
         task_id: id.into(),
         request,
         state: view.state,
@@ -1565,7 +1565,7 @@ mod tests {
 
     fn finished(next: &str) -> TaskStatusV2 {
         TaskStatusV2 {
-            schema: TASK_STATUS_V2.into(),
+            schema: TASK_STATUS_V3.into(),
             task_id: "implementation-small".into(),
             state: TaskStateV1::ended(
                 TaskStatePhaseV1::Finished,

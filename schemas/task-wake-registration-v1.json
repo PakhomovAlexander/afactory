@@ -14,7 +14,7 @@
       "const": "from_opening"
     },
     "registered_prefix": {
-      "$ref": "urn:af:schema:task-wake-observation:1#/$defs/boundary"
+      "$ref": "urn:af:schema:task-wake-observation:2#/$defs/boundary"
     },
     "launch_intent": {
       "type": "boolean"

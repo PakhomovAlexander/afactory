@@ -38,7 +38,7 @@
       "maxLength": 71
     },
     "task": {
-      "$ref": "urn:af:schema:task-wake-observation:1#/$defs/task"
+      "$ref": "urn:af:schema:task-wake-observation:2#/$defs/task"
     },
     "host": {
       "enum": [
