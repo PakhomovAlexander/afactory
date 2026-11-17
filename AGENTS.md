@@ -65,8 +65,9 @@ review corpora belong in consuming repositories, not here.
   [ADR-0239](docs/adr/0239-default-every-pull-request-to-fast-validation.md)).
 - Product rebranding must not rename `review.kernel/*` artifact types, persisted events, or
   established Review Kernel domain terms until a separate accepted migration ADR supersedes this
-  rule. Releases are cut only through `make release` and the release workflow; a lock pins the
-  release's bytes, not just its version
+  rule. Stable releases are cut only through `make release` and the release workflow; native
+  nightly releases use the separately scoped [nightly decision](docs/adr/2026-11-16-orchestrate-native-nightly-releases.md)
+  on reviewed merge. A lock pins the release's bytes, not just its version
   ([ADR-0045](docs/adr/0045-one-release-train-and-a-pin-that-binds-bytes.md)).
 - No release carries compatibility obligations for an earlier one: never add a reader,
   migration, alias, fallback or replay path for state, configuration or flags that only an
@@ -155,10 +156,13 @@ review corpora belong in consuming repositories, not here.
   ([ADR-0211](docs/adr/0211-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md)).
 - Scenario publication Actions require separate machine operation/destination authority. Generic
   `publish_pr` and `followup` also require an exact signed human decision (ADR-0274).
-  `publish_performance_pr_v1` alone accepts scoped standing owner authority after native Task and
+  `publish_performance_pr_v1` accepts scoped standing owner authority after native Task and
   measured evidence validation
   ([decision](docs/adr/2026-11-06-publish-verified-performance-under-standing-owner-authority.md));
-  neither path changes Task delivery or Remote Checks.
+  `publish_nightly_v1` accepts separately pinned machine release authority only after exact-source
+  signed build, full verified native comparison and report validation
+  ([nightly decision](docs/adr/2026-11-16-orchestrate-native-nightly-releases.md), binding on reviewed merge).
+  These scoped paths do not change generic signed publication, Task delivery or Remote Checks.
   The existing Remote Check exception remains: for a check a Task
   pipeline's check node lists in `remote_checks`, the kernel pushes exactly the two branches
   `af-gate/<task-id>/base` and `af-gate/<task-id>/head`, built from Task Snapshots, and opens one

@@ -39,7 +39,7 @@ def native_supervisor(root, mount, image, source, owner):
     state = mount / "native-build"
     state.mkdir()
     for name in ("home", "cargo", "tmp", "target"):
-        (state / name).mkdir()
+        (state / name).mkdir(mode=0o700)
     timing = budget.Budget(time.monotonic() + 100, time.monotonic, 10)
     image.budget = timing
     tool = builds.ContainerToolchain(image, "1.88.0")
@@ -105,7 +105,7 @@ sys.stdout.buffer.write((Path(DOCS) / (kind + '.json')).read_bytes())
     work = mount / supervise.DIAGNOSTIC_DIRECTORY
     work.mkdir()
     namespace = work / "namespace"
-    namespace.mkdir()
+    namespace.mkdir(mode=0o700)
     stage = work / "stage"
     stage.mkdir()
     output = root / "diagnostic-evidence"
@@ -167,7 +167,7 @@ sys.stdout.buffer.write((Path(DOCS) / (kind + '.json')).read_bytes())
         "\nRUN mkdir -p /implicit && chmod 0777 /implicit\nVOLUME /implicit\n")
     volume_image = docker("build", "--quiet", "--network", "none", "--pull=false", str(context)).decode().strip()
     try:
-        work.mkdir(); namespace.mkdir(); stage.mkdir()
+        work.mkdir(); namespace.mkdir(mode=0o700); stage.mkdir()
         before = docker("volume", "ls", "--quiet")
         profile.supervisor.image = volume_image
         count = profile.supervisor.requests

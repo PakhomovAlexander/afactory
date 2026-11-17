@@ -398,7 +398,7 @@ mod tests {
             .performance_publications
             .insert("publisher".into(), scope);
         policy.validate().unwrap();
-        valid("scenario-policy-v5.json", &policy);
+        valid("scenario-policy-v6.json", &policy);
         policy
             .performance_publications
             .get_mut("publisher")

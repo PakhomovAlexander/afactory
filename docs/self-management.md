@@ -45,6 +45,13 @@ key and refuses every nightly install in one sentence (`this af carries no night
 `install.sh` embeds the same key beside the release key (`AF_INSTALL_NIGHTLY_KEY` overrides it),
 refuses the nightly channel while that is empty, and never installs a nightly unsigned.
 
+The newly authorized nightly identity is `0596484DC93A8A62`; the stable release trust root is
+unchanged. Existing clients embedding the previous nightly identity need an explicit reviewed
+public-key override until updated: set `AF_NIGHTLY_KEY=/absolute/path/nightly.pub` for `af self`,
+or `AF_INSTALL_NIGHTLY_KEY=/absolute/path/nightly.pub` for `install.sh`. Obtain that public key
+from reviewed authority and compare it with `crates/af/keys/nightly.pub`. Neither client silently
+falls back to the stable key or the old nightly identity.
+
 ## Updates
 
 Updates need no `gh` for the public repository: `af self` lists and downloads releases

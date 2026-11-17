@@ -293,14 +293,35 @@ pub struct Ant {
     pub id: String,
     pub scenario: Bundle,
     pub inputs: BTreeMap<String, Datum>,
+    #[serde(default)]
+    pub occurrence_inputs: BTreeMap<String, OccurrenceInput>,
     pub schedule: Schedule,
     pub owner: String,
     pub notification: String,
     pub execution: Execution,
 }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OccurrenceInput {
+    ScheduledNightlyTag,
+}
 impl Ant {
+    fn concrete_inputs(&self, day: i64) -> Result<BTreeMap<String, Datum>> {
+        let mut values = self.inputs.clone();
+        for port in self.occurrence_inputs.keys() {
+            require(
+                matches!(self.schedule, Schedule::Daily { .. }),
+                "Nightly tag requires a daily schedule",
+            )?;
+            values.insert(
+                port.clone(),
+                Datum::NightlyTag(super::nightly::tag_for_day(day)?),
+            );
+        }
+        Ok(values)
+    }
     pub fn validate(&self, host: &dyn crate::Host) -> Result<()> {
-        require(self.schema == "af/ant@7", "Unsupported Ant version")?;
+        require(self.schema == "af/ant@8", "Unsupported Ant version")?;
         name(&self.id)?;
         name(&self.owner)?;
         text(&self.notification)?;
@@ -311,7 +332,13 @@ impl Ant {
             self.execution.per_run.within(&def.limits),
             "Ant per-run budget exceeds Scenario",
         )?;
-        input_values(&def.inputs, &self.inputs)?;
+        require(
+            self.occurrence_inputs.keys().all(|p| {
+                !self.inputs.contains_key(p) && def.inputs.get(p) == Some(&Port::NightlyTag)
+            }),
+            "Occurrence inputs conflict or have wrong type",
+        )?;
+        input_values(&def.inputs, &self.concrete_inputs(0)?)?;
         require(
             self.inputs.values().all(Datum::scalar),
             "Ant cannot manufacture receipts",
@@ -343,7 +370,7 @@ impl AntPin {
         let zone = Zone::load(definition.schedule.timezone())?;
         let revision = hash(&(&definition, &scenario, &zone))?;
         Ok(Self {
-            schema: "af/ant-pin@7".into(),
+            schema: "af/ant-pin@8".into(),
             definition,
             scenario,
             zone,
@@ -355,7 +382,7 @@ impl AntPin {
         self.scenario.validate(host)?;
         self.zone.validate()?;
         require(
-            self.schema == "af/ant-pin@7"
+            self.schema == "af/ant-pin@8"
                 && self.definition.scenario == self.scenario.bundle
                 && self.definition.schedule.timezone() == self.zone.name
                 && self.revision == hash(&(&self.definition, &self.scenario, &self.zone))?,
@@ -418,7 +445,7 @@ impl AntState {
             schedule => pin.zone.local_day((schedule.start() / 1000) as i64)?,
         };
         Ok(Self {
-            schema: "af/ant-state@8".into(),
+            schema: "af/ant-state@9".into(),
             pin,
             state: AntMode::Disabled,
             changes: vec![(now, AntMode::Disabled)],
@@ -432,7 +459,7 @@ impl AntState {
         self.pin.validate(host)?;
         self.retention.validate(self.next_day)?;
         require(
-            self.schema == "af/ant-state@8"
+            self.schema == "af/ant-state@9"
                 && self.cursor_valid()
                 && self.last_tick_unix_ms > 0
                 && self.last_tick_unix_ms <= MAX_TIME
@@ -480,6 +507,7 @@ impl AntState {
             } = &o.outcome
             {
                 let run = runs.get(run_id).ok_or("Started occurrence has no Run")?;
+                let expected_inputs = self.pin.definition.concrete_inputs(o.local_day)?;
                 require(
                     *run_id
                         == format!(
@@ -489,6 +517,10 @@ impl AntState {
                         )
                         && run.created_unix_ms == o.admitted_unix_ms
                         && run.ant.as_deref() == Some(&self.pin.definition.id)
+                        && run
+                            .frames
+                            .get("root")
+                            .is_some_and(|f| f.inputs == expected_inputs)
                         && run.pin == self.pin.scenario
                         && run.limits == self.pin.definition.execution.per_run
                         && *reserved_tokens == run.limits.max_tokens,
@@ -680,7 +712,7 @@ impl AntState {
                     host,
                     run_id.clone(),
                     self.pin.scenario.clone(),
-                    self.pin.definition.inputs.clone(),
+                    self.pin.definition.concrete_inputs(day)?,
                     self.pin.definition.execution.per_run.clone(),
                     now,
                     Some(self.pin.definition.id.clone()),
