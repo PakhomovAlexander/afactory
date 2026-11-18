@@ -109,12 +109,13 @@ jobs:
         run: |
           set -euo pipefail
           # The packaged binary's smoke requires a real private account namespace.
-          set -- bubblewrap
-          if [[ "${{ matrix.cross }}" == "zig-qemu" ]]; then
-            set -- "$@" qemu-user-static
-          fi
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends "$@"
+          sudo apt-get install -y --no-install-recommends bubblewrap
+      - name: Install qemu (runs the aarch64 binary on this x86_64 runner)
+        if: matrix.cross == 'zig-qemu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-user-static
       - name: Build
         env:
           AF_CI_METRICS: ${{ runner.temp }}/build-metrics.jsonl

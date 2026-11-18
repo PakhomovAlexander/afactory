@@ -86,7 +86,7 @@ class HostedReleaseDependencies(unittest.TestCase):
         marker = '      - name: Install Linux smoke dependencies\n'
         self.assertIn(marker, before_build,
                       'Linux release smoke requires its bwrap namespace before binary execution')
-        step = before_build.split(marker, 1)[1]
+        step = before_build.split(marker, 1)[1].split('      - name:', 1)[0]
         self.assertIn("        if: runner.os == 'Linux'\n", step)
         self.assertIn('        shell: bash\n', step)
         script = '\n'.join(line[10:] for line in step.split('        run: |\n', 1)[1].splitlines())
@@ -104,7 +104,7 @@ class HostedReleaseDependencies(unittest.TestCase):
             for target, cross in linux:
                 rendered = script.replace('${{ matrix.cross }}', cross)
                 self.assertNotIn('${{', rendered)
-                packages = 'bubblewrap' + (' qemu-user-static' if cross == 'zig-qemu' else '')
+                packages = 'bubblewrap'
                 commands = ['sudo apt-get update',
                             'sudo apt-get install -y --no-install-recommends ' + packages]
                 for update_exit, install_exit in ((0, 0), (23, 0), (0, 23)):
