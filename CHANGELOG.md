@@ -19,6 +19,17 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
+## [0.15.1] - 2026-11-18
+
+### Authority compatibility
+
+Breaking combined Scenario/Ant and publication shapes: Scenario definitions/bundles 10, policy 8, pins/runs/list 11, Store 17 with retained driver 2 and typed bounded preflight waits; Ant definition 11, pin/tick 12, state/list 13, inspection 8; adapter request 8/response 3, workspace config 3/state 6 and GitHub journal 9, native Git candidate request/export 2. Nightly config/publish 2 and native nightly service/job/completion 1 retain separate release scope and external signing permission. Implementation startup scope 2 retains exact native scoped publication, finite progress and bounded repairs. Generic signed and performance authority stay separate. Finish or discard prior-release state; no migration or replay of retired shapes. Review and commit authority and refresh its lock before adoption. Performance executor 5, history 2, equivalence 2 and schedule 3 remain required. Native Task kernel failures are execution_failed/kernel_execution (exit 8); Task state/status/findings 3, inspection 21 and report/checks 4 replace their earlier public formats. Scenario terminal outcome 2 carries that failure without repair or publication authority.
+
+### Changes
+
+- Stable release of reviewed source `7240053e20cee5e6b27a8b7b4b550d505ad69e12`, promoting signed
+  v0.15.1-rc.8. Earlier release-candidate sections document the release train changes.
+
 ## [0.15.1-rc.8] - 2026-11-18
 
 ### Authority compatibility
