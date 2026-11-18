@@ -26,6 +26,9 @@ fixture copies (including nested `.af`), onboarding templates, and embedded stru
 schemas by exact JSON Pointer. Three existing public conformance corpora remain evidence for the
 independent parity tests; their payload data is not treated as nested schema nodes. Canonical IDs
 are unique across public resources; package copies retain their independent local reference roots.
+When upstream replaces a schema version, update its inventory membership and any canonical port
+mappings together, retaining the current reader/writer and parity evidence. The injected replacement
+test refuses retired entries, stale mappings and stale Worker schema copies independently.
 Reference discovery visits schema keywords, never unreferenced literal object keys inside `const` or
 `enum`. Inventory fragment resolution percent-decodes UTF-8 before splitting pointer segments and
 unescaping tildes, matching the kernel resolver.

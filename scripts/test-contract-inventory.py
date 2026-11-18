@@ -54,6 +54,41 @@ class InventoryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'orphan=.*example'):
             self.check()
 
+    def test_version_replacement_updates_inventory_and_canonical_port_together(self):
+        worker = 'fixtures/pkg/worker.toml'
+        path = self.root / worker
+        path.parent.mkdir(parents=True)
+        path.write_text('[signature.contract.outputs.result]\nartifact_type="custom/Result@1"\n')
+        output = 'fixtures/pkg/outputs/result.schema.json'
+        self.write(output, self.document)
+        family = self.inventory['families'][0]
+        family['schemas'].append(output)
+        request = {'worker': worker, 'outputs': {'result': output}, 'strict': False,
+                   'reason': 'open object retains kernel validation',
+                   'canonical': {'result': 'schemas/example.json'}, 'excluded_outputs': {}}
+        self.inventory['requests'].append(request)
+        self.save()
+        self.check()
+
+        # An upstream replacement retires the old schema; retaining either old
+        # inventory membership or the old canonical mapping must still refuse.
+        current = dict(self.document, **{'$id': 'urn:test:2', 'required': ['x']})
+        (self.root / 'schemas/example.json').unlink()
+        self.write('schemas/example-v2.json', current)
+        self.write(output, current)
+        with self.assertRaisesRegex(ValueError, 'contract inventory drift'):
+            self.check()
+        family['schemas'][0] = 'schemas/example-v2.json'
+        self.save()
+        with self.assertRaisesRegex(ValueError, 'canonical schema drift'):
+            self.check()
+        request['canonical']['result'] = 'schemas/example-v2.json'
+        self.save()
+        self.check()
+        self.write(output, self.document)
+        with self.assertRaisesRegex(ValueError, 'canonical schema drift'):
+            self.check()
+
     def test_duplicate_id_and_broken_ref_fail_but_literals_are_not_schemas(self):
         self.document['properties']['x'] = {'const': {'$ref': 'literal-data'}}
         self.write('schemas/example.json', self.document)
