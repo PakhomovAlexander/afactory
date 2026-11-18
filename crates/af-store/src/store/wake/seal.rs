@@ -161,12 +161,17 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
+    #[cfg(target_os = "linux")]
     #[test]
     #[cfg(target_os = "linux")]
     fn wake_seal_key_is_private_durable_and_never_recreated_after_admission() {
         let directory = tempfile::tempdir().unwrap();
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        let path = directory.path().join("events.sqlite");
+        let path = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("events.sqlite");
         let store = EventStore::open(&path).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         let pending = directory.path().join(PENDING);
@@ -195,6 +200,38 @@ mod tests {
             !file.exists(),
             "key loss cannot mint replacement provenance"
         );
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn wake_seal_unsupported_platform_refuses_without_creating_provenance() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("events.sqlite");
+        let store = EventStore::open(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        for _ in 0..2 {
+            let error = store.admit_wake_incarnation().unwrap_err().to_string();
+            assert!(
+                error.contains(
+                    "Wake Store incarnation admission currently requires Linux machine identity"
+                ),
+                "{error}"
+            );
+            assert!(!directory.path().join(KEY).exists());
+            assert!(!directory.path().join(PENDING).exists());
+            let count: i64 = store
+                .conn
+                .query_row("SELECT COUNT(*) FROM wake_incarnation_v1", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, 0, "unsupported admission cannot create provenance");
+        }
     }
 
     #[test]

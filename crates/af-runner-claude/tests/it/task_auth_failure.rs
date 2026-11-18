@@ -67,6 +67,10 @@ fn non_auth_native_failures_keep_their_evidence_and_classification() {
         ),
         ("HTTP 429: rate limit exceeded", "(quota)"),
         ("model_not_found", "(model_unavailable)"),
+        (
+            "Failed to refresh OAuth token: connection refused; invalid_json_schema",
+            "(unsupported_invocation)",
+        ),
     ] {
         let temp = tempfile::tempdir().unwrap();
         let cas = Cas::open(temp.path().join("cas")).unwrap();
@@ -320,7 +324,7 @@ fn a_cli_that_refuses_afs_arguments_is_an_unsupported_invocation_with_its_own_li
 /// Issue #259, round 5: a CLI argument error outranks an authentication hint beside it. A Worker
 /// that prints no envelope and whose stderr holds both `error: unknown option '--safe-mode'` and
 /// `Authentication required` is `unsupported_invocation`, with its exit and the bounded excerpt,
-/// never blamed on credentials; its raw streams stay as withheld as the auth text made them.
+/// never blamed on credentials; its raw streams and saved excerpt are withheld together.
 #[test]
 fn an_argument_error_outranks_an_authentication_hint() {
     use af_runner::native_failure::NativeFailureKind;
@@ -354,7 +358,7 @@ fn an_argument_error_outranks_an_authentication_hint() {
     let error = returned.message.unwrap_err();
     assert_eq!(
         error,
-        "Claude Worker failed: the installed claude CLI does not accept af's invocation (unsupported_invocation); it exited 1: error: unknown option '--safe-mode' | Authentication required; fix: upgrade it with `npm install -g @anthropic-ai/claude-code@latest`, then rerun `af provider status`"
+        "Claude Worker failed: the installed claude CLI does not accept af's invocation (unsupported_invocation); it exited 1: [line withheld: looks like credential material]; fix: upgrade it with `npm install -g @anthropic-ai/claude-code@latest`, then rerun `af provider status`"
     );
     assert!(!error.contains("auth_missing"), "{error}");
     assert!(returned.usage.is_none(), "no usage was reported");
@@ -561,7 +565,7 @@ fn an_argument_error_without_a_result_is_an_unsupported_invocation_whatever_the_
             "",
             "Authentication required\nerror: unknown option '--safe-mode'\n",
             1,
-            Some("Authentication required | error: unknown option '--safe-mode'"),
+            Some(af_runner::cli::WITHHELD_LINE),
         ),
         (envelope, "warning: the update check was skipped\n", 0, None),
         (
@@ -620,5 +624,180 @@ fn an_argument_error_without_a_result_is_an_unsupported_invocation_whatever_the_
             let kept = String::from_utf8(cas.get(id).unwrap()).unwrap();
             assert!(!kept.contains("Authentication required"), "{kept}");
         }
+    }
+}
+
+#[test]
+fn schema_rejections_preserve_independent_auth_sensitivity_in_every_native_channel() {
+    use crate::telemetry_levels::at_level;
+    use af_runner::native_failure::NativeFailureKind;
+    use af_telemetry::level::Level;
+    use serde_json::json;
+
+    let auth = "HTTP 401 authentication_error for alice@example.com";
+    let rejection = "invalid_json_schema: schema must specify a type";
+    let mixed = format!("{auth}; {rejection}");
+    for level in [Level::Off, Level::Content] {
+        for channel in [
+            "result",
+            "error",
+            "message",
+            "errors",
+            "errors-reversed",
+            "unframed",
+            "stderr",
+            "split",
+            "split-reversed",
+            "no-result-stderr",
+            "no-result-split",
+            "no-result-split-reversed",
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let cas = Cas::open(temp.path().join("cas")).unwrap();
+            let mut envelope = json!({"type":"result","is_error":true,"result":"failed",
+                "usage":{"input_tokens":1,"output_tokens":2}});
+            let mut stderr = String::new();
+            match channel {
+                "result" => envelope["result"] = json!(mixed),
+                "error" => envelope["error"] = json!({"message":mixed}),
+                "message" => envelope["message"] = json!(mixed),
+                // Independent sensitivity must survive deterministic precedence across errors
+                // as well as within a single string, in either order.
+                "errors" => envelope["errors"] = json!([rejection, auth]),
+                "errors-reversed" => envelope["errors"] = json!([auth, rejection]),
+                "stderr" => stderr = mixed.clone(),
+                "split" => {
+                    envelope["errors"] = json!([auth, "connection refused"]);
+                    stderr = rejection.into();
+                }
+                "split-reversed" => {
+                    envelope["errors"] = json!([rejection]);
+                    stderr = auth.into();
+                }
+                "no-result-stderr" => stderr = mixed.clone(),
+                "no-result-split" => stderr = rejection.into(),
+                "no-result-split-reversed" => stderr = auth.into(),
+                "unframed" => {}
+                _ => unreachable!(),
+            }
+            let no_result = channel == "unframed" || channel.starts_with("no-result-");
+            let stdout = match channel {
+                "unframed" => mixed.clone(),
+                "no-result-stderr" => String::new(),
+                "no-result-split" => auth.into(),
+                "no-result-split-reversed" => rejection.into(),
+                _ => envelope.to_string(),
+            };
+            std::fs::write(temp.path().join("stdout"), &stdout).unwrap();
+            std::fs::write(temp.path().join("stderr"), &stderr).unwrap();
+            let script = temp.path().join("provider");
+            std::fs::write(
+                &script,
+                format!(
+                    "#!/bin/sh\ncat >/dev/null\ncat '{0}/stdout'\ncat '{0}/stderr' >&2\nexit 1\n",
+                    temp.path().display()
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let args = vec![Arg::literal("--model"), Arg::literal("claude-fixture-1")];
+            let adapter =
+                ClaudeTaskAdapter::new(&Command::new(script.to_str().unwrap(), args)).unwrap();
+            let (returned, recorded) = at_level(level, &temp.path().join("telemetry"), || {
+                adapter.invoke(
+                    &cas,
+                    temp.path(),
+                    b"input".to_vec(),
+                    LOAD_SAFE_WALL,
+                    WorkerAccess::ReadOnly,
+                    None,
+                    &[],
+                )
+            });
+            assert_eq!(
+                returned.native_failure,
+                Some(NativeFailureKind::UnsupportedInvocation),
+                "{channel}"
+            );
+            let error = returned.message.as_ref().unwrap_err();
+            assert!(!error.contains("alice@example.com"), "{channel}: {error}");
+            assert!(!error.contains(auth), "{channel}: {error}");
+            assert!(
+                returned.notes.transient.is_none(),
+                "same schema must not retry: {channel}"
+            );
+            if !no_result {
+                assert_eq!(
+                    returned.usage.unwrap().chargeable_tokens.get(),
+                    3,
+                    "{channel}"
+                );
+            } else {
+                assert!(returned.usage.is_none());
+            }
+            assert_eq!(returned.raw_artifact_ids.len(), 1, "{channel}");
+            assert_eq!(
+                cas.get(&returned.raw_artifact_ids[0]).unwrap(),
+                NativeFailureKind::UnsupportedInvocation
+                    .diagnostic()
+                    .as_bytes(),
+                "{channel}"
+            );
+            let Some(recorded) = recorded else { continue };
+            assert_eq!(
+                recorded.ends("af.harness")[0]["af.stream.withheld"],
+                true,
+                "{channel}"
+            );
+            assert!(!recorded.text.contains("alice@example.com"), "{channel}");
+        }
+    }
+}
+
+#[test]
+fn shared_capture_withholds_mixed_auth_stderr_before_adapter_filtering() {
+    use crate::telemetry_levels::at_level;
+    use af_runner::ModelRunner;
+    use af_runner::stream::HarnessStream;
+    use af_telemetry::level::Level;
+
+    // This path deliberately keeps the adapter filter empty: the shared capture must make
+    // its own telemetry release decision, regardless of a caller's retry classification.
+    for (stderr, withheld) in [
+        (
+            "HTTP 401 authentication_error for alice@example.com; invalid_json_schema",
+            true,
+        ),
+        (
+            "Failed to refresh OAuth token: connection refused; invalid_json_schema",
+            false,
+        ),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let cas = Cas::open(temp.path().join("cas")).unwrap();
+        let command = Command::new(
+            "/bin/sh",
+            vec![
+                Arg::literal("-c"),
+                Arg::literal(format!("printf '%s' '{stderr}' >&2; exit 1")),
+            ],
+        );
+        let runner = ModelRunner::new(temp.path(), LOAD_SAFE_WALL);
+        let (capture, recorded) = at_level(Level::Content, &temp.path().join("telemetry"), || {
+            runner.capture_observed(
+                &cas,
+                &command,
+                vec![],
+                None,
+                &HarnessStream::claude(""),
+                |_, _, _| {},
+            )
+        });
+        assert_eq!(capture.stderr, stderr.as_bytes());
+        let recorded = recorded.unwrap();
+        assert_eq!(
+            recorded.ends("af.harness")[0]["af.stream.withheld"],
+            withheld
+        );
     }
 }

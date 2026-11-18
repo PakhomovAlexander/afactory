@@ -1,0 +1,2537 @@
+{
+  "schema": "af.contract-inventory/1",
+  "families": [
+    {
+      "name": "laboratory",
+      "reader_writer": [
+        "scripts/performance/perflab/contracts.py"
+      ],
+      "semantic_owner": [
+        "scripts/performance/perflab/contracts.py"
+      ],
+      "tests": [
+        "scripts/performance/tests/test_contracts.py"
+      ],
+      "schemas": [
+        "schemas/performance-activation-v3.json",
+        "schemas/performance-activation-verification-v3.json",
+        "schemas/performance-adapters-v2.json",
+        "schemas/performance-archive-v1.json",
+        "schemas/performance-archive-collection-v1.json",
+        "schemas/performance-archive-event-v1.json",
+        "schemas/performance-archive-status-v1.json",
+        "schemas/performance-build-pack-v1.json",
+        "schemas/performance-builds-v6.json",
+        "schemas/performance-calibration-parameters-v2.json",
+        "schemas/performance-capabilities-v3.json",
+        "schemas/performance-cli-v8.json",
+        "schemas/performance-cohort-v5.json",
+        "schemas/performance-comparison-v1.json",
+        "schemas/performance-comparison-aggregate-v1.json",
+        "schemas/performance-comparison-export-v1.json",
+        "schemas/performance-comparison-overview-v1.json",
+        "schemas/performance-comparison-preflight-v1.json",
+        "schemas/performance-comparison-report-v1.json",
+        "schemas/performance-cost-v3.json",
+        "schemas/performance-diagnostics-v1.json",
+        "schemas/performance-enforcement-v1.json",
+        "schemas/performance-equivalence-v2.json",
+        "schemas/performance-evidence-export-v1.json",
+        "schemas/performance-evidence-index-v2.json",
+        "schemas/performance-evidence-packet-v2.json",
+        "schemas/performance-executor-v5.json",
+        "schemas/performance-executor-journal-v1.json",
+        "schemas/performance-executor-preflight-v1.json",
+        "schemas/performance-executor-request-v3.json",
+        "schemas/performance-executor-request-v1.json",
+        "schemas/performance-executor-request-v2.json",
+        "schemas/performance-executor-result-v3.json",
+        "schemas/performance-executor-result-v2.json",
+        "schemas/performance-executor-state-v2.json",
+        "schemas/performance-golden-v2.json",
+        "schemas/performance-history-v2.json",
+        "schemas/performance-host-observer-v1.json",
+        "schemas/performance-kernel-inventory-v1.json",
+        "schemas/performance-kernel-receipts-v3.json",
+        "schemas/performance-local-cohort-declaration-v2.json",
+        "schemas/performance-local-readiness-assessment-v2.json",
+        "schemas/performance-machine-lock-anchor-v1.json",
+        "schemas/performance-manifest-v1.json",
+        "schemas/performance-nightly-build-v1.json",
+        "schemas/performance-nightly-config-v2.json",
+        "schemas/performance-nightly-daily-v1.json",
+        "schemas/performance-nightly-plan-v1.json",
+        "schemas/performance-nightly-publish-v2.json",
+        "schemas/performance-partition-execution-v1.json",
+        "schemas/performance-plan-refusal-v1.json",
+        "schemas/performance-probe-v1.json",
+        "schemas/performance-probe-request-v2.json",
+        "schemas/performance-profiles-v7.json",
+        "schemas/performance-readiness-v7.json",
+        "schemas/performance-release-claim-v1.json",
+        "schemas/performance-release-handoff-v1.json",
+        "schemas/performance-repetitions-v1.json",
+        "schemas/performance-report-v4.json",
+        "schemas/performance-run-v8.json",
+        "schemas/performance-sample-v2.json",
+        "schemas/performance-scenario-adapter-v1.json",
+        "schemas/performance-scenario-completion-v2.json",
+        "schemas/performance-scenario-experiment-v1.json",
+        "schemas/performance-scenario-intent-v1.json",
+        "schemas/performance-scenario-launcher-v1.json",
+        "schemas/performance-scenario-receipt-v1.json",
+        "schemas/performance-scenario-service-v1.json",
+        "schemas/performance-scenario-status-v1.json",
+        "schemas/performance-scenario-verification-v2.json",
+        "schemas/performance-schedule-v3.json",
+        "schemas/performance-shard-v4.json",
+        "schemas/performance-shipping-v3.json",
+        "schemas/performance-suite-v6.json",
+        "schemas/performance-supervisor-request-v5.json",
+        "schemas/performance-supervisor-result-v6.json",
+        "schemas/performance-telemetry-binding-v1.json",
+        "schemas/performance-telemetry-build-v2.json",
+        "schemas/performance-telemetry-collection-v2.json",
+        "schemas/performance-telemetry-collection-position-v1.json",
+        "schemas/performance-telemetry-collector-v1.json",
+        "schemas/performance-telemetry-history-v2.json",
+        "schemas/performance-telemetry-lab-v4.json",
+        "schemas/performance-telemetry-owner-v2.json",
+        "schemas/performance-telemetry-result-v3.json",
+        "schemas/performance-trace-v1.json",
+        "schemas/performance-transport-v1.json",
+        "schemas/performance-tui-open-v1.json",
+        "schemas/performance-verdict-v3.json"
+      ]
+    },
+    {
+      "name": "test-classes",
+      "reader_writer": [
+        "scripts/test-classes.py"
+      ],
+      "semantic_owner": [
+        "scripts/test-classes.py"
+      ],
+      "tests": [
+        "scripts/test-test-classes.py"
+      ],
+      "schemas": [
+        "schemas/test-class-catalog-v1.json",
+        "schemas/test-class-plan-v2.json",
+        "schemas/test-class-receipt-v2.json",
+        "schemas/test-quarantine-confirm-v1.json",
+        "schemas/test-quarantine-v1.json"
+      ]
+    },
+    {
+      "name": "kernel-current-contracts",
+      "reader_writer": [
+        "crates/af-contracts/src/lib.rs",
+        "crates/af-store/src/store/task.rs"
+      ],
+      "semantic_owner": [
+        "crates/af-runtime/src/task/host.rs",
+        "crates/af-contracts/src/task.rs"
+      ],
+      "tests": [
+        "crates/af-contracts/tests/schema_parity.rs",
+        "crates/af-check/tests/schema_parity.rs"
+      ],
+      "schemas": [
+        "schemas/ant-inspection-v4.json",
+        "schemas/ant-list-v9.json",
+        "schemas/ant-pin-v8.json",
+        "schemas/ant-scheduler-v1.json",
+        "schemas/ant-state-v9.json",
+        "schemas/ant-tick-v8.json",
+        "schemas/ant-v8.json",
+        "schemas/artifact-envelope-v1.json",
+        "schemas/build-cache-v2.json",
+        "schemas/cache-manifest-v1.json",
+        "schemas/candidate-tree-v1.json",
+        "schemas/check-fingerprint-v1.json",
+        "schemas/check-result-v1.json",
+        "schemas/code-task-policy-v1.json",
+        "schemas/codex-model-catalog-observation-v1.json",
+        "schemas/command-catalog-v1.json",
+        "schemas/dev-release-run-v2.json",
+        "schemas/diff-subject-v1.json",
+        "schemas/doctor-v3.json",
+        "schemas/error-v2.json",
+        "schemas/experiment-comparison-v1.json",
+        "schemas/experiment-execution-plan-v3.json",
+        "schemas/experiment-plan-decision-v1.json",
+        "schemas/experiment-prepared-v1.json",
+        "schemas/experiment-specification-v1.json",
+        "schemas/experimental-slot-v2.json",
+        "schemas/findings-sarif-v1.json",
+        "schemas/fix-verification-v1.json",
+        "schemas/git-candidate-source-request-v1.json",
+        "schemas/git-candidate-source-v1.json",
+        "schemas/git-workspace-config-v2.json",
+        "schemas/git-workspace-content-v1.json",
+        "schemas/git-workspace-prepared-v1.json",
+        "schemas/git-workspace-state-v3.json",
+        "schemas/github-adapter-config-v1.json",
+        "schemas/github-adapter-state-v5.json",
+        "schemas/github-check-outcome-v1.json",
+        "schemas/github-followup-v1.json",
+        "schemas/github-notify-v1.json",
+        "schemas/github-performance-pr-v1.json",
+        "schemas/github-publish-pr-v1.json",
+        "schemas/harness-materialization-v1.json",
+        "schemas/head-delta-v1.json",
+        "schemas/help-topic-v1.json",
+        "schemas/implementation-evaluation-input-v1.json",
+        "schemas/implementation-test-evidence-v1.json",
+        "schemas/issue-input-v1.json",
+        "schemas/issue-triage-hold-v1.json",
+        "schemas/issue-triage-merged-v1.json",
+        "schemas/issue-triage-runner-v3.json",
+        "schemas/issue-triage-v1.json",
+        "schemas/issue-workflow-pilot-v1.json",
+        "schemas/measurement-comparison-v1.json",
+        "schemas/measurement-v1.json",
+        "schemas/merge-watch-config-v1.json",
+        "schemas/merge-watch-status-v1.json",
+        "schemas/nightly-completion-v1.json",
+        "schemas/nightly-job-v1.json",
+        "schemas/nightly-service-v1.json",
+        "schemas/normalized-task-requirements-v1.json",
+        "schemas/onboard-tasks-v1.json",
+        "schemas/optimization-adoption-observation-v1.json",
+        "schemas/optimization-adoption-receipt-v1.json",
+        "schemas/optimization-adoption-task-evidence-v1.json",
+        "schemas/optimization-diagnostic-v1.json",
+        "schemas/optimization-economics-v1.json",
+        "schemas/optimization-evaluation-v1.json",
+        "schemas/optimization-execution-configuration-v1.json",
+        "schemas/optimization-harness-v1.json",
+        "schemas/optimization-history-v1.json",
+        "schemas/optimization-package-repin-v1.json",
+        "schemas/optimization-policy-v1.json",
+        "schemas/optimization-profile-v1.json",
+        "schemas/optimization-proposal-v1.json",
+        "schemas/optimization-recipe-catalog-v1.json",
+        "schemas/optimization-report-v1.json",
+        "schemas/optimization-result-v1.json",
+        "schemas/optimization-sources-v1.json",
+        "schemas/optimization-verification-v1.json",
+        "schemas/optimization-writable-configuration-v1.json",
+        "schemas/patch-proposal-v1.json",
+        "schemas/performance-pr-content-v1.json",
+        "schemas/performance-pr-proof-request-v1.json",
+        "schemas/performance-pr-proof-v1.json",
+        "schemas/performance-publication-activation-v1.json",
+        "schemas/plan-decision-v1.json",
+        "schemas/planning-request-v1.json",
+        "schemas/policy-time-v1.json",
+        "schemas/pr-lines-v4.json",
+        "schemas/preflight-report-v2.json",
+        "schemas/project-brief-capture-v1.json",
+        "schemas/project-brief-preview-v1.json",
+        "schemas/project-brief-receipt-v1.json",
+        "schemas/project-brief-v1.json",
+        "schemas/project-history-v2.json",
+        "schemas/project-policy-v2.json",
+        "schemas/project-registered-v1.json",
+        "schemas/project-survey-collected-v1.json",
+        "schemas/project-survey-failed-v1.json",
+        "schemas/project-survey-pending-v2.json",
+        "schemas/project-survey-pin-v1.json",
+        "schemas/project-survey-recorded-v1.json",
+        "schemas/project-survey-v2.json",
+        "schemas/project-surveys-settled-v2.json",
+        "schemas/project-v1.json",
+        "schemas/project-workspace-delivered-v1.json",
+        "schemas/project-workspace-registered-v1.json",
+        "schemas/project-workspace-removed-v1.json",
+        "schemas/project-workspaces-v1.json",
+        "schemas/release-provenance-v1.json",
+        "schemas/release-test-binding-v2.json",
+        "schemas/remote-check-evidence-v1.json",
+        "schemas/repair-allowed-implementation-v1.json",
+        "schemas/repair-assessment-v1.json",
+        "schemas/resolution-challenge-v1.json",
+        "schemas/result-document-v1.json",
+        "schemas/result-snapshot-v1.json",
+        "schemas/reviewed-implementation-v1.json",
+        "schemas/reviewer-result-v2-conformance.json",
+        "schemas/reviewer-result-v2.json",
+        "schemas/run-event-v3.json",
+        "schemas/scenario-adapter-request-v5.json",
+        "schemas/scenario-adapter-response-v1.json",
+        "schemas/scenario-bundle-v7.json",
+        "schemas/scenario-decision-v1.json",
+        "schemas/scenario-evidence-source-v1.json",
+        "schemas/scenario-experiment-source-request-v1.json",
+        "schemas/scenario-experiment-source-v1.json",
+        "schemas/scenario-list-v7.json",
+        "schemas/scenario-owned-file-v1.json",
+        "schemas/scenario-pin-v7.json",
+        "schemas/scenario-policy-v6.json",
+        "schemas/scenario-roadmap-list-v3.json",
+        "schemas/scenario-roadmap-proposal-v2.json",
+        "schemas/scenario-roadmap-revision-v2.json",
+        "schemas/scenario-roadmap-v3.json",
+        "schemas/scenario-run-v7.json",
+        "schemas/scenario-signed-decision-v1.json",
+        "schemas/scenario-store-v11.json",
+        "schemas/scenario-task-template-v2.json",
+        "schemas/scenario-template-pin-v2.json",
+        "schemas/scenario-v7.json",
+        "schemas/seal-ignored-v1.json",
+        "schemas/self-check-v4.json",
+        "schemas/self-status-v2.json",
+        "schemas/shared-task-catalog-v1.json",
+        "schemas/signed-task-authorization-v1.json",
+        "schemas/source-snapshot-v1.json",
+        "schemas/source-tree-v1.json",
+        "schemas/storage-prune-v4.json",
+        "schemas/storage-v5.json",
+        "schemas/store-writer-v1.json",
+        "schemas/telemetry-config-v2.json",
+        "schemas/telemetry-context-v1.json",
+        "schemas/telemetry-dirs-v1.json",
+        "schemas/telemetry-gc-v1.json",
+        "schemas/telemetry-invocation-cost-v3.json",
+        "schemas/telemetry-ledger-v1.json",
+        "schemas/telemetry-overhead-v3.json",
+        "schemas/telemetry-read-latency-v2.json",
+        "schemas/telemetry-reasoning-v1.json",
+        "schemas/telemetry-record-v1.json",
+        "schemas/telemetry-reindex-v1.json",
+        "schemas/telemetry-runs-v1.json",
+        "schemas/telemetry-search-v1.json",
+        "schemas/telemetry-show-v1.json",
+        "schemas/telemetry-status-v1.json",
+        "schemas/telemetry-tail-v1.json",
+        "schemas/telemetry-tools-v1.json",
+        "schemas/telemetry-turns-v1.json",
+        "schemas/verification-continuation-v1.json",
+        "schemas/verification-result-v1.json",
+        "schemas/warm-eviction-v1.json",
+        "schemas/warm-holder-v1.json",
+        "schemas/warm-set-v3.json",
+        "schemas/warm-sources-v1.json",
+        "schemas/workspace-fixture-benchmark-v1.json",
+        "schemas/workspace-fixture-suite-v1.json"
+      ]
+    },
+    {
+      "name": "worker-package-contracts",
+      "reader_writer": [
+        "crates/af-pipeline-config/src/task/catalog.rs",
+        "crates/af-runner/src/task.rs"
+      ],
+      "semantic_owner": [
+        "crates/af-runtime/src/task/host.rs",
+        "crates/af-runtime/src/task/report_domain.rs"
+      ],
+      "tests": [
+        "crates/af-runner/tests/contract_inventory.rs",
+        "crates/af-runner-codex/tests/it/task_worker.rs"
+      ],
+      "schemas": [
+        ".af/task-packages/backlog/triage-author/input.schema.json",
+        ".af/task-packages/backlog/triage-author/outputs/draft.schema.json",
+        ".af/task-packages/backlog/triage-verifier/input.schema.json",
+        ".af/task-packages/backlog/triage-verifier/outputs/result.schema.json",
+        ".af/task-packages/issue-internal/bugs/input.schema.json",
+        ".af/task-packages/issue-internal/bugs/outputs/result.schema.json",
+        ".af/task-packages/issue-internal/codex-light-evaluator/input.schema.json",
+        ".af/task-packages/issue-internal/codex-light-evaluator/outputs/result.schema.json",
+        ".af/task-packages/issue-internal/correctness/input.schema.json",
+        ".af/task-packages/issue-internal/correctness/outputs/result.schema.json",
+        ".af/task-packages/issue-internal/design-acceptor/input.schema.json",
+        ".af/task-packages/issue-internal/design-acceptor/outputs/result.schema.json",
+        ".af/task-packages/issue-internal/designer/input.schema.json",
+        ".af/task-packages/issue-internal/designer/outputs/draft.schema.json",
+        ".af/task-packages/issue-internal/evaluator/input.schema.json",
+        ".af/task-packages/issue-internal/evaluator/outputs/result.schema.json",
+        ".af/task-packages/issue-internal/experiment-evaluator/input.schema.json",
+        ".af/task-packages/issue-internal/experiment-evaluator/outputs/result.schema.json",
+        ".af/task-packages/issue-internal/implementer/input.schema.json",
+        ".af/task-packages/issue-internal/implementer/outputs/report.schema.json",
+        ".af/task-packages/issue-internal/investigator/input.schema.json",
+        ".af/task-packages/issue-internal/investigator/outputs/draft.schema.json",
+        ".af/task-packages/issue-internal/kimi-challenger/input.schema.json",
+        ".af/task-packages/issue-internal/kimi-challenger/outputs/result.schema.json",
+        ".af/task-packages/issue-internal/kimi-implementer/input.schema.json",
+        ".af/task-packages/issue-internal/kimi-implementer/outputs/report.schema.json",
+        ".af/task-packages/issue-internal/kimi-researcher/input.schema.json",
+        ".af/task-packages/issue-internal/kimi-researcher/outputs/draft.schema.json",
+        ".af/task-packages/issue-internal/kimi/input.schema.json",
+        ".af/task-packages/issue-internal/kimi/outputs/report.schema.json",
+        ".af/task-packages/issue-internal/light-evaluator/input.schema.json",
+        ".af/task-packages/issue-internal/light-evaluator/outputs/result.schema.json",
+        ".af/task-packages/issue-internal/report-verifier/input.schema.json",
+        ".af/task-packages/issue-internal/report-verifier/outputs/result.schema.json",
+        ".af/task-packages/issue-internal/researched-implementer/input.schema.json",
+        ".af/task-packages/issue-internal/researched-implementer/outputs/report.schema.json",
+        "crates/af/src/onboard/templates/bugs/input.schema.json",
+        "crates/af/src/onboard/templates/bugs/outputs/result.schema.json",
+        "crates/af/src/onboard/templates/correctness/input.schema.json",
+        "crates/af/src/onboard/templates/correctness/outputs/result.schema.json",
+        "crates/af/src/onboard/templates/evaluator/input.schema.json",
+        "crates/af/src/onboard/templates/evaluator/outputs/result.schema.json",
+        "crates/af/src/onboard/templates/implementer/input.schema.json",
+        "crates/af/src/onboard/templates/implementer/outputs/report.schema.json",
+        "fixtures/custom-tasks/capitalize/kind/structured.json#/inputs/note/schema",
+        "fixtures/custom-tasks/capitalize/kind/structured.json#/outputs/capitalized/schema",
+        "fixtures/custom-tasks/capitalize/worker/input.schema.json",
+        "fixtures/custom-tasks/capitalize/worker/outputs/capitalized.schema.json",
+        "fixtures/custom-tasks/triage/kind/structured.json#/inputs/issue/schema",
+        "fixtures/custom-tasks/triage/kind/structured.json#/outputs/triage/schema",
+        "fixtures/custom-tasks/triage/worker/input.schema.json",
+        "fixtures/custom-tasks/triage/worker/outputs/triage.schema.json",
+        "fixtures/issue-triage/task-packages/backlog/triage-author/input.schema.json",
+        "fixtures/issue-triage/task-packages/backlog/triage-author/outputs/draft.schema.json",
+        "fixtures/issue-triage/task-packages/backlog/triage-verifier/input.schema.json",
+        "fixtures/issue-triage/task-packages/backlog/triage-verifier/outputs/result.schema.json",
+        "fixtures/issue-workflows/task-packages/backlog/triage-author/input.schema.json",
+        "fixtures/issue-workflows/task-packages/backlog/triage-author/outputs/draft.schema.json",
+        "fixtures/issue-workflows/task-packages/backlog/triage-verifier/input.schema.json",
+        "fixtures/issue-workflows/task-packages/backlog/triage-verifier/outputs/result.schema.json",
+        "fixtures/issue-workflows/task-packages/issue-internal/bugs/input.schema.json",
+        "fixtures/issue-workflows/task-packages/issue-internal/bugs/outputs/result.schema.json",
+        "fixtures/issue-workflows/task-packages/issue-internal/codex-light-evaluator/input.schema.json",
+        "fixtures/issue-workflows/task-packages/issue-internal/codex-light-evaluator/outputs/result.schema.json",
+        "fixtures/issue-workflows/task-packages/issue-internal/correctness/input.schema.json",
+        "fixtures/issue-workflows/task-packages/issue-internal/correctness/outputs/result.schema.json",
+        "fixtures/issue-workflows/task-packages/issue-internal/design-acceptor/input.schema.json",
+        "fixtures/issue-workflows/task-packages/issue-internal/design-acceptor/outputs/result.schema.json",
+        "fixtures/issue-workflows/task-packages/issue-internal/designer/input.schema.json",
+        "fixtures/issue-workflows/task-packages/issue-internal/designer/outputs/draft.schema.json",
+        "fixtures/issue-workflows/task-packages/issue-internal/evaluator/input.schema.json",
+        "fixtures/issue-workflows/task-packages/issue-internal/evaluator/outputs/result.schema.json",
+        "fixtures/issue-workflows/task-packages/issue-internal/experiment-evaluator/input.schema.json",
+        "fixtures/issue-workflows/task-packages/issue-internal/experiment-evaluator/outputs/result.schema.json",
+        "fixtures/issue-workflows/task-packages/issue-internal/implementer/input.schema.json",
+        "fixtures/issue-workflows/task-packages/issue-internal/implementer/outputs/report.schema.json",
+        "fixtures/issue-workflows/task-packages/issue-internal/investigator/input.schema.json",
+        "fixtures/issue-workflows/task-packages/issue-internal/investigator/outputs/draft.schema.json",
+        "fixtures/issue-workflows/task-packages/issue-internal/kimi-challenger/input.schema.json",
+        "fixtures/issue-workflows/task-packages/issue-internal/kimi-challenger/outputs/result.schema.json",
+        "fixtures/issue-workflows/task-packages/issue-internal/kimi-implementer/input.schema.json",
+        "fixtures/issue-workflows/task-packages/issue-internal/kimi-implementer/outputs/report.schema.json",
+        "fixtures/issue-workflows/task-packages/issue-internal/kimi-researcher/input.schema.json",
+        "fixtures/issue-workflows/task-packages/issue-internal/kimi-researcher/outputs/draft.schema.json",
+        "fixtures/issue-workflows/task-packages/issue-internal/kimi/input.schema.json",
+        "fixtures/issue-workflows/task-packages/issue-internal/kimi/outputs/report.schema.json",
+        "fixtures/issue-workflows/task-packages/issue-internal/light-evaluator/input.schema.json",
+        "fixtures/issue-workflows/task-packages/issue-internal/light-evaluator/outputs/result.schema.json",
+        "fixtures/issue-workflows/task-packages/issue-internal/report-verifier/input.schema.json",
+        "fixtures/issue-workflows/task-packages/issue-internal/report-verifier/outputs/result.schema.json",
+        "fixtures/issue-workflows/task-packages/issue-internal/researched-implementer/input.schema.json",
+        "fixtures/issue-workflows/task-packages/issue-internal/researched-implementer/outputs/report.schema.json",
+        "fixtures/kernel-experiment/task-packages/kernel/experiment-evaluator/input.schema.json",
+        "fixtures/kernel-experiment/task-packages/kernel/experiment-evaluator/outputs/result.schema.json",
+        "fixtures/kernel-report/task-packages/kernel/analyst/input.schema.json",
+        "fixtures/kernel-report/task-packages/kernel/analyst/outputs/draft.schema.json",
+        "fixtures/kernel-report/task-packages/kernel/report-verifier/input.schema.json",
+        "fixtures/kernel-report/task-packages/kernel/report-verifier/outputs/result.schema.json",
+        "fixtures/native-catalog-contracts/.af/task-packages/kernel/analyst/input.schema.json",
+        "fixtures/native-catalog-contracts/.af/task-packages/kernel/analyst/outputs/draft.schema.json",
+        "fixtures/native-catalog-contracts/.af/task-packages/kernel/bugs/input.schema.json",
+        "fixtures/native-catalog-contracts/.af/task-packages/kernel/bugs/outputs/result.schema.json",
+        "fixtures/native-catalog-contracts/.af/task-packages/kernel/correctness/input.schema.json",
+        "fixtures/native-catalog-contracts/.af/task-packages/kernel/correctness/outputs/result.schema.json",
+        "fixtures/native-catalog-contracts/.af/task-packages/kernel/evaluator/input.schema.json",
+        "fixtures/native-catalog-contracts/.af/task-packages/kernel/evaluator/outputs/result.schema.json",
+        "fixtures/native-catalog-contracts/.af/task-packages/kernel/gate-accept/input.schema.json",
+        "fixtures/native-catalog-contracts/.af/task-packages/kernel/gate-accept/outputs/result.schema.json",
+        "fixtures/native-catalog-contracts/.af/task-packages/kernel/implementer/input.schema.json",
+        "fixtures/native-catalog-contracts/.af/task-packages/kernel/implementer/outputs/report.schema.json",
+        "fixtures/native-catalog-contracts/.af/task-packages/kernel/report-verifier/input.schema.json",
+        "fixtures/native-catalog-contracts/.af/task-packages/kernel/report-verifier/outputs/result.schema.json",
+        "fixtures/native-catalog-contracts/.af/task-packages/owner-default/bugs/input.schema.json",
+        "fixtures/native-catalog-contracts/.af/task-packages/owner-default/bugs/outputs/result.schema.json",
+        "fixtures/native-catalog-contracts/.af/task-packages/owner-default/correctness/input.schema.json",
+        "fixtures/native-catalog-contracts/.af/task-packages/owner-default/correctness/outputs/result.schema.json",
+        "fixtures/native-catalog-contracts/.af/task-packages/owner-default/evaluator/input.schema.json",
+        "fixtures/native-catalog-contracts/.af/task-packages/owner-default/evaluator/outputs/result.schema.json",
+        "fixtures/native-catalog-contracts/.af/task-packages/owner-default/implementer/input.schema.json",
+        "fixtures/native-catalog-contracts/.af/task-packages/owner-default/implementer/outputs/report.schema.json",
+        "fixtures/native-catalog-contracts/.af/task-packages/owner-default/report-author/input.schema.json",
+        "fixtures/native-catalog-contracts/.af/task-packages/owner-default/report-author/outputs/draft.schema.json",
+        "fixtures/native-catalog-contracts/.af/task-packages/pi-light/correctness/input.schema.json",
+        "fixtures/native-catalog-contracts/.af/task-packages/pi-light/correctness/outputs/result.schema.json",
+        "fixtures/native-catalog-contracts/.af/task-packages/pi-light/evaluator/input.schema.json",
+        "fixtures/native-catalog-contracts/.af/task-packages/pi-light/evaluator/outputs/result.schema.json",
+        "fixtures/native-catalog-contracts/.af/task-packages/pi-light/implementer/input.schema.json",
+        "fixtures/native-catalog-contracts/.af/task-packages/pi-light/implementer/outputs/report.schema.json",
+        "fixtures/performance/cli/default-light-smoke/repo/.af/task-packages/default-light/correctness/input.schema.json",
+        "fixtures/performance/cli/default-light-smoke/repo/.af/task-packages/default-light/correctness/outputs/result.schema.json",
+        "fixtures/performance/cli/default-light-smoke/repo/.af/task-packages/default-light/evaluator/input.schema.json",
+        "fixtures/performance/cli/default-light-smoke/repo/.af/task-packages/default-light/evaluator/outputs/result.schema.json",
+        "fixtures/performance/cli/default-light-smoke/repo/.af/task-packages/default-light/implementer/input.schema.json",
+        "fixtures/performance/cli/default-light-smoke/repo/.af/task-packages/default-light/implementer/outputs/report.schema.json",
+        "fixtures/performance/cli/native-review-roots/repo/.af/task-packages/fixture/bugs/input.schema.json",
+        "fixtures/performance/cli/native-review-roots/repo/.af/task-packages/fixture/bugs/outputs/result.schema.json",
+        "fixtures/performance/cli/native-review-roots/repo/.af/task-packages/fixture/correctness/input.schema.json",
+        "fixtures/performance/cli/native-review-roots/repo/.af/task-packages/fixture/correctness/outputs/result.schema.json",
+        "fixtures/performance/cli/task-roots/receipt-v1/.af/task-packages/perf/accept/input.schema.json",
+        "fixtures/performance/cli/task-roots/repo/.af/task-packages/perf/accept/input.schema.json",
+        "fixtures/performance/cli/task-roots/repo/.af/task-packages/perf/accept/outputs/result.schema.json",
+        "fixtures/self-optimizer/catalog/optimization-baseline/input.schema.json",
+        "fixtures/self-optimizer/catalog/optimization-baseline/outputs/receipt.schema.json",
+        "fixtures/self-optimizer/catalog/optimization-candidate/input.schema.json",
+        "fixtures/self-optimizer/catalog/optimization-candidate/outputs/receipt.schema.json",
+        "fixtures/self-optimizer/catalog/optimization-check-baseline/input.schema.json",
+        "fixtures/self-optimizer/catalog/optimization-check-baseline/outputs/receipt.schema.json",
+        "fixtures/self-optimizer/catalog/optimization-check-candidate/input.schema.json",
+        "fixtures/self-optimizer/catalog/optimization-check-candidate/outputs/receipt.schema.json",
+        "fixtures/self-optimizer/catalog/optimization-check-evaluator/input.schema.json",
+        "fixtures/self-optimizer/catalog/optimization-check-evaluator/outputs/evaluation.schema.json",
+        "fixtures/self-optimizer/catalog/optimization-light-diagnose-model/input.schema.json",
+        "fixtures/self-optimizer/catalog/optimization-light-diagnose-model/outputs/diagnostic.schema.json",
+        "fixtures/self-optimizer/catalog/optimization-light-diagnose/input.schema.json",
+        "fixtures/self-optimizer/catalog/optimization-light-diagnose/outputs/diagnostic.schema.json",
+        "fixtures/self-optimizer/catalog/optimization-light-propose-model/input.schema.json",
+        "fixtures/self-optimizer/catalog/optimization-light-propose-model/outputs/proposal.schema.json",
+        "fixtures/self-optimizer/catalog/optimization-light-propose/input.schema.json",
+        "fixtures/self-optimizer/catalog/optimization-light-propose/outputs/proposal.schema.json",
+        "fixtures/task-runtime/acceptance/.af/task-packages/fixture/evaluator/input.schema.json",
+        "fixtures/task-runtime/acceptance/.af/task-packages/fixture/evaluator/outputs/result.schema.json",
+        "fixtures/task-runtime/acceptance/.af/task-packages/fixture/implementer/input.schema.json",
+        "fixtures/task-runtime/acceptance/.af/task-packages/fixture/implementer/outputs/report.schema.json",
+        "fixtures/task-runtime/bound-inputs/.af/task-packages/fixture/bugs/input.schema.json",
+        "fixtures/task-runtime/bound-inputs/.af/task-packages/fixture/bugs/outputs/result.schema.json",
+        "fixtures/task-runtime/bound-inputs/.af/task-packages/fixture/correctness/input.schema.json",
+        "fixtures/task-runtime/bound-inputs/.af/task-packages/fixture/correctness/outputs/result.schema.json",
+        "fixtures/task-runtime/bound-inputs/.af/task-packages/fixture/evaluator/input.schema.json",
+        "fixtures/task-runtime/bound-inputs/.af/task-packages/fixture/evaluator/outputs/result.schema.json",
+        "fixtures/task-runtime/bound-inputs/.af/task-packages/fixture/implementer/input.schema.json",
+        "fixtures/task-runtime/bound-inputs/.af/task-packages/fixture/implementer/outputs/report.schema.json",
+        "fixtures/task-runtime/bounded-repair/.af/task-packages/fixture/bugs/input.schema.json",
+        "fixtures/task-runtime/bounded-repair/.af/task-packages/fixture/bugs/outputs/result.schema.json",
+        "fixtures/task-runtime/bounded-repair/.af/task-packages/fixture/correctness/input.schema.json",
+        "fixtures/task-runtime/bounded-repair/.af/task-packages/fixture/correctness/outputs/result.schema.json",
+        "fixtures/task-runtime/bounded-repair/.af/task-packages/fixture/evaluator/input.schema.json",
+        "fixtures/task-runtime/bounded-repair/.af/task-packages/fixture/evaluator/outputs/result.schema.json",
+        "fixtures/task-runtime/bounded-repair/.af/task-packages/fixture/fix-verifier/input.schema.json",
+        "fixtures/task-runtime/bounded-repair/.af/task-packages/fixture/fix-verifier/outputs/result.schema.json",
+        "fixtures/task-runtime/bounded-repair/.af/task-packages/fixture/implementer/input.schema.json",
+        "fixtures/task-runtime/bounded-repair/.af/task-packages/fixture/implementer/outputs/report.schema.json",
+        "fixtures/task-runtime/bounded-repair/.af/task-packages/fixture/repairer/input.schema.json",
+        "fixtures/task-runtime/bounded-repair/.af/task-packages/fixture/repairer/outputs/report.schema.json",
+        "fixtures/task-runtime/continue/.af/task-packages/fixture/bugs/input.schema.json",
+        "fixtures/task-runtime/continue/.af/task-packages/fixture/bugs/outputs/result.schema.json",
+        "fixtures/task-runtime/continue/.af/task-packages/fixture/correctness/input.schema.json",
+        "fixtures/task-runtime/continue/.af/task-packages/fixture/correctness/outputs/result.schema.json",
+        "fixtures/task-runtime/continue/.af/task-packages/fixture/evaluator/input.schema.json",
+        "fixtures/task-runtime/continue/.af/task-packages/fixture/evaluator/outputs/result.schema.json",
+        "fixtures/task-runtime/continue/.af/task-packages/fixture/implementer/input.schema.json",
+        "fixtures/task-runtime/continue/.af/task-packages/fixture/implementer/outputs/report.schema.json",
+        "fixtures/task-runtime/embedded-review/.af/task-packages/fixture/bugs/input.schema.json",
+        "fixtures/task-runtime/embedded-review/.af/task-packages/fixture/bugs/outputs/result.schema.json",
+        "fixtures/task-runtime/embedded-review/.af/task-packages/fixture/correctness/input.schema.json",
+        "fixtures/task-runtime/embedded-review/.af/task-packages/fixture/correctness/outputs/result.schema.json",
+        "fixtures/task-runtime/embedded-review/.af/task-packages/fixture/evaluator/input.schema.json",
+        "fixtures/task-runtime/embedded-review/.af/task-packages/fixture/evaluator/outputs/result.schema.json",
+        "fixtures/task-runtime/embedded-review/.af/task-packages/fixture/implementer/input.schema.json",
+        "fixtures/task-runtime/embedded-review/.af/task-packages/fixture/implementer/outputs/report.schema.json",
+        "fixtures/task-runtime/experiment/.af/task-packages/fixture/experiment-evaluator/input.schema.json",
+        "fixtures/task-runtime/experiment/.af/task-packages/fixture/experiment-evaluator/outputs/result.schema.json",
+        "fixtures/task-runtime/experiment/.af/task-packages/fixture/implementer/input.schema.json",
+        "fixtures/task-runtime/experiment/.af/task-packages/fixture/implementer/outputs/report.schema.json",
+        "fixtures/task-runtime/pagination/.af/task-packages/fixture/evaluator/input.schema.json",
+        "fixtures/task-runtime/pagination/.af/task-packages/fixture/evaluator/outputs/result.schema.json",
+        "fixtures/task-runtime/pagination/.af/task-packages/fixture/implementer/input.schema.json",
+        "fixtures/task-runtime/pagination/.af/task-packages/fixture/implementer/outputs/report.schema.json",
+        "fixtures/task-runtime/project-brief/.af/task-packages/fixture/evaluator/input.schema.json",
+        "fixtures/task-runtime/project-brief/.af/task-packages/fixture/evaluator/outputs/result.schema.json",
+        "fixtures/task-runtime/project-brief/.af/task-packages/fixture/forger/input.schema.json",
+        "fixtures/task-runtime/project-brief/.af/task-packages/fixture/forger/outputs/brief.schema.json",
+        "fixtures/task-runtime/project-brief/.af/task-packages/fixture/forger/outputs/report.schema.json",
+        "fixtures/task-runtime/project-brief/.af/task-packages/fixture/implementer/input.schema.json",
+        "fixtures/task-runtime/project-brief/.af/task-packages/fixture/implementer/outputs/report.schema.json",
+        "fixtures/task-runtime/review-v2/.af/task-packages/fixture/bugs/input.schema.json",
+        "fixtures/task-runtime/review-v2/.af/task-packages/fixture/bugs/outputs/result.schema.json",
+        "fixtures/task-runtime/review-v2/.af/task-packages/fixture/correctness/input.schema.json",
+        "fixtures/task-runtime/review-v2/.af/task-packages/fixture/correctness/outputs/result.schema.json",
+        "fixtures/task-runtime/review/.af/task-packages/fixture/bugs/input.schema.json",
+        "fixtures/task-runtime/review/.af/task-packages/fixture/bugs/outputs/result.schema.json",
+        "fixtures/task-runtime/review/.af/task-packages/fixture/correctness/input.schema.json",
+        "fixtures/task-runtime/review/.af/task-packages/fixture/correctness/outputs/result.schema.json",
+        "fixtures/telemetry-bench/telemetry-bench-concurrent/repo/.af/task-packages/bench/alpha/input.schema.json",
+        "fixtures/telemetry-bench/telemetry-bench-concurrent/repo/.af/task-packages/bench/alpha/outputs/result.schema.json",
+        "fixtures/telemetry-bench/telemetry-bench-concurrent/repo/.af/task-packages/bench/beta/input.schema.json",
+        "fixtures/telemetry-bench/telemetry-bench-concurrent/repo/.af/task-packages/bench/beta/outputs/result.schema.json",
+        "fixtures/telemetry-bench/telemetry-bench-concurrent/repo/.af/task-packages/bench/delta/input.schema.json",
+        "fixtures/telemetry-bench/telemetry-bench-concurrent/repo/.af/task-packages/bench/delta/outputs/result.schema.json",
+        "fixtures/telemetry-bench/telemetry-bench-concurrent/repo/.af/task-packages/bench/gamma/input.schema.json",
+        "fixtures/telemetry-bench/telemetry-bench-concurrent/repo/.af/task-packages/bench/gamma/outputs/result.schema.json",
+        "fixtures/telemetry-bench/telemetry-bench-dense/repo/.af/task-packages/bench/stream/input.schema.json",
+        "fixtures/telemetry-bench/telemetry-bench-dense/repo/.af/task-packages/bench/stream/outputs/result.schema.json",
+        "fixtures/telemetry-bench/telemetry-bench-invocation-four/repo/.af/task-packages/bench/alpha/input.schema.json",
+        "fixtures/telemetry-bench/telemetry-bench-invocation-four/repo/.af/task-packages/bench/alpha/outputs/result.schema.json",
+        "fixtures/telemetry-bench/telemetry-bench-invocation-four/repo/.af/task-packages/bench/beta/input.schema.json",
+        "fixtures/telemetry-bench/telemetry-bench-invocation-four/repo/.af/task-packages/bench/beta/outputs/result.schema.json",
+        "fixtures/telemetry-bench/telemetry-bench-invocation-four/repo/.af/task-packages/bench/delta/input.schema.json",
+        "fixtures/telemetry-bench/telemetry-bench-invocation-four/repo/.af/task-packages/bench/delta/outputs/result.schema.json",
+        "fixtures/telemetry-bench/telemetry-bench-invocation-four/repo/.af/task-packages/bench/gamma/input.schema.json",
+        "fixtures/telemetry-bench/telemetry-bench-invocation-four/repo/.af/task-packages/bench/gamma/outputs/result.schema.json",
+        "fixtures/telemetry-bench/telemetry-bench-invocation-one/repo/.af/task-packages/bench/stream/input.schema.json",
+        "fixtures/telemetry-bench/telemetry-bench-invocation-one/repo/.af/task-packages/bench/stream/outputs/result.schema.json",
+        "fixtures/telemetry-bench/telemetry-bench-store/repo/.af/task-packages/bench/alpha/input.schema.json",
+        "fixtures/telemetry-bench/telemetry-bench-store/repo/.af/task-packages/bench/alpha/outputs/result.schema.json",
+        "fixtures/telemetry-bench/telemetry-bench-store/repo/.af/task-packages/bench/beta/input.schema.json",
+        "fixtures/telemetry-bench/telemetry-bench-store/repo/.af/task-packages/bench/beta/outputs/result.schema.json",
+        "fixtures/telemetry-bench/telemetry-bench-store/repo/.af/task-packages/bench/delta/input.schema.json",
+        "fixtures/telemetry-bench/telemetry-bench-store/repo/.af/task-packages/bench/delta/outputs/result.schema.json",
+        "fixtures/telemetry-bench/telemetry-bench-store/repo/.af/task-packages/bench/gamma/input.schema.json",
+        "fixtures/telemetry-bench/telemetry-bench-store/repo/.af/task-packages/bench/gamma/outputs/result.schema.json",
+        "fixtures/worker-development/python/input.schema.json",
+        "fixtures/worker-development/python/outputs/report.schema.json",
+        "fixtures/worker-development/rust/input.schema.json",
+        "fixtures/worker-development/rust/outputs/report.schema.json",
+        "fixtures/worker-knowledge/input.schema.json",
+        "fixtures/worker-knowledge/outputs/knowledge_query.schema.json",
+        "fixtures/worker-knowledge/outputs/notes.schema.json",
+        "fixtures/worker-knowledge/outputs/output.schema.json"
+      ]
+    },
+    {
+      "name": "report-and-document",
+      "reader_writer": [
+        "crates/af-contracts/src/task/document.rs",
+        "crates/af-contracts/src/task/report_domain.rs"
+      ],
+      "semantic_owner": [
+        "crates/af-runtime/src/task/report_domain.rs"
+      ],
+      "tests": [
+        "crates/af-runtime/src/task/report_domain/tests.rs",
+        "crates/af-contracts/tests/schema_parity.rs"
+      ],
+      "schemas": [
+        "schemas/document-check-receipt-v1.json",
+        "schemas/document-context-v1.json",
+        "schemas/document-draft-v3.json",
+        "schemas/document-evaluation-v1.json",
+        "schemas/document-sources-v1.json",
+        "schemas/document-task-policy-v1.json",
+        "schemas/document-v2.json",
+        "schemas/document-verification-v1.json",
+        "schemas/report-check-receipt-v1.json",
+        "schemas/report-draft-validation-v1.json",
+        "schemas/report-evaluation-v1.json",
+        "schemas/report-sources-v1.json",
+        "schemas/report-task-policy-v1.json",
+        "schemas/report-verification-v1.json"
+      ]
+    },
+    {
+      "name": "pipeline-and-plan",
+      "reader_writer": [
+        "crates/af-contracts/src/task/pipeline.rs",
+        "crates/af-pipeline-config/src/task/catalog.rs"
+      ],
+      "semantic_owner": [
+        "crates/af-pipeline-config/src/task/catalog.rs",
+        "crates/af-graph/src/task.rs"
+      ],
+      "tests": [
+        "crates/af-pipeline-config/src/task/catalog/tests.rs",
+        "crates/af-contracts/tests/schema_parity.rs"
+      ],
+      "schemas": [
+        "schemas/catalog-contract-fixtures-v2.json",
+        "schemas/compiled-task-v6.json",
+        "schemas/execution-plan-v4.json",
+        "schemas/pipeline-definition-v6.json",
+        "schemas/pipeline-proposal-v1.json",
+        "schemas/pipeline-selection-v1.json",
+        "schemas/task-contracts-v4.json",
+        "schemas/task-engine-v4.json",
+        "schemas/task-kind-v3.json"
+      ]
+    },
+    {
+      "name": "native-provider",
+      "reader_writer": [
+        "crates/af-runner/src/native_failure.rs",
+        "crates/af/src/providers/task.rs"
+      ],
+      "semantic_owner": [
+        "crates/af/src/providers/task.rs",
+        "crates/af-runner/src/task.rs"
+      ],
+      "tests": [
+        "crates/af-runner/src/native_failure.rs",
+        "crates/af-runner-codex/tests/it/task_worker.rs",
+        "crates/af-contracts/tests/schema_parity.rs"
+      ],
+      "schemas": [
+        "schemas/native-failure-v1.json",
+        "schemas/pi-context-v1.json",
+        "schemas/pi-host-v7.json",
+        "schemas/pi-inference-evidence-v2.json",
+        "schemas/pi-provider-setup-v4.json",
+        "schemas/pi-validation-claim-v1.json",
+        "schemas/provider-auth-v1.json",
+        "schemas/provider-detect-v4.json",
+        "schemas/provider-disables-v1.json",
+        "schemas/provider-models-v2.json",
+        "schemas/provider-models-v4.json",
+        "schemas/provider-registry-v4.json",
+        "schemas/provider-setup-v2.json",
+        "schemas/provider-status-v6.json",
+        "schemas/worker-reply-reask-v1.json"
+      ]
+    },
+    {
+      "name": "structured-business",
+      "reader_writer": [
+        "crates/af-contracts/src/task/structured.rs",
+        "crates/af-pipeline-config/src/task/structured.rs"
+      ],
+      "semantic_owner": [
+        "crates/af-runtime/src/task/structured.rs"
+      ],
+      "tests": [
+        "crates/af/tests/it/task_custom.rs",
+        "crates/af-runner/tests/contract_inventory.rs"
+      ],
+      "schemas": [
+        "schemas/custom-issue-input-v1.json",
+        "schemas/custom-issue-triage-v2.json",
+        "schemas/structured-contract-v2.json",
+        "schemas/structured-validation-v1.json"
+      ]
+    },
+    {
+      "name": "worker-development",
+      "reader_writer": [
+        "crates/af-contracts/src/task/development.rs",
+        "crates/af-runner/src/task.rs"
+      ],
+      "semantic_owner": [
+        "crates/af-runtime/src/task/host.rs",
+        "crates/af-runtime/src/task/development.rs"
+      ],
+      "tests": [
+        "crates/af-runtime/src/task/development/tests.rs",
+        "crates/af-contracts/tests/schema_parity.rs"
+      ],
+      "schemas": [
+        "schemas/knowledge-context-v1.json",
+        "schemas/knowledge-index-v1.json",
+        "schemas/knowledge-query-v1.json",
+        "schemas/private-knowledge-v1.json",
+        "schemas/worker-cache-capture-v1.json",
+        "schemas/worker-command-evidence-v1.json",
+        "schemas/worker-development-binding-v3.json",
+        "schemas/worker-development-v3.json",
+        "schemas/worker-knowledge-v1.json",
+        "schemas/worker-notes-v1.json",
+        "schemas/worker-storage-v1.json"
+      ]
+    },
+    {
+      "name": "native-review",
+      "reader_writer": [
+        "crates/af-contracts/src/lib.rs",
+        "crates/af-store/src/store/task.rs"
+      ],
+      "semantic_owner": [
+        "crates/af-runtime/src/task/review.rs",
+        "crates/af-store/src/store/task.rs"
+      ],
+      "tests": [
+        "crates/af-contracts/tests/schema_parity.rs",
+        "crates/af-store/tests/it/canonical_identity.rs"
+      ],
+      "schemas": [
+        "schemas/change-attestation-v1.json",
+        "schemas/change-set-v1-conformance.json",
+        "schemas/change-set-v1.json",
+        "schemas/demand-set-v1.json",
+        "schemas/demand-v1.json",
+        "schemas/demand-waiver-v1.json",
+        "schemas/evidence-reuse-admission-v1.json",
+        "schemas/evidence-satisfaction-v1.json",
+        "schemas/evidence-v1.json",
+        "schemas/finding-disposition-v1.json",
+        "schemas/finding-grouping-v1.json",
+        "schemas/finding-report-v1-conformance.json",
+        "schemas/finding-report-v1.json",
+        "schemas/finding-resolution-v1.json",
+        "schemas/finding-set-v1.json",
+        "schemas/review-decision-context-v1.json",
+        "schemas/review-decisions-v1.json",
+        "schemas/review-history-v1.json",
+        "schemas/review-ledger-v3.json",
+        "schemas/review-slice-v1.json",
+        "schemas/semantic-closure-v1.json",
+        "schemas/shard-set-v1.json",
+        "schemas/slice-set-v1.json",
+        "schemas/subject-v1.json",
+        "schemas/task-review-accounting-v1.json",
+        "schemas/task-review-assignment-v1.json",
+        "schemas/task-review-claims-v1.json",
+        "schemas/task-review-commit-v1.json",
+        "schemas/task-review-conclusion-v1.json",
+        "schemas/task-review-continuation-v1.json",
+        "schemas/task-review-findings-v1.json",
+        "schemas/task-review-integration-v1.json",
+        "schemas/task-review-proposal-v1.json",
+        "schemas/task-review-round-v1.json",
+        "schemas/task-review-subject-v3.json"
+      ]
+    },
+    {
+      "name": "task-lifecycle-and-wake",
+      "reader_writer": [
+        "crates/af-contracts/src/task.rs",
+        "crates/af-store/src/store/task.rs"
+      ],
+      "semantic_owner": [
+        "crates/af-store/src/store/task.rs"
+      ],
+      "tests": [
+        "crates/af-store/src/store/task/tests.rs",
+        "crates/af-contracts/tests/schema_parity.rs"
+      ],
+      "schemas": [
+        "schemas/task-acceptance-v1.json",
+        "schemas/task-activity-v1.json",
+        "schemas/task-attempt-wall-end-v1.json",
+        "schemas/task-attention-v2.json",
+        "schemas/task-base-v1.json",
+        "schemas/task-builtin-context-v1.json",
+        "schemas/task-cancel-request-v1.json",
+        "schemas/task-cancelled-v3.json",
+        "schemas/task-catalog-v2.json",
+        "schemas/task-check-containment-v1.json",
+        "schemas/task-check-layer-v1.json",
+        "schemas/task-check-receipt-v2.json",
+        "schemas/task-check-report-v1.json",
+        "schemas/task-checks-v4.json",
+        "schemas/task-collected-inspection-v4.json",
+        "schemas/task-collected-v1.json",
+        "schemas/task-context-v1.json",
+        "schemas/task-delivery-proof-v1.json",
+        "schemas/task-delivery-record-v1.json",
+        "schemas/task-detached-v4.json",
+        "schemas/task-developers-v1.json",
+        "schemas/task-diagnostic-v1.json",
+        "schemas/task-diff-v1.json",
+        "schemas/task-evaluation-v1.json",
+        "schemas/task-event-v3.json",
+        "schemas/task-execution-record-v5.json",
+        "schemas/task-execution-started-v1.json",
+        "schemas/task-file-v1.json",
+        "schemas/task-findings-v3.json",
+        "schemas/task-fix-receipt-v1.json",
+        "schemas/task-fix-verification-v1.json",
+        "schemas/task-gate-cleanup-v1.json",
+        "schemas/task-gate-retried-v1.json",
+        "schemas/task-gc-v2.json",
+        "schemas/task-input-bindings-v1.json",
+        "schemas/task-inspection-v21.json",
+        "schemas/task-invocation-v1.json",
+        "schemas/task-list-entry-v5.json",
+        "schemas/task-list-v5.json",
+        "schemas/task-materialized-v1.json",
+        "schemas/task-operator-signature-v1.json",
+        "schemas/task-output-v1.json",
+        "schemas/task-owned-child-set-v1.json",
+        "schemas/task-partial-candidate-v1.json",
+        "schemas/task-phase-v1.json",
+        "schemas/task-plan-authorization-v1.json",
+        "schemas/task-plan-inspection-v7.json",
+        "schemas/task-planner-settings-v1.json",
+        "schemas/task-provider-admission-v4.json",
+        "schemas/task-provider-context-v3.json",
+        "schemas/task-provider-event-v1.json",
+        "schemas/task-read-first-v2.json",
+        "schemas/task-repair-context-v1.json",
+        "schemas/task-report-v4.json",
+        "schemas/task-result-v1.json",
+        "schemas/task-retry-feedback-v1.json",
+        "schemas/task-revision-v1.json",
+        "schemas/task-run-process-v1.json",
+        "schemas/task-run-report-v3.json",
+        "schemas/task-runtime-evidence-v1.json",
+        "schemas/task-selection-v3.json",
+        "schemas/task-snapshot-v1.json",
+        "schemas/task-source-capture-v1.json",
+        "schemas/task-source-origin-v3.json",
+        "schemas/task-state-v3.json",
+        "schemas/task-status-v3.json",
+        "schemas/task-storage-sweep-v2.json",
+        "schemas/task-token-usage-v3.json",
+        "schemas/task-transition-v6.json",
+        "schemas/task-usage-observation-v1.json",
+        "schemas/task-wake-capabilities-v1.json",
+        "schemas/task-wake-checkpoint-seal-v1.json",
+        "schemas/task-wake-checkpoint-v2.json",
+        "schemas/task-wake-delivery-v2.json",
+        "schemas/task-wake-envelope-v2.json",
+        "schemas/task-wake-evidence-v1.json",
+        "schemas/task-wake-grant-v1.json",
+        "schemas/task-wake-observation-v2.json",
+        "schemas/task-wake-pi-config-v1.json",
+        "schemas/task-wake-pi-next-v1.json",
+        "schemas/task-wake-probe-v1.json",
+        "schemas/task-wake-receipt-v1.json",
+        "schemas/task-wake-registration-v1.json",
+        "schemas/task-wake-route-traversal-v1.json",
+        "schemas/task-wake-route-v1.json",
+        "schemas/task-wake-status-v2.json",
+        "schemas/task-wake-subscription-v1.json",
+        "schemas/task-wake-traversal-v1.json",
+        "schemas/task-worker-reply-v1.json",
+        "schemas/task-worker-request-v1.json"
+      ]
+    }
+  ],
+  "requests": [
+    {
+      "worker": "crates/af/src/onboard/templates/bugs/worker.toml",
+      "outputs": {
+        "result": "crates/af/src/onboard/templates/bugs/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "result: untyped schema remains kernel-owned",
+      "canonical": {
+        "result": "crates/af/src/onboard/templates/bugs/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "crates/af/src/onboard/templates/correctness/worker.toml",
+      "outputs": {
+        "result": "crates/af/src/onboard/templates/correctness/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "result: untyped schema remains kernel-owned",
+      "canonical": {
+        "result": "crates/af/src/onboard/templates/correctness/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "crates/af/src/onboard/templates/evaluator/worker.toml",
+      "outputs": {
+        "result": "crates/af/src/onboard/templates/evaluator/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "schemas/task-evaluation-v1.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "crates/af/src/onboard/templates/implementer/worker.toml",
+      "outputs": {
+        "report": "crates/af/src/onboard/templates/implementer/outputs/report.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "report": "crates/af/src/onboard/templates/implementer/outputs/report.schema.json"
+      },
+      "excluded_outputs": {
+        "candidate": {
+          "artifact_type": "af/CandidateTree@1",
+          "reason": "kernel-sealed candidate; never a Worker JSON output"
+        }
+      }
+    },
+    {
+      "worker": "fixtures/custom-tasks/capitalize/worker/worker.toml",
+      "outputs": {
+        "capitalized": "fixtures/custom-tasks/capitalize/worker/outputs/capitalized.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "capitalized": "fixtures/custom-tasks/capitalize/worker/outputs/capitalized.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/custom-tasks/triage/worker/worker.toml",
+      "outputs": {
+        "triage": "fixtures/custom-tasks/triage/worker/outputs/triage.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "triage": "schemas/custom-issue-triage-v2.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/issue-triage/task-packages/backlog/triage-author/worker.toml",
+      "outputs": {
+        "draft": "fixtures/issue-triage/task-packages/backlog/triage-author/outputs/draft.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "draft": "schemas/document-draft-v3.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/issue-triage/task-packages/backlog/triage-verifier/worker.toml",
+      "outputs": {
+        "result": "fixtures/issue-triage/task-packages/backlog/triage-verifier/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "schemas/report-evaluation-v1.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/issue-workflows/task-packages/backlog/triage-author/worker.toml",
+      "outputs": {
+        "draft": "fixtures/issue-workflows/task-packages/backlog/triage-author/outputs/draft.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "draft": "schemas/document-draft-v3.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/issue-workflows/task-packages/backlog/triage-verifier/worker.toml",
+      "outputs": {
+        "result": "fixtures/issue-workflows/task-packages/backlog/triage-verifier/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "schemas/report-evaluation-v1.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/issue-workflows/task-packages/issue-internal/bugs/worker.toml",
+      "outputs": {
+        "result": "fixtures/issue-workflows/task-packages/issue-internal/bugs/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "result: untyped schema remains kernel-owned",
+      "canonical": {
+        "result": "fixtures/issue-workflows/task-packages/issue-internal/bugs/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/issue-workflows/task-packages/issue-internal/codex-light-evaluator/worker.toml",
+      "outputs": {
+        "result": "fixtures/issue-workflows/task-packages/issue-internal/codex-light-evaluator/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "schemas/task-evaluation-v1.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/issue-workflows/task-packages/issue-internal/correctness/worker.toml",
+      "outputs": {
+        "result": "fixtures/issue-workflows/task-packages/issue-internal/correctness/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "result: untyped schema remains kernel-owned",
+      "canonical": {
+        "result": "fixtures/issue-workflows/task-packages/issue-internal/correctness/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/issue-workflows/task-packages/issue-internal/design-acceptor/worker.toml",
+      "outputs": {
+        "result": "fixtures/issue-workflows/task-packages/issue-internal/design-acceptor/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "schemas/report-evaluation-v1.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/issue-workflows/task-packages/issue-internal/designer/worker.toml",
+      "outputs": {
+        "draft": "fixtures/issue-workflows/task-packages/issue-internal/designer/outputs/draft.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "draft": "schemas/document-draft-v3.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/issue-workflows/task-packages/issue-internal/evaluator/worker.toml",
+      "outputs": {
+        "result": "fixtures/issue-workflows/task-packages/issue-internal/evaluator/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "schemas/task-evaluation-v1.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/issue-workflows/task-packages/issue-internal/experiment-evaluator/worker.toml",
+      "outputs": {
+        "result": "fixtures/issue-workflows/task-packages/issue-internal/experiment-evaluator/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "schemas/task-evaluation-v1.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/issue-workflows/task-packages/issue-internal/implementer/worker.toml",
+      "outputs": {
+        "report": "fixtures/issue-workflows/task-packages/issue-internal/implementer/outputs/report.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "report": "fixtures/issue-workflows/task-packages/issue-internal/implementer/outputs/report.schema.json"
+      },
+      "excluded_outputs": {
+        "candidate": {
+          "artifact_type": "af/CandidateTree@1",
+          "reason": "kernel-sealed candidate; never a Worker JSON output"
+        }
+      }
+    },
+    {
+      "worker": "fixtures/issue-workflows/task-packages/issue-internal/investigator/worker.toml",
+      "outputs": {
+        "draft": "fixtures/issue-workflows/task-packages/issue-internal/investigator/outputs/draft.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "draft": "schemas/document-draft-v3.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/issue-workflows/task-packages/issue-internal/kimi/worker.toml",
+      "outputs": {
+        "report": "fixtures/issue-workflows/task-packages/issue-internal/kimi/outputs/report.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "report": "fixtures/issue-workflows/task-packages/issue-internal/kimi/outputs/report.schema.json"
+      },
+      "excluded_outputs": {
+        "candidate": {
+          "artifact_type": "af/CandidateTree@1",
+          "reason": "kernel-sealed candidate; never a Worker JSON output"
+        }
+      }
+    },
+    {
+      "worker": "fixtures/issue-workflows/task-packages/issue-internal/kimi-challenger/worker.toml",
+      "outputs": {
+        "result": "fixtures/issue-workflows/task-packages/issue-internal/kimi-challenger/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "schemas/report-evaluation-v1.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/issue-workflows/task-packages/issue-internal/kimi-implementer/worker.toml",
+      "outputs": {
+        "report": "fixtures/issue-workflows/task-packages/issue-internal/kimi-implementer/outputs/report.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "report": "fixtures/issue-workflows/task-packages/issue-internal/kimi-implementer/outputs/report.schema.json"
+      },
+      "excluded_outputs": {
+        "candidate": {
+          "artifact_type": "af/CandidateTree@1",
+          "reason": "kernel-sealed candidate; never a Worker JSON output"
+        }
+      }
+    },
+    {
+      "worker": "fixtures/issue-workflows/task-packages/issue-internal/kimi-researcher/worker.toml",
+      "outputs": {
+        "draft": "fixtures/issue-workflows/task-packages/issue-internal/kimi-researcher/outputs/draft.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "draft": "schemas/document-draft-v3.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/issue-workflows/task-packages/issue-internal/light-evaluator/worker.toml",
+      "outputs": {
+        "result": "fixtures/issue-workflows/task-packages/issue-internal/light-evaluator/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "schemas/task-evaluation-v1.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/issue-workflows/task-packages/issue-internal/report-verifier/worker.toml",
+      "outputs": {
+        "result": "fixtures/issue-workflows/task-packages/issue-internal/report-verifier/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "schemas/report-evaluation-v1.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/issue-workflows/task-packages/issue-internal/researched-implementer/worker.toml",
+      "outputs": {
+        "report": "fixtures/issue-workflows/task-packages/issue-internal/researched-implementer/outputs/report.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "report": "fixtures/issue-workflows/task-packages/issue-internal/researched-implementer/outputs/report.schema.json"
+      },
+      "excluded_outputs": {
+        "candidate": {
+          "artifact_type": "af/CandidateTree@1",
+          "reason": "kernel-sealed candidate; never a Worker JSON output"
+        }
+      }
+    },
+    {
+      "worker": "fixtures/kernel-experiment/task-packages/kernel/experiment-evaluator/worker.toml",
+      "outputs": {
+        "result": "fixtures/kernel-experiment/task-packages/kernel/experiment-evaluator/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "schemas/task-evaluation-v1.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/kernel-report/task-packages/kernel/analyst/worker.toml",
+      "outputs": {
+        "draft": "fixtures/kernel-report/task-packages/kernel/analyst/outputs/draft.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "draft": "schemas/document-draft-v3.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/kernel-report/task-packages/kernel/report-verifier/worker.toml",
+      "outputs": {
+        "result": "fixtures/kernel-report/task-packages/kernel/report-verifier/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "schemas/report-evaluation-v1.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/native-catalog-contracts/.af/task-packages/kernel/analyst/worker.toml",
+      "outputs": {
+        "draft": "fixtures/native-catalog-contracts/.af/task-packages/kernel/analyst/outputs/draft.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "draft": "schemas/document-draft-v3.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/native-catalog-contracts/.af/task-packages/kernel/bugs/worker.toml",
+      "outputs": {
+        "result": "fixtures/native-catalog-contracts/.af/task-packages/kernel/bugs/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "result: untyped schema remains kernel-owned",
+      "canonical": {
+        "result": "fixtures/native-catalog-contracts/.af/task-packages/kernel/bugs/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/native-catalog-contracts/.af/task-packages/kernel/correctness/worker.toml",
+      "outputs": {
+        "result": "fixtures/native-catalog-contracts/.af/task-packages/kernel/correctness/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "result: untyped schema remains kernel-owned",
+      "canonical": {
+        "result": "fixtures/native-catalog-contracts/.af/task-packages/kernel/correctness/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/native-catalog-contracts/.af/task-packages/kernel/evaluator/worker.toml",
+      "outputs": {
+        "result": "fixtures/native-catalog-contracts/.af/task-packages/kernel/evaluator/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "schemas/task-evaluation-v1.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/native-catalog-contracts/.af/task-packages/kernel/gate-accept/worker.toml",
+      "outputs": {
+        "result": "fixtures/native-catalog-contracts/.af/task-packages/kernel/gate-accept/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "schemas/task-evaluation-v1.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/native-catalog-contracts/.af/task-packages/kernel/implementer/worker.toml",
+      "outputs": {
+        "report": "fixtures/native-catalog-contracts/.af/task-packages/kernel/implementer/outputs/report.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "report": "fixtures/native-catalog-contracts/.af/task-packages/kernel/implementer/outputs/report.schema.json"
+      },
+      "excluded_outputs": {
+        "candidate": {
+          "artifact_type": "af/CandidateTree@1",
+          "reason": "kernel-sealed candidate; never a Worker JSON output"
+        }
+      }
+    },
+    {
+      "worker": "fixtures/native-catalog-contracts/.af/task-packages/kernel/report-verifier/worker.toml",
+      "outputs": {
+        "result": "fixtures/native-catalog-contracts/.af/task-packages/kernel/report-verifier/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "schemas/report-evaluation-v1.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/native-catalog-contracts/.af/task-packages/owner-default/bugs/worker.toml",
+      "outputs": {
+        "result": "fixtures/native-catalog-contracts/.af/task-packages/owner-default/bugs/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "result: untyped schema remains kernel-owned",
+      "canonical": {
+        "result": "fixtures/native-catalog-contracts/.af/task-packages/owner-default/bugs/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/native-catalog-contracts/.af/task-packages/owner-default/correctness/worker.toml",
+      "outputs": {
+        "result": "fixtures/native-catalog-contracts/.af/task-packages/owner-default/correctness/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "result: untyped schema remains kernel-owned",
+      "canonical": {
+        "result": "fixtures/native-catalog-contracts/.af/task-packages/owner-default/correctness/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/native-catalog-contracts/.af/task-packages/owner-default/evaluator/worker.toml",
+      "outputs": {
+        "result": "fixtures/native-catalog-contracts/.af/task-packages/owner-default/evaluator/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "schemas/task-evaluation-v1.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/native-catalog-contracts/.af/task-packages/owner-default/implementer/worker.toml",
+      "outputs": {
+        "report": "fixtures/native-catalog-contracts/.af/task-packages/owner-default/implementer/outputs/report.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "report": "fixtures/native-catalog-contracts/.af/task-packages/owner-default/implementer/outputs/report.schema.json"
+      },
+      "excluded_outputs": {
+        "candidate": {
+          "artifact_type": "af/CandidateTree@1",
+          "reason": "kernel-sealed candidate; never a Worker JSON output"
+        }
+      }
+    },
+    {
+      "worker": "fixtures/native-catalog-contracts/.af/task-packages/owner-default/report-author/worker.toml",
+      "outputs": {
+        "draft": "fixtures/native-catalog-contracts/.af/task-packages/owner-default/report-author/outputs/draft.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "draft": "schemas/document-draft-v3.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/native-catalog-contracts/.af/task-packages/pi-light/correctness/worker.toml",
+      "outputs": {
+        "result": "fixtures/native-catalog-contracts/.af/task-packages/pi-light/correctness/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "result: untyped schema remains kernel-owned",
+      "canonical": {
+        "result": "fixtures/native-catalog-contracts/.af/task-packages/pi-light/correctness/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/native-catalog-contracts/.af/task-packages/pi-light/evaluator/worker.toml",
+      "outputs": {
+        "result": "fixtures/native-catalog-contracts/.af/task-packages/pi-light/evaluator/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "schemas/task-evaluation-v1.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/native-catalog-contracts/.af/task-packages/pi-light/implementer/worker.toml",
+      "outputs": {
+        "report": "fixtures/native-catalog-contracts/.af/task-packages/pi-light/implementer/outputs/report.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "report": "fixtures/native-catalog-contracts/.af/task-packages/pi-light/implementer/outputs/report.schema.json"
+      },
+      "excluded_outputs": {
+        "candidate": {
+          "artifact_type": "af/CandidateTree@1",
+          "reason": "kernel-sealed candidate; never a Worker JSON output"
+        }
+      }
+    },
+    {
+      "worker": "fixtures/performance/cli/default-light-smoke/repo/.af/task-packages/default-light/correctness/worker.toml",
+      "outputs": {
+        "result": "fixtures/performance/cli/default-light-smoke/repo/.af/task-packages/default-light/correctness/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "result: untyped schema remains kernel-owned",
+      "canonical": {
+        "result": "fixtures/performance/cli/default-light-smoke/repo/.af/task-packages/default-light/correctness/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/performance/cli/default-light-smoke/repo/.af/task-packages/default-light/evaluator/worker.toml",
+      "outputs": {
+        "result": "fixtures/performance/cli/default-light-smoke/repo/.af/task-packages/default-light/evaluator/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "schemas/task-evaluation-v1.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/performance/cli/default-light-smoke/repo/.af/task-packages/default-light/implementer/worker.toml",
+      "outputs": {
+        "report": "fixtures/performance/cli/default-light-smoke/repo/.af/task-packages/default-light/implementer/outputs/report.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "report": "fixtures/performance/cli/default-light-smoke/repo/.af/task-packages/default-light/implementer/outputs/report.schema.json"
+      },
+      "excluded_outputs": {
+        "candidate": {
+          "artifact_type": "af/CandidateTree@1",
+          "reason": "kernel-sealed candidate; never a Worker JSON output"
+        }
+      }
+    },
+    {
+      "worker": "fixtures/performance/cli/native-review-roots/repo/.af/task-packages/fixture/bugs/worker.toml",
+      "outputs": {
+        "result": "fixtures/performance/cli/native-review-roots/repo/.af/task-packages/fixture/bugs/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "array without typed items has no strict projection; whole request retains kernel validation",
+      "canonical": {
+        "result": "fixtures/performance/cli/native-review-roots/repo/.af/task-packages/fixture/bugs/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/performance/cli/native-review-roots/repo/.af/task-packages/fixture/correctness/worker.toml",
+      "outputs": {
+        "result": "fixtures/performance/cli/native-review-roots/repo/.af/task-packages/fixture/correctness/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "array without typed items has no strict projection; whole request retains kernel validation",
+      "canonical": {
+        "result": "fixtures/performance/cli/native-review-roots/repo/.af/task-packages/fixture/correctness/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/performance/cli/task-roots/repo/.af/task-packages/perf/accept/worker.toml",
+      "outputs": {
+        "result": "fixtures/performance/cli/task-roots/repo/.af/task-packages/perf/accept/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "schemas/task-evaluation-v1.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/self-optimizer/catalog/optimization-baseline/worker.toml",
+      "outputs": {
+        "receipt": "fixtures/self-optimizer/catalog/optimization-baseline/outputs/receipt.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "receipt": "fixtures/self-optimizer/catalog/optimization-baseline/outputs/receipt.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/self-optimizer/catalog/optimization-candidate/worker.toml",
+      "outputs": {
+        "receipt": "fixtures/self-optimizer/catalog/optimization-candidate/outputs/receipt.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "receipt": "fixtures/self-optimizer/catalog/optimization-candidate/outputs/receipt.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/self-optimizer/catalog/optimization-check-baseline/worker.toml",
+      "outputs": {
+        "receipt": "fixtures/self-optimizer/catalog/optimization-check-baseline/outputs/receipt.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "receipt": "fixtures/self-optimizer/catalog/optimization-check-baseline/outputs/receipt.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/self-optimizer/catalog/optimization-check-candidate/worker.toml",
+      "outputs": {
+        "receipt": "fixtures/self-optimizer/catalog/optimization-check-candidate/outputs/receipt.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "receipt": "fixtures/self-optimizer/catalog/optimization-check-candidate/outputs/receipt.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/self-optimizer/catalog/optimization-check-evaluator/worker.toml",
+      "outputs": {
+        "evaluation": "fixtures/self-optimizer/catalog/optimization-check-evaluator/outputs/evaluation.schema.json"
+      },
+      "strict": false,
+      "reason": "evaluation: local reference/definitions remain kernel-owned",
+      "canonical": {
+        "evaluation": "schemas/optimization-evaluation-v1.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/self-optimizer/catalog/optimization-light-diagnose/worker.toml",
+      "outputs": {
+        "diagnostic": "fixtures/self-optimizer/catalog/optimization-light-diagnose/outputs/diagnostic.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "diagnostic": "fixtures/self-optimizer/catalog/optimization-light-diagnose/outputs/diagnostic.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/self-optimizer/catalog/optimization-light-diagnose-model/worker.toml",
+      "outputs": {
+        "diagnostic": "fixtures/self-optimizer/catalog/optimization-light-diagnose-model/outputs/diagnostic.schema.json"
+      },
+      "strict": false,
+      "reason": "diagnostic: local reference/definitions remain kernel-owned",
+      "canonical": {
+        "diagnostic": "fixtures/self-optimizer/catalog/optimization-light-diagnose-model/outputs/diagnostic.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/self-optimizer/catalog/optimization-light-propose/worker.toml",
+      "outputs": {
+        "proposal": "fixtures/self-optimizer/catalog/optimization-light-propose/outputs/proposal.schema.json"
+      },
+      "strict": false,
+      "reason": "proposal: local reference/definitions remain kernel-owned",
+      "canonical": {
+        "proposal": "fixtures/self-optimizer/catalog/optimization-light-propose/outputs/proposal.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/self-optimizer/catalog/optimization-light-propose-model/worker.toml",
+      "outputs": {
+        "proposal": "fixtures/self-optimizer/catalog/optimization-light-propose-model/outputs/proposal.schema.json"
+      },
+      "strict": false,
+      "reason": "proposal: local reference/definitions remain kernel-owned",
+      "canonical": {
+        "proposal": "fixtures/self-optimizer/catalog/optimization-light-propose-model/outputs/proposal.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/task-runtime/acceptance/.af/task-packages/fixture/evaluator/worker.toml",
+      "outputs": {
+        "result": "fixtures/task-runtime/acceptance/.af/task-packages/fixture/evaluator/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "fixtures/task-runtime/acceptance/.af/task-packages/fixture/evaluator/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/task-runtime/acceptance/.af/task-packages/fixture/implementer/worker.toml",
+      "outputs": {
+        "report": "fixtures/task-runtime/acceptance/.af/task-packages/fixture/implementer/outputs/report.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "report": "fixtures/task-runtime/acceptance/.af/task-packages/fixture/implementer/outputs/report.schema.json"
+      },
+      "excluded_outputs": {
+        "candidate": {
+          "artifact_type": "af/CandidateTree@1",
+          "reason": "kernel-sealed candidate; never a Worker JSON output"
+        }
+      }
+    },
+    {
+      "worker": "fixtures/task-runtime/bound-inputs/.af/task-packages/fixture/bugs/worker.toml",
+      "outputs": {
+        "result": "fixtures/task-runtime/bound-inputs/.af/task-packages/fixture/bugs/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "array without typed items has no strict projection; whole request retains kernel validation",
+      "canonical": {
+        "result": "fixtures/task-runtime/bound-inputs/.af/task-packages/fixture/bugs/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/task-runtime/bound-inputs/.af/task-packages/fixture/correctness/worker.toml",
+      "outputs": {
+        "result": "fixtures/task-runtime/bound-inputs/.af/task-packages/fixture/correctness/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "array without typed items has no strict projection; whole request retains kernel validation",
+      "canonical": {
+        "result": "fixtures/task-runtime/bound-inputs/.af/task-packages/fixture/correctness/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/task-runtime/bound-inputs/.af/task-packages/fixture/evaluator/worker.toml",
+      "outputs": {
+        "result": "fixtures/task-runtime/bound-inputs/.af/task-packages/fixture/evaluator/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "fixtures/task-runtime/bound-inputs/.af/task-packages/fixture/evaluator/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/task-runtime/bound-inputs/.af/task-packages/fixture/implementer/worker.toml",
+      "outputs": {
+        "report": "fixtures/task-runtime/bound-inputs/.af/task-packages/fixture/implementer/outputs/report.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "report": "fixtures/task-runtime/bound-inputs/.af/task-packages/fixture/implementer/outputs/report.schema.json"
+      },
+      "excluded_outputs": {
+        "candidate": {
+          "artifact_type": "af/CandidateTree@1",
+          "reason": "kernel-sealed candidate; never a Worker JSON output"
+        }
+      }
+    },
+    {
+      "worker": "fixtures/task-runtime/bounded-repair/.af/task-packages/fixture/bugs/worker.toml",
+      "outputs": {
+        "result": "fixtures/task-runtime/bounded-repair/.af/task-packages/fixture/bugs/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "array without typed items has no strict projection; whole request retains kernel validation",
+      "canonical": {
+        "result": "fixtures/task-runtime/bounded-repair/.af/task-packages/fixture/bugs/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/task-runtime/bounded-repair/.af/task-packages/fixture/correctness/worker.toml",
+      "outputs": {
+        "result": "fixtures/task-runtime/bounded-repair/.af/task-packages/fixture/correctness/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "array without typed items has no strict projection; whole request retains kernel validation",
+      "canonical": {
+        "result": "fixtures/task-runtime/bounded-repair/.af/task-packages/fixture/correctness/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/task-runtime/bounded-repair/.af/task-packages/fixture/evaluator/worker.toml",
+      "outputs": {
+        "result": "fixtures/task-runtime/bounded-repair/.af/task-packages/fixture/evaluator/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "fixtures/task-runtime/bounded-repair/.af/task-packages/fixture/evaluator/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/task-runtime/bounded-repair/.af/task-packages/fixture/fix-verifier/worker.toml",
+      "outputs": {
+        "result": "fixtures/task-runtime/bounded-repair/.af/task-packages/fixture/fix-verifier/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "result: open map remains kernel-owned",
+      "canonical": {
+        "result": "fixtures/task-runtime/bounded-repair/.af/task-packages/fixture/fix-verifier/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/task-runtime/bounded-repair/.af/task-packages/fixture/implementer/worker.toml",
+      "outputs": {
+        "report": "fixtures/task-runtime/bounded-repair/.af/task-packages/fixture/implementer/outputs/report.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "report": "fixtures/task-runtime/bounded-repair/.af/task-packages/fixture/implementer/outputs/report.schema.json"
+      },
+      "excluded_outputs": {
+        "candidate": {
+          "artifact_type": "af/CandidateTree@1",
+          "reason": "kernel-sealed candidate; never a Worker JSON output"
+        }
+      }
+    },
+    {
+      "worker": "fixtures/task-runtime/bounded-repair/.af/task-packages/fixture/repairer/worker.toml",
+      "outputs": {
+        "report": "fixtures/task-runtime/bounded-repair/.af/task-packages/fixture/repairer/outputs/report.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "report": "fixtures/task-runtime/bounded-repair/.af/task-packages/fixture/repairer/outputs/report.schema.json"
+      },
+      "excluded_outputs": {
+        "candidate": {
+          "artifact_type": "af/CandidateTree@1",
+          "reason": "kernel-sealed candidate; never a Worker JSON output"
+        }
+      }
+    },
+    {
+      "worker": "fixtures/task-runtime/continue/.af/task-packages/fixture/bugs/worker.toml",
+      "outputs": {
+        "result": "fixtures/task-runtime/continue/.af/task-packages/fixture/bugs/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "array without typed items has no strict projection; whole request retains kernel validation",
+      "canonical": {
+        "result": "fixtures/task-runtime/continue/.af/task-packages/fixture/bugs/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/task-runtime/continue/.af/task-packages/fixture/correctness/worker.toml",
+      "outputs": {
+        "result": "fixtures/task-runtime/continue/.af/task-packages/fixture/correctness/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "array without typed items has no strict projection; whole request retains kernel validation",
+      "canonical": {
+        "result": "fixtures/task-runtime/continue/.af/task-packages/fixture/correctness/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/task-runtime/continue/.af/task-packages/fixture/evaluator/worker.toml",
+      "outputs": {
+        "result": "fixtures/task-runtime/continue/.af/task-packages/fixture/evaluator/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "fixtures/task-runtime/continue/.af/task-packages/fixture/evaluator/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/task-runtime/continue/.af/task-packages/fixture/implementer/worker.toml",
+      "outputs": {
+        "report": "fixtures/task-runtime/continue/.af/task-packages/fixture/implementer/outputs/report.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "report": "fixtures/task-runtime/continue/.af/task-packages/fixture/implementer/outputs/report.schema.json"
+      },
+      "excluded_outputs": {
+        "candidate": {
+          "artifact_type": "af/CandidateTree@1",
+          "reason": "kernel-sealed candidate; never a Worker JSON output"
+        }
+      }
+    },
+    {
+      "worker": "fixtures/task-runtime/embedded-review/.af/task-packages/fixture/bugs/worker.toml",
+      "outputs": {
+        "result": "fixtures/task-runtime/embedded-review/.af/task-packages/fixture/bugs/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "array without typed items has no strict projection; whole request retains kernel validation",
+      "canonical": {
+        "result": "fixtures/task-runtime/embedded-review/.af/task-packages/fixture/bugs/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/task-runtime/embedded-review/.af/task-packages/fixture/correctness/worker.toml",
+      "outputs": {
+        "result": "fixtures/task-runtime/embedded-review/.af/task-packages/fixture/correctness/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "array without typed items has no strict projection; whole request retains kernel validation",
+      "canonical": {
+        "result": "fixtures/task-runtime/embedded-review/.af/task-packages/fixture/correctness/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/task-runtime/embedded-review/.af/task-packages/fixture/evaluator/worker.toml",
+      "outputs": {
+        "result": "fixtures/task-runtime/embedded-review/.af/task-packages/fixture/evaluator/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "fixtures/task-runtime/embedded-review/.af/task-packages/fixture/evaluator/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/task-runtime/embedded-review/.af/task-packages/fixture/implementer/worker.toml",
+      "outputs": {
+        "report": "fixtures/task-runtime/embedded-review/.af/task-packages/fixture/implementer/outputs/report.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "report": "fixtures/task-runtime/embedded-review/.af/task-packages/fixture/implementer/outputs/report.schema.json"
+      },
+      "excluded_outputs": {
+        "candidate": {
+          "artifact_type": "af/CandidateTree@1",
+          "reason": "kernel-sealed candidate; never a Worker JSON output"
+        }
+      }
+    },
+    {
+      "worker": "fixtures/task-runtime/experiment/.af/task-packages/fixture/experiment-evaluator/worker.toml",
+      "outputs": {
+        "result": "fixtures/task-runtime/experiment/.af/task-packages/fixture/experiment-evaluator/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "fixtures/task-runtime/experiment/.af/task-packages/fixture/experiment-evaluator/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/task-runtime/experiment/.af/task-packages/fixture/implementer/worker.toml",
+      "outputs": {
+        "report": "fixtures/task-runtime/experiment/.af/task-packages/fixture/implementer/outputs/report.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "report": "fixtures/task-runtime/experiment/.af/task-packages/fixture/implementer/outputs/report.schema.json"
+      },
+      "excluded_outputs": {
+        "candidate": {
+          "artifact_type": "af/CandidateTree@1",
+          "reason": "kernel-sealed candidate; never a Worker JSON output"
+        }
+      }
+    },
+    {
+      "worker": "fixtures/task-runtime/pagination/.af/task-packages/fixture/evaluator/worker.toml",
+      "outputs": {
+        "result": "fixtures/task-runtime/pagination/.af/task-packages/fixture/evaluator/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "fixtures/task-runtime/pagination/.af/task-packages/fixture/evaluator/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/task-runtime/pagination/.af/task-packages/fixture/implementer/worker.toml",
+      "outputs": {
+        "report": "fixtures/task-runtime/pagination/.af/task-packages/fixture/implementer/outputs/report.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "report": "fixtures/task-runtime/pagination/.af/task-packages/fixture/implementer/outputs/report.schema.json"
+      },
+      "excluded_outputs": {
+        "candidate": {
+          "artifact_type": "af/CandidateTree@1",
+          "reason": "kernel-sealed candidate; never a Worker JSON output"
+        }
+      }
+    },
+    {
+      "worker": "fixtures/task-runtime/project-brief/.af/task-packages/fixture/evaluator/worker.toml",
+      "outputs": {
+        "result": "fixtures/task-runtime/project-brief/.af/task-packages/fixture/evaluator/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "fixtures/task-runtime/project-brief/.af/task-packages/fixture/evaluator/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/task-runtime/project-brief/.af/task-packages/fixture/forger/worker.toml",
+      "outputs": {
+        "brief": "fixtures/task-runtime/project-brief/.af/task-packages/fixture/forger/outputs/brief.schema.json",
+        "report": "fixtures/task-runtime/project-brief/.af/task-packages/fixture/forger/outputs/report.schema.json"
+      },
+      "strict": false,
+      "reason": "brief: open map remains kernel-owned",
+      "canonical": {
+        "brief": "fixtures/task-runtime/project-brief/.af/task-packages/fixture/forger/outputs/brief.schema.json",
+        "report": "fixtures/task-runtime/project-brief/.af/task-packages/fixture/forger/outputs/report.schema.json"
+      },
+      "excluded_outputs": {
+        "candidate": {
+          "artifact_type": "af/CandidateTree@1",
+          "reason": "kernel-sealed candidate; never a Worker JSON output"
+        }
+      }
+    },
+    {
+      "worker": "fixtures/task-runtime/project-brief/.af/task-packages/fixture/implementer/worker.toml",
+      "outputs": {
+        "report": "fixtures/task-runtime/project-brief/.af/task-packages/fixture/implementer/outputs/report.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "report": "fixtures/task-runtime/project-brief/.af/task-packages/fixture/implementer/outputs/report.schema.json"
+      },
+      "excluded_outputs": {
+        "candidate": {
+          "artifact_type": "af/CandidateTree@1",
+          "reason": "kernel-sealed candidate; never a Worker JSON output"
+        }
+      }
+    },
+    {
+      "worker": "fixtures/task-runtime/review/.af/task-packages/fixture/bugs/worker.toml",
+      "outputs": {
+        "result": "fixtures/task-runtime/review/.af/task-packages/fixture/bugs/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "array without typed items has no strict projection; whole request retains kernel validation",
+      "canonical": {
+        "result": "fixtures/task-runtime/review/.af/task-packages/fixture/bugs/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/task-runtime/review/.af/task-packages/fixture/correctness/worker.toml",
+      "outputs": {
+        "result": "fixtures/task-runtime/review/.af/task-packages/fixture/correctness/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "array without typed items has no strict projection; whole request retains kernel validation",
+      "canonical": {
+        "result": "fixtures/task-runtime/review/.af/task-packages/fixture/correctness/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/task-runtime/review-v2/.af/task-packages/fixture/bugs/worker.toml",
+      "outputs": {
+        "result": "fixtures/task-runtime/review-v2/.af/task-packages/fixture/bugs/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "array without typed items has no strict projection; whole request retains kernel validation",
+      "canonical": {
+        "result": "fixtures/task-runtime/review-v2/.af/task-packages/fixture/bugs/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/task-runtime/review-v2/.af/task-packages/fixture/correctness/worker.toml",
+      "outputs": {
+        "result": "fixtures/task-runtime/review-v2/.af/task-packages/fixture/correctness/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "array without typed items has no strict projection; whole request retains kernel validation",
+      "canonical": {
+        "result": "fixtures/task-runtime/review-v2/.af/task-packages/fixture/correctness/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/telemetry-bench/telemetry-bench-concurrent/repo/.af/task-packages/bench/alpha/worker.toml",
+      "outputs": {
+        "result": "fixtures/telemetry-bench/telemetry-bench-concurrent/repo/.af/task-packages/bench/alpha/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "array without typed items has no strict projection; whole request retains kernel validation",
+      "canonical": {
+        "result": "fixtures/telemetry-bench/telemetry-bench-concurrent/repo/.af/task-packages/bench/alpha/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/telemetry-bench/telemetry-bench-concurrent/repo/.af/task-packages/bench/beta/worker.toml",
+      "outputs": {
+        "result": "fixtures/telemetry-bench/telemetry-bench-concurrent/repo/.af/task-packages/bench/beta/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "array without typed items has no strict projection; whole request retains kernel validation",
+      "canonical": {
+        "result": "fixtures/telemetry-bench/telemetry-bench-concurrent/repo/.af/task-packages/bench/beta/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/telemetry-bench/telemetry-bench-concurrent/repo/.af/task-packages/bench/delta/worker.toml",
+      "outputs": {
+        "result": "fixtures/telemetry-bench/telemetry-bench-concurrent/repo/.af/task-packages/bench/delta/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "array without typed items has no strict projection; whole request retains kernel validation",
+      "canonical": {
+        "result": "fixtures/telemetry-bench/telemetry-bench-concurrent/repo/.af/task-packages/bench/delta/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/telemetry-bench/telemetry-bench-concurrent/repo/.af/task-packages/bench/gamma/worker.toml",
+      "outputs": {
+        "result": "fixtures/telemetry-bench/telemetry-bench-concurrent/repo/.af/task-packages/bench/gamma/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "array without typed items has no strict projection; whole request retains kernel validation",
+      "canonical": {
+        "result": "fixtures/telemetry-bench/telemetry-bench-concurrent/repo/.af/task-packages/bench/gamma/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/telemetry-bench/telemetry-bench-dense/repo/.af/task-packages/bench/stream/worker.toml",
+      "outputs": {
+        "result": "fixtures/telemetry-bench/telemetry-bench-dense/repo/.af/task-packages/bench/stream/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "array without typed items has no strict projection; whole request retains kernel validation",
+      "canonical": {
+        "result": "fixtures/telemetry-bench/telemetry-bench-dense/repo/.af/task-packages/bench/stream/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/telemetry-bench/telemetry-bench-invocation-four/repo/.af/task-packages/bench/alpha/worker.toml",
+      "outputs": {
+        "result": "fixtures/telemetry-bench/telemetry-bench-invocation-four/repo/.af/task-packages/bench/alpha/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "array without typed items has no strict projection; whole request retains kernel validation",
+      "canonical": {
+        "result": "fixtures/telemetry-bench/telemetry-bench-invocation-four/repo/.af/task-packages/bench/alpha/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/telemetry-bench/telemetry-bench-invocation-four/repo/.af/task-packages/bench/beta/worker.toml",
+      "outputs": {
+        "result": "fixtures/telemetry-bench/telemetry-bench-invocation-four/repo/.af/task-packages/bench/beta/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "array without typed items has no strict projection; whole request retains kernel validation",
+      "canonical": {
+        "result": "fixtures/telemetry-bench/telemetry-bench-invocation-four/repo/.af/task-packages/bench/beta/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/telemetry-bench/telemetry-bench-invocation-four/repo/.af/task-packages/bench/delta/worker.toml",
+      "outputs": {
+        "result": "fixtures/telemetry-bench/telemetry-bench-invocation-four/repo/.af/task-packages/bench/delta/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "array without typed items has no strict projection; whole request retains kernel validation",
+      "canonical": {
+        "result": "fixtures/telemetry-bench/telemetry-bench-invocation-four/repo/.af/task-packages/bench/delta/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/telemetry-bench/telemetry-bench-invocation-four/repo/.af/task-packages/bench/gamma/worker.toml",
+      "outputs": {
+        "result": "fixtures/telemetry-bench/telemetry-bench-invocation-four/repo/.af/task-packages/bench/gamma/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "array without typed items has no strict projection; whole request retains kernel validation",
+      "canonical": {
+        "result": "fixtures/telemetry-bench/telemetry-bench-invocation-four/repo/.af/task-packages/bench/gamma/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/telemetry-bench/telemetry-bench-invocation-one/repo/.af/task-packages/bench/stream/worker.toml",
+      "outputs": {
+        "result": "fixtures/telemetry-bench/telemetry-bench-invocation-one/repo/.af/task-packages/bench/stream/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "array without typed items has no strict projection; whole request retains kernel validation",
+      "canonical": {
+        "result": "fixtures/telemetry-bench/telemetry-bench-invocation-one/repo/.af/task-packages/bench/stream/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/telemetry-bench/telemetry-bench-store/repo/.af/task-packages/bench/alpha/worker.toml",
+      "outputs": {
+        "result": "fixtures/telemetry-bench/telemetry-bench-store/repo/.af/task-packages/bench/alpha/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "array without typed items has no strict projection; whole request retains kernel validation",
+      "canonical": {
+        "result": "fixtures/telemetry-bench/telemetry-bench-store/repo/.af/task-packages/bench/alpha/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/telemetry-bench/telemetry-bench-store/repo/.af/task-packages/bench/beta/worker.toml",
+      "outputs": {
+        "result": "fixtures/telemetry-bench/telemetry-bench-store/repo/.af/task-packages/bench/beta/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "array without typed items has no strict projection; whole request retains kernel validation",
+      "canonical": {
+        "result": "fixtures/telemetry-bench/telemetry-bench-store/repo/.af/task-packages/bench/beta/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/telemetry-bench/telemetry-bench-store/repo/.af/task-packages/bench/delta/worker.toml",
+      "outputs": {
+        "result": "fixtures/telemetry-bench/telemetry-bench-store/repo/.af/task-packages/bench/delta/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "array without typed items has no strict projection; whole request retains kernel validation",
+      "canonical": {
+        "result": "fixtures/telemetry-bench/telemetry-bench-store/repo/.af/task-packages/bench/delta/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/telemetry-bench/telemetry-bench-store/repo/.af/task-packages/bench/gamma/worker.toml",
+      "outputs": {
+        "result": "fixtures/telemetry-bench/telemetry-bench-store/repo/.af/task-packages/bench/gamma/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "array without typed items has no strict projection; whole request retains kernel validation",
+      "canonical": {
+        "result": "fixtures/telemetry-bench/telemetry-bench-store/repo/.af/task-packages/bench/gamma/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/worker-development/python/worker.toml",
+      "outputs": {
+        "report": "fixtures/worker-development/python/outputs/report.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "report": "fixtures/worker-development/python/outputs/report.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/worker-development/rust/worker.toml",
+      "outputs": {
+        "report": "fixtures/worker-development/rust/outputs/report.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "report": "fixtures/worker-development/rust/outputs/report.schema.json"
+      },
+      "excluded_outputs": {
+        "candidate": {
+          "artifact_type": "af/CandidateTree@1",
+          "reason": "kernel-sealed candidate; never a Worker JSON output"
+        },
+        "cache_out": {
+          "artifact_type": "review.kernel/BuildCache@2",
+          "reason": "kernel-owned declared development cache output"
+        }
+      }
+    },
+    {
+      "worker": "fixtures/worker-knowledge/worker.toml",
+      "outputs": {
+        "output": "fixtures/worker-knowledge/outputs/output.schema.json",
+        "knowledge_query": "fixtures/worker-knowledge/outputs/knowledge_query.schema.json",
+        "notes": "fixtures/worker-knowledge/outputs/notes.schema.json"
+      },
+      "strict": false,
+      "reason": "notes: open map remains kernel-owned",
+      "canonical": {
+        "output": "fixtures/worker-knowledge/outputs/output.schema.json",
+        "knowledge_query": "schemas/knowledge-query-v1.json",
+        "notes": "fixtures/worker-knowledge/outputs/notes.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": ".af/task-packages/backlog/triage-author/worker.toml",
+      "outputs": {
+        "draft": ".af/task-packages/backlog/triage-author/outputs/draft.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "draft": "schemas/document-draft-v3.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": ".af/task-packages/backlog/triage-verifier/worker.toml",
+      "outputs": {
+        "result": ".af/task-packages/backlog/triage-verifier/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "schemas/report-evaluation-v1.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": ".af/task-packages/issue-internal/bugs/worker.toml",
+      "outputs": {
+        "result": ".af/task-packages/issue-internal/bugs/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "result: untyped schema remains kernel-owned",
+      "canonical": {
+        "result": ".af/task-packages/issue-internal/bugs/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": ".af/task-packages/issue-internal/codex-light-evaluator/worker.toml",
+      "outputs": {
+        "result": ".af/task-packages/issue-internal/codex-light-evaluator/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "schemas/task-evaluation-v1.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": ".af/task-packages/issue-internal/correctness/worker.toml",
+      "outputs": {
+        "result": ".af/task-packages/issue-internal/correctness/outputs/result.schema.json"
+      },
+      "strict": false,
+      "reason": "result: untyped schema remains kernel-owned",
+      "canonical": {
+        "result": ".af/task-packages/issue-internal/correctness/outputs/result.schema.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": ".af/task-packages/issue-internal/design-acceptor/worker.toml",
+      "outputs": {
+        "result": ".af/task-packages/issue-internal/design-acceptor/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "schemas/report-evaluation-v1.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": ".af/task-packages/issue-internal/designer/worker.toml",
+      "outputs": {
+        "draft": ".af/task-packages/issue-internal/designer/outputs/draft.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "draft": "schemas/document-draft-v3.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": ".af/task-packages/issue-internal/evaluator/worker.toml",
+      "outputs": {
+        "result": ".af/task-packages/issue-internal/evaluator/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "schemas/task-evaluation-v1.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": ".af/task-packages/issue-internal/experiment-evaluator/worker.toml",
+      "outputs": {
+        "result": ".af/task-packages/issue-internal/experiment-evaluator/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "schemas/task-evaluation-v1.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": ".af/task-packages/issue-internal/implementer/worker.toml",
+      "outputs": {
+        "report": ".af/task-packages/issue-internal/implementer/outputs/report.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "report": ".af/task-packages/issue-internal/implementer/outputs/report.schema.json"
+      },
+      "excluded_outputs": {
+        "candidate": {
+          "artifact_type": "af/CandidateTree@1",
+          "reason": "kernel-sealed candidate; never a Worker JSON output"
+        }
+      }
+    },
+    {
+      "worker": ".af/task-packages/issue-internal/investigator/worker.toml",
+      "outputs": {
+        "draft": ".af/task-packages/issue-internal/investigator/outputs/draft.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "draft": "schemas/document-draft-v3.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": ".af/task-packages/issue-internal/kimi/worker.toml",
+      "outputs": {
+        "report": ".af/task-packages/issue-internal/kimi/outputs/report.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "report": ".af/task-packages/issue-internal/kimi/outputs/report.schema.json"
+      },
+      "excluded_outputs": {
+        "candidate": {
+          "artifact_type": "af/CandidateTree@1",
+          "reason": "kernel-sealed candidate; never a Worker JSON output"
+        }
+      }
+    },
+    {
+      "worker": ".af/task-packages/issue-internal/kimi-challenger/worker.toml",
+      "outputs": {
+        "result": ".af/task-packages/issue-internal/kimi-challenger/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "schemas/report-evaluation-v1.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": ".af/task-packages/issue-internal/kimi-implementer/worker.toml",
+      "outputs": {
+        "report": ".af/task-packages/issue-internal/kimi-implementer/outputs/report.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "report": ".af/task-packages/issue-internal/kimi-implementer/outputs/report.schema.json"
+      },
+      "excluded_outputs": {
+        "candidate": {
+          "artifact_type": "af/CandidateTree@1",
+          "reason": "kernel-sealed candidate; never a Worker JSON output"
+        }
+      }
+    },
+    {
+      "worker": ".af/task-packages/issue-internal/kimi-researcher/worker.toml",
+      "outputs": {
+        "draft": ".af/task-packages/issue-internal/kimi-researcher/outputs/draft.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "draft": "schemas/document-draft-v3.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": ".af/task-packages/issue-internal/light-evaluator/worker.toml",
+      "outputs": {
+        "result": ".af/task-packages/issue-internal/light-evaluator/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "schemas/task-evaluation-v1.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": ".af/task-packages/issue-internal/report-verifier/worker.toml",
+      "outputs": {
+        "result": ".af/task-packages/issue-internal/report-verifier/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "schemas/report-evaluation-v1.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": ".af/task-packages/issue-internal/researched-implementer/worker.toml",
+      "outputs": {
+        "report": ".af/task-packages/issue-internal/researched-implementer/outputs/report.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "report": ".af/task-packages/issue-internal/researched-implementer/outputs/report.schema.json"
+      },
+      "excluded_outputs": {
+        "candidate": {
+          "artifact_type": "af/CandidateTree@1",
+          "reason": "kernel-sealed candidate; never a Worker JSON output"
+        }
+      }
+    },
+    {
+      "worker": "fixtures/performance/cli/task-roots/receipt-v1/.af/task-packages/perf/accept/worker.toml",
+      "outputs": {},
+      "strict": false,
+      "reason": "negative fixture deliberately lacks its model-authored output schema; package admission must refuse",
+      "canonical": {},
+      "excluded_outputs": {
+        "result": {
+          "artifact_type": "af/TaskEvaluation@1",
+          "reason": "negative receipt fixture intentionally lacks output schema; not an executable Worker contract"
+        }
+      }
+    }
+  ]
+}

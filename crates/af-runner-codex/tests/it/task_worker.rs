@@ -681,3 +681,225 @@ fn a_silent_exit_and_an_overloaded_model_are_transient_and_an_auth_failure_is_no
         );
     }
 }
+
+/// #1106: real shipped triage/report/evaluator contracts reach the real adapter's schema
+/// file; a synthetic native request rejection is deterministic and never re-asked.
+#[test]
+fn shipped_contract_schema_files_and_deterministic_rejections_are_hermetic() {
+    use af_contracts::task::execution::TaskInvocationV1;
+    use af_runner::native_failure::NativeFailureKind;
+    use af_runner::task::{WorkerRequest, invoke_model, reply_schema};
+    use serde_json::{Value, json};
+    use std::collections::BTreeMap;
+    let root = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+    let temp = tempfile::tempdir().unwrap();
+    let cas = Cas::open(temp.path().join("cas")).unwrap();
+    let copy = temp.path().join("schema.json");
+    let calls = temp.path().join("calls");
+    let program = temp.path().join("fake-codex");
+    let setup = format!(
+        "#!/bin/sh\ncat >/dev/null\necho call >> '{}'\nprev=; for arg in \"$@\"; do [ \"$prev\" = --output-schema ] && cp \"$arg\" '{}'; prev=$arg; done\n",
+        calls.display(),
+        copy.display()
+    );
+    std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    for path in [
+        "fixtures/custom-tasks/triage/worker/outputs/triage.schema.json",
+        ".af/task-packages/backlog/triage-author/outputs/draft.schema.json",
+        ".af/task-packages/issue-internal/report-verifier/outputs/result.schema.json",
+        ".af/task-packages/issue-internal/evaluator/outputs/result.schema.json",
+    ] {
+        let schema: Value =
+            serde_json::from_slice(&std::fs::read(root.join(path)).unwrap()).unwrap();
+        let outputs = BTreeMap::from([("result".into(), schema)]);
+        let contract =
+            WorkerContract::capture(&cas, json!({"type":"object"}), outputs.clone()).unwrap();
+        let request = WorkerRequest::new("Judge.", BTreeMap::new(), vec![], outputs)
+            .rendered()
+            .unwrap();
+        std::fs::write(&program, format!("{setup}echo '{{\"type\":\"item.completed\",\"item\":{{\"type\":\"agent_message\",\"text\":\"invalid_json_schema\"}}}}'\n{}echo '{{\"type\":\"turn.completed\",\"usage\":{{\"input_tokens\":2,\"output_tokens\":1}}}}'\n", write_reply(r#"{"schema":"af.worker-reply/1","outputs":{"result":[]}}"#))).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let adapter =
+            CodexTaskAdapter::new(&Command::new(program.to_str().unwrap(), vec![])).unwrap();
+        let returned = adapter.invoke(
+            &cas,
+            temp.path(),
+            request,
+            LOAD_SAFE_WALL,
+            WorkerAccess::ReadOnly,
+            None,
+            &[],
+        );
+        assert_eq!(returned.native_failure, None);
+        assert!(returned.notes.transient.is_none());
+        contract.validate_reply(&returned.message.unwrap()).unwrap();
+        let actual: Value = serde_json::from_slice(&std::fs::read(&copy).unwrap()).unwrap();
+        reply_schema::validate_strict(&actual).unwrap();
+        let payload = &actual["properties"]["outputs"]["properties"]["result"]["items"];
+        if path.contains("custom-tasks") {
+            assert_eq!(payload["properties"]["schema"]["type"], "string");
+            let kinds = payload["properties"]["class"]["type"].as_array().unwrap();
+            assert!(kinds.contains(&json!("null")) && kinds.contains(&json!("string")));
+        }
+    }
+    let adapter = CodexTaskAdapter::new(&Command::new(program.to_str().unwrap(), vec![])).unwrap();
+    let before = std::fs::read(&calls).unwrap();
+    let invalid = WorkerRequest::new(
+        "Judge.",
+        BTreeMap::new(),
+        vec![],
+        BTreeMap::from([("triage".into(), json!({"type":"bogus"}))]),
+    )
+    .rendered()
+    .unwrap();
+    let refused = adapter.invoke(
+        &cas,
+        temp.path(),
+        invalid,
+        LOAD_SAFE_WALL,
+        WorkerAccess::ReadOnly,
+        None,
+        &[],
+    );
+    assert!(refused.message.unwrap_err().contains("triage"));
+    assert_eq!(refused.usage.unwrap().chargeable_tokens.get(), 0);
+    assert_eq!(
+        std::fs::read(&calls).unwrap(),
+        before,
+        "preflight must not spawn provider"
+    );
+
+    // Real invoke_model/re-ask path: failed native events are never model prose. Include an
+    // earlier transient error to prove the deterministic final schema rejection takes priority.
+    for rejection_channel in [
+        "framed",
+        "stderr",
+        "unframed",
+        "mixed-stderr",
+        "mixed-unframed",
+        "mixed-error",
+    ] {
+        for auth_position in [None, Some(false), Some(true)] {
+            for usage in [
+                "",
+                "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":3,\"output_tokens\":2}}\n",
+            ] {
+                let events = format!(
+                    "{{\"type\":\"error\",\"message\":\"connection reset\"}}\n{usage}{{\"type\":\"turn.failed\",\"error\":{{\"code\":\"invalid_json_schema\",\"message\":\"Invalid schema for response_format codex_output_schema: At schema path /properties/outputs/properties/triage/items/properties/schema, schema must specify a type.\"}}}}\n"
+                );
+                let (events, diagnostic) = if rejection_channel == "framed"
+                    || rejection_channel == "mixed-error"
+                {
+                    (
+                        if rejection_channel == "mixed-error" {
+                            events.replace("Invalid schema for", "HTTP 401 authentication_error for alice@example.com Invalid schema for")
+                        } else {
+                            events
+                        },
+                        String::new(),
+                    )
+                } else {
+                    (
+                        format!("{{\"type\":\"error\",\"message\":\"connection reset\"}}\n{usage}"),
+                        format!(
+                            "printf '%s\\n' '{}invalid_json_schema: schema must specify a type'{}\n",
+                            if rejection_channel.starts_with("mixed-") {
+                                "HTTP 401 authentication_error for alice@example.com "
+                            } else {
+                                ""
+                            },
+                            if rejection_channel.ends_with("stderr") {
+                                " >&2"
+                            } else {
+                                ""
+                            }
+                        ),
+                    )
+                };
+                let auth = "{\"type\":\"turn.failed\",\"error\":{\"message\":\"HTTP 401 authentication_error for alice@example.com\"}}\n";
+                let events = match auth_position {
+                    Some(false) => format!("{auth}{events}"),
+                    Some(true) => format!("{events}{auth}"),
+                    None => events,
+                };
+                std::fs::write(
+                    &program,
+                    format!("{setup}printf '%s' '{events}'\n{diagnostic}exit 1\n"),
+                )
+                .unwrap();
+                let contract = WorkerContract::capture(
+                    &cas,
+                    json!({"type":"object"}),
+                    BTreeMap::from([("result".into(), json!({"type":"string"}))]),
+                )
+                .unwrap();
+                let context = contract
+                    .prepare(
+                        &cas,
+                        &TaskInvocationV1 {
+                            plan_id: cas.put(b"plan").unwrap(),
+                            node: "root.nodes.test".into(),
+                            inputs: BTreeMap::new(),
+                        },
+                        &[],
+                        "Judge.",
+                    )
+                    .unwrap();
+                let before = std::fs::read_to_string(&calls).unwrap().lines().count();
+                let returned = invoke_model(
+                    &cas,
+                    temp.path(),
+                    &adapter,
+                    &contract,
+                    &context,
+                    LOAD_SAFE_WALL,
+                    WorkerAccess::ReadOnly,
+                    None,
+                    1000,
+                );
+                let error = returned.reply.as_ref().unwrap_err();
+                assert!(error.contains("invalid_json_schema"));
+                assert!(!error.contains("alice@example.com"), "{error}");
+                assert_eq!(
+                    returned.native_failure,
+                    Some(NativeFailureKind::UnsupportedInvocation)
+                );
+                assert!(returned.native_failure.unwrap().refuses_input());
+                assert!(returned.notes.transient.is_none());
+                if usage.is_empty() {
+                    assert!(
+                        returned.usage.is_none(),
+                        "unreported is unknown, never zero"
+                    );
+                } else {
+                    assert_eq!(returned.usage.unwrap().chargeable_tokens.get(), 5);
+                }
+                if auth_position.is_some() || rejection_channel.starts_with("mixed-") {
+                    // Authentication remains sensitive before and after a deterministic
+                    // schema rejection, while final classification and retry suppression
+                    // still describe the schema refusal. Parsed usage stays independent.
+                    assert!(!returned.raw_artifact_ids.is_empty());
+                    for id in &returned.raw_artifact_ids {
+                        assert_eq!(
+                            cas.get(id).unwrap(),
+                            NativeFailureKind::UnsupportedInvocation
+                                .diagnostic()
+                                .as_bytes()
+                        );
+                    }
+                } else {
+                    assert!(returned.raw_artifact_ids.iter().any(|id| {
+                        String::from_utf8_lossy(&cas.get(id).unwrap())
+                            .contains("schema must specify a type")
+                    }));
+                }
+                assert_eq!(
+                    std::fs::read_to_string(&calls).unwrap().lines().count(),
+                    before + 1
+                );
+            }
+        }
+    }
+}
