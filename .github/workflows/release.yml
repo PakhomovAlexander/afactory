@@ -103,11 +103,18 @@ jobs:
         # binaries is exactly the bytes the requirements file names.
         run: |
           pip install --user --require-hashes --only-binary=:all: -r scripts/release-toolchain.txt
-      - name: Install qemu (runs the aarch64 binary on this x86_64 runner)
-        if: matrix.cross == 'zig-qemu'
+      - name: Install Linux smoke dependencies
+        if: runner.os == 'Linux'
+        shell: bash
         run: |
+          set -euo pipefail
+          # The packaged binary's smoke requires a real private account namespace.
+          set -- bubblewrap
+          if [[ "${{ matrix.cross }}" == "zig-qemu" ]]; then
+            set -- "$@" qemu-user-static
+          fi
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends qemu-user-static
+          sudo apt-get install -y --no-install-recommends "$@"
       - name: Build
         env:
           AF_CI_METRICS: ${{ runner.temp }}/build-metrics.jsonl

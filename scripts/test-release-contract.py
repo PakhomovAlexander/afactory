@@ -77,6 +77,47 @@ class HostedReleaseDependencies(unittest.TestCase):
         self.assertEqual(policy['pr_validation']['source_files']['.github/workflows/validate.yml'],
                          hashlib.sha256(workflow.strip().encode()).hexdigest())
 
+    def test_release_build_installs_private_account_dependencies_for_each_linux_target(self):
+        import re
+        workflow = (ROOT / '.github/workflows/release.yml').read_text()
+        build = workflow.split('\n  build:\n', 1)[1].split('\n  publish:\n', 1)[0]
+        self.assertIn('scripts/release-smoke.sh "$run" "$RUNNER_TEMP/smoke"', build)
+        before_build = build.split('      - name: Build\n', 1)[0]
+        marker = '      - name: Install Linux smoke dependencies\n'
+        self.assertIn(marker, before_build,
+                      'Linux release smoke requires its bwrap namespace before binary execution')
+        step = before_build.split(marker, 1)[1]
+        self.assertIn("        if: runner.os == 'Linux'\n", step)
+        self.assertIn('        shell: bash\n', step)
+        script = '\n'.join(line[10:] for line in step.split('        run: |\n', 1)[1].splitlines())
+        matrix = re.findall(r'- target: (\S+)\n\s+os: (\S+)\n\s+cross: (\S+)', build)
+        linux = [(target, cross) for target, runner, cross in matrix if runner.startswith('ubuntu-')]
+        self.assertEqual({cross for _, cross in linux}, {'zig', 'zig-qemu'})
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / 'commands'
+            sudo = root / 'sudo'
+            sudo.write_text('#!/bin/bash\nprintf "%s\\n" "sudo $*" >> "$COMMAND_LOG"\n'
+                            'if [[ "$*" == "apt-get update" ]]; then exit "$UPDATE_EXIT"; fi\n'
+                            'exit "$INSTALL_EXIT"\n')
+            sudo.chmod(0o755)
+            for target, cross in linux:
+                rendered = script.replace('${{ matrix.cross }}', cross)
+                self.assertNotIn('${{', rendered)
+                packages = 'bubblewrap' + (' qemu-user-static' if cross == 'zig-qemu' else '')
+                commands = ['sudo apt-get update',
+                            'sudo apt-get install -y --no-install-recommends ' + packages]
+                for update_exit, install_exit in ((0, 0), (23, 0), (0, 23)):
+                    with self.subTest(target=target, update_exit=update_exit, install_exit=install_exit):
+                        log.write_text('')
+                        result = subprocess.run([shutil.which('bash'), '-c', rendered],
+                            env={'PATH': str(root), 'COMMAND_LOG': str(log),
+                                 'UPDATE_EXIT': str(update_exit), 'INSTALL_EXIT': str(install_exit)},
+                            capture_output=True, text=True)
+                        self.assertEqual(result.returncode, update_exit or install_exit, result.stderr)
+                        self.assertEqual(log.read_text().splitlines(),
+                                         commands[:1] if update_exit else commands)
+
 
 class ReleaseContract(unittest.TestCase):
     def setUp(self):
