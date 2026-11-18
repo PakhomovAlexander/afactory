@@ -106,11 +106,7 @@ jobs:
       - name: Install Linux smoke dependencies
         if: runner.os == 'Linux'
         shell: bash
-        run: |
-          set -euo pipefail
-          # The packaged binary's smoke requires a real private account namespace.
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends bubblewrap
+        run: bash scripts/prepare-linux-release-smoke.sh
       - name: Install qemu (runs the aarch64 binary on this x86_64 runner)
         if: matrix.cross == 'zig-qemu'
         run: |

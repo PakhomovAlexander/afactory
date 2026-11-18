@@ -89,34 +89,68 @@ class HostedReleaseDependencies(unittest.TestCase):
         step = before_build.split(marker, 1)[1].split('      - name:', 1)[0]
         self.assertIn("        if: runner.os == 'Linux'\n", step)
         self.assertIn('        shell: bash\n', step)
-        script = '\n'.join(line[10:] for line in step.split('        run: |\n', 1)[1].splitlines())
+        self.assertIn('run: bash scripts/prepare-linux-release-smoke.sh', step)
+        script = (ROOT / 'scripts/prepare-linux-release-smoke.sh').read_text()
+        proof = (ROOT / '.github/workflows/release-namespace-proof.yml').read_text()
+        self.assertIn('runs-on: ubuntu-24.04', proof)
+        self.assertIn('run: bash scripts/prepare-linux-release-smoke.sh', proof)
+        self.assertIn('persist-credentials: false', proof)
         matrix = re.findall(r'- target: (\S+)\n\s+os: (\S+)\n\s+cross: (\S+)', build)
         linux = [(target, cross) for target, runner, cross in matrix if runner.startswith('ubuntu-')]
         self.assertEqual({cross for _, cross in linux}, {'zig', 'zig-qemu'})
+        self.assertIn('in_private_account_namespace()', script)
+        self.assertIn('assert os.geteuid() != 0', script)
+        self.assertIn("python3 -I -B - <<'PY'", script)
+        self.assertIn("[sys.executable, '-I', '-B', '-c'", script)
+        self.assertNotIn('sysctl', script)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            (root / 'scripts').mkdir()
+            helper = root / 'scripts/prepare-linux-release-smoke.sh'
+            helper.write_text(script)
             log = root / 'commands'
             sudo = root / 'sudo'
-            sudo.write_text('#!/bin/bash\nprintf "%s\\n" "sudo $*" >> "$COMMAND_LOG"\n'
-                            'if [[ "$*" == "apt-get update" ]]; then exit "$UPDATE_EXIT"; fi\n'
-                            'exit "$INSTALL_EXIT"\n')
+            sudo.write_text("""#!/bin/bash
+printf '%s\\n' "sudo $*" >> "$COMMAND_LOG"
+if [[ "$1" == test ]]; then exit "$PROFILE_EXISTS"; fi
+if [[ "$1" == "$FAIL_AT" || "$*" == "$FAIL_AT" ]]; then exit 23; fi
+""")
             sudo.chmod(0o755)
-            for target, cross in linux:
-                rendered = script.replace('${{ matrix.cross }}', cross)
-                self.assertNotIn('${{', rendered)
-                packages = 'bubblewrap'
-                commands = ['sudo apt-get update',
-                            'sudo apt-get install -y --no-install-recommends ' + packages]
-                for update_exit, install_exit in ((0, 0), (23, 0), (0, 23)):
-                    with self.subTest(target=target, update_exit=update_exit, install_exit=install_exit):
-                        log.write_text('')
-                        result = subprocess.run([shutil.which('bash'), '-c', rendered],
-                            env={'PATH': str(root), 'COMMAND_LOG': str(log),
-                                 'UPDATE_EXIT': str(update_exit), 'INSTALL_EXIT': str(install_exit)},
-                            capture_output=True, text=True)
-                        self.assertEqual(result.returncode, update_exit or install_exit, result.stderr)
-                        self.assertEqual(log.read_text().splitlines(),
-                                         commands[:1] if update_exit else commands)
+            python = root / 'python3'
+            python.write_text("""#!/bin/bash
+printf '%s\\n' "python3 $*" >> "$COMMAND_LOG"
+if [[ "$FAIL_AT" == probe ]]; then exit 23; fi
+""")
+            python.chmod(0o755)
+            # dirname is the only filesystem utility used outside the sudo boundary.
+            (root / 'dirname').symlink_to(shutil.which('dirname'))
+            packaged = '/usr/share/apparmor/extra-profiles/bwrap-userns-restrict'
+            active = '/etc/apparmor.d/bwrap-userns-restrict'
+            for target, _ in linux:
+                for exists in (0, 1):
+                    commands = ['sudo apt-get update',
+                        'sudo apt-get install -y --no-install-recommends bubblewrap apparmor-profiles',
+                        'sudo test -e ' + active,
+                        ('sudo cmp -- ' if exists == 0 else 'sudo install -m 0644 -- ') +
+                        packaged + ' ' + active,
+                        'sudo apparmor_parser -r -- ' + active, 'python3 -I -B -']
+                    for fail_at in ('', 'apt-get update', 'apt-get install -y --no-install-recommends bubblewrap apparmor-profiles',
+                                    'cmp' if exists == 0 else 'install', 'apparmor_parser', 'probe'):
+                        with self.subTest(target=target, exists=exists, fail_at=fail_at):
+                            log.write_text('')
+                            result = subprocess.run([shutil.which('bash'), str(helper)],
+                                env={'PATH': str(root), 'COMMAND_LOG': str(log),
+                                     'PROFILE_EXISTS': str(exists), 'FAIL_AT': fail_at},
+                                capture_output=True, text=True)
+                            self.assertEqual(result.returncode, 23 if fail_at else 0, result.stderr)
+                            expected = commands
+                            if fail_at:
+                                index = next(i for i, command in enumerate(commands)
+                                    if (command.startswith('sudo ' + fail_at) if fail_at != 'probe'
+                                        else command.startswith('python3 ')))
+                                expected = commands[:index + 1]
+                            self.assertEqual(log.read_text().splitlines(), expected)
+
 
 
 class ReleaseContract(unittest.TestCase):
