@@ -1051,7 +1051,7 @@ impl TaskPlanCompiler {
             .flat_map(|request| request.caches.values())
             .filter_map(|policy| policy.output.clone())
             .collect();
-        worker
+        let outputs = worker
             .signature
             .contract
             .outputs
@@ -1061,7 +1061,13 @@ impl TaskPlanCompiler {
                 let schema = self.worker_schema(name, &format!("outputs/{port}.schema.json"))?;
                 Ok((port.clone(), schema))
             })
-            .collect()
+            .collect::<Result<BTreeMap<_, _>, String>>()?;
+        if matches!(&worker.runner, TaskWorkerRunner::Model { provider_kind, .. } if provider_kind == "codex")
+        {
+            af_runner::task::reply_schema::strict_outputs(&outputs)
+                .map_err(|error| format!("Worker {name}: {error}"))?;
+        }
+        Ok(outputs)
     }
 
     pub(super) fn worker_schema(
@@ -1117,6 +1123,7 @@ impl TaskPlanCompiler {
         )?;
         self.validate_requirements_inputs(&graph)?;
         self.validate_replacement_schemas(&graph)?;
+        self.validate_provider_schemas(&graph)?;
         self.validate_structured(cas, &normalized, &graph)?;
         if let Err(reason) = graph.budget(task.limits.clone()) {
             resources.push(reason);
@@ -1243,6 +1250,30 @@ impl TaskPlanCompiler {
         self.compile_inner(cas, task_revision_id, root, None)
     }
 
+    fn validate_provider_schemas(&self, graph: &CompiledTask) -> Result<(), String> {
+        for slot in graph.slots.values() {
+            let name = &slot.worker;
+            let worker = self.worker(name).ok_or("Missing captured Worker")?;
+            if matches!(&worker.runner, TaskWorkerRunner::Model { provider_kind, .. } if provider_kind == "codex")
+            {
+                let kernel = worker
+                    .signature
+                    .contract
+                    .outputs
+                    .iter()
+                    .filter(|(port, contract)| {
+                        port.as_str() == "candidate"
+                            && contract.artifact_type == "af/CandidateTree@1"
+                            && worker.signature.effects.contains("write-source")
+                    })
+                    .map(|(port, _)| port.clone())
+                    .collect();
+                self.worker_output_schemas(name, &kernel)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Pure preflight for the selected definition, before any account probes. Unused catalog
     /// Workers must not make an otherwise fitting Pipeline require unrelated credentials.
     pub fn required_worker_packages(
@@ -1266,6 +1297,7 @@ impl TaskPlanCompiler {
         }
         let graph = self.compile_graph(&task, root)?;
         self.validate_replacement_schemas(&graph)?;
+        self.validate_provider_schemas(&graph)?;
         self.validate_structured(cas, &task, &graph)?;
         Ok(graph
             .slots
@@ -1300,6 +1332,7 @@ impl TaskPlanCompiler {
         graph.experimental_slots = self.experimental_slots.clone();
         graph.validate_experimental_slots()?;
         self.validate_replacement_schemas(&graph)?;
+        self.validate_provider_schemas(&graph)?;
         self.validate_structured(cas, &task, &graph)?;
         remote_check_authority(root, &task, &graph)?;
         let bindings = self.effective_bindings(cas, &graph)?;

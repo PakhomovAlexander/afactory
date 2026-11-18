@@ -712,7 +712,7 @@ if mode == 'malformed':
         lint = ['fmt', 'lint', 'lint-diagnostic-features']
         tests = ['test', 'scenario-github-adapter', 'scenario-git-workspace', 'scenario-merge-watch', 'performance-lab', 'workspace-fixture-benchmark',
                  'test-perf-trace', 'test-perf-calibration']
-        release = ['release-harness', 'release-contract', 'release-contract-tests', 'dev-release-tests', 'release-resolution', 'changelog-notes-tests', 'changelog-notes',
+        release = ['contract-inventory', 'contract-inventory-tests', 'release-harness', 'release-contract', 'release-contract-tests', 'dev-release-tests', 'release-resolution', 'changelog-notes-tests', 'changelog-notes',
                    'quarantine-scan-tests', 'af-pin-tests', 'af-pin', 'telemetry-contract']
         expected = [(label, 'preflight') for label in preflight]
         expected += [(label, 'lint') for label in lint] + [('test-build', 'build')]
@@ -726,7 +726,7 @@ if mode == 'malformed':
             for name in ('verify.sh', 'verify-body.sh', 'gate-owner.py', 'ci-step.py'):
                 shutil.copy2(ROOT / 'scripts' / name, scripts / name)
             # All command paths required by the full Make entry must exist in the fixture.
-            payloads = ['test-ci-disk.py', 'test-adr.py', 'test-task-preflight.py', 'test-prereqs.py', 'test-gate-owner.py',
+            payloads = ['contract-inventory.py', 'test-contract-inventory.py', 'test-ci-disk.py', 'test-adr.py', 'test-task-preflight.py', 'test-prereqs.py', 'test-gate-owner.py',
                         'test-nextest-gate.py', 'test-stress-proof.py',
                         'test-test-time-report.py',
                         'test-provider-auth-host.py', 'test-scenario-github-adapter.py', 'test-scenario-git-workspace.py',
@@ -865,7 +865,7 @@ if mode == 'malformed':
             tc.write(root / '.config/test-quarantine.json', EMPTY_QUARANTINE)
             scripts = root / 'scripts'
             for name in ('test-class-python.py', 'changelog-notes.py', 'af-pin.py',
-                         'release-contract.py', 'performance/schemas.py', 'performance/cli.py', 'test-performance.py'):
+                         'release-contract.py', 'performance/schemas.py', 'performance/cli.py', 'test-performance.py', 'contract-inventory.py'):
                 (scripts / name).write_text('pass\n')
             tools = root / 'bin'
             tools.mkdir()
@@ -1093,9 +1093,9 @@ ET.ElementTree(root).write(path, encoding='unicode')
             sample = ('import unittest\nclass Case(unittest.TestCase):\n'
                       '    def test_recorded(self): self.assertTrue(True)\nunittest.main()\n')
             for name in ('test-test-classes.py', 'test-release-resolve.py', 'test-af-pin.py', 'test-gate-owner.py',
-                         'test-changelog-notes.py', 'test-test-quarantine.py', 'test-release-contract.py', 'test-dev-release.py'):
+                         'test-changelog-notes.py', 'test-test-quarantine.py', 'test-release-contract.py', 'test-dev-release.py', 'test-contract-inventory.py'):
                 (scripts / name).write_text(sample)
-            for name in ('test-classes.py', 'changelog-notes.py', 'af-pin.py', 'release-contract.py', 'test-performance.py'):
+            for name in ('test-classes.py', 'changelog-notes.py', 'af-pin.py', 'release-contract.py', 'test-performance.py', 'contract-inventory.py'):
                 (scripts / name).write_text('pass\n')
             (scripts / 'performance').mkdir(exist_ok=True)
             (scripts / 'performance/cli.py').write_text('pass\n')
@@ -1122,7 +1122,7 @@ ET.ElementTree(root).write(path, encoding='unicode')
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             records = [json.loads(line) for line in (source / metrics_path).read_text().splitlines()]
             self.assertEqual([r['label'] for r in records], ['fmt', 'lint', 'lint-diagnostic-features',
-                             'release-harness', 'release-contract', 'release-contract-tests', 'dev-release-tests', 'release-resolution',
+                             'contract-inventory', 'contract-inventory-tests', 'release-harness', 'release-contract', 'release-contract-tests', 'dev-release-tests', 'release-resolution',
                              'changelog-notes-tests', 'changelog-notes', 'quarantine-scan-tests', 'af-pin-tests', 'af-pin',
                              'telemetry-contract', 'gate-owner', 'test-classes', 'test-catalog', 'cli-smoke', 'release-smoke'])
             self.assertTrue(all(r['schema'] == 'af.ci-step/1' and r['exit_code'] == 0
@@ -1145,9 +1145,9 @@ ET.ElementTree(root).write(path, encoding='unicode')
             sample = ('import unittest\nclass Case(unittest.TestCase):\n'
                       '    def test_recorded(self): self.assertTrue(True)\nunittest.main()\n')
             for name in ('test-test-classes.py', 'test-release-resolve.py', 'test-af-pin.py', 'test-gate-owner.py',
-                         'test-changelog-notes.py', 'test-test-quarantine.py', 'test-release-contract.py', 'test-dev-release.py'):
+                         'test-changelog-notes.py', 'test-test-quarantine.py', 'test-release-contract.py', 'test-dev-release.py', 'test-contract-inventory.py'):
                 (scripts / name).write_text(sample)
-            for name in ('test-classes.py', 'changelog-notes.py', 'af-pin.py', 'release-contract.py', 'test-performance.py'):
+            for name in ('test-classes.py', 'changelog-notes.py', 'af-pin.py', 'release-contract.py', 'test-performance.py', 'contract-inventory.py'):
                 (scripts / name).write_text('pass\n')
             (scripts / 'performance').mkdir(exist_ok=True)
             (scripts / 'performance/cli.py').write_text('pass\n')
@@ -1170,9 +1170,9 @@ ET.ElementTree(root).write(path, encoding='unicode')
                 result = subprocess.run(['make', 'base-check'], cwd=source, env=env,
                                         capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertEqual(len(list((output / 'base-evidence').glob('*.xml'))), 8)
+                self.assertEqual(len(list((output / 'base-evidence').glob('*.xml'))), 9)
                 records = [json.loads(line) for line in metrics.read_text().splitlines()]
-                self.assertEqual(len(records), 14)
+                self.assertEqual(len(records), 16)
                 self.assertTrue(all(r['exit_code'] == 0 for r in records))
                 after = {str(p.relative_to(source)): p.read_bytes() for p in source.rglob('*') if p.is_file()}
                 self.assertEqual(before, after)
