@@ -2410,6 +2410,28 @@ class ReleaseCLI(unittest.TestCase):
         self.assertIn('validation_policy', self.cli('plan', ok=False).stderr)
         self.assertEqual(self.data().get('effects', []), [])
 
+    def test_reviewed_validation_sources_admit_exact_bytes_and_refuse_drift(self):
+        # Exercise the real fetched-source path, including the catalog's contract
+        # coverage, rather than accepting a self-consistent fixture-only digest.
+        self.cli('plan')
+        self.assertEqual(self.data().get('effects', []), [])
+        policy = json.loads((ROOT / 'scripts/release-policy.json').read_text())
+        for index, name in enumerate(policy['pr_validation']['source_files']):
+            with self.subTest(source=name):
+                self.state = self.base / ('drift-state-' + str(index))
+                path = self.source / name
+                original = path.read_text()
+                # A blank line preserves workflow/resolver/catalog semantics but
+                # still changes the exact bytes requiring renewed review.
+                path.write_text(original.replace('\n', '\n\n', 1))
+                self.commit('change unreviewed validation source')
+                self.git('-C', self.source, 'push', str(self.remote), 'main')
+                error = self.cli('plan', ok=False).stderr
+                self.assertIn('validation_policy: workflow semantics changed; review ' + name, error)
+                self.assertEqual(self.data().get('effects', []), [])
+                path.write_text(original)
+                self.commit('restore reviewed validation source')
+
     def test_main_racing_merge_is_refused_by_server(self):
         self.data(race_merge=True)
         self.cli('rc', ok=False)

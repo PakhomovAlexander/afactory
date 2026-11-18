@@ -31,7 +31,7 @@ use af_process::{
     run_supervised_captured_bounded_observed, sanitized_path,
 };
 
-use crate::native_failure::{NativeFailureKind, classify_native_failure};
+use crate::native_failure::{NativeFailureKind, native_auth_seen};
 use crate::stream::{HarnessStream, Observation};
 
 /// Why a supervised process yielded no capture, or an input could not be composed. Each is a
@@ -431,9 +431,7 @@ impl ModelRunner {
         let withheld_before = observed
             && (af_telemetry::redact::carries_auth_material(&capture.stdout)
                 || af_telemetry::redact::carries_auth_material(&capture.stderr)
-                || failed
-                    && classify_native_failure(&String::from_utf8_lossy(&capture.stderr))
-                        .is_auth());
+                || failed && native_auth_seen(&String::from_utf8_lossy(&capture.stderr)));
         let mut further = FurtherOutput {
             observed,
             auth: false,

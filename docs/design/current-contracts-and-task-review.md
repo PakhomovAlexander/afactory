@@ -26,13 +26,18 @@ Rust names do not themselves authorize another representation. Changed typed sha
 identities, coherent writers/readers, fixtures and parity. There is no migration or reader fallback
 for retired execution state. The compiled schema's title names its actual `CompiledTask@4` envelope.
 
-The published inventory has 417 JSON files, 414 schema IDs and three conformance corpora without
-`$id`. The existing `af-contracts::schema_parity` registry enforces current consolidated ownership and
+The published inventory has 450 JSON files, including 443 schema IDs and three conformance corpora.
+Four additional schemas omit resource IDs. The existing `af-contracts::schema_parity` registry enforces current consolidated ownership and
 checks every published schema's resource and JSON Pointer reference closure, including Python-owned
 schemas. `current_contract_owners_and_retained_observation_schemas_are_explicit` checks the exact
 current families, Python writer identities and the retained coexisting versions. Python performance
 parity separately compares every generated schema against its actual reader definition and exercises
 positive and negative fixtures. This extends the existing registry rather than adding another one.
+
+The [fast contract gate](../contract-gate.md) adds explicit schema/package ownership, canonical
+copy checks and whole-request provider projection checks. `make contract-check` runs its bounded
+hermetic selection; the normal fast gate always checks inventory discovery. It retains the
+independent reference closure, serde parity and semantic-validation owners above.
 
 Only four lower-version schema files coexist with a newer member of their family:
 
