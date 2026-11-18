@@ -19,7 +19,12 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
-## [0.15.1-rc.7] - 2026-11-18
+## [0.15.1-rc.7] - 2026-11-18 [YANKED]
+
+Tagged but never published: required Linux private-account smoke failed setting up
+Bubblewrap's UID map on Ubuntu24.04
+([release run44241446126](https://github.com/PakhomovAlexander/afactory/actions/runs/44241446126)).
+The tag and failed publication evidence remain unchanged; the next cut uses a fresh version.
 
 ### Authority compatibility
 
