@@ -103,6 +103,14 @@ jobs:
         # binaries is exactly the bytes the requirements file names.
         run: |
           pip install --user --require-hashes --only-binary=:all: -r scripts/release-toolchain.txt
+      - name: Install Linux smoke dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The packaged binary's smoke requires a real private account namespace.
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap
       - name: Install qemu (runs the aarch64 binary on this x86_64 runner)
         if: matrix.cross == 'zig-qemu'
         run: |
