@@ -19,7 +19,12 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
-## [0.15.1-rc.6] - 2026-11-17
+## [0.15.1-rc.6] - 2026-11-17 [YANKED]
+
+Tagged but never published: the Linux release binary built successfully, but its required
+private-account smoke failed because Bubblewrap was absent from the Ubuntu24.04 build
+runner ([release run44213599397](https://github.com/PakhomovAlexander/afactory/actions/runs/44213599397)).
+The tag and failed publication evidence remain unchanged; the next cut uses a fresh version.
 
 ### Authority compatibility
 
