@@ -598,6 +598,7 @@ Campaign selectors and their inspection documents are retired. Review plan captu
 Task plan; --authority selects trusted authority independently of source/base selectors.
 
 Scenario and Ant documents (ADR-0274; `af help scenarios`):
+  scenario prepare: af/scenario-bundle@10 from af/scenario-artifact@1.
   scenario validate: af/scenario-pin@11; start, show, resume, decide, cancel: af/scenario-run@11.
   scenario decision-payload: af/scenario-decision@1; list: af/scenario-list@11.
   ant validate: af/ant-pin@12; add, enable, pause, disable: af/ant-state@13;

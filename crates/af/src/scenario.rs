@@ -170,6 +170,26 @@ af scenario experiment-source --file source.json --repo /project \\\n    --task-
         #[command(subcommand)]
         command: RoadmapCommand,
     },
+    /// Prepare a committed portable Scenario artifact as a native bundle without running a Task
+    Prepare {
+        /// Repository-relative portable Scenario artifact path, read from committed HEAD
+        #[arg(long)]
+        file: String,
+        /// Receiver checkout (default: current directory)
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        /// Receiver's private native Task Store outside the checkout
+        #[arg(long)]
+        task_state: PathBuf,
+        /// Caller-supplied named report sources JSON
+        #[arg(long)]
+        inputs: PathBuf,
+        /// Optional receiver-owned Provider aliases in af.task-bindings/1 form
+        #[arg(long)]
+        bindings: Option<PathBuf>,
+        #[command(flatten)]
+        inspect: Inspect,
+    },
     /// Validate types, transitive definitions, authority and bounds; print the exact pin to review
     Validate {
         #[command(flatten)]
@@ -735,6 +755,23 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
             )
         }
         ScenarioCommand::Roadmap { command } => roadmap_command(command),
+        ScenarioCommand::Prepare {
+            file,
+            repo,
+            task_state,
+            inputs,
+            bindings,
+            inspect,
+        } => print(
+            &crate::task_commands::scenario_portable::prepare(
+                repo,
+                task_state,
+                &file,
+                &inputs,
+                bindings.as_deref(),
+            )?,
+            &inspect,
+        ),
         ScenarioCommand::Validate {
             definition,
             inspect,

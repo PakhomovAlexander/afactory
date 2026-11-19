@@ -8,6 +8,16 @@ cron job, starts a daemon, or creates an instance until explicitly requested. Mo
 inside Tasks. [ADR-0274](adr/0274-orchestrate-pinned-scenarios-and-admit-ant-occurrences.md)
 defines the authority boundary.
 
+## Prepare a portable report Scenario
+
+A committed [portable Scenario artifact](../schemas/scenario-artifact-v1.json) describes one
+fresh report Task, the named report sources it accepts, and the package and schema dependencies
+shipped beside it. The native bundle prepared for a receiver binds its exact commit, Task Store,
+report policy, Provider settings, and concrete inputs. Review and grant its template through
+the owner-only machine policy, then approve the exact native Scenario revision. See the
+[local triage walkthrough](../fixtures/issue-triage/README.md#run-portable-triage-locally)
+and [the portability decision](adr/2026-11-19-prepare-portable-scenario-artifacts.md).
+
 ## Review, record, drive
 
 Definitions use TOML for authoring and JSON for their versioned wire documents, with schema

@@ -19,6 +19,9 @@
     "schemas/scenario-v10.json": [
       "af/scenario@10"
     ],
+    "schemas/scenario-artifact-v1.json": [
+      "af/scenario-artifact@1"
+    ],
     "schemas/scenario-bundle-v10.json": [
       "af/scenario-bundle@10"
     ],

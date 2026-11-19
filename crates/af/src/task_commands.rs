@@ -66,6 +66,7 @@ pub(crate) mod review_export;
 pub(crate) mod review_ledger;
 pub(crate) mod runs;
 pub(crate) mod scenario_evidence;
+pub(crate) mod scenario_portable;
 pub(crate) mod scenario_template;
 mod selection;
 pub(crate) mod starter;
@@ -643,6 +644,25 @@ fn capture_authority(
     task_kind: &str,
     delivery_undeclared_af_paths: af_pipeline_config::layout::UndeclaredAfPathsPolicy,
 ) -> Result<(String, RunAuthority, TaskPlanCompiler), String> {
+    capture_authority_with_packages(
+        cas,
+        manifest,
+        local,
+        task_kind,
+        delivery_undeclared_af_paths,
+        None,
+    )
+}
+
+fn capture_authority_with_packages(
+    cas: &Cas,
+    manifest: &Manifest,
+    local: Option<&Path>,
+    task_kind: &str,
+    delivery_undeclared_af_paths: af_pipeline_config::layout::UndeclaredAfPathsPolicy,
+    portable: Option<scenario_portable::Packages>,
+) -> Result<(String, RunAuthority, TaskPlanCompiler), String> {
+    let portable_capture = portable.is_some();
     let bytes = captured_file(cas, manifest, ".af/task-catalog.toml").map_err(|message| {
         if manifest.get(".af/task-catalog.toml").is_some() { return message; }
         crate::error_document::typed(
@@ -655,7 +675,15 @@ fn capture_authority(
     })?;
     let mut catalog: TaskCatalog = parse(Path::new(".af/task-catalog.toml"), &bytes)?;
     let provider_admission = provider_admission::catalog_cost(&catalog)?;
-    let import_locks = catalog::restore_imports(cas, manifest, &mut catalog)?;
+    let import_locks = if let Some(portable) = portable {
+        catalog.packages = portable.pins;
+        catalog.kinds = BTreeMap::from([(task_kind.to_owned(), portable.kind_package)]);
+        catalog.selection.clear();
+        catalog.planner = None;
+        BTreeSet::new()
+    } else {
+        catalog::restore_imports(cas, manifest, &mut catalog)?
+    };
     if catalog.packages.is_empty()
         || catalog.packages.len() > 128
         || catalog.kinds.len() > 128
@@ -759,6 +787,13 @@ fn capture_authority(
         }
     }
     let local = local.map(bindings::read).transpose()?;
+    if portable_capture
+        && local.as_ref().is_some_and(|local| {
+            !local.definition.packages.is_empty() || !local.definition.slots.is_empty()
+        })
+    {
+        return Err("Portable Scenario bindings can only supply Provider aliases".into());
+    }
     let local_bindings_id = local
         .as_ref()
         .map(|local| {
@@ -1826,6 +1861,11 @@ fn start_bytes(
     } else {
         policy_source
     };
+    let portable_sources = if captured_authority.is_some() {
+        scenario_portable::bound_sources(file.requirements.as_ref())?
+    } else {
+        None
+    };
     start_captured(
         options,
         file,
@@ -1837,6 +1877,7 @@ fn start_bytes(
         authority,
         presentation,
         replace,
+        portable_sources,
     )
 }
 
@@ -1852,6 +1893,7 @@ fn start_captured(
     (authority_id, authority, mut compiler): (String, RunAuthority, TaskPlanCompiler),
     presentation: Presentation,
     replace: Option<Box<TaskProjection>>,
+    portable_sources: Option<af_contracts::task::report_domain::ReportSourcesV1>,
 ) -> Result<Started, String> {
     let profile = selected_profile(&compiler, &authority, &file.kind, file.verification)?;
     if profile == TaskKindProfile::Structured
@@ -1885,6 +1927,13 @@ fn start_captured(
         .as_ref()
         .map(|bound| bound.ports.clone())
         .unwrap_or_default();
+    if portable_sources.is_some()
+        && (profile != TaskKindProfile::Report
+            || file.report_sources.is_some()
+            || bound_ports.contains_key("sources"))
+    {
+        return Err("Portable Scenario sources require an unbound report sources port".into());
+    }
     if bound_ports.contains_key("sources") && file.document_sources.is_some() {
         return Err("A bound sources port and document_sources claim one input".into());
     }
@@ -2128,6 +2177,10 @@ fn start_captured(
         .transpose()?;
     let mut requirements_payload = json!({"text":file.goal});
     if let Some(specification) = &file.requirements {
+        let mut specification = specification.clone();
+        if portable_sources.is_some() {
+            specification.remove(scenario_portable::SOURCES);
+        }
         requirements_payload["specification"] = json!(specification);
     }
     let mut input_refs = vec![input_file.clone()];
@@ -2360,12 +2413,12 @@ fn start_captured(
     }
     if profile == TaskKindProfile::Report {
         use af_contracts::task::report_domain::*;
-        // A bound `sources` port replaces this construction. Without `report_sources` the
-        // report reads the empty set, so every report names the exact sources it was checked
-        // against.
+        // A bound `sources` port replaces this construction. Otherwise a report names its exact
+        // captured sources, whether sealed in a Scenario template, committed to Git, or empty.
         if !bound_ports.contains_key("sources") {
-            let (sources, refs) = match file.report_sources.as_deref() {
-                Some(path) => {
+            let (sources, refs) = match (portable_sources, file.report_sources.as_deref()) {
+                (Some(sources), None) => (sources, vec![input_file.clone(), origin.clone()]),
+                (None, Some(path)) => {
                     if !af_pipeline_config::task::shared::safe_relative_path(path) {
                         return Err("Report source path must be project-relative".into());
                     }
@@ -2385,7 +2438,7 @@ fn start_captured(
                     let raw = cas.put(&bytes).map_err(|e| e.to_string())?;
                     (sources, vec![raw, origin.clone()])
                 }
-                None => (ReportSourcesV1::empty(), vec![origin.clone()]),
+                _ => (ReportSourcesV1::empty(), vec![origin.clone()]),
             };
             let id = cas
                 .put_artifact(

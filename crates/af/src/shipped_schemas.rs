@@ -65,6 +65,7 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("review-ledger", 3),
     schema!("scenario-adapter-request", 8),
     schema!("scenario-adapter-response", 3),
+    schema!("scenario-artifact", 1),
     schema!("scenario-bundle", 10),
     schema!("scenario-decision", 1),
     schema!("scenario-driver", 2),

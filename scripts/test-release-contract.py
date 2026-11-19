@@ -221,7 +221,8 @@ class ReleaseContract(unittest.TestCase):
                     'ant': 11, 'ant-pin': 12, 'ant-tick': 12, 'ant-state': 13,
                     'ant-inspection': 8, 'ant-list': 13,
                     'scenario-policy': 8, 'implementation-startup-scope': 2, 'implementation-startup-failure': 1,
-                    'scenario-task-template': 2, 'scenario-template-pin': 2}
+                    'scenario-task-template': 2, 'scenario-template-pin': 2,
+                    'scenario-artifact': 1}
         for name, version in expected.items():
             relative = 'schemas/%s-v%s.json' % (name, version)
             with self.subTest(schema=relative):
