@@ -77,8 +77,8 @@
 "path" = ".af/task-packages/issue-internal/bugs"
 
 ["packages"."issue-internal/codex-light-evaluator"]
-"version" = "1.0.0"
-"digest" = "sha256:8dc2a8cc4987c0367040310d484a68a75414d0a1c2903e751e220de9ca6b199e"
+"version" = "1.0.1"
+"digest" = "sha256:a3c975fec913248ce63b3d0e9a8cbbaa8cfc1a43c520ee128708e0df74fdef3d"
 "path" = ".af/task-packages/issue-internal/codex-light-evaluator"
 
 ["packages"."issue-internal/correctness"]
@@ -87,23 +87,23 @@
 "path" = ".af/task-packages/issue-internal/correctness"
 
 ["packages"."issue-internal/design-acceptor"]
-"version" = "1.0.0"
-"digest" = "sha256:cb0b4a08552f44e4ea8693dc6b367e0b3a1098c8142e29eb17fe4e743cc29434"
+"version" = "1.0.1"
+"digest" = "sha256:d695fdbe4d102787166880e439f56f7efd32e44b86d7d79a6c57cd4ce3df1412"
 "path" = ".af/task-packages/issue-internal/design-acceptor"
 
 ["packages"."issue-internal/designer"]
-"version" = "1.0.1"
-"digest" = "sha256:af9ffb8b75cf1e5d48062bbb169838e4e92447c5878103c176d43402a682b946"
+"version" = "1.0.2"
+"digest" = "sha256:929bb0d7a764507b1da0bc337f9467140fdfd636039390ec17bf3eaea9c753c0"
 "path" = ".af/task-packages/issue-internal/designer"
 
 ["packages"."issue-internal/evaluator"]
-"version" = "1.0.0"
-"digest" = "sha256:90e9165efc6601a89e2fae9038a1d4b51b8c14b60fe5b08f546e77e28f924cda"
+"version" = "1.0.1"
+"digest" = "sha256:48f4dc31b542195322dbd53ef0f29f7693881a94b7e899fbd19a1f5ad14c31a9"
 "path" = ".af/task-packages/issue-internal/evaluator"
 
 ["packages"."issue-internal/experiment-evaluator"]
-"version" = "1.0.0"
-"digest" = "sha256:0262d8f45f7c28cdba4a9388d413d13c2be8ecc2045e38aff016e05997c78689"
+"version" = "1.0.1"
+"digest" = "sha256:25be922b4c94cb31b5c9210ab768540507c2c2291351fd4b6507c812e89de7c4"
 "path" = ".af/task-packages/issue-internal/experiment-evaluator"
 
 ["packages"."issue-internal/experiment-trial"]
@@ -112,13 +112,13 @@
 "path" = ".af/task-packages/issue-internal/experiment-trial"
 
 ["packages"."issue-internal/implementer"]
-"version" = "1.0.0"
-"digest" = "sha256:bc464cbfadb4e9042f2629a5d85eff99371c3d9c4dda89a8b8fcb488a00221cb"
+"version" = "1.0.1"
+"digest" = "sha256:4fe0d4aeb1f1a43f13e7c143865e204fb885c8b13835771310af0436447a3a1c"
 "path" = ".af/task-packages/issue-internal/implementer"
 
 ["packages"."issue-internal/investigator"]
-"version" = "1.0.1"
-"digest" = "sha256:c47a00a07404dd3c020cf5e04548e0a55d1b2bece2f2e595442e7d6e46060c1c"
+"version" = "1.0.2"
+"digest" = "sha256:51fa0518fdb98ce1ddfac7e7f71b7d343718c49d1a421ae50190c7e6628dfdb4"
 "path" = ".af/task-packages/issue-internal/investigator"
 
 ["packages"."issue-internal/kimi"]
@@ -147,8 +147,8 @@
 "path" = ".af/task-packages/issue-internal/kimi-researcher"
 
 ["packages"."issue-internal/light-evaluator"]
-"version" = "1.0.1"
-"digest" = "sha256:0e5236029c91e45fa429bb9c8c376b800fb56f0365d4c37f8250fc52f788bba5"
+"version" = "1.0.2"
+"digest" = "sha256:f72b54bcf0c83add4879ba59a00393455e4efffceba78f23c53df28fdac0c2cc"
 "path" = ".af/task-packages/issue-internal/light-evaluator"
 
 ["packages"."issue-internal/light-review"]
@@ -167,8 +167,8 @@
 "path" = ".af/task-packages/issue-internal/report-verifier"
 
 ["packages"."issue-internal/researched-implementer"]
-"version" = "1.0.0"
-"digest" = "sha256:a21644707a7208d121c359b2cec68dcadd19a50dc28eb3824f9ad2e531bbf954"
+"version" = "1.0.1"
+"digest" = "sha256:cb63b33291adbe42846c75b64894c21b9b88bf782f8415fdce7a616f24c59fb1"
 "path" = ".af/task-packages/issue-internal/researched-implementer"
 
 ["packages"."issue-internal/review"]
