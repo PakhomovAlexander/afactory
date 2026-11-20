@@ -272,6 +272,24 @@ The first run on Claw (12 vCPU, 2026-10-30, `main` 10b6db0f) built the test bina
 then finished within minutes, because the slowest of the nine took 6.6 s. All nine were clean on
 Linux, so ADR-0268's platform rule kept every entry with macOS evidence `quarantined`.
 
+## Recovery after expiry
+
+`confirm` and `apply` accept expired input entries so fresh confirmation can recover the
+catalog. Apply accepts reports at most 14 days old (inclusive) on the actual apply date,
+including clean and always-failing results. Each reported identity must also have a report date
+on or after its current `since` date; evidence from an earlier window is refused. These input
+evidence checks also run before previewing actions without `--write`. All other guards still
+apply. Expiry remains an error for gates, plans, audits and `scan`; do not change the clock or edit dates to bypass it.
+
+Before `apply --write` writes the catalog or any issue body, the entire resulting catalog must
+pass strict current-date validation. Confirm and resolve every expired entry: a fresh flaky
+confirmation sets its window to the report date through report date + 14 days, and a clean
+confirmation from its evidence platform removes it.
+Reapplying the same report never moves its expiry forward. A clean report from another platform
+retains its original dates, so an expired entry blocks writing, as does an unrelated expired
+entry absent from the report. Preview with `apply` without
+`--write` to see the proposed actions; it does not certify that the result passes the write guards.
+
 ## Apply the report
 
 On the owner's machine, in a checkout of `main` at or after the confirmed commit:
@@ -283,8 +301,8 @@ python3 scripts/test-quarantine.py apply "$TMPDIR/confirm.json" --write \
     --issues "$TMPDIR/quarantine-issues"
 ```
 
-- A `flaky` entry becomes `state: flaky`, `since` today, `expires` today + 14 days, its
-  `evidence` and `issue` kept, and gets the body of an issue titled `flaky: <identity>`.
+- A `flaky` entry becomes `state: flaky`, `since` the confirmation report date, `expires` that
+  date + 14 days, its `evidence` and `issue` kept, and gets the body of an issue titled `flaky: <identity>`.
 - An `always_fails` entry is removed, so the test fails every gate again, and gets a P0 issue
   body: main is broken.
 - A `clean` entry is removed only when the report's host platform is the evidence platform: the
