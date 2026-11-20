@@ -762,7 +762,7 @@ fn portable_backlog_settles_and_dispatches_the_frozen_batch_in_two_receivers() {
     let parent = directory.path().canonicalize().unwrap();
     let mut receipts = Vec::new();
     schemas::valid(
-        &schemas::validator("scenario-artifact-v2.json"),
+        &schemas::validator("backlog-scenario-artifact-v1.json"),
         &read(&workspace().join(BACKLOG)),
     );
     for issue in [303, 404] {

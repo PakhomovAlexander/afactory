@@ -12,7 +12,7 @@ use af_scenario::contract::{
 
 const SCHEMA: &str = "af/scenario-artifact@1";
 const BACKLOG_FILE: &str = "scenario_backlog_artifact_file";
-const BACKLOG_SCHEMA: &str = "af/scenario-artifact@2";
+const BACKLOG_SCHEMA: &str = "af/backlog-scenario-artifact@1";
 pub(super) const SOURCES: &str = "scenario_portable_sources";
 
 #[derive(Deserialize)]

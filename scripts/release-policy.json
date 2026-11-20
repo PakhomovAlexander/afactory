@@ -39,8 +39,8 @@
     "schemas/scenario-artifact-v1.json": [
       "af/scenario-artifact@1"
     ],
-    "schemas/scenario-artifact-v2.json": [
-      "af/scenario-artifact@2"
+    "schemas/backlog-scenario-artifact-v1.json": [
+      "af/backlog-scenario-artifact@1"
     ],
     "crates/af-project/src/backlog/batch/native.rs": [
       "pub fn settle_native_backlog",
