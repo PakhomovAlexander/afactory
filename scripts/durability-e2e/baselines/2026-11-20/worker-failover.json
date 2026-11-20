@@ -1,0 +1,28 @@
+{
+  "schema": "af-durability/trial-report@1",
+  "case": "worker-loss-and-late-completion",
+  "profile": "independent-worker-vm-replacement",
+  "expectation": "recover",
+  "engine": {
+    "name": "af-native",
+    "build": "bd79ea23b6a1ddc82be0def4c6f118cbdd2e4bc3a53b8da84c785eabc229a283"
+  },
+  "inputs": {
+    "workload_sha256": "83407abc4c16cede08cc29e252d5af74e968f61f08cbabb912a8f6becf0b6f91",
+    "fault_sha256": "eba64d182c1b1034c4c69cbbae02c444b2a2b72c3e3ae5afe6381b8a3f5ae1b8",
+    "placement_sha256": "fc6da250402d8aa5720872618682a3c00dc54cb73823d5f4094dd15084e3c86a",
+    "clock": "collector monotonic from witnessed Worker loss",
+    "seed": 0
+  },
+  "verdict": "unsupported",
+  "fault_witnessed": false,
+  "violations": [],
+  "metrics": {},
+  "evidence": [
+    "scripts/durability-e2e/BASELINE-20261120.md"
+  ],
+  "missing_capabilities": [
+    "late_completion_delivery",
+    "remote_worker_replacement"
+  ]
+}

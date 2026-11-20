@@ -1,0 +1,31 @@
+{
+  "schema": "af-durability/trial-inputs@1",
+  "case": "checks-commit-before-crash-green",
+  "profile": "two-vm-control-api-relay",
+  "expectation": "recover",
+  "workload": {
+    "recipe": "pagination-then-exact-candidate-check@1",
+    "fixture_git_tree": "722e63629e17f3f5fdb9c4b64d1c10a92880b58c",
+    "child": "one command-worker implementation and separate evaluator",
+    "candidate_authority": "same source snapshot through provider-free implementation and local Code Policy",
+    "business_gate": "one check against accepted Task snapshot",
+    "max_tokens": 1000,
+    "max_dispatches": 400,
+    "max_wall_ms": 360000
+  },
+  "fault": {
+    "execution_failure": "SIGKILL scheduler while commit reply withheld",
+    "trigger": "independent fixture durable pending receipt and native reconcile wait",
+    "restart": "start normal scheduler on same Store after terminal receipt delivery",
+    "check_result": "green"
+  },
+  "placement": {
+    "controller": "control-01",
+    "engine": "r-401",
+    "fixture": "r-400",
+    "transport": "durable receipts via existing broker API",
+    "journal": "engine worker local SSD"
+  },
+  "clock": "engine monotonic after receipt delivery",
+  "seed": 0
+}

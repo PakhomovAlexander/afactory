@@ -1,0 +1,28 @@
+{
+  "schema": "af-durability/trial-report@1",
+  "case": "checks-clean-control",
+  "profile": "two-vm-control-api-relay",
+  "engine": {
+    "name": "af-native",
+    "build": "bd79ea23b6a1ddc82be0def4c6f118cbdd2e4bc3a53b8da84c785eabc229a283"
+  },
+  "inputs": {
+    "workload_sha256": "6aaa0c4ae4ec311bd856c7f6c06004a2dd27e72b4d9413f9677a8076dcf515e2",
+    "placement_sha256": "ff04e9f19b82de5f04bdcb2bbbb4a0ed2acab690a12e3a52a80a823854da690a",
+    "fault_sha256": "a975742358a1cfbc7d30c61c2d6fae5944cdbb493e560948c878b6528e1d45f3",
+    "clock": "engine monotonic after receipt delivery",
+    "seed": 0
+  },
+  "expectation": "control",
+  "fault_witnessed": false,
+  "verdict": "pass",
+  "violations": [],
+  "metrics": {
+    "terminal_s": 0.653,
+    "provider_tokens": 0,
+    "repeated_steps": 0
+  },
+  "evidence": [
+    "scripts/durability-e2e/BASELINE-20261120.md"
+  ]
+}
