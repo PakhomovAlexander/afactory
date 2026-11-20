@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:scenario-artifact:2",
-  "title": "Portable backlog Scenario artifact v2",
+  "$id": "urn:af:schema:backlog-scenario-artifact:1",
+  "title": "Portable backlog Scenario artifact v1",
   "description": "A committed backlog Scenario and its dependency pins. Preparation resolves the frozen batch from the receiving Project Store. Native actions settle accepted assessments and dispatch eligible revisions to the local sink.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "definition", "inputs", "packages", "schemas"],
   "properties": {
-    "schema": { "const": "af/scenario-artifact@2" },
+    "schema": { "const": "af/backlog-scenario-artifact@1" },
     "definition": {
       "type": "object",
       "additionalProperties": false,

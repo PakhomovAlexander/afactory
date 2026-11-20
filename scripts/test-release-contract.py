@@ -257,7 +257,7 @@ class ReleaseContract(unittest.TestCase):
             'task-wake-route-v1.json': 'af/task-wake-route@1',
             'task-wake-status-v2.json': 'af/task-wake-status@2',
             'scenario-v11.json': 'af/scenario@11',
-            'scenario-artifact-v2.json': 'af/scenario-artifact@2',
+            'backlog-scenario-artifact-v1.json': 'af/backlog-scenario-artifact@1',
             'scenario-store-v18.json': 'af/scenario-store@18',
             'scenario-driver-v2.json': 'af/scenario-driver@2',
             'implementation-startup-scope-v2.json': 'af/implementation-startup-scope@2',

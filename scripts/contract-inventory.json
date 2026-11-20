@@ -337,7 +337,7 @@
         "schemas/scenario-adapter-request-v8.json",
         "schemas/scenario-adapter-response-v3.json",
         "schemas/scenario-artifact-v1.json",
-        "schemas/scenario-artifact-v2.json",
+        "schemas/backlog-scenario-artifact-v1.json",
         "schemas/scenario-bundle-v11.json",
         "schemas/scenario-decision-v1.json",
         "schemas/scenario-driver-v2.json",

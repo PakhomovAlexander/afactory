@@ -229,7 +229,7 @@ remains in the rolling window from close and is distinct from actual Provider sp
 ## Prepare and run the portable daily Scenario
 
 The [daily backlog package](../fixtures/project-backlog/scenario.json) uses
-[`af/scenario-artifact@2`](../schemas/scenario-artifact-v2.json). Copy the whole package directory
+[`af/backlog-scenario-artifact@1`](../schemas/backlog-scenario-artifact-v1.json). Copy the whole package directory
 to the receiving checkout and commit it. Configure a report policy and Provider bindings for
 `backlog/daily-author` and `backlog/daily-verifier` in the receiver's Task catalog. The Pipeline
 requires independent verification under that catalog's policy. Package paths and package pins
