@@ -54,11 +54,7 @@ def run(manifest, directory, call):
 
     contract = json.loads(Path(__file__).with_name("cases.json").read_text())[CASE]
     required_facts = {fact for chain in contract["chains"] for fact in chain}
-    execution = invoke("start")["scenario"]
-    if not execution:
-        raise ValueError("engine adapter must return an admitted Scenario identity")
     events = []
-    deadline = time.monotonic() + manifest["fault"]["deadline_s"]
     killed_at = None
     violations = []
 
@@ -87,6 +83,10 @@ def run(manifest, directory, call):
         raise TimeoutError("worker failover deadline for " + ", ".join(sorted(missing_facts or facts)))
 
     try:
+        execution = invoke("start")["scenario"]
+        if not execution:
+            raise ValueError("engine adapter must return an admitted Scenario identity")
+        deadline = time.monotonic() + manifest["fault"]["deadline_s"]
         detected = wait(["first_attempt.started"])
         original = detected["first_attempt.started"]["subject"]
         if "worker.lost" in detected:
@@ -114,7 +114,11 @@ def run(manifest, directory, call):
             for fact in ("stale_completion.delivered", "stale_completion.rejected",
                          "late_usage.reconciled"):
                 bind(fact, original)
-    except (TimeoutError, subprocess.TimeoutExpired) as error:
+    except subprocess.CalledProcessError as error:
+        violations.append(f"adapter execution failed (exit status {error.returncode})")
+    except subprocess.TimeoutExpired as error:
+        violations.append(f"adapter execution timed out after {error.timeout} seconds")
+    except TimeoutError as error:
         violations.append(str(error))
     if (directory / "trace.json").exists():
         refs.append(str(directory / "trace.json"))
