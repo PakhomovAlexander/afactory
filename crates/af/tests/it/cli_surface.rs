@@ -1725,9 +1725,10 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
             (Some(&"doctor"), None) => af(&["doctor", "--help"]),
             (Some(&"help"), Some(topic)) => af(&["help", topic]),
             (Some(&"setup"), Some(verb)) => af(&["setup", verb, "--help"]),
+            (Some(&"backlog"), Some(verb)) => af(&["backlog", verb, "--help"]),
             (Some(&"schema"), Some(verb)) => af(&["schema", verb, "--help"]),
             (Some(&"review"), Some(verb)) => af(&["review", verb, "--help"]),
-            _ => panic!("docs/agents.md names `{span}`, which is not an af task command"),
+            _ => panic!("docs/agents.md names `{span}`, which is not a supported af command in this help check"),
         };
         assert!(help.status.success(), "`{span}`: {}", err(&help));
         for flag in words.iter().filter(|word| word.starts_with("--")) {
