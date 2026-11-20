@@ -12,7 +12,7 @@ use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-mod github;
+pub(super) mod github;
 
 pub fn local_destination(project_id: &str) -> Result<String, String> {
     value_id(&("af/backlog-local-sink@1", project_id))
@@ -155,7 +155,8 @@ impl ProjectStore {
                 decision.disposition,
                 Verdict::Verified | Verdict::AlreadyTracked
             );
-            let (verdict, reason) = if positive && pin.policy.hold_policy == HoldPolicy::HoldAll {
+            let (verdict, mut reason) = if positive && pin.policy.hold_policy == HoldPolicy::HoldAll
+            {
                 (
                     Verdict::Held,
                     "Project policy holds publication and verification of backlog items.".into(),
@@ -169,6 +170,29 @@ impl ProjectStore {
             } else {
                 (decision.disposition, decision.reason.clone())
             };
+            if let Some(index) = &batch.provider_index {
+                use std::fmt::Write as _;
+                write!(
+                    reason,
+                    "\nProvider observation {} (GitHub repository ID {}).",
+                    index.observation_id, index.observation.repository_id
+                )
+                .expect("writing to a String cannot fail");
+                if verdict == Verdict::AlreadyTracked
+                    && let Some(evidence) = &decision.provider_match
+                {
+                    let issue = index
+                        .observation
+                        .matched_issue(evidence)
+                        .ok_or("Provider match differs from the frozen observation")?;
+                    write!(
+                        reason,
+                        " Verified GitHub issue ID {} (#{}).",
+                        issue.id, issue.number
+                    )
+                    .expect("writing to a String cannot fail");
+                }
+            }
             let report_ids = group
                 .iter()
                 .map(|m| m.report_id.clone())

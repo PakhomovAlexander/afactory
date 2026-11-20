@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:backlog-collected-batch:1",
+  "$id": "urn:af:schema:backlog-collected-batch:2",
   "title": "Collected private Project backlog batch",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "reference", "authority_id", "scenario_id", "source_revision", "previous_high_water", "members", "tracked_items", "tracked_items_truncated"],
+  "required": ["schema", "reference", "authority_id", "scenario_id", "source_revision", "previous_high_water", "members", "tracked_items", "tracked_items_truncated", "provider_index"],
   "properties": {
-    "schema": { "const": "af/backlog-collected-batch@1" },
+    "schema": { "const": "af/backlog-collected-batch@2" },
     "reference": { "$ref": "urn:af:schema:backlog-batch-reference:1" },
     "authority_id": { "$ref": "#/$defs/digest" },
     "scenario_id": { "$ref": "#/$defs/digest" },
@@ -42,7 +42,20 @@
       "propertyNames": { "$ref": "#/$defs/digest" },
       "additionalProperties": { "$ref": "#/$defs/digest" }
     },
-    "tracked_items_truncated": { "type": "boolean" }
+    "tracked_items_truncated": { "type": "boolean" },
+    "provider_index": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["observation_id", "destination_id", "observation"],
+      "properties": {
+        "observation_id": { "$ref": "#/$defs/digest" },
+        "destination_id": { "$ref": "#/$defs/digest" },
+        "observation": {
+          "$ref": "urn:af:schema:backlog-open-issues:1",
+          "properties": { "issues": { "maxItems": 128 } }
+        }
+      }
+    }
   },
   "$defs": {
     "digest": { "$ref": "urn:af:schema:task-contracts:4#/$defs/digest" },

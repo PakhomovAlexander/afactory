@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:backlog-provider-index-pin:1",
+  "title": "Private Project pin for a backlog provider observation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "project_id", "batch_id", "source_revision", "destination_id", "observation_id"],
+  "properties": {
+    "schema": { "const": "af/backlog-provider-index-pin@1" },
+    "project_id": { "$ref": "#/$defs/digest" },
+    "batch_id": { "$ref": "#/$defs/digest" },
+    "source_revision": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+    "destination_id": { "$ref": "#/$defs/digest" },
+    "observation_id": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "digest": { "$ref": "urn:af:schema:task-contracts:4#/$defs/digest" }
+  }
+}

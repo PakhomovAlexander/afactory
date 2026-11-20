@@ -215,7 +215,29 @@ def offline_example():
     return 0
 
 
+def scenario_observation():
+    repo_url = INDEX.API_URL + '/repos/Fixture/Backlog'
+    rows = [
+        issue(73, title='Boundary issue',
+              body='blue-boundary.py rejects the input 3 and accepts 4.\nPrivate index detail.',
+              repository_url=repo_url, url=repo_url + '/issues/73'),
+        issue(74, title='Boundary issue',
+              body='blue-boundary.py rejects a string before comparing the input.',
+              repository_url=repo_url, url=repo_url + '/issues/74'),
+    ]
+    pages = [({'id': 23, 'full_name': 'Fixture/Backlog', 'url': repo_url}, 200, {}),
+             (rows, 200, {})]
+    with tempfile.TemporaryDirectory() as tmp:
+        code, stdout, stderr, output, calls = run(Path(tmp), pages, repository='fixture/backlog')
+        assert (code, stdout, stderr) == (0, '', '')
+        assert len(calls) == 2 and all(call[2] == 'GET' for call in calls)
+        sys.stdout.buffer.write(output.read_bytes())
+    return 0
+
+
 if __name__ == '__main__':
     if sys.argv[1:] == ['--example']:
         sys.exit(offline_example())
+    if sys.argv[1:] == ['--scenario-observation']:
+        sys.exit(scenario_observation())
     unittest.main()

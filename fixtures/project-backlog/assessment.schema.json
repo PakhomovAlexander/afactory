@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schema", "batch_id", "source_revision", "decisions"],
   "properties": {
-    "schema": { "const": "af/backlog-assessment@1" },
+    "schema": { "const": "af/backlog-assessment@2" },
     "batch_id": { "$ref": "urn:af:schema:task-contracts:4#/$defs/digest" },
     "source_revision": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
     "decisions": {
@@ -16,7 +16,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["members", "evidence_ids", "citations", "disposition", "claim", "reason", "tracked_id", "proposed"],
+        "required": ["members", "evidence_ids", "citations", "disposition", "claim", "reason", "tracked_id", "provider_match", "proposed"],
         "properties": {
           "members": {
             "type": "array",
@@ -50,6 +50,15 @@
               { "$ref": "urn:af:schema:task-contracts:4#/$defs/digest" },
               { "type": "null" }
             ]
+          },
+          "provider_match": {
+            "type": ["object", "null"],
+            "additionalProperties": false,
+            "required": ["issue_id", "quote"],
+            "properties": {
+              "issue_id": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+              "quote": { "type": "string", "minLength": 1, "maxLength": 512 }
+            }
           },
           "proposed": {
             "type": ["object", "null"],

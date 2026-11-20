@@ -600,8 +600,8 @@ Task plan; --authority selects trusted authority independently of source/base se
 Backlog record, inbox, list, show, outbox and ack: af/backlog@1.
 Backlog export: af/backlog-signed-submission@1. Backlog accept: af/backlog-signed-receipt@1.
 Portable backlog: af/backlog-scenario-artifact@1.
-Portable backlog inputs: af/backlog-batch-reference@1 and af/backlog-collected-batch@1.
-Independent backlog assessment: af/backlog-assessment@1.
+Portable backlog inputs: af/backlog-batch-reference@1 and af/backlog-collected-batch@2.
+Independent backlog assessment: af/backlog-assessment@2.
   The capture receipt separates local capture from designated authority receipt.
   Inbox and show --private carry private Report data. List and ordinary show carry verified fields.
 

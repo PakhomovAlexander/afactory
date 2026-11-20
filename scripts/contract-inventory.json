@@ -3,7 +3,10 @@
   "families": [
     {
       "name": "backlog-open-issues",
-      "reader_writer": ["scripts/backlog-open-issues.py"],
+      "reader_writer": [
+        "scripts/backlog-open-issues.py",
+        "crates/af-contracts/src/backlog/batch/provider_index.rs"
+      ],
       "semantic_owner": ["scripts/backlog-open-issues.py"],
       "tests": ["scripts/test-backlog-open-issues.py"],
       "schemas": ["schemas/backlog-open-issues-v1.json"]
@@ -139,7 +142,8 @@
         "crates/af-contracts/src/backlog/batch/assessment.rs",
         "crates/af-contracts/src/backlog/intake.rs",
         "crates/af/src/task_commands/scenario_portable/backlog.rs",
-        "crates/af-project/src/backlog/batch/native/github.rs"
+        "crates/af-project/src/backlog/batch/native/github.rs",
+        "crates/af-project/src/backlog/batch/provider_index.rs"
       ],
       "semantic_owner": [
         "crates/af-project/src/backlog.rs",
@@ -155,14 +159,15 @@
         "crates/af/tests/it/scenario/portable.rs"
       ],
       "schemas": [
-        "schemas/backlog-assessment-v1.json",
+        "schemas/backlog-assessment-v2.json",
         "fixtures/project-backlog/assessment.schema.json",
         "schemas/backlog-batch-audit-v1.json",
         "schemas/backlog-batch-policy-v1.json",
         "schemas/backlog-batch-record-v1.json",
         "schemas/backlog-batch-reference-v1.json",
-        "schemas/backlog-collected-batch-v1.json",
+        "schemas/backlog-collected-batch-v2.json",
         "schemas/backlog-github-state-v1.json",
+        "schemas/backlog-provider-index-pin-v1.json",
         "schemas/backlog-intake-policy-v1.json",
         "schemas/backlog-intake-record-v1.json",
         "schemas/backlog-record-v1.json",

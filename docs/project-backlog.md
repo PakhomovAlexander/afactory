@@ -626,10 +626,91 @@ its reproduction text and `needs_evidence` disposition. Its reproduction appeare
 the assessment input nor the outgoing ticket. Fixture identities change with each fresh
 repository and batch.
 
-The index example observes two existing fake provider issues and refuses an incomplete read.
-Use a read-only index to nominate duplicate candidates and verify an exact issue identity
-before linking it. The index does not import issues into the Project Store. The packaged
-daily Scenario in this fixture takes the local frozen batch reference. The index example
-is separate read-only evidence and the fake publication leaves existing remote issues alone.
-
 [GitHub publication decision](adr/2026-11-20-coordinate-github-backlog-publication.md)
+
+### Use a private provider index for daily duplicate checks
+
+On the receiving Project authority, run the
+[Issues-read observer](issue-triage-runner.md#read-only-open-issue-index) against the exact
+GitHub destination. Use a fresh observation for each batch. The observer's read credential
+stays outside the Project and Workers. The receiver admits at most 128 issues and 64 KiB of
+observation JSON so both Workers receive the entire accepted walk. A larger observation is
+refused. The observer marks truncated issue bodies individually. Such a body cannot support
+an exact provider match, and a batch with any truncated body cannot propose public fields.
+
+After freezing the batch and before running `af scenario prepare`, use the `batch.json`
+constructed above and the installed GitHub batch policy. Set `observation` to the private
+output of the read-only observer. Run this from the checkout whose committed HEAD will be
+assessed. The batch pin selects exact observation bytes and must be owned by the receiving
+user with no group or other permissions.
+
+```bash
+store=$(af project show --json | jq -r .store)
+source_revision=$(git rev-parse --verify HEAD)
+python3 - "$store" "$scratch/batch.json" "$source_revision" "$observation" <<'PYTHON'
+import hashlib
+import json
+import os
+import pathlib
+import sys
+import tempfile
+
+store, reference, commit, observation = sys.argv[1:]
+store = pathlib.Path(store)
+batch = json.loads(pathlib.Path(reference).read_text())
+policy = json.loads((store / "backlog-batch-policy-v1.json").read_text())
+with open(observation, "rb") as file:
+    raw = file.read(65537)
+if len(raw) > 65536:
+    raise SystemExit("Observation exceeds the Project collection bound")
+digest = hashlib.sha256(b"review.kernel/content-id/v1\0" + raw).hexdigest()
+output = store / f"backlog-open-issues-{digest}.json"
+if not output.exists():
+    with tempfile.NamedTemporaryFile(dir=store) as file:
+        file.write(raw)
+        file.flush()
+        os.fsync(file.fileno())
+        os.link(file.name, output)
+pin = dict(schema="af/backlog-provider-index-pin@1", project_id=batch["project_id"],
+           batch_id=batch["batch_id"], source_revision=commit,
+           destination_id=policy["destination_id"], observation_id="sha256:" + digest)
+with tempfile.NamedTemporaryFile(mode="w", dir=store, delete=False) as file:
+    json.dump(pin, file)
+    file.flush()
+    os.fsync(file.fileno())
+os.replace(file.name, store / "backlog-provider-index-v1.json")
+PYTHON
+```
+
+Continue with the normal Scenario preparation and Ant approval. Keep the pin and its bytes
+in place through first settlement. A mismatched pin, wrong repository name or numeric ID,
+missing bytes, unsafe file, invalid JSON or incomplete page walk prevents acceptance. If the
+pin or observation changes before settlement, restore the captured scope and bytes for the
+same Run. Once settled, the recorded native receipt replays without rereading the observer's
+files. Private `af backlog show ID --private --json` output traces the observation digest and
+the stable provider issue ID and display number beside the disposition. The Scenario retains
+the private assessment and its independent verification. Never share the prepared bundle or
+assessment as public output.
+
+With no `backlog-provider-index-v1.json` installed, collection uses the existing local Project
+item view. Hold a suspected duplicate whose identity remains uncertain. A complete live
+walk can miss concurrent provider changes and does not prove that no duplicate exists.
+The Scenario uses only the pinned observation and committed source. The operator can obtain
+a fresh read-only export and prepare a new batch assessment when current evidence is needed.
+External observations do not import tickets, add intake Reports or make existing tickets
+publication targets.
+
+Run the focused offline proof from a fresh checkout with no provider credentials:
+
+```sh
+cargo nextest run --workspace --locked --profile ci --success-output immediate \
+  -E 'binary_id(af::it) & test(portable_backlog_github_index_prevents_a_duplicate)'
+```
+
+The synthetic read-only observer returns issues 1073 (#73) and 1074 (#74) with the same title.
+Issue 1073 gives the precise behavior of `blue-boundary.py` at inputs 3 and 4. The other issue
+describes a string input failure. The daily Ant records the exact issue as already tracked
+for both Blue Reports and keeps a third Report with missing evidence private. The fake
+publisher receives one POST for the distinct, verified Green defect. Replaying the settled Run
+after rotating the observer input does not add another POST. The fixture prints the actual
+Ant Run and observation identities.

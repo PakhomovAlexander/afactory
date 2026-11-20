@@ -24,17 +24,20 @@ fn numeric_id(id: u64) -> bool {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Config {
+pub(in crate::backlog::batch) struct Config {
     schema: String,
     project_id: String,
-    repository: String,
-    repository_id: u64,
+    pub(in crate::backlog::batch) repository: String,
+    pub(in crate::backlog::batch) repository_id: u64,
     publisher_id: u64,
     executable_digest: String,
 }
 
 impl Config {
-    fn load(store: &ProjectStore, destination: &str) -> Result<Self, String> {
+    pub(in crate::backlog::batch) fn load(
+        store: &ProjectStore,
+        destination: &str,
+    ) -> Result<Self, String> {
         let bytes = owned_file(&store.directory.join(CONFIG), MAX_RESPONSE)?;
         let config: Self =
             serde_json::from_slice(&bytes).map_err(|_| "Invalid GitHub destination")?;
@@ -132,7 +135,7 @@ fn matches_pin(path: &Path, max_bytes: u64, pin: &str) -> bool {
         .is_ok_and(|bytes| af_store::canonical::blob_content_id(&bytes) == pin)
 }
 
-fn owned_file(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
+pub(in crate::backlog::batch) fn owned_file(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK | nix::libc::O_CLOEXEC)

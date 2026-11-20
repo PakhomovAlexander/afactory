@@ -3,8 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use super::provider_index::{Observation, ProviderMatch};
 use super::{BatchReference, is_member_id};
 use crate::backlog::{Disposition, MAX_TEXT_BYTES, MAX_TITLE_BYTES, PublicFields, valid_text};
+use crate::is_digest;
 use crate::task::document::{DocumentDraft, DocumentSourceV1, RepositoryCitationV1};
 use crate::task::usage::DecimalU64;
 
@@ -14,8 +16,8 @@ pub const MAX_MEMBERS: usize = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CollectionSchema {
-    #[serde(rename = "af/backlog-collected-batch@1")]
-    V1,
+    #[serde(rename = "af/backlog-collected-batch@2")]
+    V2,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,6 +32,16 @@ pub struct CollectedBatch {
     pub members: Vec<CollectedMember>,
     pub tracked_items: BTreeMap<String, String>,
     pub tracked_items_truncated: bool,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub provider_index: Option<ProviderIndex>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderIndex {
+    pub observation_id: String,
+    pub destination_id: String,
+    pub observation: Observation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,8 +59,8 @@ pub struct CollectedMember {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 enum Schema {
-    #[serde(rename = "af/backlog-assessment@1")]
-    V1,
+    #[serde(rename = "af/backlog-assessment@2")]
+    V2,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,6 +85,8 @@ pub struct Decision {
     pub tracked_id: Option<String>,
     #[serde(deserialize_with = "Option::deserialize")]
     pub proposed: Option<PublicFields>,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub provider_match: Option<ProviderMatch>,
 }
 
 impl Assessment {
@@ -92,6 +106,12 @@ impl Assessment {
         let batch: CollectedBatch = serde_json::from_str(&source.text)
             .map_err(|_| "Invalid frozen backlog batch context")?;
         batch.reference.validate()?;
+        if let Some(index) = &batch.provider_index {
+            if !is_digest(&index.observation_id) || !is_digest(&index.destination_id) {
+                return Err("Invalid Project provider observation identity".into());
+            }
+            index.observation.validate()?;
+        }
         let body = draft
             .sections
             .iter()
@@ -142,8 +162,16 @@ impl Assessment {
                 || !cited.is_subset(&eligible)
                 || decision.citations.iter().any(|c| !citations.contains(c))
                 || !valid_text(&decision.claim, MAX_TEXT_BYTES, true)
-                || !valid_text(&decision.reason, MAX_TEXT_BYTES, true)
-                || !decision.valid_disposition(&batch.tracked_items)
+                || !valid_text(
+                    &decision.reason,
+                    if batch.provider_index.is_some() {
+                        MAX_TEXT_BYTES - 256
+                    } else {
+                        MAX_TEXT_BYTES
+                    },
+                    true,
+                )
+                || !decision.valid_disposition(&batch)
             {
                 return Err(
                     "Backlog decision lacks bound evidence, citations or valid fields".into(),
@@ -158,7 +186,18 @@ impl Assessment {
 }
 
 impl Decision {
-    fn valid_disposition(&self, tracked_items: &BTreeMap<String, String>) -> bool {
+    fn valid_disposition(&self, batch: &CollectedBatch) -> bool {
+        if let Some(evidence) = &self.provider_match {
+            return self.disposition == Disposition::AlreadyTracked
+                && self.tracked_id.is_none()
+                && self.proposed.is_none()
+                && !self.evidence_ids.is_empty()
+                && !self.citations.is_empty()
+                && batch
+                    .provider_index
+                    .as_ref()
+                    .is_some_and(|index| index.observation.matched_issue(evidence).is_some());
+        }
         match self.disposition {
             Disposition::Verified => {
                 self.tracked_id.is_none()
@@ -167,6 +206,10 @@ impl Decision {
                     && self.proposed.as_ref().is_some_and(|public| {
                         valid_text(&public.title, MAX_TITLE_BYTES, false)
                             && valid_text(&public.body, MAX_TEXT_BYTES, true)
+                            && batch
+                                .provider_index
+                                .as_ref()
+                                .is_none_or(|index| index.observation.permits_public_fields(public))
                     })
             }
             Disposition::AlreadyTracked => {
@@ -174,7 +217,7 @@ impl Decision {
                     && self
                         .tracked_id
                         .as_ref()
-                        .is_some_and(|id| tracked_items.contains_key(id))
+                        .is_some_and(|id| batch.tracked_items.contains_key(id))
                     && !self.evidence_ids.is_empty()
                     && !self.citations.is_empty()
             }
@@ -196,7 +239,7 @@ mod tests {
         let digest = |digit: &str| format!("sha256:{}", digit.repeat(64));
         let source_revision = "a".repeat(40);
         let mut batch = CollectedBatch {
-            schema: CollectionSchema::V1,
+            schema: CollectionSchema::V2,
             reference: BatchReference {
                 schema: BatchReferenceSchema::V1,
                 project_id: digest("1"),
@@ -220,13 +263,14 @@ mod tests {
             }],
             tracked_items: BTreeMap::new(),
             tracked_items_truncated: false,
+            provider_index: None,
         };
         let citation = RepositoryCitationV1 {
             path: "rules.json".into(),
             line: Some(1),
         };
         let mut assessment = Assessment {
-            schema: Schema::V1,
+            schema: Schema::V2,
             batch_id: batch.reference.batch_id.clone(),
             source_revision: source_revision.clone(),
             decisions: vec![Decision {
@@ -237,6 +281,7 @@ mod tests {
                 claim: "One off-by-one error.".into(),
                 reason: "The configured boundary is exclusive.".into(),
                 tracked_id: None,
+                provider_match: None,
                 proposed: Some(PublicFields {
                     title: "Off-by-one error".into(),
                     body: "Use an inclusive boundary.".into(),
@@ -287,5 +332,56 @@ mod tests {
         assert!(check(&batch, &assessment, &source_revision).is_err());
         batch.tracked_items.insert(digest("a"), digest("b"));
         assert!(check(&batch, &assessment, &source_revision).is_ok());
+
+        let title = "Boundary comparison rejects an input";
+        let quote = "rules.json accepts 4 and incorrectly rejects 3";
+        let marker = "<!-- af-backlog-item:project:item -->";
+        let observation: Observation = serde_json::from_value(serde_json::json!({
+            "schema": "af.backlog-open-issues/1", "observation": "live-page-walk",
+            "repository": "fixture/backlog", "repository_id": 23, "destination": "github:fixture/backlog",
+            "issues": [{
+                "id": 1073, "number": 73, "title": title, "updated_at": "2026-11-19T12:30:00Z",
+                "body_excerpt": format!("{quote}\n{title}\n{marker}"), "body_truncated": false,
+            }],
+        })).unwrap();
+        batch.provider_index = Some(ProviderIndex {
+            observation_id: digest("8"),
+            destination_id: digest("9"),
+            observation,
+        });
+        assert!(check(&batch, &assessment, &source_revision).is_ok()); // local lookup
+        assessment.decisions[0].tracked_id = None;
+        for (issue_id, excerpt) in [
+            (73, quote),
+            (1073, title),
+            (1073, marker),
+            (1073, "missing"),
+        ] {
+            assessment.decisions[0].provider_match = Some(ProviderMatch {
+                issue_id,
+                quote: excerpt.into(),
+            });
+            assert!(check(&batch, &assessment, &source_revision).is_err());
+        }
+        assessment.decisions[0].provider_match = Some(ProviderMatch {
+            issue_id: 1073,
+            quote: quote.into(),
+        });
+        assert!(check(&batch, &assessment, &source_revision).is_ok());
+        let issue = &mut batch.provider_index.as_mut().unwrap().observation.issues[0];
+        issue.body_excerpt = format!("{quote}\n{}", "x".repeat(511 - quote.len()));
+        issue.body_truncated = true;
+        assert!(check(&batch, &assessment, &source_revision).is_err());
+        assessment.decisions[0].disposition = Disposition::Verified;
+        assessment.decisions[0].provider_match = None;
+        assessment.decisions[0].proposed = Some(PublicFields {
+            title: "Inclusive boundary".into(),
+            body: "Restore the boundary behavior.".into(),
+        });
+        assert!(check(&batch, &assessment, &source_revision).is_err());
+        batch.provider_index.as_mut().unwrap().observation.issues[0].body_truncated = false;
+        assert!(check(&batch, &assessment, &source_revision).is_ok());
+        assessment.decisions[0].proposed.as_mut().unwrap().body = quote.into();
+        assert!(check(&batch, &assessment, &source_revision).is_err());
     }
 }

@@ -5,6 +5,7 @@ use crate::{is_digest, task::usage::DecimalU64};
 use serde::{Deserialize, Serialize};
 
 pub mod assessment;
+pub mod provider_index;
 
 const MAX_CALENDAR_MS: u64 = 8_640_000_000_000;
 

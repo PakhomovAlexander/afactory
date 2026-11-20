@@ -22,6 +22,7 @@ use super::intake::{AcceptedReport, value_id};
 use crate::ProjectStore;
 
 mod native;
+mod provider_index;
 pub use native::{NativeAssessment, local_destination};
 
 const STREAM: &str = "backlog-daily-batch";
@@ -706,7 +707,13 @@ impl ProjectStore {
         let tracked_items = self.verified_backlog()?;
         let tracked_items_truncated = tracked_items.len() > MAX_MEMBERS;
         Ok(CollectedBatch {
-            schema: CollectionSchema::V1,
+            schema: CollectionSchema::V2,
+            provider_index: provider_index::collect(
+                self,
+                &reference,
+                &source_revision,
+                &pin.policy.destination_id,
+            )?,
             reference,
             authority_id: pin.policy.authority_id.clone(),
             scenario_id: pin.policy.scenario_id.clone(),

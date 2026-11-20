@@ -30,7 +30,7 @@ class FixtureConnection:
         assert method in ("GET", "POST")
         data = json.loads(body) if body is not None else None
         if body is not None:
-            for private_text in (b"private-attachment", b"Different behavior", b"private-insufficient-repro"):
+            for private_text in (b"private-attachment", b"Different behavior", b"private-insufficient-repro", b"Private index detail."):
                 assert private_text not in body
         with (fixture_state / "requests").open("a") as trace:
             trace.write(json.dumps({"method": method, "path": path, "body": data}) + "\n")
@@ -43,7 +43,8 @@ class FixtureConnection:
             if (fixture_state / "abort-before-write").exists():
                 os._exit(18)
             assert set(data) == {"title", "body"}
-            assert data["title"] == "Blue excludes its required boundary."
+            color = "Green" if (fixture_state / "expect-green").exists() else "Blue"
+            assert data["title"] == color + " excludes its required boundary."
             approved, marker = data["body"].split("\n\n")
             assert approved == "The configured boundary must be inclusive."
             assert re.fullmatch(f"{MARKER_PREFIX}{DIGEST}:{DIGEST} -->", marker)

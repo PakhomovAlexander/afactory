@@ -38,8 +38,9 @@ Identical titles can belong to distinct issues and the index makes no duplicate 
 
 The `observation` value `live-page-walk` marks a read of the listing through its terminal page.
 GitHub's live pagination can shift during reads, so the result cannot establish the
-absence of a duplicate. Recheck the current issue identity and revision when verifying
-a proposed match.
+absence of a duplicate. The daily Project Scenario uses a private pin to give both Workers
+the same observation for verification against committed source. See the
+[Project receiver steps](project-backlog.md#use-a-private-provider-index-for-daily-duplicate-checks).
 
 Run the offline example from the repository root. The harness passes synthetic responses
 through the ordinary command entrypoint and replaces the transport's socket and HTTP

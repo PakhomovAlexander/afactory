@@ -65,7 +65,7 @@ else:
             return dict(members=members, evidence_ids=evidence,
                         citations=[citation] if citation else [], disposition=disposition,
                         claim=claim, reason='Checked the current source behavior.',
-                        tracked_id=None, proposed=proposed)
+                        tracked_id=None, provider_match=None, proposed=proposed)
         decisions = []
         citations = []
         groups = [('blue', 3, ['blue-a', 'blue-b']), ('green', 7, ['green'])]
@@ -88,6 +88,21 @@ else:
                            else 'The configured boundary must be inclusive.')
             decisions.append(decision(members, [evidence], 'verified', claim, citation,
                                       {'title':claim, 'body':public_body}))
+        provider_index = batch['provider_index']
+        if provider_index:
+            index = provider_index['observation']
+            assert index['repository_id'] == 23 and index['observation'] == 'live-page-walk'
+            exact, similar = index['issues']
+            assert exact['id'] == 1073 and exact['number'] == 73
+            assert exact['title'] == similar['title'] and similar['id'] == 1074
+            quote = 'blue-boundary.py rejects the input 3 and accepts 4.'
+            assert quote in exact['body_excerpt'].splitlines()
+            assert 'rejects a string before comparing' in similar['body_excerpt']
+            assert all('green-boundary.py' not in issue['body_excerpt'] for issue in index['issues'])
+            assert not exact['body_truncated'] and not similar['body_truncated']
+            decisions[0].update(disposition='already_tracked', proposed=None,
+                                provider_match={'issue_id': exact['id'], 'quote': quote},
+                                reason='The same input and source path exhibit the same behavior.')
         if reconsidering:
             decisions.append(decision(['late'], [], 'needs_evidence', 'The reported behavior is unknown.'))
         else:
@@ -97,7 +112,7 @@ else:
             mismatch = identity(b'mismatched-attachment')
             decisions.append(decision(['mismatch'], [mismatch], 'verified', 'An unrelated claim.',
                                       citations[0], {'title':'Unrelated claim', 'body':'Do not publish.'}))
-        assessment = dict(schema='af/backlog-assessment@1', batch_id=batch['reference']['batch_id'],
+        assessment = dict(schema='af/backlog-assessment@2', batch_id=batch['reference']['batch_id'],
                           source_revision=batch['source_revision'], decisions=decisions)
         body = '```json\n' + json.dumps(assessment) + '\n```'
         block = ('Blue was reconsidered. Needs evidence: late.' if reconsidering else
@@ -106,7 +121,11 @@ else:
         if 'document' in inputs:
             stage = 'verifier'
             assert inputs['checks']['payload']['outcome'] == 'passed'
-            assert block in inputs['document']['payload']['text']
+            document = inputs['document']['payload']['text']
+            assert block in document
+            if provider_index:
+                assert quote in document and '1073' in document
+                assert 'already_tracked' in document and 'Private index detail.' not in document
             assert inputs['checks']['payload']['checks']['backlog_assessment'] == 'passed'
             outputs = {'result':[{'document_id':inputs['document']['artifact_id'],
                 'sources_id':inputs['sources']['artifact_id'],
@@ -852,7 +871,7 @@ fn portable_backlog_settles_and_dispatches_the_frozen_batch_in_two_receivers() {
             ["sources"]["backlog-batch"];
         let collected: Value = serde_json::from_str(collection["text"].as_str().unwrap()).unwrap();
         schemas::valid(
-            &schemas::validator("backlog-collected-batch-v1.json"),
+            &schemas::validator("backlog-collected-batch-v2.json"),
             &collected,
         );
         assert_eq!(collected["reference"], reference);
@@ -1071,7 +1090,7 @@ fn portable_backlog_settles_and_dispatches_the_frozen_batch_in_two_receivers() {
         )
         .unwrap();
         schemas::valid(
-            &schemas::validator("backlog-assessment-v1.json"),
+            &schemas::validator("backlog-assessment-v2.json"),
             &assessment,
         );
         assert_eq!(
@@ -1612,4 +1631,166 @@ fn portable_backlog_github_retains_a_crash_before_the_provider_write_as_pending(
     assert_eq!(publication["attempt_ids"].as_array().unwrap().len(), 2);
     assert!(publication["remote_id"].is_null());
     assert!(publication["receipt_id"].is_null());
+}
+
+#[test]
+fn portable_backlog_github_index_prevents_a_duplicate_from_the_daily_ant() {
+    let directory = tempfile::tempdir().unwrap();
+    let receiver = Receiver::for_artifact(
+        directory.path().canonicalize().unwrap().join("receiver"),
+        507,
+        BACKLOG,
+    );
+    let executable = github_fixture(&receiver);
+    let reference = capture_backlog_batch(&receiver, Some(&executable));
+    let project = ok(receiver.af(&["project", "show", "--json"]));
+    let store = Path::new(project["store"].as_str().unwrap());
+    let destination = read(&store.join("backlog-batch-policy-v1.json"))["destination_id"].clone();
+    let head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&receiver.repo)
+        .output()
+        .unwrap();
+    assert!(head.status.success());
+    let source = std::str::from_utf8(&head.stdout).unwrap();
+    let observation = Command::new("python3")
+        .args([
+            "-I",
+            "scripts/test-backlog-open-issues.py",
+            "--scenario-observation",
+        ])
+        .current_dir(workspace())
+        .output()
+        .unwrap();
+    assert!(observation.status.success(), "{:?}", observation.stderr);
+    let observation = observation.stdout;
+    let observation_id = af_store::canonical::blob_content_id(&observation);
+    let observation_path = |id: &str| store.join(format!("backlog-open-issues-{}.json", &id[7..]));
+    let path = observation_path(&observation_id);
+    let pin_path = store.join("backlog-provider-index-v1.json");
+    let pin = json!({
+        "schema":"af/backlog-provider-index-pin@1",
+        "project_id": reference["project_id"],
+        "batch_id": reference["batch_id"],
+        "source_revision": source.trim(),
+        "destination_id": destination,
+        "observation_id": observation_id,
+    });
+    schemas::valid(
+        &schemas::validator("backlog-provider-index-pin-v1.json"),
+        &pin,
+    );
+    let install_pin = |pin: &Value| {
+        if pin_path.exists() {
+            fs::remove_file(&pin_path).unwrap();
+        }
+        private_write(&pin_path, serde_json::to_vec(pin).unwrap());
+    };
+    install_pin(&pin);
+    save(&receiver.input, &reference);
+    let refuse = |diagnostic: &str| {
+        let refusal = receiver.prepare_artifact(BACKLOG, None);
+        assert!(!refusal.status.success());
+        assert!(text(&refusal).contains(diagnostic), "{refusal:?}");
+    };
+    refuse("observation is unavailable");
+    private_write(&path, &observation);
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+    refuse("observation is unavailable");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    let mut replay = pin.clone();
+    replay["batch_id"] = json!(format!("sha256:{}", "0".repeat(64)));
+    install_pin(&replay);
+    refuse("differs from the Project, batch, source or destination");
+    let mut altered: Value = serde_json::from_slice(&observation).unwrap();
+    for (field, value, diagnostic) in [
+        (
+            "repository_id",
+            json!(24),
+            "belongs to a different GitHub repository",
+        ),
+        (
+            "observation",
+            json!("incomplete"),
+            "Invalid backlog provider observation",
+        ),
+    ] {
+        let original = std::mem::replace(&mut altered[field], value);
+        let bytes = serde_json::to_vec(&altered).unwrap();
+        let id = af_store::canonical::blob_content_id(&bytes);
+        private_write(&observation_path(&id), bytes);
+        let mut wrong = pin.clone();
+        wrong["observation_id"] = json!(id);
+        install_pin(&wrong);
+        refuse(diagnostic);
+        altered[field] = original;
+    }
+    install_pin(&pin);
+    fs::write(&path, b"{}").unwrap();
+    refuse("observation differs from pinned bytes");
+    fs::write(&path, &observation).unwrap();
+
+    let prepared = ok(receiver.prepare_artifact(BACKLOG, None));
+    let frozen = &prepared["definitions"]["daily-backlog"]["steps"][0]["operation"]["template"]["document"]
+        ["requirements"]["scenario_portable_sources"]["sources"]["backlog-batch"]["text"];
+    let frozen: Value = serde_json::from_str(frozen.as_str().unwrap()).unwrap();
+    schemas::valid(
+        &schemas::validator("backlog-collected-batch-v2.json"),
+        &frozen,
+    );
+    assert_eq!(frozen["provider_index"]["observation_id"], observation_id);
+
+    let fake = receiver.root.join("fake-github");
+    let (run_id, first) = start_github_backlog(&receiver, "indexed-backlog", &reference);
+    assert_eq!(first["status"], "waiting", "{}", first["failure"]);
+    assert!(!fake.join("requests").exists());
+    let outcome = |id| {
+        ok(receiver.af(&["backlog", "show", id, "--private", "--json"]))["data"]["outcomes"][0]
+            .clone()
+    };
+    let tracked = outcome("blue-a");
+    assert_eq!(tracked["disposition"], "already_tracked");
+    assert_eq!(tracked, outcome("blue-b"));
+    let reason = tracked["reason"].as_str().unwrap();
+    assert!(reason.contains(&observation_id));
+    assert!(reason.contains("GitHub repository ID 23"));
+    assert!(reason.contains("Verified GitHub issue ID 1073 (#73)"));
+    assert_eq!(outcome("unknown")["disposition"], "needs_evidence");
+    assert_eq!(outcome("green")["disposition"], "verified");
+
+    // A settled Run replays its accepted Task and decision, even if the observer's
+    // files are rotated. The publication adapter may create only the distinct issue.
+    fs::remove_file(&path).unwrap();
+    install_pin(&replay);
+    private_write(&store.join(GITHUB_ADAPTER), &executable);
+    private_write(&store.join("backlog-github-token"), "fixture_token\n");
+    fs::write(fake.join("expect-green"), "").unwrap();
+    fs::write(fake.join("respond"), "").unwrap();
+    let resume = [
+        "scenario",
+        "resume",
+        &run_id,
+        "--state",
+        receiver.scenarios.to_str().unwrap(),
+        "--json",
+    ];
+    for _ in 0..2 {
+        let run = ok(receiver.af(&resume));
+        assert_eq!(run["status"], "succeeded", "{}", run["failure"]);
+    }
+    assert_eq!(outcome("blue-a"), tracked);
+    let requests = http_requests(&fake);
+    let posts: Vec<_> = requests
+        .iter()
+        .filter(|request| request["method"] == "POST")
+        .collect();
+    assert_eq!(posts.len(), 1);
+    assert_eq!(
+        posts[0]["body"]["title"],
+        "Green excludes its required boundary."
+    );
+    assert!(!posts[0].to_string().contains("Private index detail."));
+    eprintln!(
+        "Ant {run_id}, frozen observation {observation_id}, issue 1073 (#73) already tracked, one distinct POST"
+    );
 }

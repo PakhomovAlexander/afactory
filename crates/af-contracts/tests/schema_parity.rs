@@ -22,7 +22,7 @@ use af_contracts::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 262] = [
+const SCHEMAS: [&str; 265] = [
     "task-wake-traversal-v1.json",
     "task-wake-route-traversal-v1.json",
     "task-wake-pi-config-v1.json",
@@ -268,7 +268,10 @@ const SCHEMAS: [&str; 262] = [
     "resolution-challenge-v1.json",
     "run-event-v3.json",
     "backlog-batch-audit-v1.json",
-    "backlog-assessment-v1.json",
+    "backlog-assessment-v2.json",
+    "backlog-collected-batch-v2.json",
+    "backlog-open-issues-v1.json",
+    "backlog-provider-index-pin-v1.json",
     "backlog-batch-policy-v1.json",
     "backlog-batch-reference-v1.json",
     "backlog-batch-record-v1.json",
