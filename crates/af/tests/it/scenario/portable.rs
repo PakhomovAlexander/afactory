@@ -125,7 +125,7 @@ distinct_models = true
 
 [providers]
 "backlog/triage-author" = "portable-{issue}"
-"backlog/triage-verifier" = "portable-{issue}"
+"backlog/triage-verifier" = "unused-receiver-default"
 "#,
             ),
         )
@@ -199,8 +199,8 @@ distinct_models = true
             .unwrap()
     }
 
-    fn prepare(&self) -> Output {
-        self.af(&[
+    fn prepare(&self, bindings: Option<&Path>) -> Output {
+        let mut args = vec![
             "scenario",
             "prepare",
             "--file",
@@ -210,7 +210,11 @@ distinct_models = true
             "--inputs",
             self.input.to_str().unwrap(),
             "--json",
-        ])
+        ];
+        if let Some(bindings) = bindings {
+            args.extend(["--bindings", bindings.to_str().unwrap()]);
+        }
+        self.af(&args)
     }
 }
 
@@ -237,7 +241,14 @@ fn the_same_portable_triage_runs_in_two_clean_receivers_with_typed_issue_sources
 
     for issue in [101, 202] {
         let receiver = Receiver::new(parent.join(issue.to_string()), issue);
-        let bundle = ok(receiver.prepare());
+        let bindings = receiver.root.join("bindings.json");
+        save(
+            &bindings,
+            &json!({"schema": "af.task-bindings/1", "providers": {
+                "backlog/triage-verifier": format!("portable-{issue}")
+            }}),
+        );
+        let bundle = ok(receiver.prepare(Some(&bindings)));
         schemas::valid(&schemas::validator("scenario-bundle-v10.json"), &bundle);
         let bundle_path = receiver.root.join("prepared.json");
         save(&bundle_path, &bundle);
@@ -290,8 +301,9 @@ fn the_same_portable_triage_runs_in_two_clean_receivers_with_typed_issue_sources
         );
         assert!(!denied.status.success());
         assert!(!receiver.provider_home.join("calls").exists());
-        // Execution uses captured inputs and packages, with no dependence on the caller file.
+        // Execution restores the captured sources and Provider alias.
         fs::remove_file(&receiver.input).unwrap();
+        fs::remove_file(&bindings).unwrap();
         let run = ok(receiver.af(&[&start[..], &["--confirm-pin", pin_id]].concat()));
         assert_eq!(run["status"], "succeeded", "{}", run["failure"]);
         let receipt = &run["frames"]["root"]["outputs"]["triage"]["value"];
@@ -344,10 +356,9 @@ fn the_same_portable_triage_runs_in_two_clean_receivers_with_typed_issue_sources
                     .unwrap(),
             )
             .unwrap();
-        assert_eq!(
-            authority["providers"]["backlog/triage-author"],
-            format!("portable-{issue}")
-        );
+        for worker in ["backlog/triage-author", "backlog/triage-verifier"] {
+            assert_eq!(authority["providers"][worker], format!("portable-{issue}"));
+        }
         assert!(authority["report_policy_id"].is_string());
         let calls = fs::read_to_string(receiver.provider_home.join("calls")).unwrap();
         assert_eq!(
@@ -387,7 +398,7 @@ fn portable_prepare_refuses_missing_tampered_and_escaping_dependencies() {
         .join("portable-issue-triage-v1.json");
     let original = fs::read(&schema_path).unwrap();
     let assert_denied = |message: &str| {
-        let denied = receiver.prepare();
+        let denied = receiver.prepare(None);
         assert!(!denied.status.success(), "{}", text(&denied));
         assert!(text(&denied).contains(message), "{}", text(&denied));
     };
@@ -430,5 +441,45 @@ fn portable_prepare_refuses_missing_tampered_and_escaping_dependencies() {
         &json!({"schema":"af.document-sources/1","sources":{}}),
     );
     assert_denied("exact declared named report sources");
+    assert!(!receiver.provider_home.join("calls").exists());
+}
+
+#[test]
+fn portable_prepare_rejects_package_bindings_before_inspecting_package_paths() {
+    let directory = tempfile::tempdir().unwrap();
+    let receiver = Receiver::new(
+        directory.path().canonicalize().unwrap().join("receiver"),
+        101,
+    );
+    let bindings = receiver.root.join("bindings.json");
+    let assert_aliases_only = || {
+        let denied = receiver.prepare(Some(&bindings));
+        assert!(!denied.status.success(), "{}", text(&denied));
+        assert!(
+            text(&denied).contains("Portable Scenario bindings can only supply Provider aliases"),
+            "{}",
+            text(&denied)
+        );
+    };
+    save(
+        &bindings,
+        &json!({"schema": "af.task-bindings/1", "packages": {"local/worker": {
+            "version": "1.0.0", "digest": af_scenario::contract::digest(b"fixture"),
+            "path": "local-worker"
+        }}}),
+    );
+    // A package path lookup would fail on the missing directory.
+    assert_aliases_only();
+    let package = receiver.root.join("local-worker");
+    fs::create_dir(&package).unwrap();
+    symlink("missing", package.join("worker.toml")).unwrap();
+    // A recursive capture would fail on the nested symlink, before the policy error.
+    assert_aliases_only();
+
+    save(
+        &bindings,
+        &json!({"schema": "af.task-bindings/1", "slots": {"author": "local/worker"}}),
+    );
+    assert_aliases_only();
     assert!(!receiver.provider_home.join("calls").exists());
 }

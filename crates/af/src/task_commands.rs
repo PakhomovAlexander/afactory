@@ -786,14 +786,12 @@ fn capture_authority_with_packages(
             );
         }
     }
-    let local = local.map(bindings::read).transpose()?;
-    if portable_capture
-        && local.as_ref().is_some_and(|local| {
-            !local.definition.packages.is_empty() || !local.definition.slots.is_empty()
-        })
-    {
-        return Err("Portable Scenario bindings can only supply Provider aliases".into());
-    }
+    let read_bindings = if portable_capture {
+        bindings::read_provider_aliases
+    } else {
+        bindings::read
+    };
+    let local = local.map(read_bindings).transpose()?;
     let local_bindings_id = local
         .as_ref()
         .map(|local| {
