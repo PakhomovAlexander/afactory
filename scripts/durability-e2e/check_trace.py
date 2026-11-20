@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 
-def check(contract, events, evidence_root=None):
+def check(contract, events, evidence_root=None, *, complete=True):
     ancestors = {}
     milestones = {}
     problems = []
@@ -35,8 +35,9 @@ def check(contract, events, evidence_root=None):
                 problems.append(f"duplicate milestone: {fact}")
             milestones[fact] = key
 
-    for fact in sorted(required - milestones.keys()):
-        problems.append(f"missing milestone: {fact}")
+    if complete:
+        for fact in sorted(required - milestones.keys()):
+            problems.append(f"missing milestone: {fact}")
     for chain in contract["chains"]:
         for before, after in zip(chain, chain[1:]):
             if before in milestones and after in milestones:

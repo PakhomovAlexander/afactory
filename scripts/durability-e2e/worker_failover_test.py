@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from worker_failover import run
 
@@ -16,10 +17,13 @@ NEXT = {"allocation": "worker-b", "attempt": "replacement"}
 
 
 class Driver(unittest.TestCase):
-    def exercise(self, replacement, missing=False, subjects=None, premature=False):
+    def exercise(self, replacement, missing=False, subjects=None, premature=False,
+                 recovery=None, timeout=False):
         calls = []
         before = ["scenario.submitted", "child.admitted", "first_attempt.started"]
-        recovery = ["worker.lost", "first_attempt.fenced", "replacement.started", "replacement.verified"]
+        if recovery is None:
+            recovery = ["worker.lost", "first_attempt.fenced",
+                        "replacement.started", "replacement.verified"]
         late = ["stale_completion.delivered", "stale_completion.rejected",
                 "parent.succeeded", "slot.reused", "late_usage.reconciled"]
 
@@ -60,7 +64,13 @@ class Driver(unittest.TestCase):
             return {"trace": trace}
 
         with tempfile.TemporaryDirectory() as temp:
-            return run(INPUTS, Path(temp) / "trial", adapter), calls
+            trial = Path(temp) / "trial"
+            if timeout:
+                inputs = {**INPUTS, "fault": {**INPUTS["fault"], "deadline_s": 5}}
+                with patch("worker_failover.time.monotonic", side_effect=range(6)), \
+                     patch("worker_failover.time.sleep"):
+                    return run(inputs, trial, adapter), calls
+            return run(INPUTS, trial, adapter), calls
 
     def test_replacement_and_late_completion(self):
         result, calls = self.exercise(NEXT)
@@ -90,6 +100,34 @@ class Driver(unittest.TestCase):
         result, calls = self.exercise(NEXT, premature=True)
         self.assertEqual(result["verdict"], "fail")
         self.assertNotIn("deliver_stale", calls)
+
+    def test_duplicate_and_causal_violation_survive_early_failure(self):
+        result, calls = self.exercise(NEXT, recovery=[
+            "worker.lost", "first_attempt.fenced", "replacement.started",
+            "replacement.verified", "first_attempt.fenced",
+        ])
+        self.assertEqual(result["verdict"], "fail")
+        self.assertEqual(result["violations"], [
+            "duplicate milestone: first_attempt.fenced",
+            "missing causal edge: first_attempt.fenced -> replacement.started",
+        ])
+        self.assertNotIn("deliver_stale", calls)
+
+    def test_forbidden_charge_survives_timeout_with_or_without_witnessed_loss(self):
+        for recovery, verdict, witnessed in (
+            (["worker.lost", "first_attempt.fenced", "unaccounted_charge"], "fail", True),
+            (["unaccounted_charge"], "invalid", False),
+        ):
+            with self.subTest(verdict=verdict):
+                result, calls = self.exercise(NEXT, recovery=recovery, timeout=True)
+                self.assertEqual(result["verdict"], verdict)
+                self.assertIs(result["fault_witnessed"], witnessed)
+                missing_fact = "replacement.verified" if witnessed else "worker.lost"
+                self.assertEqual(result["violations"], [
+                    "forbidden observation: unaccounted_charge",
+                    f"worker failover deadline for {missing_fact}",
+                ])
+                self.assertNotIn("deliver_stale", calls)
 
     def test_late_usage_must_reconcile_original_attempt(self):
         result, _ = self.exercise(NEXT, subjects={"late_usage.reconciled": NEXT})

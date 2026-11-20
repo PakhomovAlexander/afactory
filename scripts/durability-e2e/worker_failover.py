@@ -76,12 +76,15 @@ def run(manifest, directory, call):
                 raise ValueError("trace crosses Scenario identities")
             events = current
             write(directory / "trace.json", events)
-            check(contract, events, directory)
+            for problem in check(contract, events, directory, complete=False):
+                if problem not in violations:
+                    violations.append(problem)
             found = {record["fact"]: record for record in events}
             if set(facts) <= found.keys():
                 return found
             time.sleep(0.2)
-        raise TimeoutError("worker failover deadline for " + ", ".join(facts))
+        missing_facts = set(facts) - {record["fact"] for record in events}
+        raise TimeoutError("worker failover deadline for " + ", ".join(sorted(missing_facts or facts)))
 
     try:
         detected = wait(["first_attempt.started"])
@@ -111,8 +114,7 @@ def run(manifest, directory, call):
             for fact in ("stale_completion.delivered", "stale_completion.rejected",
                          "late_usage.reconciled"):
                 bind(fact, original)
-            violations.extend(check(contract, events, directory))
-    except TimeoutError as error:
+    except (TimeoutError, subprocess.TimeoutExpired) as error:
         violations.append(str(error))
     if (directory / "trace.json").exists():
         refs.append(str(directory / "trace.json"))

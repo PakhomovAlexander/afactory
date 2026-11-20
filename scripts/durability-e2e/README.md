@@ -95,10 +95,7 @@ on the fixture host with `mock_provider.py --ledger PATH --export`.
 The following checks use temporary fixtures and do not start native fault trials.
 
 ```sh
-python3 -B "$suite/provider_contract_test.py"
-python3 -B "$suite/broker_check_adapter_test.py"
-python3 -B "$suite/compare_test.py"
-python3 -B "$suite/worker_failover_test.py"
+python3 -B -m unittest discover -s "$suite" -p '*_test.py'
 baseline="$suite/baselines/2026-11-20"
 python3 -B "$suite/compare.py" "$baseline" "$baseline"
 ```
@@ -159,7 +156,16 @@ python3 scripts/durability-e2e/distributed_trial.py trial-001 r-101 r-102 \
 
 The critical sequence is native dispatch, remote check commit, confirmed scheduler death, remote check completion, receipt delivery, and ordinary scheduler cold start. The controller supplies no Run ID or resume command. A nonzero exit from the restart job records an invariant failure when the run settled and emitted complete evidence.
 
-Store the controller's evidence directory under `control/`, the engine's `before.json`, `after.json`, `task-before.json` and `task-after.json` under `engine/`, and the fixture's closed `checks.sqlite` under `fixture/`. Run the evidence exporter with the pinned inputs manifest for the case.
+Store the controller's evidence directory under `control/` and the fixture's closed
+`checks.sqlite` under `fixture/`. Copy `before.json`, `after.json`, `task-before.json`,
+`task-after.json` and `ant.json` from the engine trial directory (the outbox's `root`) into
+`engine/`. The `ant.json` is the generated Ant definition the worker passed to
+`af ant validate` and `af ant add`.
+
+For older outbox evidence without `fixture_git_tree`, include `engine/provenance.json` with
+the engine host in `host`, the trial checkout path (`<outbox root>/repo`) in `repository`,
+and that checkout's recorded `HEAD^{tree}` in `fixture_git_tree`. Run the evidence exporter
+with the pinned inputs manifest for the case.
 
 ```sh
 python3 scripts/durability-e2e/export_distributed.py TRIAL_EVIDENCE \

@@ -19,6 +19,10 @@ def digest(value):
     return sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def check_intent_ids(steps):
+    return [intent.get("id") for intent in steps[1].get("intents", [])] if len(steps) > 1 else []
+
+
 def export(root, manifest, trace_path=None):
     if manifest["schema"] != "af-durability/trial-inputs@1":
         raise ValueError("unsupported pairing manifest")
@@ -81,12 +85,14 @@ def export(root, manifest, trace_path=None):
         execution = outbox["execution"]
     else:
         valid_chain = (
-            valid_chain and down["killed"] == -9 and down["pid"] != terminal["pid"]
+            valid_chain and down is not None and down["killed"] == -9
+            and down["pid"] != terminal["pid"]
             and event(read(root, "control/stage/logs.json"), "down") == down
             and marker == accepted
         )
-        execution = down["execution"]
+        execution = down["execution"] if down is not None else outbox["execution"]
     candidate = steps_before[0]["outputs"]["result"]["value"]["result"]["outputs"]["snapshot"]["snapshot_id"]
+    intents_before = check_intent_ids(steps_before)
     assertions = {
         "Scenario was resubmitted or replaced": (
             before["execution_id"] == after["execution_id"] == execution
@@ -101,6 +107,10 @@ def export(root, manifest, trace_path=None):
             and task_before["result"]["acceptance"] == "satisfied"
         ),
         "local candidate changed": steps_before[0]["outputs"] == steps_after[0]["outputs"],
+        "native check intent changed": (
+            len(intents_before) == 1 and bool(intents_before[0])
+            and intents_before == check_intent_ids(steps_after)[:1]
+        ),
         "exact check changed or was duplicated": request["revision"] == candidate and checks == [
             (request["id"], request["revision"], manifest["fault"]["check_result"])
         ] and history == [("initialize", None), ("accept", request["id"]), ("finish", request["id"])],
@@ -108,6 +118,17 @@ def export(root, manifest, trace_path=None):
                                              for key in ("history", "chargeable_tokens")),
     }
     violations = [message for message, valid in assertions.items() if not valid]
+    terminal_messages = {
+        "same_attempts": "Task history or charge changed",
+        "same_charge": "Task history or charge changed",
+        "same_candidate": "local candidate changed",
+        "same_intent": "native check intent changed",
+        "terminal_steps_settled": "terminal Scenario has an unsettled step",
+        "expected_outcome": "wrong business outcome",
+    }
+    for name, passed in terminal["checks"].items():
+        if passed is not True and terminal_messages.get(name) not in violations:
+            violations.append(f"native terminal assertion failed: {name}")
     if valid_chain:
         phases = [("fixture.empty", "control/initialize/logs.json", initial["host"])]
         if assertions["first child has no accepted local gate result"]:
@@ -130,6 +151,8 @@ def export(root, manifest, trace_path=None):
         violations.extend(check(contracts[manifest["case"]], trace, root.resolve()))
         if trace_path is not None:
             trace_path.write_text(json.dumps(trace, indent=2) + "\n")
+    if report["verdict"] != "pass" and not violations:
+        violations.append("controller reported a failed distributed trial")
     verdict = ("invalid" if not valid_chain else "fail" if violations else "pass")
     return {
         "schema": SCHEMA, "case": manifest["case"], "profile": manifest["profile"],
