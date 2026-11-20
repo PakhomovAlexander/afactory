@@ -3,9 +3,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use af_contracts::task::pipeline::{PipelineDefinitionV1, TaskOperatorV1};
+use af_contracts::task::pipeline::{PipelineDefinition, TaskOperatorV1};
 use af_contracts::task::plan::{
-    EffectiveWorkerBindingV3, ExecutionPlanV3, GeneratedOriginV1, IndependencePolicyV1,
+    EffectiveWorkerBindingV3, ExecutionPlan, GeneratedOriginV1, IndependencePolicyV1,
     PlanDependencyV1, WorkerExecutionV3, validate_independent_bindings,
 };
 use af_contracts::task::{TaskRevisionV1, is_package_name};
@@ -20,7 +20,7 @@ use super::kind::TaskKindManifest;
 use crate::{CommandSpec, lock::package_digest_from_files};
 
 pub const TASK_PACKAGE_V1: &str = "af/TaskPackage@1";
-pub const COMPILED_TASK_V1: &str = "af/CompiledTask@1";
+pub const COMPILED_TASK_V4: &str = "af/CompiledTask@4";
 
 pub mod export;
 mod local;
@@ -95,7 +95,7 @@ struct Package {
 
 #[derive(Debug)]
 enum ParsedPackage {
-    Pipeline(PipelineDefinitionV1),
+    Pipeline(PipelineDefinition),
     Worker(TaskWorkerManifest),
     TaskKind(TaskKindManifest),
 }
@@ -177,7 +177,7 @@ pub struct TaskPlanCompiler {
     engine_id: String,
     policy_id: String,
     packages: BTreeMap<String, Package>,
-    pipelines: BTreeMap<String, PipelineDefinitionV1>,
+    pipelines: BTreeMap<String, PipelineDefinition>,
     pub(super) workers: BTreeMap<String, TaskWorkerManifest>,
     pub(super) kinds: BTreeMap<String, TaskKindManifest>,
     pub(super) active_kind: Option<String>,
@@ -740,8 +740,8 @@ impl TaskPlanCompiler {
                             .into(),
                     );
                 }
-                // A root default and its `brief` variant are a pipeline root port's, and the
-                // Brief port is `af.pipeline/2`'s alone (ADR-0160): `af.worker/1` keeps its shape.
+                // Brief constructors and variants belong to Pipeline root ports (ADR-0160),
+                // never Worker manifests.
                 if let Some(port) = worker
                     .signature
                     .contract
@@ -753,7 +753,7 @@ impl TaskPlanCompiler {
                     return Err(format!(
                         "Worker {} declares port {port} with a Project Brief root default or \
                          `brief` variant; a Worker admits a Brief as a plain optional input, and \
-                         only an af.pipeline/2 root port names its variant",
+                         only a Pipeline root port names its variant",
                         worker.name
                     ));
                 }
@@ -897,7 +897,88 @@ impl TaskPlanCompiler {
         Ok(())
     }
 
-    pub fn pipelines(&self) -> &BTreeMap<String, PipelineDefinitionV1> {
+    /// Token-free effective Worker pool, including every conditional child. The ordinary
+    /// native planner subsequently proves contracts and resources before startup admission.
+    pub fn startup_workers(&self, root: &str) -> Result<BTreeSet<String>, String> {
+        fn visit(
+            compiler: &TaskPlanCompiler,
+            name: &str,
+            scope: &str,
+            mapping: &BTreeMap<String, String>,
+            workers: &mut BTreeMap<String, String>,
+            depth: usize,
+        ) -> Result<(), String> {
+            if depth >= 4 {
+                return Err("Startup Pipeline expansion depth exceeded".into());
+            }
+            let pipeline = compiler
+                .pipelines
+                .get(name)
+                .ok_or("Startup Pipeline missing from captured authority")?;
+            pipeline.validate()?;
+            let mut slots = BTreeMap::new();
+            for (local, slot) in &pipeline.slots {
+                let physical = mapping
+                    .get(local)
+                    .cloned()
+                    .unwrap_or_else(|| format!("{scope}.slots.{local}"));
+                let worker = workers.entry(physical.clone()).or_insert_with(|| {
+                    compiler
+                        .slot_workers
+                        .get(&physical)
+                        .unwrap_or(&slot.worker)
+                        .clone()
+                });
+                if worker != &slot.worker && !slot.allow_local_replacement {
+                    return Err("Startup slot forbids Worker replacement".into());
+                }
+                slots.insert(local.clone(), physical);
+            }
+            for node in &pipeline.nodes {
+                match &node.operator {
+                    TaskOperatorV1::Call { pipeline, bindings } => {
+                        let mapped = bindings
+                            .iter()
+                            .map(|(child, parent)| {
+                                Ok((
+                                    child.clone(),
+                                    slots
+                                        .get(parent)
+                                        .ok_or("Startup parent slot missing")?
+                                        .clone(),
+                                ))
+                            })
+                            .collect::<Result<BTreeMap<_, _>, String>>()?;
+                        visit(
+                            compiler,
+                            pipeline,
+                            &format!("{scope}.nodes.{}", node.id),
+                            &mapped,
+                            workers,
+                            depth + 1,
+                        )?;
+                    }
+                    TaskOperatorV1::Check { remote_checks, .. } if !remote_checks.is_empty() => {
+                        return Err("Implementation startup requires local gates only".into());
+                    }
+                    _ => {}
+                }
+            }
+            Ok(())
+        }
+        let mut workers = BTreeMap::new();
+        visit(self, root, "root", &BTreeMap::new(), &mut workers, 0)?;
+        if self
+            .slot_workers
+            .keys()
+            .any(|slot| !workers.contains_key(slot))
+        {
+            return Err("Startup replacement names an absent physical slot".into());
+        }
+        Ok(workers.into_values().collect())
+    }
+
+    pub fn pipelines(&self) -> &BTreeMap<String, PipelineDefinition> {
         &self.pipelines
     }
     pub fn task_kind(&self, name: &str) -> Option<&TaskKindManifest> {
@@ -970,7 +1051,7 @@ impl TaskPlanCompiler {
             .flat_map(|request| request.caches.values())
             .filter_map(|policy| policy.output.clone())
             .collect();
-        worker
+        let outputs = worker
             .signature
             .contract
             .outputs
@@ -980,7 +1061,13 @@ impl TaskPlanCompiler {
                 let schema = self.worker_schema(name, &format!("outputs/{port}.schema.json"))?;
                 Ok((port.clone(), schema))
             })
-            .collect()
+            .collect::<Result<BTreeMap<_, _>, String>>()?;
+        if matches!(&worker.runner, TaskWorkerRunner::Model { provider_kind, .. } if provider_kind == "codex")
+        {
+            af_runner::task::reply_schema::strict_outputs(&outputs)
+                .map_err(|error| format!("Worker {name}: {error}"))?;
+        }
+        Ok(outputs)
     }
 
     pub(super) fn worker_schema(
@@ -1036,6 +1123,7 @@ impl TaskPlanCompiler {
         )?;
         self.validate_requirements_inputs(&graph)?;
         self.validate_replacement_schemas(&graph)?;
+        self.validate_provider_schemas(&graph)?;
         self.validate_structured(cas, &normalized, &graph)?;
         if let Err(reason) = graph.budget(task.limits.clone()) {
             resources.push(reason);
@@ -1158,8 +1246,32 @@ impl TaskPlanCompiler {
         cas: &Cas,
         task_revision_id: &str,
         root: &str,
-    ) -> Result<(ExecutionPlanV3, CompiledTask), String> {
+    ) -> Result<(ExecutionPlan, CompiledTask), String> {
         self.compile_inner(cas, task_revision_id, root, None)
+    }
+
+    fn validate_provider_schemas(&self, graph: &CompiledTask) -> Result<(), String> {
+        for slot in graph.slots.values() {
+            let name = &slot.worker;
+            let worker = self.worker(name).ok_or("Missing captured Worker")?;
+            if matches!(&worker.runner, TaskWorkerRunner::Model { provider_kind, .. } if provider_kind == "codex")
+            {
+                let kernel = worker
+                    .signature
+                    .contract
+                    .outputs
+                    .iter()
+                    .filter(|(port, contract)| {
+                        port.as_str() == "candidate"
+                            && contract.artifact_type == "af/CandidateTree@1"
+                            && worker.signature.effects.contains("write-source")
+                    })
+                    .map(|(port, _)| port.clone())
+                    .collect();
+                self.worker_output_schemas(name, &kernel)?;
+            }
+        }
+        Ok(())
     }
 
     /// Pure preflight for the selected definition, before any account probes. Unused catalog
@@ -1185,6 +1297,7 @@ impl TaskPlanCompiler {
         }
         let graph = self.compile_graph(&task, root)?;
         self.validate_replacement_schemas(&graph)?;
+        self.validate_provider_schemas(&graph)?;
         self.validate_structured(cas, &task, &graph)?;
         Ok(graph
             .slots
@@ -1199,7 +1312,7 @@ impl TaskPlanCompiler {
         task_revision_id: &str,
         root: &str,
         recorded_graph: Option<&ArtifactEnvelope>,
-    ) -> Result<(ExecutionPlanV3, CompiledTask), String> {
+    ) -> Result<(ExecutionPlan, CompiledTask), String> {
         let revision = read_envelope(cas, task_revision_id, af_contracts::task::TASK_REVISION_V1)?;
         let task: TaskRevisionV1 =
             serde_json::from_value(revision.payload).map_err(|e| e.to_string())?;
@@ -1219,6 +1332,7 @@ impl TaskPlanCompiler {
         graph.experimental_slots = self.experimental_slots.clone();
         graph.validate_experimental_slots()?;
         self.validate_replacement_schemas(&graph)?;
+        self.validate_provider_schemas(&graph)?;
         self.validate_structured(cas, &task, &graph)?;
         remote_check_authority(root, &task, &graph)?;
         let bindings = self.effective_bindings(cas, &graph)?;
@@ -1276,7 +1390,10 @@ impl TaskPlanCompiler {
             .collect();
         for node in graph.nodes.values() {
             if let CompiledOperator::Primitive {
-                operator: TaskOperatorV1::Verify { slot } | TaskOperatorV1::FixVerify { slot },
+                operator:
+                    TaskOperatorV1::Verify { slot }
+                    | TaskOperatorV1::FixVerify { slot }
+                    | TaskOperatorV1::ReviewScatter { slot, .. },
                 ..
             } = &node.operator
             {
@@ -1299,7 +1416,8 @@ impl TaskPlanCompiler {
                     operator:
                         TaskOperatorV1::Worker { slot }
                         | TaskOperatorV1::Verify { slot }
-                        | TaskOperatorV1::FixVerify { slot },
+                        | TaskOperatorV1::FixVerify { slot }
+                        | TaskOperatorV1::ReviewScatter { slot, .. },
                     ..
                 } => vec![slot],
                 CompiledOperator::Primitive {
@@ -1345,7 +1463,7 @@ impl TaskPlanCompiler {
             recorded.artifact_id.clone()
         } else {
             cas.put_artifact(
-                COMPILED_TASK_V1,
+                COMPILED_TASK_V4,
                 capture_producer(),
                 vec![task_revision_id.into(), self.engine_id.clone()],
                 None,
@@ -1354,7 +1472,7 @@ impl TaskPlanCompiler {
             .map_err(|e| e.to_string())?
             .0
         };
-        let plan = ExecutionPlanV3 {
+        let plan = ExecutionPlan {
             preparation: self
                 .preparation_roots
                 .contains(root)
@@ -1385,7 +1503,7 @@ impl TaskPlanCompiler {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
     ) -> Result<Vec<GeneratedOriginV1>, String> {
         let revision = read_envelope(
             cas,
@@ -1403,7 +1521,7 @@ impl TaskPlanCompiler {
             .find(|(_, package)| package.dependency.artifact_id == plan.pipeline_id)
             .map(|(name, _)| name)
             .ok_or("Root is absent from trusted catalog")?;
-        let recorded = read_envelope(cas, &plan.compiled_graph_id, COMPILED_TASK_V1)?;
+        let recorded = read_envelope(cas, &plan.compiled_graph_id, COMPILED_TASK_V4)?;
         let (expected, _) =
             self.compile_inner(cas, &plan.task_revision_id, root, Some(&recorded))?;
         if &expected != plan {

@@ -54,12 +54,16 @@ mod input_bindings;
 mod input_file;
 mod inspection;
 mod issue;
+pub(crate) mod onboarding;
 mod planning;
 pub(super) mod pr_body;
 mod preview;
 mod provider_admission;
 pub(crate) mod recovery;
 pub(super) mod refresh;
+pub(crate) mod review_decisions;
+pub(crate) mod review_export;
+pub(crate) mod review_ledger;
 pub(crate) mod runs;
 pub(crate) mod scenario_evidence;
 pub(crate) mod scenario_template;
@@ -70,9 +74,18 @@ mod structured;
 mod task_file_home;
 mod task_file_shape;
 pub(super) mod task_report;
+pub(crate) mod wake;
+
+#[derive(Clone)]
+pub(crate) struct ReviewSelectors {
+    pub(crate) candidate: Option<String>,
+    pub(crate) base: Option<String>,
+}
 
 #[derive(Clone)]
 pub(super) struct StartOptions {
+    pub(super) review_inputs: Option<BTreeMap<String, ArtifactInputV1>>,
+    pub(crate) review_selectors: Option<ReviewSelectors>,
     pub input_json: Vec<String>,
     pub file: PathBuf,
     pub bindings: Option<PathBuf>,
@@ -555,7 +568,7 @@ pub(super) fn engine(cas: &Cas) -> Result<String, String> {
         })
         .as_ref()
         .map_err(Clone::clone)?;
-    cas.put_json(&json!({"schema":"af.task-engine/1","binary_digest":digest,"version":env!("CARGO_PKG_VERSION"),"graph":"af.compiled-task/1"})).map_err(|e|e.to_string())
+    cas.put_json(&json!({"schema":"af.task-engine/4","binary_digest":digest,"version":env!("CARGO_PKG_VERSION"),"graph":"af.compiled-task/6"})).map_err(|e|e.to_string())
 }
 
 /// Where every repository's default Task state lives under an XDG state root.
@@ -959,15 +972,15 @@ fn restore_compiler(
     )?;
     if authority.document_policy_id.is_some() {
         compiler = compiler.with_authored_artifacts(BTreeSet::from([
-            af_contracts::task::document::DOCUMENT_DRAFT_V1.into(),
+            af_contracts::task::document::DOCUMENT_DRAFT_V3.into(),
         ]))?;
     }
     // A report's author is whoever returns a draft of either version, whatever it declares,
     // so no Pipeline can make the author its own verifier.
     if authority.report_policy_id.is_some() {
         compiler = compiler.with_authored_artifacts(BTreeSet::from([
-            af_contracts::task::document::DOCUMENT_DRAFT_V1.into(),
-            af_contracts::task::document::DOCUMENT_DRAFT_V2.into(),
+            af_contracts::task::document::DOCUMENT_DRAFT_V3.into(),
+            af_contracts::task::document::DOCUMENT_DRAFT_V3.into(),
         ]))?;
     }
     for (name, package) in &authority.packages {
@@ -1093,7 +1106,7 @@ fn bind_named_models(
 }
 
 fn model_bindings<'a>(
-    plan: &ExecutionPlanV3,
+    plan: &ExecutionPlan,
     graph: &CompiledTask,
     adapters: &'a BTreeMap<String, Box<dyn af_runner::task::WorkerModelAdapter>>,
 ) -> Result<BTreeMap<String, TaskModelBinding<'a>>, String> {
@@ -1159,6 +1172,8 @@ pub(crate) fn plan_tree_preview_at(
     let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
     let state = scratch.path().join("state");
     let options = StartOptions {
+        review_inputs: None,
+        review_selectors: None,
         input_json: Vec::new(),
         file: file.to_path_buf(),
         bindings: None,
@@ -1327,16 +1342,33 @@ fn start_kind(
 /// `af task run NEW --from TASK` derives from the continued Task's captured one.
 fn start_kind_bytes(
     options: StartOptions,
+    bytes: Vec<u8>,
+    expected_kind: Option<&str>,
+    presentation: Presentation,
+) -> Result<i32, String> {
+    start_kind_bytes_with_authority(options, bytes, expected_kind, presentation, None)
+}
+
+/// Only native Scenario templates supply an already captured authority identity.
+fn start_kind_bytes_with_authority(
+    options: StartOptions,
     mut bytes: Vec<u8>,
     expected_kind: Option<&str>,
     presentation: Presentation,
+    captured_authority: Option<&str>,
 ) -> Result<i32, String> {
     let original = parse_task_file(&options.file, &bytes)?;
     let mut refitted = false;
     // `--fit` plans again at the limits the planner computed; a second refusal can only raise
     // them further (Provider admission is counted once the Workers are bound), so this ends.
     for _ in 0..3 {
-        match start_bytes(options.clone(), bytes.clone(), expected_kind, presentation)? {
+        match start_bytes(
+            options.clone(),
+            bytes.clone(),
+            expected_kind,
+            presentation,
+            captured_authority,
+        )? {
             Started::Code(code) => {
                 if refitted && presentation == Presentation::Print {
                     let fitted = parse_task_file(&options.file, &bytes)?;
@@ -1348,6 +1380,27 @@ fn start_kind_bytes(
             }
             Started::Refit(fit) => {
                 let mut file = parse_task_file(&options.file, &bytes)?;
+                if let Some(selectors) = &options.review_selectors {
+                    if let Some(base) = &selectors.base {
+                        if file.base.is_some() {
+                            return Err(
+                                "--base and the Task file's base claim one Base; choose one".into(),
+                            );
+                        }
+                        file.base = Some(context::BaseRefV1 {
+                            commit: base.clone(),
+                        });
+                    }
+                    if selectors.candidate.is_some()
+                        && (file.continue_from.is_some()
+                            || file
+                                .inputs
+                                .as_ref()
+                                .is_some_and(|inputs| inputs.contains_key("source")))
+                    {
+                        return Err("--candidate conflicts with a bound or continued source".into());
+                    }
+                }
                 file.limits = Some(FileLimits {
                     tokens: fit.required.tokens,
                     max_attempts: fit.required.max_attempts,
@@ -1449,6 +1502,7 @@ fn existing_task(
     options: &StartOptions,
     bytes: &[u8],
     task_id: &str,
+    captured_authority: Option<&str>,
 ) -> Result<Option<Existing>, String> {
     let Some(current) = store
         .task_projection(cas, task_id)
@@ -1475,6 +1529,12 @@ fn existing_task(
             .map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
+    if let Some(id) = captured_authority {
+        if same_file && current.revision.authority.policy_id == id {
+            return Ok(Some(Existing::Same));
+        }
+        return Err("Recorded fresh Task differs from pinned template authority or file".into());
+    }
     let bindings = options
         .bindings
         .as_deref()
@@ -1511,6 +1571,15 @@ fn existing_task(
             ));
         }
         return Ok(Some(Existing::Replace(Box::new(current))));
+    }
+    if options
+        .review_selectors
+        .as_ref()
+        .is_some_and(|s| s.base.is_some() || s.candidate.is_some())
+    {
+        return Err(format!(
+            "Task `{task_id}` already captured its exact source and Base; inspect or resume it by Task ID, or give the Task file a new task_id"
+        ));
     }
     if same_file && bindings == authority.local_bindings_id {
         return Ok(Some(Existing::Same));
@@ -1562,9 +1631,29 @@ fn start_bytes(
     bytes: Vec<u8>,
     expected_kind: Option<&str>,
     presentation: Presentation,
+    captured_authority: Option<&str>,
 ) -> Result<Started, String> {
     let started = clock()?;
     let mut file = parse_task_file(&options.file, &bytes)?;
+    if let Some(selectors) = &options.review_selectors {
+        if let Some(base) = &selectors.base {
+            if file.base.is_some() {
+                return Err("--base and the Task file's base claim one Base; choose one".into());
+            }
+            file.base = Some(context::BaseRefV1 {
+                commit: base.clone(),
+            });
+        }
+        if selectors.candidate.is_some()
+            && (file.continue_from.is_some()
+                || file
+                    .inputs
+                    .as_ref()
+                    .is_some_and(|inputs| inputs.contains_key("source")))
+        {
+            return Err("--candidate conflicts with a bound or continued source".into());
+        }
+    }
     task_file_identity(&options.file, &file)?;
     apply_kind_defaults(&mut file)?;
     if let Some(specification) = &file.requirements {
@@ -1599,7 +1688,14 @@ fn start_bytes(
     crate::storage::owned::prepare(&state, options.state.is_some())?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let store = EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())?;
-    let replace = match existing_task(&cas, &store, &options, &bytes, &file.task_id)? {
+    let replace = match existing_task(
+        &cas,
+        &store,
+        &options,
+        &bytes,
+        &file.task_id,
+        captured_authority,
+    )? {
         None => None,
         Some(Existing::Same) if !options.plan_only => {
             return Err(format!(
@@ -1644,18 +1740,29 @@ fn start_bytes(
             }
         })?;
     let delivery = captured_delivery_policy(&cas, &policy_source.manifest)?;
-    let authority = capture_authority(
-        &cas,
-        &policy_source.manifest,
-        options.bindings.as_deref(),
-        &file.kind,
-        delivery,
-    )?;
+    let authority = if let Some(id) = captured_authority {
+        if options.bindings.is_some() {
+            return Err("Captured authority cannot recapture local bindings".into());
+        }
+        let settings: RunAuthority =
+            serde_json::from_value(cas.get_json(id).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        let compiler = restore_compiler(&cas, id, &settings)?;
+        (id.to_owned(), settings, compiler)
+    } else {
+        capture_authority(
+            &cas,
+            &policy_source.manifest,
+            options.bindings.as_deref(),
+            &file.kind,
+            delivery,
+        )?
+    };
     if expected_kind.is_some()
         && selected_profile(&authority.2, &authority.1, &file.kind, file.verification)?
             != TaskKindProfile::Review
     {
-        return Err("af review --file requires a Review Task profile".into());
+        return Err("af review requires a Review Task profile".into());
     }
     // What the Task file leaves to the project's `[task.defaults]` (ADR-0212), filled in from
     // the Authority Snapshot before anything is recorded, and judged as a stated limit is.
@@ -1707,6 +1814,14 @@ fn start_bytes(
     let source = if options.uncommitted {
         Capture::new(&source_repo, &cas)
             .dirty()
+            .map_err(|e| e.to_string())?
+    } else if let Some(candidate) = options
+        .review_selectors
+        .as_ref()
+        .and_then(|s| s.candidate.as_deref())
+    {
+        Capture::new(&source_repo, &cas)
+            .committed(candidate)
             .map_err(|e| e.to_string())?
     } else {
         policy_source
@@ -1868,16 +1983,39 @@ fn start_captured(
     // a recorded manifest: no working tree is walked, nothing is removed, and Snapshot identity
     // is whatever the capture already made it. The result is advice here and a receipt field
     // later. A bound `source` reads the bound tree, so that is the tree classified.
+    let decision_manifest = options
+        .review_inputs
+        .as_ref()
+        .map(|inputs| {
+            af_source_git::task::read_snapshot(
+                &cas,
+                inputs["source"]
+                    .snapshot_id
+                    .as_deref()
+                    .ok_or("Review decisions have no source Snapshot")?,
+            )
+            .map(|(_, manifest)| manifest)
+        })
+        .transpose()?;
     let read = match (continued.as_ref(), bound.as_ref()) {
         (Some(continued), _) => &continued.manifest,
         (None, Some(bound)) => bound.source_manifest.as_ref().unwrap_or(&source.manifest),
         (None, None) => &source.manifest,
     };
+    let read = decision_manifest.as_ref().unwrap_or(read);
     let undeclared = af_pipeline_config::layout::classify_manifest(read).undeclared;
     if presentation == Presentation::Print {
         super::af_paths::warn(&undeclared);
     }
-    let origin=cas.put_json(&json!({"schema":"af.task-source-origin/1","repository_id":source.repository_id,"source_revision":source.source_revision,"content_digest":source.content_digest})).map_err(|e|e.to_string())?;
+    let origin = af_source_git::task::write_origin(
+        &cas,
+        &af_source_git::task::TaskSourceOrigin::Captured {
+            schema: af_source_git::task::TASK_SOURCE_ORIGIN_SCHEMA.into(),
+            repository_id: source.repository_id.clone(),
+            source_revision: source.source_revision.clone(),
+            content_digest: source.content_digest.clone(),
+        },
+    )?;
     let source_port = if matches!(
         profile,
         TaskKindProfile::Structured
@@ -1894,6 +2032,7 @@ fn start_captured(
             .as_ref()
             .map(|continued| &continued.source)
             .or(bound_ports.get("source"))
+            .or_else(|| options.review_inputs.as_ref().and_then(|p| p.get("source")))
         {
             Some(port) => Some(port.clone()),
             None => {
@@ -2003,6 +2142,72 @@ fn start_captured(
         .as_ref()
         .map(|base| context::record_base(&cas, base, &source.repository_id))
         .transpose()?;
+    let continued_review = continued.as_ref().and_then(|c| match &c.lineage {
+        continuation::Lineage::ReviewTask { history, base, .. } => Some((history, base)),
+        _ => None,
+    });
+    if continued_review.is_some() && profile != TaskKindProfile::Review {
+        return Err(
+            "continue: a standalone Review must continue through a native Review Pipeline".into(),
+        );
+    }
+    if continued_review.is_some()
+        && ["history", "base", "continuation"]
+            .iter()
+            .any(|p| bound_ports.contains_key(*p))
+    {
+        return Err(
+            "continue: native Review supplies its exact history and Base; do not bind them again"
+                .into(),
+        );
+    }
+    let review_base = if let Some((_, base)) = continued_review {
+        base.clone()
+    } else if profile == TaskKindProfile::Review {
+        match &base_id {
+            Some(id) => {
+                let named = file.pipeline.as_ref().map(|p| p.name.as_str());
+                let declared =
+                    input_bindings::DeclaredPorts::of(compiler.pipelines(), &file.kind, named);
+                if bound_ports.contains_key("base") || !declared.declares("base", SOURCE_TREE_V1)? {
+                    return Err("Review Base requires an unbound native base SourceTree input in its Pipeline".into());
+                }
+                let record: af_contracts::task::findings::TaskBaseV1 =
+                    artifact(&cas, id, af_contracts::task::findings::TASK_BASE_V1)?;
+                Some(source_tree(
+                    &cas,
+                    producer(),
+                    &record.snapshot_id,
+                    vec![id.clone()],
+                )?)
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
+    if profile == TaskKindProfile::Review
+        && let (Some(base), Some(head)) = (
+            review_base.as_ref().or(bound_ports.get("base")),
+            source_port.as_ref(),
+        )
+    {
+        let base_id = base
+            .snapshot_id
+            .as_deref()
+            .ok_or("Review Base has no exact Snapshot")?;
+        let head_id = head
+            .snapshot_id
+            .as_deref()
+            .ok_or("Review source has no exact Snapshot")?;
+        let (_, base_manifest) = af_source_git::task::read_snapshot(&cas, base_id)?;
+        let (_, head_manifest) = af_source_git::task::read_snapshot(&cas, head_id)?;
+        let diff = af_source_git::git::manifest_diff(&base_manifest, &head_manifest, &cas)
+            .map_err(|e| e.to_string())?;
+        if diff.change_set(base_id, head_id)?.changed_paths.is_empty() {
+            return Err("Cannot review an empty Diff Subject; choose a different --candidate or --base, or use --uncommitted to review working-tree changes".into());
+        }
+    }
     let read_first_id = match &read_first {
         Some(record) => {
             let text = requirements_payload["text"].as_str().unwrap_or_default();
@@ -2061,8 +2266,36 @@ fn start_captured(
         limits:TaskLimitsV1 {tokens:limits.tokens,max_attempts:limits.max_attempts,deadline_unix_ms:deadline,verification:limits.verification},
         strategy,pipeline:file.pipeline,facts:file.facts,
     };
+    if let Some(inputs) = &options.review_inputs {
+        if profile != TaskKindProfile::Review
+            || file.continue_from.is_some()
+            || file.inputs.is_some()
+        {
+            return Err("Human Review inputs require an exact standalone decision Task".into());
+        }
+        revision.inputs.extend(inputs.clone());
+        revision
+            .provenance
+            .input_artifact_ids
+            .extend(inputs.values().flat_map(|p| p.artifact_ids.iter().cloned()));
+        revision.authority.allowed_effects = BTreeSet::from(["read-source".into()]);
+    }
+    if let Some(base) = review_base {
+        revision.inputs.insert("base".into(), base);
+    }
     if let Some(source_port) = source_port {
         revision.inputs.insert("source".into(), source_port);
+    }
+    if let Some((history, _)) = continued_review {
+        let named = revision.pipeline.as_ref().map(|p| p.name.as_str());
+        let declared =
+            input_bindings::DeclaredPorts::of(compiler.pipelines(), &revision.kind, named);
+        if !declared.declares("history", af_contracts::task::REVIEW_HISTORY_V1)? {
+            return Err(
+                "continue: native Review Pipeline must consume its canonical history".into(),
+            );
+        }
+        revision.inputs.insert("history".into(), history.clone());
     }
     if let Some(port) = continued.as_ref().and_then(continuation::Continued::port) {
         revision
@@ -2358,7 +2591,6 @@ fn start_captured(
         if file.requirements.is_none() && file.issue.is_none() {
             revision.inputs.remove("requirements");
         }
-        revision.authority.allowed_effects.remove("write-source");
         revision.required_outputs = serde_json::from_value(json!({"review":{"artifact_type":TASK_REVIEW_ROUND_V1,"cardinality":"one"},"history":{"artifact_type":REVIEW_HISTORY_V1,"cardinality":"one"}})).map_err(|e|e.to_string())?;
         revision.acceptance = BTreeMap::from([(
             "reviewed".into(),
@@ -2440,7 +2672,12 @@ fn start_captured(
         authority.planner.is_some(),
         &bound_ports,
     );
-    let source_origin = match bound_ports.get("source") {
+    let source_origin = match bound_ports.get("source").or_else(|| {
+        options
+            .review_inputs
+            .as_ref()
+            .and_then(|inputs| inputs.get("source"))
+    }) {
         Some(port) => input_bindings::bound_source_origin(&cas, port)?,
         None => crate::project::brief::SourceOrigin {
             repository_id: source.repository_id.clone(),
@@ -2526,6 +2763,9 @@ fn start_captured(
         mut graph,
     } = *selected;
     compiler = selected_compiler;
+    if profile == TaskKindProfile::Review {
+        review_export::validate_authors(&compiler, &graph)?;
+    }
     if profile == TaskKindProfile::OptimizationCandidate {
         (compiler, plan, graph) = install_candidate_experiment(
             &cas,
@@ -2580,7 +2820,8 @@ fn start_captured(
         environment.as_ref(),
         &domain,
         &models,
-    )?;
+    )?
+    .with_activity(&state, &revision.task_id);
     let developer = developer::host(&cas, &authority, None);
     let trusted = CapturedTaskAuthority::new(&compiler, &host, developer.as_ref());
     let writer = match &replace {
@@ -2788,8 +3029,8 @@ fn install_candidate_experiment(
     revision: &TaskRevisionV1,
     revision_id: &str,
     graph: &CompiledTask,
-    plan: &ExecutionPlanV3,
-) -> Result<(TaskPlanCompiler, ExecutionPlanV3, CompiledTask), String> {
+    plan: &ExecutionPlan,
+) -> Result<(TaskPlanCompiler, ExecutionPlan, CompiledTask), String> {
     use af_contracts::task::optimization_experiment::{
         EXPERIMENTAL_SLOT_V2, ExperimentAllowanceV1, ExperimentalSlotV2,
     };
@@ -2938,7 +3179,7 @@ fn captured_domain(
     authority: &RunAuthority,
     profile: TaskKindProfile,
     graph: CompiledTask,
-    plan: &ExecutionPlanV3,
+    plan: &ExecutionPlan,
     compiler: &TaskPlanCompiler,
     state: &Path,
     repo: &Path,
@@ -3197,6 +3438,8 @@ pub(super) fn run_from(options: ContinueOptions) -> Result<i32, String> {
         crate::model_check::enable_plan_time();
     }
     let start = StartOptions {
+        review_inputs: None,
+        review_selectors: None,
         input_json: Vec::new(),
         // Named for the messages that quote it; the bytes are the derived file, never read
         // from this path.
@@ -3306,7 +3549,7 @@ pub(super) fn run(
     )
     .map_err(|e| e.to_string())?;
     let mut compiler = planning::restore(&cas, &projection, &authority)?;
-    let plan: ExecutionPlanV3 = artifact(
+    let plan: ExecutionPlan = artifact(
         &cas,
         projection
             .plan_id
@@ -3314,7 +3557,7 @@ pub(super) fn run(
             .ok_or("Task has no captured plan")?,
         EXECUTION_PLAN_V4,
     )?;
-    let graph: CompiledTask = artifact(&cas, &plan.compiled_graph_id, COMPILED_TASK_V1)?;
+    let graph: CompiledTask = artifact(&cas, &plan.compiled_graph_id, COMPILED_TASK_V4)?;
     compiler = restore_experimental_slots(compiler, &graph)?;
     if plan.preparation.is_some() {
         return planning::resume(
@@ -3385,7 +3628,8 @@ pub(super) fn run(
         environment.as_ref(),
         &domain,
         &models,
-    )?;
+    )?
+    .with_activity(&state, id);
     let developer = developer::host(&cas, &authority, None);
     let trusted = CapturedTaskAuthority::new(&compiler, &host, developer.as_ref());
     // The process that takes the lease, recorded before it does, so `af task cancel` finds it
@@ -3655,6 +3899,8 @@ pub(super) struct OpenedTask {
     pub(super) cas: Cas,
     pub(super) store: EventStore,
     pub(super) task: TaskProjection,
+    view_artifacts: std::cell::RefCell<BTreeSet<String>>,
+    view_runs: std::cell::RefCell<BTreeMap<String, u64>>,
 }
 
 pub(super) fn open_task(id: &str, repo: &Path, state: Option<&Path>) -> Result<OpenedTask, String> {
@@ -3689,6 +3935,8 @@ pub(super) fn open_task(id: &str, repo: &Path, state: Option<&Path>) -> Result<O
         cas,
         store,
         task,
+        view_artifacts: std::cell::RefCell::new(BTreeSet::new()),
+        view_runs: std::cell::RefCell::new(BTreeMap::new()),
     })
 }
 
@@ -3702,8 +3950,109 @@ impl OpenedTask {
             _ => None,
         };
         let cancelled = runs::cancelled_epoch(Some(&self.state), &self.task);
-        let view = selected_view(&self.cas, &self.task, result.as_ref(), clock()?, cancelled)?;
+        let view = self.track_display(|| {
+            let view = selected_view(&self.cas, &self.task, result.as_ref(), clock()?, cancelled);
+            #[cfg(debug_assertions)]
+            runs::observation_barrier("view")?;
+            view
+        })?;
         Ok((result, view))
+    }
+
+    /// Retain the complete display read closure until the projection changes. If a stream
+    /// advances between display operations, keep its oldest prefix so validation forces a
+    /// reconstruction rather than combining two different observations.
+    fn track_display<T>(&self, read: impl FnOnce() -> T) -> T {
+        let ((value, runs), reads) = self.cas.track_reads(|| self.store.track_replays(read));
+        self.view_artifacts.borrow_mut().extend(reads);
+        let mut observed = self.view_runs.borrow_mut();
+        for (run, count) in runs {
+            observed
+                .entry(run)
+                .and_modify(|old| *old = (*old).min(count))
+                .or_insert(count);
+        }
+        value
+    }
+
+    /// Reuse this projection only after exact byte checks of its full read closure. The
+    /// caller still observes run/cancel files and lease deadlines independently of the log.
+    pub(super) fn refresh_if_changed(&mut self) -> Result<bool, String> {
+        self.refresh_if_changed_with(|cas, id| {
+            cas.verify(id).map(|_| ()).map_err(|e| e.to_string())
+        })
+    }
+
+    fn refresh_if_changed_with(
+        &mut self,
+        mut verify_display: impl FnMut(&Cas, &str) -> Result<(), String>,
+    ) -> Result<bool, String> {
+        if self
+            .store
+            .task_observation_unchanged_with(
+                &self.cas,
+                &self.task,
+                &self.view_runs.borrow(),
+                || {
+                    for id in self.view_artifacts.borrow().iter() {
+                        verify_display(&self.cas, id).map_err(af_store::StoreError::Artifact)?;
+                    }
+                    Ok(())
+                },
+            )
+            .map_err(|e| e.to_string())?
+        {
+            return Ok(false);
+        }
+        self.reset_observation()?;
+        Ok(true)
+    }
+
+    /// Discovery can observe rows that never cause a replay (or no rows at all). Check its
+    /// database token around the complete artifact/stream verification too. Collection during
+    /// verification discards the document even if a now-unreachable artifact read failed.
+    fn refresh_status_if_changed(
+        &mut self,
+        discovery: &af_store::store::DatabaseObservation,
+    ) -> Result<bool, String> {
+        self.refresh_status_if_changed_with(discovery, |cas, id| {
+            cas.verify(id).map(|_| ()).map_err(|e| e.to_string())
+        })
+    }
+
+    fn refresh_status_if_changed_with(
+        &mut self,
+        discovery: &af_store::store::DatabaseObservation,
+        verify_display: impl FnMut(&Cas, &str) -> Result<(), String>,
+    ) -> Result<bool, String> {
+        if self
+            .store
+            .database_observation_unchanged(discovery)
+            .map_err(|e| e.to_string())?
+        {
+            let refreshed = self.refresh_if_changed_with(verify_display);
+            // A changed stream already discarded the document. Its replacement will get
+            // a fresh discovery token; do not project the same Task twice here.
+            if matches!(refreshed, Ok(true)) {
+                return refreshed;
+            }
+            if self
+                .store
+                .database_observation_unchanged(discovery)
+                .map_err(|e| e.to_string())?
+            {
+                return refreshed;
+            }
+        }
+        self.reset_observation()?;
+        Ok(true)
+    }
+
+    fn reset_observation(&mut self) -> Result<(), String> {
+        self.refresh()?;
+        self.view_artifacts.borrow_mut().clear();
+        self.view_runs.borrow_mut().clear();
+        Ok(())
     }
 
     /// Project the Task again from the Store, for a command that watches it change.
@@ -3718,8 +4067,7 @@ impl OpenedTask {
 }
 
 /// The leaf subcommand's matches of this process's command line when it works on a Task Store:
-/// an `af task` command, or `af review` with a Task file (`--file`), whose `--state` names a
-/// Task Store too. `None` for every other command, a Campaign review and the browser included.
+/// an `af task` or `af review` command. `None` for every other command, including the browser.
 fn task_invocation() -> Option<&'static clap::ArgMatches> {
     static MATCHES: std::sync::OnceLock<Option<clap::ArgMatches>> = std::sync::OnceLock::new();
     MATCHES
@@ -3731,8 +4079,7 @@ fn task_invocation() -> Option<&'static clap::ArgMatches> {
             while let Some((_, deeper)) = leaf.subcommand() {
                 leaf = deeper;
             }
-            let task_file = matches!(leaf.try_get_raw("task_file"), Ok(Some(_)));
-            (namespace == "task" || (namespace == "review" && task_file)).then(|| leaf.clone())
+            matches!(namespace, "task" | "review").then(|| leaf.clone())
         })
         .as_ref()
 }
@@ -3945,7 +4292,7 @@ pub(super) fn list_common(state: &Path) -> Result<Vec<serde_json::Value>, String
         // The same state `af task show` prints, from the same derivation.
         let cancelled = runs::cancelled_epoch(Some(state), &task);
         let view = selected_view(&cas, &task, result.as_ref(), now, cancelled)?;
-        Ok(json!({"schema":TASK_LIST_ENTRY_V4,"task_id":task.task_id,"kind":task.revision.kind,"phase":task.phase,
+        Ok(json!({"schema":TASK_LIST_ENTRY_V5,"task_id":task.task_id,"kind":task.revision.kind,"phase":task.phase,
             "state":view.state,
             "round":review_round(&task),
             "chargeable_tokens":task.execution.as_ref().map_or(0,|e| e.budget.committed_tokens()).to_string(),
@@ -3987,7 +4334,7 @@ pub(super) fn list_common(state: &Path) -> Result<Vec<serde_json::Value>, String
 }
 
 /// One entry of `af task list --json`.
-pub(crate) const TASK_LIST_ENTRY_V4: &str = "af/task-list-entry@4";
+pub(crate) const TASK_LIST_ENTRY_V5: &str = "af/task-list-entry@5";
 
 /// The review round a Task is in: the rounds it handed off to a successor plan, plus the one its
 /// current execution recorded; 0 before a review recorded a round.
@@ -3999,7 +4346,7 @@ fn review_round(task: &TaskProjection) -> u64 {
             .flat_map(|(_, output)| output.outputs.values())
             .any(|port| port.artifact_type == TASK_REVIEW_ROUND_V1)
     });
-    task.review_handoffs.len() as u64 + u64::from(current)
+    u64::from(current)
 }
 
 /// `af task list --sizes`: the Store's totals and each uncollected Task's CAS footprint. The
@@ -4141,6 +4488,8 @@ pub(crate) fn recorded_artifact(state: &Path, id: &str) -> Result<serde_json::Va
 #[cfg(test)]
 pub(crate) fn run_silently(file: &Path, repo: &Path, state: &Path) -> Result<i32, String> {
     let options = StartOptions {
+        review_inputs: None,
+        review_selectors: None,
         input_json: Vec::new(),
         file: file.to_path_buf(),
         bindings: None,
@@ -4169,7 +4518,7 @@ struct Inspection {
 }
 
 /// The document `af task show --json` and `af task explain --json` print.
-pub(crate) const TASK_INSPECTION_V17: &str = "af/task-inspection@17";
+pub(crate) const TASK_INSPECTION_V21: &str = "af/task-inspection@21";
 
 #[allow(clippy::too_many_arguments)]
 fn present_with_format(
@@ -5136,7 +5485,7 @@ fn inspection(
     let store_dir = store.database_path();
     let cancelled = runs::cancelled_epoch(store_dir.as_deref().and_then(Path::parent), &state);
     let view = selected_view(cas, &state, result.as_ref(), clock()?, cancelled)?;
-    let mut value = json!({"schema":TASK_INSPECTION_V17,"task_id":state.task_id,"revision_id":state.revision_id,"phase":state.phase,"state":view.state,"plan_id":state.plan_id,
+    let mut value = json!({"schema":TASK_INSPECTION_V21,"task_id":state.task_id,"revision_id":state.revision_id,"phase":state.phase,"state":view.state,"plan_id":state.plan_id,
         "chargeable_tokens":state.execution.as_ref().map_or(0,|e|e.budget.committed_tokens()).to_string(),"attempts":state.execution.as_ref().map_or(0,|e|e.budget.begun_attempts())});
     // The wall clock starts at the first admission: the wall the Task has, when its clock
     // started, and the deadline it has since.
@@ -5188,7 +5537,7 @@ fn inspection(
     let mut wall_ends = Vec::new();
     for event in events {
         // A lease's execution marker, a gate retry and a Provider event are their own event
-        // kinds, not `TaskTransition@5`: the history lists the transitions only; the Provider
+        // kinds, not `TaskTransition@6`: the history lists the transitions only; the Provider
         // events are listed beside it.
         if af_store::store::task::is_provider_event(&event) {
             let value =
@@ -5356,31 +5705,7 @@ fn inspection(
     if !experiments.is_empty() {
         value["experiments"] = json!(experiments);
     }
-    if !state.review_handoffs.is_empty() {
-        let mut handoffs = Vec::new();
-        for (id, _) in &state.review_handoffs {
-            // The checked projection normalizes both generations. Keep the original
-            // payload: an integrated handoff must never be re-encoded as generation one.
-            let recorded = cas.get_artifact(id).map_err(|e| e.to_string())?;
-            handoffs.push(json!({"artifact_id":id,"artifact_type":recorded.artifact_type,"record":recorded.payload}));
-        }
-        value["review_handoffs"] = json!(handoffs);
-    }
-    if let Some(execution) = &state.execution {
-        let phases = execution.review_integrations();
-        if !phases.is_empty() {
-            value["review_integrations"] = json!(phases.iter().map(|phase| json!({
-                "artifact_id":phase.phase_id(),
-                "artifact_type":af_contracts::task::review_integration::TASK_REVIEW_INTEGRATION_PHASE_V1,
-                "record":phase.phase(),
-                "node":phase.node(),
-                "requires_checks":phase.requires_checks(),
-                "finished":phase.finished(),
-                "report_id":phase.report_id(),
-                "integration_committed_event_id":phase.integration_committed_event_id(),
-            })).collect::<Vec<_>>());
-        }
-    }
+
     let mut reports = Vec::new();
     for id in &state.run_reports {
         use af_contracts::task::run_report::*;
@@ -5512,8 +5837,8 @@ fn inspection(
         value["undeclared_af_paths"] = serde_json::to_value(group).map_err(|e| e.to_string())?;
     }
     if explain && let Some(id) = &state.plan_id {
-        let plan: ExecutionPlanV3 = artifact(cas, id, EXECUTION_PLAN_V4)?;
-        let graph = artifact::<CompiledTask>(cas, &plan.compiled_graph_id, COMPILED_TASK_V1)?;
+        let plan: ExecutionPlan = artifact(cas, id, EXECUTION_PLAN_V4)?;
+        let graph = artifact::<CompiledTask>(cas, &plan.compiled_graph_id, COMPILED_TASK_V4)?;
         // Each Worker slot's binding beside its Attempt wall (ADR-0257).
         value["slots"] = preview::slots_value(cas, &plan, &graph);
         value["graph"] = serde_json::to_value(graph).map_err(|e| e.to_string())?;
@@ -5597,6 +5922,8 @@ mod tree_preview_tests {
         // `af task plan --file` records the Task, and `af task explain --tree` prints this.
         let state = root.join("state");
         let options = StartOptions {
+            review_inputs: None,
+            review_selectors: None,
             input_json: Vec::new(),
             file: file.clone(),
             bindings: None,
@@ -5621,7 +5948,7 @@ mod tree_preview_tests {
         assert_eq!(stable_lines(&silent.text), stable_lines(&printed));
         let text = &silent.text;
         assert!(
-            text.contains("PIPE  fixture/implementation@1.0.0  [configured]"),
+            text.contains("PIPE  fixture/implementation@1.0.1  [configured]"),
             "{text}"
         );
         // Every Worker row carries its slot's binding, keyed by the row's line.
@@ -5690,6 +6017,59 @@ mod check_cache_line_tests {
             "caches": [{"kind": "cargo_target:busy", "eligible": false, "bytes_available": 0}],
         }));
         assert!(check_cache_lines(&unnamed).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod engine_tests {
+    use super::*;
+
+    #[test]
+    fn captured_engine_names_the_current_graph_and_matches_its_schema() {
+        let temp = tempfile::tempdir().unwrap();
+        let cas = Cas::open(temp.path()).unwrap();
+        let id = engine(&cas).unwrap();
+        let record = cas.get_json(&id).unwrap();
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../../schemas/task-engine-v4.json")).unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        assert!(validator.is_valid(&record));
+        assert_eq!(engine(&cas).unwrap(), id);
+        for retired in [
+            "af.compiled-task/1",
+            "af.compiled-task/2",
+            "af.compiled-task/3",
+            "af.compiled-task/4",
+        ] {
+            let mut old = record.clone();
+            old["graph"] = json!(retired);
+            assert!(!validator.is_valid(&old));
+        }
+        for retired in ["af.task-engine/1", "af.task-engine/2", "af.task-engine/3"] {
+            let mut old = record.clone();
+            old["schema"] = json!(retired);
+            assert!(!validator.is_valid(&old));
+        }
+        let mut retired = record.clone();
+        retired["schema"] = json!("af.task-engine/3");
+        retired["graph"] = json!("af.compiled-task/5");
+        let retired_id = cas.put_json(&retired).unwrap();
+        // Reuse an actual captured authority's shape, then bind the retired engine record.
+        // Restoration must refuse the engine before it can read any captured catalog state.
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/task-warm/no-warm-documents.json"
+        ))
+        .unwrap();
+        let mut authority: RunAuthority =
+            serde_json::from_value(fixture["authority"].clone()).unwrap();
+        authority.engine_id = retired_id;
+        assert_eq!(
+            restore_compiler(&cas, "unused", &authority).err().unwrap(),
+            "Task requires the exact recorded compatible engine; inspect remains available"
+        );
+        let mut old = record;
+        old["undeclared"] = json!(true);
+        assert!(!validator.is_valid(&old));
     }
 }
 
@@ -5851,6 +6231,8 @@ mod remote_check_line_tests {
         std::fs::write(&file, serde_json::to_vec_pretty(&task).unwrap()).unwrap();
         let owner = |state: &Path| {
             start(StartOptions {
+                review_inputs: None,
+                review_selectors: None,
                 input_json: Vec::new(),
                 file: file.clone(),
                 bindings: None,
@@ -5959,4 +6341,34 @@ mod presentation_tests {
             "an exit 0 adds no line"
         );
     }
+}
+
+pub(crate) fn provider_doctor(args: crate::cli::DoctorArgs) -> Result<i32, String> {
+    provider_admission::doctor(args)
+}
+
+/// Native Findings for the browser, using the CLI's exact read-only projection and renderer.
+/// This takes an already-discovered Store; it neither registers it nor resolves live authority.
+pub(crate) fn recorded_findings_lines(state: &Path, id: &str) -> Result<Vec<String>, String> {
+    let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
+    let store =
+        EventStore::open_read_only(state.join("events.sqlite")).map_err(|e| e.to_string())?;
+    let task = store
+        .task_projection(&cas, id)
+        .map_err(|e| e.to_string())?
+        .ok_or("Task disappeared")?;
+    let opened = OpenedTask {
+        state: state.into(),
+        cas,
+        store,
+        task,
+        view_artifacts: std::cell::RefCell::new(BTreeSet::new()),
+        view_runs: std::cell::RefCell::new(BTreeMap::new()),
+    };
+    let document = findings::ledger_document(&opened, None)?;
+    Ok(if document.rounds == 0 {
+        vec![]
+    } else {
+        findings::lines(&document)
+    })
 }

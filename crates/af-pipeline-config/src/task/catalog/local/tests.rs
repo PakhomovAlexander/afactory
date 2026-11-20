@@ -1,7 +1,7 @@
 use super::*;
 use std::path::PathBuf;
 
-const KIND: &str = "schema = \"af.task-kind/1\"\nname = \"team/feature-kind\"\nversion = \"1.0.0\"\nkind = \"team/feature\"\nprofile = \"implementation\"\n";
+const KIND: &str = "schema = \"af.task-kind/3\"\nname = \"team/feature-kind\"\nversion = \"1.0.0\"\nkind = \"team/feature\"\nprofile = \"implementation\"\n";
 
 fn package(files: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();

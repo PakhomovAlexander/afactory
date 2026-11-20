@@ -479,7 +479,8 @@ class Comparison(ExecutorFixture):
                                                {suite_path: small, adapter_path: adapters})
         self.c["control_sha"] = self.base
         with executor.Journal(self.c) as j:
-            launched = self.launch(j)
+            launched = release_comparison.preflight(j, self.base, self.head,
+                "nightly-2026.11.16", "release", launch=True)
             self.assertEqual(launched["status"], "launched", launched["detail"])
             doc, plan, _ = release_comparison.load(j, launched["comparison"]["comparison_id"])
             ident = doc["comparison_id"]
@@ -487,7 +488,12 @@ class Comparison(ExecutorFixture):
             self.assertTrue(all(case["seed"] is None
                                 for case in plan["cases"]))
             self.assertEqual([p["shards"] for p in doc["partitions"]], [[0], [1]])
-            staged, calls = self.staged(j, ident), []
+            # Explicit measured-contract stand-in exercises release admission; these
+            # fixture timings are never evidence of product performance.
+            staged = synthetic.write_run(plan, self.path("synthetic"),
+                lambda slot, case: 200 if slot["side"] == "candidate" else 100,
+                provenance="measured")
+            calls = []
 
             def in_partition_window(options, target):
                 # The synthetic runner observes the real executor's sealed later window,
@@ -583,6 +589,41 @@ class Comparison(ExecutorFixture):
             self.assertIn('"status": "verified"', printed.getvalue())
             _, offline = release_comparison.verify_export(moved)
             self.assertEqual(offline, local)
+            # Exercise the release worker's actual comparison closeout on this native
+            # measured regression. The export verifier still derives every core claim.
+            from pathlib import Path
+            sys.path.insert(0, os.path.join(ROOT, 'scripts/nightly'))
+            import native_release
+            import scenario as nightly_runtime
+            backend = object.__new__(native_release.Native)
+            backend.executor = self.c
+            backend.bundle = lambda tag: Path(moved)
+            record = dict(tag="nightly-2026.11.16", baseline_tag="v0.15.1-rc.3",
+                          baseline_sha=self.base, head_sha=self.head, status="built")
+            backend.record = lambda tag: record
+            certificate_path = Path(self.path('nightly-build-completion.json'))
+            backend.service = SimpleNamespace(root=Path(self.tmp), completion_path=lambda *args: certificate_path)
+            certificate = dict(schema='af/nightly-completion@1', nightly_tag=record['tag'],
+                configuration_digest=canonical_digest(self.c), operation=nightly_runtime.OPS[0],
+                artifacts={'build': canonical_digest(record)}, detail='signed fixture build')
+            nightly_runtime.atomic(certificate_path, certificate, 'nightly-completion-v1.json')
+            job = dict(nightly_tag=record['tag'], phases={nightly_runtime.OPS[0]:
+                dict(evidence=canonical_digest(certificate))})
+            from tests.test_nightly_scenario import trusted_mounts
+            with trusted_mounts():
+                artifacts, detail = backend.run_phase(job, nightly_runtime.OPS[1], True)
+            self.assertEqual(artifacts['comparison'], canonical_digest(offline))
+            self.assertIn('core fail', detail, 'measured regression is reportable evidence')
+            with self.assertRaisesRegex(ContractError, 'source identity differs'):
+                backend.verified(dict(record, baseline_sha='f' * 40))
+            if os.environ.get('AF_NIGHTLY_CLI_BIN'):
+                from tests import nightly_cli_driver
+                nightly_cli_driver.main(os.environ['AF_NIGHTLY_CLI_BIN'],
+                                        comparison_proof=lambda: backend.verified(record))
+            member = Path(moved, 'evidence/requests', offline['members'][0]['request_id'], 'result.json')
+            member.unlink()
+            with self.assertRaises((ContractError, OSError)):
+                backend.verified(record)
 
     def test_full_comparison_partitions_aggregates_diagnoses_reports_and_exports(self):
         with executor.Journal(self.c) as j:
@@ -1450,9 +1491,9 @@ class Comparison(ExecutorFixture):
 
     def test_the_documented_full_comparison_configuration_and_checks_hold(self):
         """The operator documentation's full-comparison configuration, applied to the executor
-        configuration as it says (telemetry overrides deleted), is a valid `af.perf-executor/4`
+        configuration as it says (telemetry overrides deleted), is a valid `af.perf-executor/5`
         that launches the whole nightly family in its declared 45 and 120 minute windows; its documented checks, run as written on the
-        launched journal, find 33 instances, 31 judged, 2 exploratory, 2932 slots in 8 shards
+        launched journal, find 39 instances, 37 judged, 2 exploratory, 3436 slots in 8 shards
         and 12 manual telemetry runs."""
         text = read(os.path.join(ROOT, "docs", "performance-local-executor.md")).decode()
 
@@ -1485,7 +1526,7 @@ class Comparison(ExecutorFixture):
                                launched["comparison"]["comparison_id"]],
                               input=script, capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertIn("('nightly', 'linux_x86_64_musl_claw', 8, 33, 31, 2, 2932)", done.stdout)
+        self.assertIn("('nightly', 'linux_x86_64_musl_claw', 8, 39, 37, 2, 3436)", done.stdout)
         # The recipe's declared windows, not the nightly tier's 15 and 180 (ADR-0269), frozen
         # into the plan, over four serial partitions that reuse the first one's build.
         self.assertEqual(documented["core"]["windows"],

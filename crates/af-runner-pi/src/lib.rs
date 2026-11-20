@@ -1,7 +1,7 @@
 //! One AF-owned Pi 1.4.0 SDK process per Attempt. Credentials stay in the embedded host.
 //!
 //! The CLI supplies machine bindings and native Task integration. This adapter implements
-//! `af_runner::task::WorkerModelAdapter` and `af_runner::ReviewerAdapter`; `af-runtime` owns
+//! `af_runner::task::WorkerModelAdapter`; `af-runtime` owns
 //! execution and admission. `af-contracts` supplies Pi authority and usage evidence, `af-runner`
 //! supplies Worker contracts and transport, `af-process` supervises the confined host, and
 //! `af-store` retains safe evidence. Application bindings use `af_runner::models` before
@@ -27,7 +27,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 pub const HOST: &str = include_str!("host.mjs");
-pub const PROTOCOL: &str = "af.pi-host/5";
+pub const PROTOCOL: &str = "af.pi-host/7";
 pub const SDK_VERSION: &str = "1.4.0";
 const MAX_RECORD: usize = 4 * 1024 * 1024;
 const MAX_OUTPUT: usize = 16 * 1024 * 1024;
@@ -363,6 +363,51 @@ struct State {
     usage: BTreeMap<u64, Usage>,
     tool_counts: BTreeMap<String, u64>,
     error: Option<String>,
+    inference_failure: Option<InferenceFailure>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct InferenceFailure {
+    diagnostic: String,
+    failure_kind: InferenceFailureKind,
+    accounting_complete: bool,
+}
+// The host classifies original provider text before withholding private material.
+// Deserialize a closed category; never infer the category again from redacted text.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum InferenceFailureKind {
+    AuthMissing,
+    AuthRevoked,
+    AuthExpired,
+    AuthRefreshContended,
+    AuthRefreshFailed,
+    AuthRejected,
+    Quota,
+    Capacity,
+    ModelUnavailable,
+    ModelRefused,
+    Network,
+    Environment,
+}
+impl InferenceFailure {
+    fn kind(&self) -> af_runner::native_failure::NativeFailureKind {
+        use af_runner::native_failure::NativeFailureKind;
+        match self.failure_kind {
+            InferenceFailureKind::AuthMissing => NativeFailureKind::AuthMissing,
+            InferenceFailureKind::AuthRevoked => NativeFailureKind::AuthRevoked,
+            InferenceFailureKind::AuthExpired => NativeFailureKind::AuthExpired,
+            InferenceFailureKind::AuthRefreshContended => NativeFailureKind::AuthRefreshContended,
+            InferenceFailureKind::AuthRefreshFailed => NativeFailureKind::AuthRefreshFailed,
+            InferenceFailureKind::AuthRejected => NativeFailureKind::AuthRejected,
+            InferenceFailureKind::Quota => NativeFailureKind::Quota,
+            InferenceFailureKind::Capacity => NativeFailureKind::Capacity,
+            InferenceFailureKind::ModelUnavailable => NativeFailureKind::ModelUnavailable,
+            InferenceFailureKind::ModelRefused => NativeFailureKind::ModelRefused,
+            InferenceFailureKind::Network => NativeFailureKind::Network,
+            InferenceFailureKind::Environment => NativeFailureKind::Environment,
+        }
+    }
 }
 #[derive(Clone, Default, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -601,6 +646,40 @@ impl State {
                 self.settled = true;
             }
             "error" => {
+                if object.get("code").and_then(Value::as_str) == Some("inference_failed") {
+                    object.remove("code");
+                    let mut failure: InferenceFailure = serde_json::from_value(value)
+                        .map_err(|_| "Invalid Pi inference failure")?;
+                    if failure.diagnostic.is_empty()
+                        || failure.diagnostic.len() > 240
+                        || !failure
+                            .diagnostic
+                            .bytes()
+                            .all(|b| (b' '..=b'~').contains(&b))
+                        || (failure.accounting_complete
+                            && (!self.accepted || !self.complete_usage()))
+                    {
+                        return Err("Invalid Pi inference failure or accounting claim".into());
+                    }
+                    // Defense in depth: only the host knows literal credential values,
+                    // and Rust additionally applies the common native-output redactor.
+                    failure.diagnostic =
+                        af_runner::cli::stderr_excerpt(failure.diagnostic.as_bytes())
+                            .unwrap_or_else(|| "Pi SDK supplied no terminal diagnostic".into());
+                    let kind = failure.kind();
+                    let context = if kind.is_auth() {
+                        "Pi Provider authentication failed"
+                    } else {
+                        "Pi SDK session failed"
+                    };
+                    self.error = Some(format!(
+                        "{context}: {}; {}",
+                        kind.diagnostic(),
+                        failure.diagnostic
+                    ));
+                    self.inference_failure = Some(failure);
+                    return Ok(());
+                }
                 #[derive(Deserialize)]
                 #[serde(deny_unknown_fields)]
                 struct Error {
@@ -612,7 +691,6 @@ impl State {
                     "host_refused" => {
                         "Pi SDK host could not load or serve its pinned protocol; check the installed SDK entrypoint"
                     }
-                    "inference_failed" => "Pi inference failed before successful settlement",
                     "unsupported_auth" => {
                         "Pi credential mode or fields are invalid; use stored OAuth, a literal API key or an explicit credential context; OpenAI Codex requires a routing-checked accountId"
                     }
@@ -663,6 +741,24 @@ impl State {
         }
         Ok(())
     }
+    fn complete_usage(&self) -> bool {
+        let convention = self
+            .ready
+            .as_ref()
+            .and_then(|ready| accounting(&ready.backend));
+        !self.usage.is_empty()
+            && self.usage.values().all(|u| {
+                u.complete
+                    && u.observations > 0
+                    && u.input.is_some()
+                    && u.output.is_some()
+                    && match convention {
+                        Some(Accounting::Total) => true,
+                        Some(Accounting::OpenAi) => u.cache_read.is_some(),
+                        None => false,
+                    }
+            })
+    }
     fn observation(&self) -> TaskUsageObservationV1 {
         if !self.accepted && !self.prompt_sent {
             return TaskUsageObservationV1 {
@@ -711,18 +807,12 @@ impl State {
                 None => 0,
             }) + u128::from(u.output.unwrap_or(0))
         });
-        let complete = self.settled
-            && self.error.is_none()
-            && self.usage.values().all(|u| {
-                u.complete
-                    && u.input.is_some()
-                    && u.output.is_some()
-                    && match convention {
-                        Some(Accounting::Total) => true,
-                        Some(Accounting::OpenAi) => u.cache_read.is_some(),
-                        None => false,
-                    }
-            });
+        let complete = ((self.settled && self.error.is_none())
+            || self
+                .inference_failure
+                .as_ref()
+                .is_some_and(|f| f.accounting_complete))
+            && self.complete_usage();
         TaskUsageObservationV1 {
             charge_complete: complete,
             reported_usage: Some(TaskTokenUsageV3 {
@@ -1043,13 +1133,29 @@ impl PiTaskAdapter {
                 cas.put(&bytes)
                     .map_err(|_| "Cannot retain Pi safe evidence")
             });
-        let raw_artifact_ids = match retained {
+        let mut raw_artifact_ids = match retained {
             Ok(id) => vec![id],
             Err(error) => {
                 state.error.get_or_insert(error.into());
                 vec![]
             }
         };
+        if let Some(failure) = &state.inference_failure {
+            // Retain only the sanitized terminal protocol record, never raw SDK output.
+            // The accounting evidence above keeps its existing counters and shape.
+            let record = json!({"schema":PROTOCOL,"type":"error","code":"inference_failed",
+                "diagnostic":failure.diagnostic,"failure_kind":failure.failure_kind,
+                "accounting_complete":failure.accounting_complete});
+            match cas.put(&serde_json::to_vec(&record).expect("Pi terminal record is JSON")) {
+                Ok(id) => raw_artifact_ids.push(id),
+                Err(_) => {
+                    state
+                        .error
+                        .get_or_insert("Cannot retain Pi terminal diagnostic".into());
+                }
+            }
+        }
+        let native_failure = state.inference_failure.as_ref().map(InferenceFailure::kind);
         let message = if state.settled && state.error.is_none() {
             state
                 .message
@@ -1064,7 +1170,7 @@ impl PiTaskAdapter {
             usage: observation.reported_usage.clone(),
             usage_observation: (!observation.charge_complete).then_some(observation),
             raw_artifact_ids,
-            native_failure: None,
+            native_failure,
             notes: Default::default(),
         }
     }
@@ -1072,67 +1178,3 @@ impl PiTaskAdapter {
 
 #[cfg(test)]
 mod tests;
-
-/// Digest-pinned Review rendering. Native schema generation is not a Pi capability; the common
-/// Reviewer Result contract in the prompt and local admission remain authoritative.
-pub struct PiAdapter {
-    prompt: String,
-}
-impl PiAdapter {
-    pub fn from_package(package: &af_runner::ResolvedReviewer) -> Result<Self, String> {
-        if Path::new(&package.runner.program)
-            .file_name()
-            .and_then(|name| name.to_str())
-            != Some("pi")
-        {
-            return Err("Pi reviewer package must name runner pi".into());
-        }
-        let arguments = package.runner.resolve().map_err(|e| e.to_string())?;
-        let mut model = None;
-        let mut effort = None;
-        for pair in arguments.chunks(2) {
-            if pair.len() != 2 {
-                return Err("Pi reviewer model option needs a value".into());
-            }
-            let target = match pair[0].as_str() {
-                "--model" => &mut model,
-                "--effort" => &mut effort,
-                _ => return Err("Pi packages may set only exact --model and --effort".into()),
-            };
-            if target.replace(pair[1].clone()).is_some() {
-                return Err("Duplicate Pi model option".into());
-            }
-        }
-        static_rules(
-            model.as_deref().ok_or("Pi requires --model")?,
-            effort.as_deref().ok_or("Pi requires --effort")?,
-        )?;
-        let prompt = String::from_utf8(
-            package
-                .file("reviewer.md")
-                .ok_or("Pi reviewer prompt is absent")?
-                .to_vec(),
-        )
-        .map_err(|_| "Pi reviewer prompt is not UTF-8")?;
-        Ok(Self { prompt })
-    }
-    pub fn with_focus(mut self, focus: impl AsRef<str>) -> Self {
-        af_runner::append_focus(&mut self.prompt, focus.as_ref());
-        self
-    }
-}
-impl af_runner::ReviewerAdapter for PiAdapter {
-    fn render_input(
-        &self,
-        inputs: &af_runner::ReviewerInputs,
-    ) -> Result<af_runner::RenderedInput, af_runner::RunnerError> {
-        let (prompt, manifest) = af_runner::compose_model_prompt(&self.prompt, inputs)
-            .map_err(af_runner::RunnerError::Refused)?;
-        Ok(af_runner::RenderedInput {
-            transport: af_runner::InputTransport::Prompt,
-            bytes: prompt.into_bytes(),
-            manifest,
-            reply_schema: None,
-        })
-    }
-}

@@ -244,7 +244,10 @@ def side_receipts(git, plan):
 
 def setup_argument(entry, receipts, side, seed_argument):
     """The fifth argument of `cli/setup.sh` for `entry`'s setup: the side's receipt generation
-    for a task-repository setup, which reads no seed; otherwise the seed's path or `-`."""
+    for a task-repository setup; the declared state fixture for waiter_state; otherwise the
+    seed's path or `-`."""
+    if entry["setup"] == "waiter_state":
+        return entry["parameters"]["state"]
     if entry["setup"] in ("task_repository", "task_started"):
         return receipts.get(side, RECEIPTS[1])
     return seed_argument
@@ -301,7 +304,7 @@ def driver_python(contained):
 def tui_home_environment(scratch):
     """The browser sample's private HOME and XDG roots, created by its setup."""
     home = os.path.join(scratch, "home")
-    return {"HOME": home, "XDG_STATE_HOME": os.path.join(home, "state"),
+    return {"HOME": home, "AF_TEST_WAKE_ACCOUNT_HOME": home, "XDG_STATE_HOME": os.path.join(home, "state"),
             "XDG_CONFIG_HOME": os.path.join(home, "config"),
             "XDG_CACHE_HOME": os.path.join(home, "cache"),
             "XDG_DATA_HOME": os.path.join(home, "data")}

@@ -11,24 +11,24 @@
   ],
   "properties": {
     "contract": {
-      "$ref": "urn:af:schema:task-contracts:3#/$defs/contract"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/contract"
     },
     "effects": {
       "type": "array",
       "items": {
-        "$ref": "urn:af:schema:task-contracts:3#/$defs/name"
+        "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
       },
       "uniqueItems": true
     },
     "evidence": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:task-contracts:3#/$defs/name"
+        "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
       },
       "additionalProperties": {
         "type": "array",
         "items": {
-          "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
         },
         "uniqueItems": true
       }
@@ -36,12 +36,12 @@
     "retains": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:task-contracts:3#/$defs/name"
+        "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
       },
       "additionalProperties": {
         "type": "array",
         "items": {
-          "$ref": "urn:af:schema:task-contracts:3#/$defs/name"
+          "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
         },
         "uniqueItems": true
       }
@@ -49,18 +49,18 @@
     "roles": {
       "type": "array",
       "items": {
-        "$ref": "urn:af:schema:task-contracts:3#/$defs/name"
+        "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
       },
       "uniqueItems": true
     },
     "worker_input_type": {
-      "$ref": "urn:af:schema:task-contracts:3#/$defs/artifactType"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/artifactType"
     },
     "worker_output_type": {
-      "$ref": "urn:af:schema:task-contracts:3#/$defs/artifactType"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/artifactType"
     },
     "outcome_port": {
-      "$ref": "urn:af:schema:task-contracts:3#/$defs/name"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
     },
     "attempt": {
       "type": "object",

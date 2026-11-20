@@ -211,7 +211,7 @@ pub(super) fn tombstone_in(
     }
     let payload: Option<String> = connection
         .query_row(
-            "SELECT payload FROM events WHERE run_id=?1 AND type='TaskTransition@5'
+            "SELECT payload FROM events WHERE run_id=?1 AND type='TaskTransition@6'
              ORDER BY sequence DESC LIMIT 1",
             [run_id],
             |row| row.get(0),
@@ -703,6 +703,12 @@ impl EventStore {
         only: Option<&BTreeSet<String>>,
         stop_after_tombstones: bool,
     ) -> Result<CollectionOutcome, StoreError> {
+        // Lock ordering is CAS reservation, then SQLite. Refuse immediately while capture
+        // owns any new or reused objects, without blocking an unrelated writer's heartbeat.
+        // Keep exclusion through both tombstones and sweep, including crash recovery calls.
+        let _collection = cas
+            .hold_capture(true)
+            .map_err(|error| StoreError::Artifact(error.to_string()))?;
         let leased = std::time::SystemTime::now();
         let lock = self.store_lease()?;
         let now_unix_ms = now()?;
@@ -716,6 +722,7 @@ impl EventStore {
             let state = self
                 .task_projection(cas, &task.task_id)?
                 .ok_or_else(|| conflict("Collected Task disappeared"))?;
+            self.require_wake_extracted(&task.task_id, state.next_sequence - 1)?;
             let epoch = state
                 .epoch
                 .checked_add(1)
@@ -747,7 +754,7 @@ impl EventStore {
                     },
                 },
             };
-            let (event_type, value) = review_handoff::encode_transition(&transition)?;
+            let (event_type, value) = journal::encode_transition(&transition)?;
             af_contracts::event::validate_event_payload(event_type, &value)
                 .map_err(|error| conflict(format!("invalid Task tombstone: {error}")))?;
             let run_id = task_run_id(&task.task_id)?;
@@ -764,6 +771,19 @@ impl EventStore {
         lock.commit()?;
         *self.task_cache.borrow_mut() = None;
         self.committed(cas, &committed, None);
+        // Disposable activity follows Task collection, including leftovers from an interrupted
+        // earlier collection. It never changes the tombstone or CAS reachability accounting.
+        if let Some(path) = self.database_path()
+            && let Some(root) = path.parent()
+        {
+            for task_id in tombstoned.iter().map(String::as_str).chain(
+                plan.collected
+                    .iter()
+                    .map(|task| task.collected.task_id.as_str()),
+            ) {
+                let _ = crate::activity::forget_task(root, task_id);
+            }
+        }
         if stop_after_tombstones {
             return Ok(CollectionOutcome {
                 plan,

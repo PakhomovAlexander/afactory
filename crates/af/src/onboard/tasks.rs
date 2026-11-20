@@ -3,12 +3,11 @@
 use super::*;
 use af_pipeline_config::lock::package_digest_from_files;
 
-const DEFAULTS: &str = "\n[task.defaults]\npipeline = \"onboard/implementation-reviewed\"\nfallback = \"refuse\"\n\n[task.defaults.limits]\ntokens = 6000000\nmax_attempts = 16\nwall_ms = 22000000\n\n[task.defaults.limits.verification]\ntokens = 2000000\nattempts = 8\nwall_ms = 10800000\n";
+pub(super) const DEFAULTS: &str = "\n[task.defaults]\npipeline = \"onboard/implementation-reviewed\"\nfallback = \"refuse\"\n\n[task.defaults.limits]\ntokens = 6000000\nmax_attempts = 16\nwall_ms = 22000000\n\n[task.defaults.limits.verification]\ntokens = 2000000\nattempts = 8\nwall_ms = 10800000\n";
 const IMPLEMENTER: &str = "# Implementer\n\nImplement the Task goal in the private source sandbox. Read the declared requirements and source. Make the smallest complete change, run the project's checks, and report the changed behavior and tests. Never publish or change authority outside the sandbox.\n";
 const BUGS: &str = "# Bugs reviewer\n\nReview the exact selected change for concrete defects that can cause a wrong result. Trace the changed behavior through callers and tests. Report each reproducible finding with a bounded fix; otherwise return a clean result.\n";
 const CORRECTNESS: &str = "# Correctness reviewer\n\nReview the exact selected change against its requirements and the repository's contracts. Check state transitions, errors, budgets and sandbox boundaries. Report only concrete defects with evidence and a fix.\n";
 const EVALUATOR: &str = "# Goal evaluator\n\nJudge the Task's goal against the exact source Snapshot and check receipts. Verify each acceptance item independently. Cite evidence for a pass and name unmet items; do not infer a pass from the implementer's report.\n";
-const TASK_GUIDE: &str = "\n## Model-driven Tasks\n\nThis bundle also pins `onboard/implementation-reviewed` and its implementer, bugs, correctness\nand evaluator Workers in `.af/task-catalog.toml`. Its required checks live in\n`.af/code-policy.toml`; `[task.defaults]` in `.af/af.toml` selects the Pipeline and limits.\nReview and commit all of `.af/` before planning a three-field Task file with\n`af task plan --file ticket.json`. Register the selected Provider kind with\n`af provider detect` or `af provider setup`, then use machine-local `--bindings` if its\nID differs from the catalog alias.\n";
 
 #[derive(Serialize)]
 struct TaskReport {
@@ -63,7 +62,7 @@ pub(super) fn run(options: &Options) -> Result<(), String> {
             RunnerProfile::Codex
         }
     });
-    let task_files = files(&gates)?;
+    let task_files = files(&gates, options.runner.unwrap_or(profile))?;
     let mut command = format!(
         "af onboard --repo {} --tasks --runner {}",
         shell_words::quote(repo.to_str().ok_or("repository path is not UTF-8")?),
@@ -110,7 +109,7 @@ pub(super) fn run(options: &Options) -> Result<(), String> {
         }
     } else {
         let review_profile = options.runner.unwrap_or(profile);
-        let mut bundle = build_bundle(&repo, review_profile, gates, options.af.as_deref())?;
+        let bundle = build_bundle(&repo, review_profile, gates, options.af.as_deref())?;
         validate_bundle(&bundle)?;
         required_provider_kinds.extend(
             bundle
@@ -120,19 +119,6 @@ pub(super) fn run(options: &Options) -> Result<(), String> {
                 .filter_map(|reviewer| provider_kind(&reviewer.runner)),
         );
         report.warnings = bundle.report.warnings.clone();
-        for (path, bytes) in task_files {
-            bundle.files.insert(path, bytes);
-        }
-        bundle
-            .files
-            .get_mut(".af/af.toml")
-            .ok_or("generated review bundle omitted af.toml")?
-            .extend_from_slice(DEFAULTS.as_bytes());
-        bundle
-            .files
-            .get_mut(".af/README.md")
-            .ok_or("generated review bundle omitted README.md")?
-            .extend_from_slice(TASK_GUIDE.as_bytes());
         report.files = bundle.files.keys().cloned().collect();
         if options.apply {
             apply_bundle(&repo, &bundle)?;
@@ -176,7 +162,10 @@ pub(super) fn run(options: &Options) -> Result<(), String> {
     Ok(())
 }
 
-fn files(gates: &[Gate]) -> Result<BTreeMap<String, Vec<u8>>, String> {
+pub(super) fn files(
+    gates: &[Gate],
+    profile: RunnerProfile,
+) -> Result<BTreeMap<String, Vec<u8>>, String> {
     let mut files = BTreeMap::new();
     let names = ["implementer", "bugs", "correctness", "evaluator"];
     let manifests = [
@@ -208,8 +197,19 @@ fn files(gates: &[Gate]) -> Result<BTreeMap<String, Vec<u8>>, String> {
         } else {
             "gpt-6.1-terra"
         };
+        let runner = if matches!(*name, "bugs" | "correctness") {
+            profile.runner(name)
+        } else {
+            RunnerKind::Codex
+        };
+        runner.check_models()?;
+        let model = if runner == RunnerKind::Claude {
+            runner.binding().0
+        } else {
+            model
+        };
         let manifest = manifests[index]
-            .replace("{{PROVIDER_KIND}}", "codex")
+            .replace("{{PROVIDER_KIND}}", runner.program())
             .replace("{{MODEL}}", model);
         let root = format!(".af/task-packages/onboard/{name}");
         files.insert(format!("{root}/worker.toml"), manifest.into_bytes());
@@ -225,7 +225,10 @@ fn files(gates: &[Gate]) -> Result<BTreeMap<String, Vec<u8>>, String> {
             ),
             outputs[index].to_vec(),
         );
-        provider_lines.push_str(&format!("\"onboard/{name}\" = \"codex-main\"\n"));
+        provider_lines.push_str(&format!(
+            "\"onboard/{name}\" = \"{}-main\"\n",
+            runner.program()
+        ));
     }
     let checks = gates
         .iter()
@@ -233,6 +236,10 @@ fn files(gates: &[Gate]) -> Result<BTreeMap<String, Vec<u8>>, String> {
         .collect::<Vec<_>>()
         .join(", ");
     for (name, source) in [
+        (
+            "review-decisions",
+            include_str!("templates/review-decisions/pipeline.toml"),
+        ),
         (
             "review-code",
             include_str!("templates/review-code/pipeline.toml"),
@@ -248,9 +255,21 @@ fn files(gates: &[Gate]) -> Result<BTreeMap<String, Vec<u8>>, String> {
             pipeline.into_bytes(),
         );
     }
-    for name in names
-        .into_iter()
-        .chain(["review-code", "implementation-reviewed"])
+    files.insert(
+        ".af/task-packages/onboard/review-code/task.json".into(),
+        br#"{
+  "schema":"af.task-file/1", "task_id":"review", "kind":"review",
+  "goal":"Review the selected change", "strategy":"light",
+  "requirements":{"review_scope":"Review the selected source or Diff for actionable defects under the captured policy and acceptance checks."},
+  "pipeline":{"name":"onboard/review-code","fallback":"refuse"}
+}
+"#
+        .to_vec(),
+    );
+    for name in
+        names
+            .into_iter()
+            .chain(["review-code", "review-decisions", "implementation-reviewed"])
     {
         let prefix = format!(".af/task-packages/onboard/{name}/");
         let package: BTreeMap<String, Vec<u8>> = files
@@ -260,7 +279,10 @@ fn files(gates: &[Gate]) -> Result<BTreeMap<String, Vec<u8>>, String> {
                     .map(|relative| (relative.to_owned(), bytes.clone()))
             })
             .collect();
-        let manifest = if name == "review-code" || name == "implementation-reviewed" {
+        let manifest = if name == "review-code"
+            || name == "review-decisions"
+            || name == "implementation-reviewed"
+        {
             "pipeline.toml"
         } else {
             "worker.toml"
@@ -291,6 +313,9 @@ fn code_policy(gates: &[Gate]) -> String {
     for gate in gates {
         let key = toml::Value::String(gate.name.clone());
         text.push_str(&format!("\n[checks.{key}]\nname = {key}\nrequired = true\n\n[checks.{key}.command]\nprogram = {program}\n", program = toml::Value::String(gate.program.clone())));
+        if gate.args.is_empty() {
+            text.push_str("args = []\n");
+        }
         for arg in &gate.args {
             text.push_str(&format!(
                 "\n[[checks.{key}.command.args]]\nvalue = {}\nprovenance = \"literal\"\n",
@@ -579,7 +604,7 @@ mod tests {
     #[test]
     fn dotted_gate_name_stays_one_policy_check_and_a_review_result_keeps_its_domain_type() {
         let gate = Gate::detected("project.check", "make", &["check"], "Makefile");
-        let generated = files(&[gate]).unwrap();
+        let generated = files(&[gate], RunnerProfile::Mixed).unwrap();
         let policy: toml::Value =
             toml::from_str(std::str::from_utf8(&generated[".af/code-policy.toml"]).unwrap())
                 .unwrap();

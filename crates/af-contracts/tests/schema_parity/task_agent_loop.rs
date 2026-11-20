@@ -1,6 +1,6 @@
-//! The agent loop's documents and records (ADR-0211, ADR-0248, ADR-0250): `af/task-findings@2`,
-//! `af/task-materialized@1`, `af/task-diff@1`, `af/task-status@2`, `af/task-detached@3`,
-//! `af/task-cancelled@2`, the lines of `af task events` (`af/task-event@1`), the `runs/` records
+//! The agent loop's documents and records (ADR-0211, ADR-0248, ADR-0250): `af/task-findings@3`,
+//! `af/task-materialized@1`, `af/task-diff@1`, `af/task-status@3`, `af/task-detached@4`,
+//! `af/task-cancelled@3`, the lines of `af task events` (`af/task-event@3`), the `runs/` records
 //! `af/task-run-process@1` and `af/task-cancel-request@1`, and the `af/TaskDeliveryProof@1` a
 //! verification Task's delivery references. A typed value the Rust validator accepts satisfies
 //! its schema, both reject the same broken shapes, and another version fails closed.
@@ -157,7 +157,7 @@ fn findings_name_each_reviewers_findings_and_the_evaluators_verdict() {
         ),
     };
     let document = TaskFindingsV2 {
-        schema: TASK_FINDINGS_V2.into(),
+        schema: TASK_FINDINGS_V3.into(),
         task_id: "chain-base".into(),
         state: verified(),
         rounds: 1,
@@ -200,7 +200,7 @@ fn findings_name_each_reviewers_findings_and_the_evaluators_verdict() {
         }),
     };
     both(
-        "task-findings-v2.json",
+        "task-findings-v3.json",
         &document,
         TaskFindingsV2::validate,
         vec![
@@ -275,7 +275,7 @@ fn findings_name_each_reviewers_findings_and_the_evaluators_verdict() {
                 "a missing field instead of null",
             ),
             (
-                Box::new(|v: &mut Value| v["schema"] = json!("af/task-findings@1")),
+                Box::new(|v: &mut Value| v["schema"] = json!("af/task-findings@2")),
                 "the previous version",
             ),
         ],
@@ -287,8 +287,26 @@ fn findings_name_each_reviewers_findings_and_the_evaluators_verdict() {
         ..document
     };
     none.validate().unwrap();
+    let ledger = af_contracts::task::review_ledger::ReviewLedgerV2 {
+        schema: af_contracts::task::review_ledger::REVIEW_LEDGER_V3.into(),
+        inspection: none.clone(),
+        finding_set: None,
+        reports: BTreeMap::new(),
+    };
+    ledger.validate().unwrap();
+    let value = serde_json::to_value(&ledger).unwrap();
+    assert_valid("review-ledger-v3.json", &value);
+    let mut retired = value;
+    retired["schema"] = json!("af/review-ledger@2");
+    assert_invalid("review-ledger-v3.json", &retired, "retired ledger identity");
+    assert!(
+        serde_json::from_value::<af_contracts::task::review_ledger::ReviewLedgerV2>(retired)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
     assert_valid(
-        "task-findings-v2.json",
+        "task-findings-v3.json",
         &serde_json::to_value(&none).unwrap(),
     );
 }
@@ -363,7 +381,7 @@ fn materialized_diff_and_status_documents_are_closed() {
         ],
     );
     let status = TaskStatusV2 {
-        schema: TASK_STATUS_V2.into(),
+        schema: TASK_STATUS_V3.into(),
         task_id: "pagination-cli".into(),
         state: TaskStateV1::ended(
             TaskStatePhaseV1::Abandoned,
@@ -382,12 +400,12 @@ fn materialized_diff_and_status_documents_are_closed() {
         cancel: Some(cancel_request()),
     };
     both(
-        "task-status-v2.json",
+        "task-status-v3.json",
         &status,
         TaskStatusV2::validate,
         vec![
             (
-                Box::new(|v: &mut Value| v["schema"] = json!("af/task-status@1")),
+                Box::new(|v: &mut Value| v["schema"] = json!("af/task-status@2")),
                 "an older status document",
             ),
             (
@@ -407,7 +425,7 @@ fn materialized_diff_and_status_documents_are_closed() {
                 "an abandoned state without its cause",
             ),
             (
-                Box::new(|v: &mut Value| v["schema"] = json!("af/task-status@1")),
+                Box::new(|v: &mut Value| v["schema"] = json!("af/task-status@2")),
                 "the previous version",
             ),
         ],
@@ -418,7 +436,7 @@ fn materialized_diff_and_status_documents_are_closed() {
 fn detached_cancelled_and_the_delivery_proof_are_closed() {
     let running = TaskStateV1::new(TaskStatePhaseV1::Running);
     let detached = TaskDetachedV3 {
-        schema: TASK_DETACHED_V3.into(),
+        schema: TASK_DETACHED_V4.into(),
         task_id: "pagination-cli".into(),
         run: 2,
         pid: 812,
@@ -429,7 +447,7 @@ fn detached_cancelled_and_the_delivery_proof_are_closed() {
         next_action: Some("af task wait pagination-cli".into()),
     };
     both(
-        "task-detached-v3.json",
+        "task-detached-v4.json",
         &detached,
         TaskDetachedV3::validate,
         vec![
@@ -446,7 +464,7 @@ fn detached_cancelled_and_the_delivery_proof_are_closed() {
                 "a run that does not say whether it was admitted",
             ),
             (
-                Box::new(|v: &mut Value| v["schema"] = json!("af/task-detached@2")),
+                Box::new(|v: &mut Value| v["schema"] = json!("af/task-detached@3")),
                 "the earlier version",
             ),
         ],
@@ -460,7 +478,7 @@ fn detached_cancelled_and_the_delivery_proof_are_closed() {
         ..detached.clone()
     };
     both(
-        "task-detached-v3.json",
+        "task-detached-v4.json",
         &starting,
         TaskDetachedV3::validate,
         vec![],
@@ -472,13 +490,13 @@ fn detached_cancelled_and_the_delivery_proof_are_closed() {
         ..detached
     };
     both(
-        "task-detached-v3.json",
+        "task-detached-v4.json",
         &ended,
         TaskDetachedV3::validate,
         vec![],
     );
     let cancelled = TaskCancelledV2 {
-        schema: TASK_CANCELLED_V2.into(),
+        schema: TASK_CANCELLED_V3.into(),
         task_id: "pagination-cli".into(),
         request: cancel_request(),
         state: TaskStateV1::ended(
@@ -489,7 +507,7 @@ fn detached_cancelled_and_the_delivery_proof_are_closed() {
         .with_next("af task run pagination-cli"),
     };
     both(
-        "task-cancelled-v2.json",
+        "task-cancelled-v3.json",
         &cancelled,
         TaskCancelledV2::validate,
         vec![
@@ -498,7 +516,7 @@ fn detached_cancelled_and_the_delivery_proof_are_closed() {
                 "a request of no process",
             ),
             (
-                Box::new(|v: &mut Value| v["schema"] = json!("af/task-cancelled@1")),
+                Box::new(|v: &mut Value| v["schema"] = json!("af/task-cancelled@2")),
                 "the previous version",
             ),
         ],
@@ -537,11 +555,11 @@ fn detached_cancelled_and_the_delivery_proof_are_closed() {
 #[test]
 fn event_stream_lines_are_closed() {
     let settled = TaskEventV1::Event(TaskEventEntryV1 {
-        schema: TASK_EVENT_V1.into(),
+        schema: TASK_EVENT_V3.into(),
         task_id: "pagination-cli".into(),
         sequence: 12,
         event_id: "0123456789abcdef0123456789".into(),
-        event_type: "TaskTransition@5".into(),
+        event_type: "TaskTransition@6".into(),
         at_unix_ms: 1_700_000_000_000,
         change: TaskEventChangeV1::ExecutionRecorded,
         detail: Some("settled".into()),
@@ -551,7 +569,7 @@ fn event_stream_lines_are_closed() {
         charged_tokens: Some(41_200u128.into()),
     });
     both(
-        "task-event-v1.json",
+        "task-event-v3.json",
         &settled,
         TaskEventV1::validate,
         vec![
@@ -588,11 +606,11 @@ fn event_stream_lines_are_closed() {
         ],
     );
     let lease = TaskEventV1::Event(TaskEventEntryV1 {
-        schema: TASK_EVENT_V1.into(),
+        schema: TASK_EVENT_V3.into(),
         task_id: "pagination-cli".into(),
         sequence: 0,
         event_id: "fedcba9876543210fedcba9876".into(),
-        event_type: "TaskTransition@5".into(),
+        event_type: "TaskTransition@6".into(),
         at_unix_ms: 1_700_000_000_000,
         change: TaskEventChangeV1::LeaseTaken,
         detail: None,
@@ -602,7 +620,7 @@ fn event_stream_lines_are_closed() {
         charged_tokens: None,
     });
     both(
-        "task-event-v1.json",
+        "task-event-v3.json",
         &lease,
         TaskEventV1::validate,
         vec![
@@ -617,7 +635,7 @@ fn event_stream_lines_are_closed() {
         ],
     );
     let terminal = TaskEventV1::Terminal(TaskEventTerminalV1 {
-        schema: TASK_EVENT_V1.into(),
+        schema: TASK_EVENT_V3.into(),
         task_id: "pagination-cli".into(),
         last_sequence: 57,
         state: TaskStateV1::ended(
@@ -629,7 +647,7 @@ fn event_stream_lines_are_closed() {
         exit_code: 4,
     });
     both(
-        "task-event-v1.json",
+        "task-event-v3.json",
         &terminal,
         TaskEventV1::validate,
         vec![
@@ -656,15 +674,36 @@ fn event_stream_lines_are_closed() {
             ),
         ],
     );
+    let failed_terminal = TaskEventV1::Terminal(TaskEventTerminalV1 {
+        schema: TASK_EVENT_V3.into(),
+        task_id: "pagination-cli".into(),
+        last_sequence: 57,
+        state: TaskStateV1::ended(
+            TaskStatePhaseV1::Finished,
+            TaskOutcomeV1::ExecutionFailed,
+            Some(TaskCauseV1::KernelExecution),
+        )
+        .with_next("af task show pagination-cli"),
+        exit_code: 8,
+    });
+    both(
+        "task-event-v3.json",
+        &failed_terminal,
+        TaskEventV1::validate,
+        vec![(
+            Box::new(|v: &mut Value| v["exit_code"] = json!(4)),
+            "a kernel failure is not resource exhaustion",
+        )],
+    );
     let verified_terminal = TaskEventV1::Terminal(TaskEventTerminalV1 {
-        schema: TASK_EVENT_V1.into(),
+        schema: TASK_EVENT_V3.into(),
         task_id: "pagination-cli".into(),
         last_sequence: 0,
         state: verified().with_next("af task deliver pagination-cli"),
         exit_code: 0,
     });
     both(
-        "task-event-v1.json",
+        "task-event-v3.json",
         &verified_terminal,
         TaskEventV1::validate,
         vec![(

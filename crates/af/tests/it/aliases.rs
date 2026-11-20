@@ -46,16 +46,19 @@ fn provider_list_and_providers_are_the_provider_commands() {
 
 #[test]
 fn review_tui_names_the_browser_as_a_usage_error() {
-    let tui = af(&["review", "tui"]);
-    assert_eq!(tui.status.code(), Some(2));
-    assert!(out(&tui).is_empty());
-    assert!(
-        err(&tui)
-            .contains("`af review tui` is not a command; the browser is `af` alone, at a terminal"),
-        "{}",
-        err(&tui)
-    );
-    assert!(err(&tui).contains("try: af"), "{}", err(&tui));
+    for words in [vec!["review", "tui"], vec!["--repo", ".", "review", "tui"]] {
+        let tui = af(&words);
+        assert_eq!(tui.status.code(), Some(2));
+        assert!(out(&tui).is_empty());
+        assert!(
+            err(&tui).contains(
+                "`af review tui` is not a command; the browser is `af` alone, at a terminal"
+            ),
+            "{}",
+            err(&tui)
+        );
+        assert!(err(&tui).contains("try: af"), "{}", err(&tui));
+    }
     // It is no command of the review help.
     assert!(!out(&af(&["review", "--help"])).contains("tui"));
 }
@@ -66,6 +69,7 @@ fn near_misses_get_a_pointer() {
         (vec!["provider", "lst"], "'list'"),
         (vec!["providr", "status"], "'provider'"),
         (vec!["review", "tu"], "'tui'"),
+        (vec!["--repo", ".", "review", "tu"], "'tui'"),
         (vec!["task", "strt"], "'start'"),
     ] {
         let missed = af(&words);

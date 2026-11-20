@@ -232,7 +232,7 @@ fn nothing_older_than_the_oldest_supported_release_is_activated_or_dispatched_to
     let repo = sandbox.pinned_repo("repo", &Sandbox::lock("0.7.1", None));
     let run = sandbox
         .command(common::af_binary())
-        .args(["review", "campaigns"])
+        .args(["task", "list"])
         .current_dir(&repo)
         .output()
         .unwrap();
@@ -248,7 +248,7 @@ fn nothing_older_than_the_oldest_supported_release_is_activated_or_dispatched_to
     // An explicit request below the floor is refused outright.
     let explicit = sandbox
         .command(common::af_binary())
-        .args(["review", "campaigns"])
+        .args(["task", "list"])
         .env("AF_VERSION", "0.7.1")
         .output()
         .unwrap();
@@ -285,8 +285,8 @@ fn dispatch_runs_the_version_a_project_pins_when_the_bytes_match() {
     );
     assert!(!out(&offline).contains("fake af"), "{}", out(&offline));
 
-    // `af review plan` is token-free and stateless: online and under "always" it still installs
-    // nothing, and the running binary plans.
+    // The retained historical no-file Review-plan dispatch exemption installs nothing, even
+    // online under "always". Current parsing then refuses its retired invocation.
     let plan = sandbox
         .command(common::af_binary())
         .args(["review", "plan", "--repo"])
@@ -306,16 +306,13 @@ fn dispatch_runs_the_version_a_project_pins_when_the_bytes_match() {
     // exec'd with the same argv.
     let dispatched = sandbox
         .command(common::af_binary())
-        .args(["review", "campaigns", "--repo"])
+        .args(["task", "list", "--repo"])
         .arg(&repo)
         .output()
         .unwrap();
     assert!(dispatched.status.success(), "{}", err(&dispatched));
     let text = out(&dispatched);
-    assert!(
-        text.contains("fake af 0.8.1 review campaigns --repo"),
-        "{text}"
-    );
+    assert!(text.contains("fake af 0.8.1 task list --repo"), "{text}");
     assert!(text.contains(&format!("from={VERSION}")), "{text}");
     // A local parse error must still reach the pinned release: it may know commands this
     // binary does not. Reusing the early parse must not report that error before dispatch.
@@ -426,13 +423,13 @@ fn dispatch_runs_the_version_a_project_pins_when_the_bytes_match() {
     // AF_VERSION overrides the pin; so does `af onboard --af`.
     let forced = sandbox
         .command(common::af_binary())
-        .args(["review", "campaigns"])
+        .args(["task", "list"])
         .env("AF_VERSION", "0.8.1")
         .current_dir(sandbox.path("home"))
         .output()
         .unwrap();
     assert!(
-        out(&forced).contains("fake af 0.8.1 review campaigns"),
+        out(&forced).contains("fake af 0.8.1 task list"),
         "{}",
         out(&forced)
     );
@@ -472,7 +469,7 @@ fn a_pin_binds_bytes_not_just_a_version() {
     let repo = sandbox.pinned_repo("repo", &Sandbox::lock("0.8.1", None));
     let older = sandbox
         .command(common::af_binary())
-        .args(["review", "campaigns"])
+        .args(["task", "list"])
         .current_dir(&repo)
         .output()
         .unwrap();
@@ -488,7 +485,7 @@ fn a_pin_binds_bytes_not_just_a_version() {
     let newer = sandbox.pinned_repo("newer", &Sandbox::lock("9.9.9", None));
     let refused = sandbox
         .command(common::af_binary())
-        .args(["review", "campaigns"])
+        .args(["task", "list"])
         .current_dir(&newer)
         .output()
         .unwrap();
@@ -500,7 +497,7 @@ fn a_pin_binds_bytes_not_just_a_version() {
     let mismatched = sandbox.pinned_repo("mismatch", &Sandbox::lock("0.8.1", Some(&wrong)));
     let refused = sandbox
         .command(common::af_binary())
-        .args(["review", "campaigns"])
+        .args(["task", "list"])
         .current_dir(&mismatched)
         .output()
         .unwrap();
@@ -521,19 +518,19 @@ fn a_pin_binds_bytes_not_just_a_version() {
     assert!(install.status.success(), "{}", err(&install));
     let dispatched = sandbox
         .command(common::af_binary())
-        .args(["review", "campaigns"])
+        .args(["task", "list"])
         .current_dir(&repo)
         .output()
         .unwrap();
     assert!(
-        out(&dispatched).contains("fake af 0.8.1 review campaigns"),
+        out(&dispatched).contains("fake af 0.8.1 task list"),
         "{}",
         out(&dispatched)
     );
     // … but a lock whose digest disagrees with the installed receipt is refused.
     let refused = sandbox
         .command(common::af_binary())
-        .args(["review", "campaigns"])
+        .args(["task", "list"])
         .current_dir(&mismatched)
         .output()
         .unwrap();
@@ -767,7 +764,7 @@ fn project_config_cannot_steer_dispatch_and_unavailable_newer_pins_fail_closed()
     );
     let older = sandbox
         .command(common::af_binary())
-        .args(["review", "campaigns"])
+        .args(["task", "list"])
         .current_dir(&repo)
         .output()
         .unwrap();
@@ -793,7 +790,7 @@ fn project_config_cannot_steer_dispatch_and_unavailable_newer_pins_fail_closed()
     );
     let newer = sandbox
         .command(common::af_binary())
-        .args(["review", "campaigns"])
+        .args(["task", "list"])
         .current_dir(&repo)
         .output()
         .unwrap();
@@ -808,7 +805,7 @@ fn project_config_cannot_steer_dispatch_and_unavailable_newer_pins_fail_closed()
     // An explicit AF_VERSION that is not installed is a refusal too.
     let explicit = sandbox
         .command(common::af_binary())
-        .args(["review", "campaigns"])
+        .args(["task", "list"])
         .env("AF_VERSION", "5.5.5")
         .env("AF_SELF_OFFLINE", "1")
         .current_dir(sandbox.path("home"))
@@ -847,7 +844,7 @@ fn a_bare_binary_without_a_receipt_is_not_installed() {
     let repo = sandbox.pinned_repo("repo", &Sandbox::lock("0.8.1", Some(&digest)));
     let dispatched = sandbox
         .command(common::af_binary())
-        .args(["review", "campaigns"])
+        .args(["task", "list"])
         .current_dir(&repo)
         .output()
         .unwrap();
@@ -857,7 +854,7 @@ fn a_bare_binary_without_a_receipt_is_not_installed() {
         out(&dispatched)
     );
     assert!(
-        out(&dispatched).contains("fake af 0.8.1 review campaigns"),
+        out(&dispatched).contains("fake af 0.8.1 task list"),
         "{}\n{}",
         out(&dispatched),
         err(&dispatched)
@@ -899,7 +896,7 @@ fn remove_takes_a_version_never_a_path_and_a_same_version_pin_still_binds_bytes(
     let repo = sandbox.pinned_repo("repo", &Sandbox::lock(VERSION, Some(&wrong)));
     let refused = sandbox
         .command(&real)
-        .args(["review", "campaigns"])
+        .args(["task", "list"])
         .current_dir(&repo)
         .output()
         .unwrap();
@@ -919,7 +916,7 @@ fn remove_takes_a_version_never_a_path_and_a_same_version_pin_still_binds_bytes(
         write(&repo.join(".af/af.lock"), &lock);
         let run = sandbox
             .command(&real)
-            .args(["review", "campaigns"])
+            .args(["task", "list"])
             .current_dir(&repo)
             .output()
             .unwrap();
@@ -929,13 +926,13 @@ fn remove_takes_a_version_never_a_path_and_a_same_version_pin_still_binds_bytes(
     // AF_VERSION accepts a leading `v`.
     let forced = sandbox
         .command(&real)
-        .args(["review", "campaigns"])
+        .args(["task", "list"])
         .env("AF_VERSION", "v0.8.1")
         .current_dir(sandbox.path("home"))
         .output()
         .unwrap();
     assert!(
-        out(&forced).contains("fake af 0.8.1 review campaigns"),
+        out(&forced).contains("fake af 0.8.1 task list"),
         "{}\n{}",
         out(&forced),
         err(&forced)
@@ -951,7 +948,7 @@ fn an_install_from_a_lock_needs_the_signed_checksums_to_agree_with_the_lock() {
     let run = |repo: &Path| {
         sandbox
             .command(common::af_binary())
-            .args(["review", "campaigns"])
+            .args(["task", "list"])
             .current_dir(repo)
             .output()
             .unwrap()
@@ -1005,7 +1002,7 @@ fn an_install_from_a_lock_needs_the_signed_checksums_to_agree_with_the_lock() {
     let repo = sandbox.pinned_repo("agree", &Sandbox::lock("0.8.4", Some(&digest)));
     let agree = run(&repo);
     assert!(
-        out(&agree).contains("fake af 0.8.4 review campaigns"),
+        out(&agree).contains("fake af 0.8.4 task list"),
         "{}",
         err(&agree)
     );
@@ -1042,7 +1039,7 @@ fn install_pins_asks_by_default_and_without_a_terminal_runs_this_af() {
 
     // The default asks, and with no terminal to ask on installs nothing: this af runs, after one
     // line naming the step and the setting.
-    let asked = run(&repos[0], &["review", "campaigns"]);
+    let asked = run(&repos[0], &["task", "list"]);
     assert!(asked.status.success(), "{}", err(&asked));
     let stderr = err(&asked);
     let notice: Vec<&str> = stderr
@@ -1062,7 +1059,7 @@ fn install_pins_asks_by_default_and_without_a_terminal_runs_this_af() {
 
     // `false` is "never": nothing installed either.
     sandbox.install_pins("false");
-    let never = run(&repos[0], &["review", "campaigns"]);
+    let never = run(&repos[0], &["task", "list"]);
     assert!(never.status.success(), "{}", err(&never));
     assert!(
         err(&never).contains("install_pins = \"never\""),
@@ -1085,9 +1082,9 @@ fn install_pins_asks_by_default_and_without_a_terminal_runs_this_af() {
     // `true` is "always", and so is "always": installed and run.
     for (setting, index, version) in [("true", 0, "0.8.1"), ("\"always\"", 1, "0.8.2")] {
         sandbox.install_pins(setting);
-        let always = run(&repos[index], &["review", "campaigns"]);
+        let always = run(&repos[index], &["task", "list"]);
         assert!(
-            out(&always).contains(&format!("fake af {version} review campaigns")),
+            out(&always).contains(&format!("fake af {version} task list")),
             "{setting}: {}",
             err(&always)
         );
@@ -1095,9 +1092,9 @@ fn install_pins_asks_by_default_and_without_a_terminal_runs_this_af() {
 
     // Installed, a pin dispatches under "ask" without asking.
     sandbox.install_pins("\"ask\"");
-    let installed = run(&repos[1], &["review", "campaigns"]);
+    let installed = run(&repos[1], &["task", "list"]);
     assert!(
-        out(&installed).contains("fake af 0.8.2 review campaigns"),
+        out(&installed).contains("fake af 0.8.2 task list"),
         "{}",
         err(&installed)
     );

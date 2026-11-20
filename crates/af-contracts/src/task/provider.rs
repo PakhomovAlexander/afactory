@@ -8,7 +8,7 @@ pub const TASK_PROVIDER_ADMISSION_V4: &str = "af/TaskProviderAdmission@4";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TaskProviderAdmissionV3 {
+pub struct TaskProviderAdmission {
     pub plan_id: String,
     #[serde(deserialize_with = "super::unique_set")]
     pub bindings: BTreeSet<String>,
@@ -16,7 +16,7 @@ pub struct TaskProviderAdmissionV3 {
     pub invocation_policy_id: String,
     pub outcome: ReceiptOutcomeV1,
 }
-impl TaskProviderAdmissionV3 {
+impl TaskProviderAdmission {
     pub fn validate(&self) -> Result<(), String> {
         super::require(
             crate::is_digest(&self.plan_id)

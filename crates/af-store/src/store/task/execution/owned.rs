@@ -2,9 +2,7 @@
 use super::*;
 use af_attempt::task_budget::{NodeAllowance, OwnedNodeAllowance};
 use af_contracts::task::owned_children::*;
-use af_graph::task::{CompiledNode, ReviewOperation};
-
-mod review_shards;
+use af_graph::task::CompiledNode;
 
 #[derive(Debug, Clone)]
 pub(in crate::store::task) struct RecordedChildren {
@@ -12,7 +10,6 @@ pub(in crate::store::task) struct RecordedChildren {
     set: TaskOwnedChildSetV1,
     parent_node: String,
     invocations: BTreeMap<String, TaskInvocationV1>,
-    review_nodes: BTreeMap<String, String>,
     published: BTreeMap<String, (String, String)>,
     completed: Option<String>,
 }
@@ -50,7 +47,6 @@ pub struct OwnedChildAddress {
     pub parent_node: String,
     pub parent_invocation_id: String,
     pub source_item_id: String,
-    pub review_node: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -116,12 +112,6 @@ impl TaskExecutionProjection {
     }
 
     pub fn resolve_node(&self, node: &str) -> Result<ResolvedTaskNode, StoreError> {
-        if let Some(phase) = self
-            .active_review_integration()
-            .filter(|p| p.node() == node)
-        {
-            return phase.resolved();
-        }
         if let Some(definition) = self.graph.nodes.get(node) {
             return Ok(ResolvedTaskNode {
                 definition: definition.clone(),
@@ -169,18 +159,6 @@ impl TaskExecutionProjection {
             return Err(conflict("Accounting Attempt changed its original identity"));
         }
         let node = &attempt.reservation.node;
-        if let Some(compiled) = &graph.review_integration {
-            if compiled.node == *node {
-                let phase = self
-                    .review_integrations
-                    .values()
-                    .find(|p| p.phase().plan_id == attempt.plan_id && p.node() == node)
-                    .ok_or_else(|| {
-                        conflict("Historical Integration Attempt lacks its exact phase")
-                    })?;
-                return phase.resolved();
-            }
-        }
         if let Some(definition) = graph.nodes.get(node) {
             return Ok(ResolvedTaskNode {
                 definition: definition.clone(),
@@ -209,7 +187,6 @@ impl TaskExecutionProjection {
     }
 
     pub(super) fn check_owned_open(&self, node: &str) -> Result<(), StoreError> {
-        self.check_integration_node(node)?;
         let resolved = self.resolve_node(node)?;
         if let Some(address) = resolved.owned
             && self.owned[&address.child_set_id].completed.is_some()
@@ -267,34 +244,17 @@ impl TaskExecutionProjection {
                 "Owned child source or fan-out differs from its template",
             ));
         }
-        let review = matches!(
-            template.operator,
-            CompiledOperator::ReviewDomain {
-                operation: ReviewOperation::Reviewer { .. },
-                ..
-            }
-        );
-        let slices = if review {
-            let source = envelope(
-                cas,
-                &set.source_artifact_id,
-                af_contracts::contract::SLICE_SET_V1,
-            )?;
-            let slices: af_contracts::SliceSetV1 = serde_json::from_value(source.payload)?;
-            slices.validate().map_err(conflict)?;
-            if slices.slices.len() != set.children.len()
-                || slices.max_fanout != template.max_children
-            {
-                return Err(conflict(
-                    "Owned Review set omits or changes captured Slices",
-                ));
-            }
-            Some(slices)
+        // A declared child Diff Subject is bound to this admitted parent plan. Read its
+        // Task once per complete set, rather than twice per child on every Store replay.
+        let diff_task = if template.contract.inputs.contains_key(DIFF_SUBJECT_PORT) {
+            let plan: ExecutionPlan = payload(cas, &parent.plan_id, task::EXECUTION_PLAN_V4)?;
+            let revision: task::TaskRevisionV1 =
+                payload(cas, &plan.task_revision_id, task::TASK_REVISION_V1)?;
+            Some(revision.task_id)
         } else {
             None
         };
         let mut invocations = BTreeMap::new();
-        let mut review_nodes = BTreeMap::new();
         for (index, child) in set.children.iter().enumerate() {
             if child.node != format!("{}.slice{}", parent.node, index + 1)
                 || self.graph.nodes.contains_key(&child.node)
@@ -310,18 +270,6 @@ impl TaskExecutionProjection {
                 || item.subject_snapshot_id != source.snapshot_id
             {
                 return Err(conflict("Owned item changed its source or Snapshot"));
-            }
-            if let Some(slices) = &slices {
-                let slice: af_contracts::ReviewSliceV1 =
-                    serde_json::from_value(item.payload.clone())?;
-                if item.artifact_type != af_contracts::contract::REVIEW_SLICE_V1
-                    || slice != slices.slices[index]
-                {
-                    return Err(conflict(
-                        "Owned Review item differs from the complete Slice Set",
-                    ));
-                }
-                review_nodes.insert(child.node.clone(), slice.runtime_node_id);
             }
             let mut inputs = BTreeMap::new();
             for (name, parent_port) in &template.inherited_inputs {
@@ -361,6 +309,25 @@ impl TaskExecutionProjection {
                 ));
             }
             let input = invocation(cas, &child.invocation_id)?;
+            if let Some(subject) = input.inputs.get(DIFF_SUBJECT_PORT) {
+                let definition = CompiledNode {
+                    operator: template.operator.clone(),
+                    contract: template.contract.clone(),
+                    inputs: BTreeMap::new(),
+                    conditions: vec![],
+                };
+                verify_diff_subject(
+                    cas,
+                    diff_task.as_deref().ok_or_else(|| {
+                        conflict("Owned child carries an undeclared Diff Subject")
+                    })?,
+                    &input,
+                    &definition,
+                    inputs.get("source"),
+                    subject,
+                )?;
+                inputs.insert(DIFF_SUBJECT_PORT.into(), subject.clone());
+            }
             if input.plan_id != set.plan_id || input.node != child.node || input.inputs != inputs {
                 return Err(conflict(
                     "Owned invocation changed its exact inherited or item inputs",
@@ -373,7 +340,6 @@ impl TaskExecutionProjection {
             set,
             parent_node: parent.node,
             invocations,
-            review_nodes,
             published: BTreeMap::new(),
             completed: None,
         })
@@ -506,20 +472,6 @@ impl TaskExecutionProjection {
         }
         Ok(())
     }
-
-    pub(super) fn check_owned_publication(
-        &self,
-        children: &RegisteredTaskChildren,
-        output_id: &str,
-    ) -> Result<(), StoreError> {
-        let set = self.checked_set(children)?;
-        if !set.published.values().any(|(id, _)| id == output_id) {
-            return Err(conflict(
-                "Canonical owned publication requires an unsealed recorded child output",
-            ));
-        }
-        Ok(())
-    }
 }
 
 pub(in crate::store::task) fn validate_cached(
@@ -559,25 +511,6 @@ pub(in crate::store::task) fn validate_cached(
 }
 
 impl EventStore {
-    fn owned_review_prefix(
-        &self,
-        cas: &Cas,
-        state: &TaskProjection,
-    ) -> Result<Option<(String, u64)>, StoreError> {
-        use af_contracts::task::campaign_review::*;
-        state
-            .revision
-            .inputs
-            .values()
-            .find(|port| port.artifact_type == CAMPAIGN_REVIEW_ROUND_V1)
-            .map(|port| {
-                let round: CampaignReviewRoundV1 =
-                    payload(cas, &port.artifact_ids[0], CAMPAIGN_REVIEW_ROUND_V1)?;
-                Ok((round.campaign_id.clone(), self.len(&round.campaign_id)?))
-            })
-            .transpose()
-    }
-
     pub fn register_task_owned_children(
         &mut self,
         cas: &Cas,
@@ -664,21 +597,16 @@ impl EventStore {
             .map(|child| {
                 let selected_output_id = execution.reusable_output(&child.node).map(|(id, _)| id);
                 let published_output_id = set.published.get(&child.node).map(|(id, _)| id.clone());
-                let completed_artifact_ids = if let Some(id) = &published_output_id {
-                    if set.review_nodes.contains_key(&child.node) {
-                        self.owned_review_artifacts(cas, state, id)?
-                    } else {
-                        Some(
-                            output(cas, id)?
-                                .outputs
-                                .into_values()
-                                .flat_map(|value| value.artifact_ids)
-                                .collect(),
-                        )
-                    }
-                } else {
-                    None
-                };
+                let completed_artifact_ids = published_output_id
+                    .as_ref()
+                    .map(|id| -> Result<Vec<String>, StoreError> {
+                        Ok(output(cas, id)?
+                            .outputs
+                            .into_values()
+                            .flat_map(|value| value.artifact_ids)
+                            .collect())
+                    })
+                    .transpose()?;
                 Ok(TaskOwnedChildEvidence {
                     child: child.clone(),
                     attempts: attempts
@@ -692,45 +620,6 @@ impl EventStore {
                 })
             })
             .collect()
-    }
-
-    fn owned_review_artifacts(
-        &self,
-        cas: &Cas,
-        state: &TaskProjection,
-        id: &str,
-    ) -> Result<Option<Vec<String>>, StoreError> {
-        use rusqlite::{OptionalExtension, params};
-        let (context, expected) = review::selected_review_event(cas, state, id)?;
-        let row: Option<String> = self.conn.query_row("SELECT payload FROM events WHERE run_id=?1 AND causation_id=?2 AND node_id=?3 AND attempt_id=?4 AND type='TaskReviewResultSelected@1'", params![context.campaign_id,context.round_event_id,context.review_node,context.attempt_id], |row| row.get(0)).optional()?;
-        let Some(row) = row else { return Ok(None) };
-        if serde_json::from_str::<serde_json::Value>(&row)? != expected.payload {
-            return Err(conflict(
-                "Owned Review selection differs from common selected output",
-            ));
-        }
-        let selected: af_contracts::task::campaign_review::TaskReviewResultSelectedV1 =
-            serde_json::from_value(expected.payload)?;
-        let row: Option<String> = self.conn.query_row("SELECT payload FROM events WHERE run_id=?1 AND causation_id=?2 AND node_id=?3 AND attempt_id=?4 AND type='NodeOutputReceipt@1'", params![context.campaign_id,context.round_event_id,context.review_node,context.attempt_id], |row| row.get(0)).optional()?;
-        let Some(row) = row else { return Ok(None) };
-        let receipt: af_contracts::NodeOutputReceiptPayloadV1 = serde_json::from_str(&row)?;
-        let result = cas
-            .get_artifact(&selected.result_envelope_id)
-            .map_err(|e| StoreError::Artifact(e.to_string()))?;
-        let [port] = receipt.outputs.as_slice() else {
-            return Err(conflict("Owned Review receipt has ambiguous outputs"));
-        };
-        if receipt.node != context.review_node
-            || port.artifact_ids != [selected.result_artifact_id.clone()]
-            || port.artifact_type != result.artifact_type
-            || port.cardinality != af_contracts::PortCardinality::One
-            || port.subject_snapshot_id != result.subject_snapshot_id
-        {
-            return Err(conflict(
-                "Owned canonical receipt changed its selected result or Snapshot",
-            ));
-        }
-        Ok(Some(vec![selected.result_artifact_id]))
     }
 
     pub fn publish_task_owned_child(
@@ -809,7 +698,7 @@ impl EventStore {
                 Err(conflict("Conflicting owned completion replay"))
             };
         }
-        let prefix = self.owned_review_prefix(cas, &state)?;
+        let prefix = None;
         let facts = self.owned_child_evidence(cas, &state, children)?;
         authority
             .validate_owned_completion(
@@ -823,9 +712,7 @@ impl EventStore {
             )
             .map_err(conflict)?;
         let fresh = self.checked_task_recording(cas, lease, authority)?.0;
-        if fresh.next_sequence != state.next_sequence
-            || self.owned_review_prefix(cas, &fresh)? != prefix
-        {
+        if fresh.next_sequence != state.next_sequence {
             return Err(conflict(
                 "Task or Review changed during owned completion validation",
             ));
@@ -884,157 +771,6 @@ fn resolve_child(
             parent_node: set.parent_node.clone(),
             parent_invocation_id: set.set.parent_invocation_id.clone(),
             source_item_id: child.source_item_id.clone(),
-            review_node: set.review_nodes.get(node).cloned(),
         }),
     })
-}
-
-/// The canonical receipt may follow its Task selection in a later transaction. Recheck the
-/// ownership seal under that same canonical writer lock, without calling a host or opening a
-/// second Store. A reviewer receipt always follows its Task selection; static Review selections
-/// retain their path.
-pub(in crate::store) fn check_canonical_child_receipt(
-    connection: &rusqlite::Connection,
-    cas: &Cas,
-    campaign: &str,
-    round: &str,
-    node: &str,
-    attempt: &str,
-) -> Result<(), StoreError> {
-    use af_contracts::task::campaign_review::*;
-    use rusqlite::{OptionalExtension, params};
-    let selection:Option<String> = connection.query_row(
-        "SELECT payload FROM events WHERE run_id=?1 AND causation_id=?2 AND node_id=?3 AND attempt_id=?4 AND type='TaskReviewResultSelected@1'",
-        params![campaign,round,node,attempt], |row|row.get(0),
-    ).optional()?;
-    let Some(selection) = selection else {
-        return Err(conflict("Reviewer receipt has no Task Review selection"));
-    };
-    let selected: TaskReviewResultSelectedV1 = serde_json::from_str(&selection)?;
-    selected.validate().map_err(conflict)?;
-    let plan: ExecutionPlanV3 = payload(cas, &selected.plan_id, task::EXECUTION_PLAN_V4)?;
-    let graph: CompiledTask = payload(cas, &plan.compiled_graph_id, "af/CompiledTask@1")?;
-    if graph.nodes.contains_key(&selected.task_node) {
-        return Ok(());
-    }
-    let context: TaskReviewContextV1 = payload(cas, &selected.context_id, TASK_REVIEW_CONTEXT_V1)?;
-    context.validate().map_err(conflict)?;
-    if context.campaign_id != campaign
-        || context.round_event_id != round
-        || context.review_node != node
-        || context.attempt_id != attempt
-        || context.task_invocation_id != selected.invocation_id
-    {
-        return Err(conflict(
-            "Owned canonical receipt changed its exact Task and Review association",
-        ));
-    }
-    // The protected execution transition records its output and child-set IDs as exact
-    // references. Filter those indexed run rows before decoding; unrelated Attempt history
-    // and renewal payloads are not part of this ownership-seal check. General Task replay
-    // continues to validate that complete history separately.
-    let run_id = task_run_id(&selected.task_id)?;
-    let mut published_set = None;
-    for row in receipt_records_referencing(connection, &run_id, &selected.output_id)? {
-        if let TaskExecutionRecordV1::OwnedChildPublished {
-            child_set_id,
-            output_id,
-            attempt_id,
-        } = read_execution_record(cas, &row)?.record
-            && output_id == selected.output_id
-            && attempt_id == attempt
-        {
-            if published_set.as_ref().is_some_and(|id| id != &child_set_id) {
-                return Err(conflict(
-                    "Canonical child receipt has ambiguous ownership publication",
-                ));
-            }
-            published_set = Some(child_set_id);
-        }
-    }
-    let child_set_id = published_set.ok_or_else(|| {
-        conflict("Canonical child receipt has no exact protected ownership publication")
-    })?;
-    let set = read_task_owned_children(cas, &child_set_id)?;
-    if set.plan_id != selected.plan_id
-        || !set.children.iter().any(|child| {
-            child.node == selected.task_node && child.invocation_id == selected.invocation_id
-        })
-    {
-        return Err(conflict(
-            "Canonical child receipt changed its registered ownership",
-        ));
-    }
-    let mut registered = false;
-    let mut published = false;
-    for record_id in receipt_records_referencing(connection, &run_id, &child_set_id)? {
-        match read_execution_record(cas, &record_id)?.record {
-            TaskExecutionRecordV1::OwnedChildrenRegistered { child_set_id: id }
-                if id == child_set_id =>
-            {
-                registered = true
-            }
-            TaskExecutionRecordV1::OwnedChildPublished {
-                child_set_id: id,
-                output_id,
-                attempt_id,
-            } if registered
-                && id == child_set_id
-                && output_id == selected.output_id
-                && attempt_id == attempt =>
-            {
-                published = true;
-            }
-            TaskExecutionRecordV1::OwnedChildrenCompleted {
-                child_set_id: id, ..
-            } if registered && id == child_set_id => {
-                return Err(conflict(
-                    "Owned parent sealed before canonical child receipt publication",
-                ));
-            }
-            _ => {}
-        }
-    }
-    if !registered || !published {
-        return Err(conflict(
-            "Canonical child receipt has no exact protected ownership publication",
-        ));
-    }
-    Ok(())
-}
-
-pub(in crate::store::task) fn receipt_records_referencing(
-    connection: &rusqlite::Connection,
-    run_id: &str,
-    artifact_id: &str,
-) -> Result<Vec<String>, StoreError> {
-    let mut query = connection.prepare(
-        "SELECT payload,artifact_refs FROM events
-         WHERE run_id=?1 AND type='TaskTransition@5' AND instr(artifact_refs,?2)>0
-         AND EXISTS (SELECT 1 FROM json_each(events.artifact_refs)
-                     WHERE json_each.type='text' AND json_each.value=?2)
-         ORDER BY sequence",
-    )?;
-    let rows = query.query_map(rusqlite::params![run_id, artifact_id], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })?;
-    let mut records = Vec::new();
-    for row in rows {
-        let (payload, refs) = row?;
-        let refs: Vec<String> = serde_json::from_str(&refs)?;
-        if !refs.iter().any(|id| id == artifact_id) {
-            return Err(conflict("Owned receipt reference query changed identity"));
-        }
-        let transition: TaskTransitionV1 = serde_json::from_str(&payload)?;
-        transition.validate().map_err(conflict)?;
-        if let TaskChangeV1::ExecutionRecorded { record_id } = transition.change {
-            if !refs.contains(&record_id) {
-                return Err(conflict(
-                    "Owned receipt transition omitted its execution record",
-                ));
-            }
-            records.push(record_id);
-        }
-    }
-    Ok(records)
 }

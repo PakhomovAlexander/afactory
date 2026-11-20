@@ -28,7 +28,7 @@ fn manifest(cas: &Cas, entries: &[(&str, EntryKind, &[u8])]) -> Manifest {
 fn snapshot(cas: &Cas, manifest: &Manifest) -> (String, ArtifactInputV1) {
     let origin = cas
         .put_json(
-            &json!({"schema":"af.task-source-origin/1","repository_id":"fixture",
+            &json!({"schema":"af.task-source-origin/3","kind":"captured","repository_id":"fixture",
             "source_revision":"0".repeat(40),"content_digest":manifest.content_digest()}),
         )
         .unwrap();
@@ -81,7 +81,7 @@ fn domain(cas: &Cas) -> ReportTaskDomain {
         .unwrap();
     let signatures = report_signatures(&policy_id, &policy).unwrap();
     let mut graph: CompiledTask = serde_json::from_value(json!({
-        "schema":"af.compiled-task/1","nodes":{},"order":[],"inputs":{},"outputs":{},
+        "schema":"af.compiled-task/6","nodes":{},"order":[],"inputs":{},"outputs":{},
         "coverage":{},"calls":{},"slots":{},"max_parallel":1,"allowances":{}
     }))
     .unwrap();
@@ -141,13 +141,19 @@ fn cite(path: &str, line: Option<u64>) -> RepositoryCitationV1 {
     }
 }
 
-fn draft(citations: &[RepositoryCitationV1]) -> DocumentDraftV2 {
-    DocumentDraftV2 {
-        schema: "af.document-draft/2".into(),
+fn draft(citations: &[RepositoryCitationV1]) -> DocumentDraft {
+    DocumentDraft {
+        schema: "af.document-draft/3".into(),
         title: "Where the time goes".into(),
         sections: vec![section("Findings", "Tests dominate: 12 of 14 minutes.")],
-        citations: BTreeSet::from(["r1".into()]),
-        repository_citations: citations.iter().cloned().collect(),
+        citations: std::iter::once("r1".into())
+            .chain(
+                citations
+                    .iter()
+                    .cloned()
+                    .map(|location| DraftCitation::Repository { location }),
+            )
+            .collect(),
     }
 }
 
@@ -167,20 +173,15 @@ fn sources() -> ReportSourcesV1 {
 }
 
 #[test]
-fn a_first_version_draft_renders_exactly_as_the_document_renderer_renders_it() {
-    let draft = draft(&[]).as_first_version();
+fn the_shared_draft_renders_exactly_as_the_document_renderer_without_repository_citations() {
+    let draft = draft(&[]);
     let report = sources();
     let document = DocumentSourcesV1 {
         schema: report.schema.clone(),
         sources: report.sources.clone(),
     };
     assert_eq!(
-        render_report(&ReportDraft::V1(draft.clone()), &report).unwrap(),
-        super::super::document::render_document(&draft, &document).unwrap()
-    );
-    // A second-version draft without repository citations renders the same bytes too.
-    assert_eq!(
-        render_report(&ReportDraft::V2(self::draft(&[])), &report).unwrap(),
+        render_report(&draft.clone(), &report).unwrap(),
         super::super::document::render_document(&draft, &document).unwrap()
     );
 }
@@ -188,11 +189,11 @@ fn a_first_version_draft_renders_exactly_as_the_document_renderer_renders_it() {
 #[test]
 fn repository_citations_render_as_path_or_path_line_in_a_closed_code_span() {
     let rendered = render_report(
-        &ReportDraft::V2(draft(&[
+        &draft(&[
             cite("src/lib.rs", None),
             cite("src/lib.rs", Some(2)),
             cite("docs/a`b.md", Some(1)),
-        ])),
+        ]),
         &sources(),
     )
     .unwrap();
@@ -206,8 +207,9 @@ fn repository_citations_render_as_path_or_path_line_in_a_closed_code_span() {
     assert_eq!(code_span("a``b"), "```a``b```");
     // The empty set of sources renders no Sources section and still renders citations.
     let mut bare = draft(&[cite("README.md", None)]);
-    bare.citations.clear();
-    let rendered = render_report(&ReportDraft::V2(bare), &ReportSourcesV1::empty()).unwrap();
+    bare.citations
+        .retain(|c| matches!(c, DraftCitation::Repository { .. }));
+    let rendered = render_report(&bare, &ReportSourcesV1::empty()).unwrap();
     assert!(!rendered.contains("## Sources"));
     assert!(rendered.contains("- `README.md`"));
 }
@@ -266,12 +268,12 @@ fn only_closed_author_and_verifier_contracts_are_admitted() {
             ("requirements".into(), port("af/Requirements@1", false)),
             ("source".into(), port(SOURCE_TREE_V1, false)),
         ]),
-        outputs: BTreeMap::from([("draft".into(), same_source(DOCUMENT_DRAFT_V2, false))]),
+        outputs: BTreeMap::from([("draft".into(), same_source(DOCUMENT_DRAFT_V3, false))]),
     };
     assert!(author_contract(&author));
     author
         .outputs
-        .insert("draft".into(), same_source(DOCUMENT_DRAFT_V1, false));
+        .insert("draft".into(), same_source(DOCUMENT_DRAFT_V3, false));
     assert!(author_contract(&author));
     author
         .inputs
@@ -299,7 +301,7 @@ fn only_closed_author_and_verifier_contracts_are_admitted() {
     let mut unbound = author.clone();
     unbound
         .outputs
-        .insert("draft".into(), port(DOCUMENT_DRAFT_V2, false));
+        .insert("draft".into(), port(DOCUMENT_DRAFT_V3, false));
     assert!(!author_contract(&unbound));
     let mut candidate = author.clone();
     candidate
@@ -324,6 +326,23 @@ fn only_closed_author_and_verifier_contracts_are_admitted() {
         outputs: BTreeMap::from([("result".into(), same_source(REPORT_EVALUATION_V1, false))]),
     };
     assert!(verifier_contract(&verifier));
+    let mut customer = verifier.clone();
+    for name in ["legal_signoff", "security_audit", "editorial"] {
+        customer
+            .inputs
+            .insert(name.into(), same_source(REPORT_EVALUATION_V1, false));
+        assert!(verifier_contract(&customer));
+        for invalid in [
+            port(REPORT_EVALUATION_V1, false),
+            same_source(REPORT_EVALUATION_V1, true),
+            same_source(DOCUMENT_V1, false),
+            many(REPORT_EVALUATION_V1),
+        ] {
+            let mut bad = customer.clone();
+            bad.inputs.insert(name.into(), invalid);
+            assert!(!verifier_contract(&bad));
+        }
+    }
     verifier.inputs.remove("source");
     assert!(!verifier_contract(&verifier));
     verifier
@@ -339,9 +358,49 @@ fn only_closed_author_and_verifier_contracts_are_admitted() {
 }
 
 #[test]
-fn a_verifier_bound_to_another_snapshot_is_refused_at_admission() {
+fn verifier_signatures_must_retain_every_declared_evaluation() {
     let (_directory, cas) = store();
     let domain = domain(&cas);
+    let mut signature =
+        report_signatures(&domain.policy_id, &domain.policy).unwrap()["operator/report-check"]
+            .clone();
+    signature.contract = PipelineContractV1 {
+        inputs: BTreeMap::from([
+            ("requirements".into(), port("af/Requirements@1", false)),
+            ("source".into(), port(SOURCE_TREE_V1, false)),
+            ("document".into(), same_source(DOCUMENT_V1, false)),
+            ("checks".into(), same_source(REPORT_CHECK_RECEIPT_V1, false)),
+        ]),
+        outputs: BTreeMap::from([("result".into(), same_source(REPORT_EVALUATION_V1, false))]),
+    };
+    signature.retains.clear();
+    assert!(domain.admit_worker_signature(&signature).is_ok());
+    for name in ["legal_signoff", "security_audit", "editorial"] {
+        signature
+            .contract
+            .inputs
+            .insert(name.into(), same_source(REPORT_EVALUATION_V1, false));
+        let error = domain.admit_worker_signature(&signature).unwrap_err();
+        assert!(error.contains(name), "{error}");
+        signature
+            .retains
+            .entry("result".into())
+            .or_default()
+            .insert(name.into());
+        assert!(domain.admit_worker_signature(&signature).is_ok());
+    }
+    signature
+        .retains
+        .get_mut("result")
+        .unwrap()
+        .remove("legal_signoff");
+    assert!(domain.admit_worker_signature(&signature).is_err());
+}
+
+#[test]
+fn a_verifier_bound_to_another_snapshot_is_refused_at_admission() {
+    let (_directory, cas) = store();
+    let mut domain = domain(&cas);
     let tree = manifest(&cas, &[("src/lib.rs", EntryKind::File, b"a\nb\n")]);
     let (cited, source) = snapshot(&cas, &tree);
     let other = manifest(&cas, &[("src/lib.rs", EntryKind::File, b"a\nb\nchanged\n")]);
@@ -358,7 +417,7 @@ fn a_verifier_bound_to_another_snapshot_is_refused_at_admission() {
     };
     let draft_id = cas
         .put_artifact(
-            DOCUMENT_DRAFT_V2,
+            DOCUMENT_DRAFT_V3,
             attempt("root.nodes.author"),
             vec![],
             Some(cited.clone()),
@@ -380,7 +439,7 @@ fn a_verifier_bound_to_another_snapshot_is_refused_at_admission() {
     let seal = invocation(
         "root.nodes.seal",
         vec![
-            ("draft", one(draft_id, DOCUMENT_DRAFT_V2, Some(&cited))),
+            ("draft", one(draft_id, DOCUMENT_DRAFT_V3, Some(&cited))),
             ("sources", sources_port.clone()),
             ("source", source.clone()),
         ],
@@ -450,7 +509,7 @@ fn a_verifier_bound_to_another_snapshot_is_refused_at_admission() {
     };
     assert_eq!(
         domain
-            .admit_verifier(&cas, &verify(source, &cited))
+            .admit_verifier(&cas, &verify(source.clone(), &cited))
             .unwrap(),
         receipt
     );
@@ -462,6 +521,238 @@ fn a_verifier_bound_to_another_snapshot_is_refused_at_admission() {
             .unwrap_err();
         assert!(refused.contains("Snapshot"), "{refused}");
     }
+
+    // A customer verifier requires all declared evaluations of the original
+    // document, checks and requirements. Every malformed handoff fails before inference.
+    for role in ["legal_reviewer", "security_reviewer", "editor"] {
+        let node = domain.graph.nodes["root.nodes.verify"].clone();
+        domain
+            .graph
+            .nodes
+            .insert(format!("root.nodes.{role}"), node);
+    }
+    let final_node = domain.graph.nodes.get_mut("root.nodes.verify").unwrap();
+    for (port, role) in [
+        ("legal_signoff", "legal_reviewer"),
+        ("security_audit", "security_reviewer"),
+        ("editorial", "editor"),
+    ] {
+        final_node
+            .contract
+            .inputs
+            .insert(port.into(), same_source(REPORT_EVALUATION_V1, false));
+        final_node.inputs.insert(
+            port.into(),
+            af_graph::task::Address {
+                node: format!("root.nodes.{role}"),
+                port: "result".into(),
+            },
+        );
+    }
+    let final_input = verify(source.clone(), &cited);
+    let challenge = |role: &str, outcome, foreign_requirements: bool| {
+        let requirements_id = if foreign_requirements {
+            plan_id.clone()
+        } else {
+            requirements.clone()
+        };
+        let evaluation = ReportEvaluationV1 {
+            document_id: receipt.document_id.clone(),
+            sources_id: receipt.sources_id.clone(),
+            requirements_id,
+            check_receipt_id: receipt_id.clone(),
+            source_snapshot_id: cited.clone(),
+            outcome,
+            summary: "Independent customer evaluation".into(),
+        };
+        let inputs = final_input
+            .inputs
+            .values()
+            .flat_map(|v| v.artifact_ids.clone())
+            .collect();
+        let id = cas
+            .put_artifact(
+                REPORT_EVALUATION_V1,
+                attempt(&format!("root.nodes.{role}")),
+                inputs,
+                Some(cited.clone()),
+                serde_json::to_value(evaluation).unwrap(),
+            )
+            .unwrap()
+            .0;
+        one(id, REPORT_EVALUATION_V1, Some(&cited))
+    };
+    let legal = challenge("legal_reviewer", ReceiptOutcomeV1::Passed, false);
+    let security = challenge("security_reviewer", ReceiptOutcomeV1::Passed, false);
+    let mut final_input = final_input.clone();
+    final_input
+        .inputs
+        .insert("legal_signoff".into(), legal.clone());
+    assert!(
+        domain.admit_verifier(&cas, &final_input).is_err(),
+        "missing declared security evaluation"
+    );
+    final_input
+        .inputs
+        .insert("security_audit".into(), security.clone());
+    assert!(domain.admit_verifier(&cas, &final_input).is_err());
+    final_input.inputs.insert(
+        "editorial".into(),
+        challenge("editor", ReceiptOutcomeV1::Passed, false),
+    );
+    assert!(domain.admit_verifier(&cas, &final_input).is_ok());
+    // Output admission must retain these exact IDs, not just some passed evaluation
+    // from the expected producer. All other inputs and evaluation payloads stay valid.
+    let final_evaluation = envelope(
+        &cas,
+        &challenge("verify", ReceiptOutcomeV1::Passed, false).artifact_ids[0],
+    )
+    .unwrap();
+    let retained: Vec<_> = final_input
+        .inputs
+        .values()
+        .flat_map(|value| value.artifact_ids.iter().cloned())
+        .collect();
+    let replacement = challenge("security_reviewer", ReceiptOutcomeV1::Passed, false);
+    // Change only the summary to give the substitute a distinct valid artifact identity.
+    let mut substitute = envelope(&cas, &replacement.artifact_ids[0]).unwrap();
+    substitute.payload["summary"] = json!("Another evaluation from the same producer");
+    let substitute_id = cas
+        .put_artifact(
+            REPORT_EVALUATION_V1,
+            substitute.producer,
+            substitute.input_artifacts,
+            Some(cited.clone()),
+            substitute.payload,
+        )
+        .unwrap()
+        .0;
+    assert_ne!(substitute_id, security.artifact_ids[0]);
+    for missing in ["legal_signoff", "security_audit", "editorial"] {
+        for replacement in [None, Some(&substitute_id)] {
+            let omitted = &final_input.inputs[missing].artifact_ids[0];
+            let refs = retained
+                .iter()
+                .filter(|id| *id != omitted)
+                .cloned()
+                .chain(replacement.cloned())
+                .collect();
+            let id = cas
+                .put_artifact(
+                    REPORT_EVALUATION_V1,
+                    final_evaluation.producer.clone(),
+                    refs,
+                    Some(cited.clone()),
+                    final_evaluation.payload.clone(),
+                )
+                .unwrap()
+                .0;
+            let error = domain.verifier_output(&cas, &final_input, &id).unwrap_err();
+            assert!(error.contains("exact evaluation dependency"), "{error}");
+        }
+    }
+    let id = cas
+        .put_artifact(
+            REPORT_EVALUATION_V1,
+            final_evaluation.producer,
+            retained,
+            Some(cited.clone()),
+            final_evaluation.payload,
+        )
+        .unwrap()
+        .0;
+    domain.verifier_output(&cas, &final_input, &id).unwrap();
+
+    // A result from the right node on the wrong graph port is still refused.
+    domain
+        .graph
+        .nodes
+        .get_mut("root.nodes.verify")
+        .unwrap()
+        .inputs
+        .get_mut("editorial")
+        .unwrap()
+        .port = "other".into();
+    assert!(domain.admit_verifier(&cas, &final_input).is_err());
+    domain
+        .graph
+        .nodes
+        .get_mut("root.nodes.verify")
+        .unwrap()
+        .inputs
+        .get_mut("editorial")
+        .unwrap()
+        .port = "result".into();
+    for bad in [
+        legal,
+        challenge("security_reviewer", ReceiptOutcomeV1::Failed, false),
+        challenge("security_reviewer", ReceiptOutcomeV1::Inconclusive, false),
+        challenge("security_reviewer", ReceiptOutcomeV1::Passed, true),
+        challenge("verify", ReceiptOutcomeV1::Passed, false),
+    ] {
+        final_input.inputs.insert("security_audit".into(), bad);
+        assert!(domain.admit_verifier(&cas, &final_input).is_err());
+    }
+    for field in [
+        "document_id",
+        "sources_id",
+        "check_receipt_id",
+        "source_snapshot_id",
+    ] {
+        let original = envelope(&cas, &security.artifact_ids[0]).unwrap();
+        let mut payload = serde_json::to_value(
+            read::<ReportEvaluationV1>(
+                &cas,
+                &security.artifact_ids[0],
+                REPORT_EVALUATION_V1,
+                Some(&cited),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        payload[field] = json!(plan_id);
+        let id = cas
+            .put_artifact(
+                REPORT_EVALUATION_V1,
+                original.producer,
+                original.input_artifacts,
+                Some(cited.clone()),
+                payload,
+            )
+            .unwrap()
+            .0;
+        final_input.inputs.insert(
+            "security_audit".into(),
+            one(id, REPORT_EVALUATION_V1, Some(&cited)),
+        );
+        assert!(
+            domain.admit_verifier(&cas, &final_input).is_err(),
+            "{field}"
+        );
+    }
+    final_input
+        .inputs
+        .insert("security_audit".into(), security.clone());
+    let address = domain
+        .graph
+        .nodes
+        .get_mut("root.nodes.verify")
+        .unwrap()
+        .inputs
+        .remove("editorial")
+        .unwrap();
+    assert!(domain.admit_verifier(&cas, &final_input).is_err());
+    domain
+        .graph
+        .nodes
+        .get_mut("root.nodes.verify")
+        .unwrap()
+        .inputs
+        .insert("editorial".into(), address);
+    let mut stale = security.clone();
+    stale.snapshot_id = Some(foreign.clone());
+    final_input.inputs.insert("security_audit".into(), stale);
+    assert!(domain.admit_verifier(&cas, &final_input).is_err());
 }
 
 #[test]
@@ -472,7 +763,7 @@ fn a_failed_citation_fails_the_check_receipt_and_names_its_reason() {
     let (cited, source) = snapshot(&cas, &tree);
     let draft_id = cas
         .put_artifact(
-            DOCUMENT_DRAFT_V2,
+            DOCUMENT_DRAFT_V3,
             attempt("root.nodes.author"),
             vec![],
             Some(cited.clone()),
@@ -509,7 +800,7 @@ fn a_failed_citation_fails_the_check_receipt_and_names_its_reason() {
             &invocation(
                 "root.nodes.seal",
                 vec![
-                    ("draft", one(draft_id, DOCUMENT_DRAFT_V2, Some(&cited))),
+                    ("draft", one(draft_id, DOCUMENT_DRAFT_V3, Some(&cited))),
                     ("sources", sources_port.clone()),
                     ("source", source.clone()),
                 ],
@@ -569,38 +860,37 @@ fn a_failed_citation_fails_the_check_receipt_and_names_its_reason() {
 }
 
 #[test]
-fn the_seal_binds_exactly_one_draft() {
-    let (_directory, cas) = store();
-    let tree = manifest(&cas, &[("a", EntryKind::File, b"a\n")]);
-    let (cited, source) = snapshot(&cas, &tree);
+fn the_seal_requires_the_current_draft_and_refuses_retired_ports() {
     let id = format!("sha256:{}", "3".repeat(64));
-    let both = TaskInvocationV1 {
+    let snapshot = format!("sha256:{}", "4".repeat(64));
+    let mut input = TaskInvocationV1 {
         plan_id: id.clone(),
         node: "root.nodes.seal".into(),
-        inputs: BTreeMap::from([
-            (
-                "draft".into(),
-                one(id.clone(), DOCUMENT_DRAFT_V2, Some(&cited)),
-            ),
-            (
-                "draft_v1".into(),
-                one(id.clone(), DOCUMENT_DRAFT_V1, Some(&cited)),
-            ),
-            ("source".into(), source),
-        ]),
+        inputs: BTreeMap::from([(
+            "draft".into(),
+            one(id.clone(), DOCUMENT_DRAFT_V3, Some(&snapshot)),
+        )]),
     };
-    assert!(
-        draft_input(&both, &cited)
-            .unwrap_err()
-            .contains("exactly one draft")
+    assert_eq!(draft_input(&input, &snapshot).unwrap(), id);
+    input.inputs.insert(
+        "draft_v1".into(),
+        one(id.clone(), DOCUMENT_DRAFT_V3, Some(&snapshot)),
     );
-    let mut none = both.clone();
-    none.inputs.remove("draft");
-    none.inputs.remove("draft_v1");
-    assert!(draft_input(&none, &cited).is_err());
-    let mut first = both;
-    first.inputs.remove("draft");
-    assert_eq!(draft_input(&first, &cited).unwrap(), id);
+    assert!(draft_input(&input, &snapshot).is_err());
+    input.inputs.remove("draft");
+    assert!(draft_input(&input, &snapshot).is_err());
+    input.inputs.remove("draft_v1");
+    assert!(draft_input(&input, &snapshot).is_err());
+    for retired in ["af/DocumentDraft@1", "af/DocumentDraft@2"] {
+        input
+            .inputs
+            .insert("draft".into(), one(id.clone(), retired, Some(&snapshot)));
+        assert!(draft_input(&input, &snapshot).is_err());
+    }
+    input
+        .inputs
+        .insert("draft".into(), one(id, DOCUMENT_DRAFT_V3, Some(&snapshot)));
+    assert!(draft_input(&input, &format!("sha256:{}", "5".repeat(64))).is_err());
 }
 
 #[test]
@@ -751,7 +1041,7 @@ fn a_pipeline_that_binds_no_sources_seals_and_checks_against_the_empty_set() {
     uncited.citations.clear();
     let draft_id = cas
         .put_artifact(
-            DOCUMENT_DRAFT_V2,
+            DOCUMENT_DRAFT_V3,
             attempt("root.nodes.author"),
             vec![],
             Some(cited.clone()),
@@ -775,7 +1065,7 @@ fn a_pipeline_that_binds_no_sources_seals_and_checks_against_the_empty_set() {
                 vec![
                     (
                         "draft",
-                        one(draft_id.clone(), DOCUMENT_DRAFT_V2, Some(&cited)),
+                        one(draft_id.clone(), DOCUMENT_DRAFT_V3, Some(&cited)),
                     ),
                     ("source", source.clone()),
                 ],
@@ -884,7 +1174,7 @@ fn a_pipeline_that_binds_no_sources_seals_and_checks_against_the_empty_set() {
             &invocation(
                 "root.nodes.seal",
                 vec![
-                    ("draft", one(draft_id, DOCUMENT_DRAFT_V2, Some(&cited))),
+                    ("draft", one(draft_id, DOCUMENT_DRAFT_V3, Some(&cited))),
                     (
                         "sources",
                         one(with_sources.clone(), REPORT_SOURCES_V1, None),
@@ -979,7 +1269,7 @@ fn author_invocation(cas: &Cas) -> (ReportTaskDomain, TaskInvocationV1) {
                     ("requirements".into(), port("af/Requirements@1", false)),
                     ("source".into(), port(SOURCE_TREE_V1, false)),
                 ]),
-                outputs: BTreeMap::from([("draft".into(), same_source(DOCUMENT_DRAFT_V2, false))]),
+                outputs: BTreeMap::from([("draft".into(), same_source(DOCUMENT_DRAFT_V3, false))]),
             },
             inputs: BTreeMap::new(),
             conditions: vec![],
@@ -1039,7 +1329,7 @@ fn a_draft_is_validated_for_shape_before_sealing_and_each_check_fails_alone() {
     assert_eq!(passed.policy.required_sections, policy().required_sections);
 
     let mut unnamed = good.clone();
-    unnamed["citations"] = json!(["not a name!"]);
+    unnamed["citations"] = json!([{"kind":"source","name":"not a name!"}]);
     let mut untitled = good.clone();
     untitled["sections"] = json!([{"heading": "Summary", "body": "b"}]);
     for (case, drafts, check, words) in [
@@ -1054,7 +1344,7 @@ fn a_draft_is_validated_for_shape_before_sealing_and_each_check_fails_alone() {
             "an unnamed citation",
             vec![unnamed],
             "sets",
-            "the draft is not a valid af/DocumentDraft@2: ",
+            "the draft is not a valid af/DocumentDraft@3: ",
         ),
         (
             "a missing section",
@@ -1148,7 +1438,7 @@ fn accepted_research_document_is_a_narrow_optional_report_worker_input() {
             ("source".into(), port(SOURCE_TREE_V1, false)),
             ("research_report".into(), port(DOCUMENT_V1, true)),
         ]),
-        outputs: BTreeMap::from([("draft".into(), same_source(DOCUMENT_DRAFT_V2, false))]),
+        outputs: BTreeMap::from([("draft".into(), same_source(DOCUMENT_DRAFT_V3, false))]),
     };
     assert!(author_contract(&author));
     let mut verifier = author.clone();

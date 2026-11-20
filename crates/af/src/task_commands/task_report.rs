@@ -1,5 +1,5 @@
 //! `af task report` (ADR-0142): what recorded Tasks cost and how they ran, as one Markdown block
-//! for a pull request description or one `af/task-report@3` document.
+//! for a pull request description or one `af/task-report@4` document.
 //!
 //! Read-only. It reads what `af task show` and `af task list` read — the Task's projection,
 //! execution records, review rounds, attempt walls and the event times of its log — opens the
@@ -19,7 +19,7 @@ use af_contracts::task::runtime::{
 };
 use af_contracts::task::usage::{DecimalU128, TaskUnknownUsageCauseV1};
 use af_contracts::task::verification::{TASK_CHECK_RECEIPT_V2, TaskCheckReceiptV2};
-use af_graph::task::{CompiledNode, CompiledOperator, ReviewOperation};
+use af_graph::task::{CompiledNode, CompiledOperator};
 use af_store::store::task::execution::TaskAttemptAccounting;
 
 /// The report over `task_ids`, in the order given, from the Store under `state`. An ID the
@@ -109,12 +109,8 @@ pub(crate) fn unresolved(state: &Path, report: &TaskReportV3) -> Result<[Option<
     Ok(totals)
 }
 
-/// The warnings `af task report` prints on stderr before its report: two Tasks whose sealed
-/// candidates add the same `docs/adr/NNNN-*.md` number. Tasks planned in parallel from one base
-/// each take the next free number, and only one of them can keep it once both merge. Each
-/// warning names the number, the Tasks and the files: a first line starting `warning:`, to
-/// follow `af task report: `, and indented continuations, each within 100 columns. A Task
-/// without a candidate yet adds nothing.
+/// Warn when multiple Tasks add the same legacy number or dated ADR identity.
+/// A Task without a candidate yet adds nothing. Warnings are bounded to 100 columns.
 pub(crate) fn adr_collisions(repo: &Path, state: &Path, task_ids: &[String]) -> Vec<String> {
     let mut by_number: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
     for id in task_ids {
@@ -128,6 +124,10 @@ pub(crate) fn adr_collisions(repo: &Path, state: &Path, task_ids: &[String]) -> 
                 .push((id.clone(), path));
         }
     }
+    render_adr_collisions(by_number)
+}
+
+fn render_adr_collisions(by_number: BTreeMap<String, Vec<(String, String)>>) -> Vec<String> {
     let mut lines = Vec::new();
     for (number, added) in by_number {
         let tasks: BTreeSet<&str> = added.iter().map(|(task, _)| task.as_str()).collect();
@@ -139,8 +139,8 @@ pub(crate) fn adr_collisions(repo: &Path, state: &Path, task_ids: &[String]) -> 
             .map(|(task, path)| format!("{} ({})", task, preview::text(path)))
             .collect();
         let warning = format!(
-            "warning: ADR {number} is added by {} Tasks: {}; give all but one the next free \
-             number before they merge, and link it from docs/adr/README.md",
+            "warning: ADR {} is added by {} Tasks: {}",
+            preview::text(&number),
             tasks.len(),
             named.join(", ")
         );
@@ -152,7 +152,7 @@ pub(crate) fn adr_collisions(repo: &Path, state: &Path, task_ids: &[String]) -> 
     lines
 }
 
-/// The `docs/adr/NNNN-*.md` files the Task's candidate adds to its source, by number.
+/// ADR files the Task's candidate adds to its source, by identity.
 fn added_adrs(opened: &OpenedTask) -> Result<Vec<(String, String)>, String> {
     let selected = candidate::select(opened, None)?;
     let Some(source_id) = selected.source_id.as_deref() else {
@@ -168,10 +168,23 @@ fn added_adrs(opened: &OpenedTask) -> Result<Vec<(String, String)>, String> {
         .collect())
 }
 
-/// The number of an ADR file, `docs/adr/0205-a-title.md`: four digits, a dash and a name.
+/// Legacy ADRs use their number; dated ADRs use their complete basename without `.md`.
 fn adr_number(path: &str) -> Option<String> {
     let name = path.strip_prefix("docs/adr/")?;
     let (number, rest) = name.split_at_checked(4)?;
+    if !name.contains('/')
+        && name.len() > 14
+        && name.as_bytes().get(4) == Some(&b'-')
+        && name.as_bytes().get(7) == Some(&b'-')
+        && name.as_bytes().get(10) == Some(&b'-')
+        && name.as_bytes()[..10]
+            .iter()
+            .enumerate()
+            .all(|(i, b)| i == 4 || i == 7 || b.is_ascii_digit())
+        && name.ends_with(".md")
+    {
+        return Some(name[..name.len() - 3].to_owned());
+    }
     (number.bytes().all(|b| b.is_ascii_digit())
         && rest.starts_with('-')
         && rest.len() > "-.md".len()
@@ -569,7 +582,7 @@ fn has_review(graph: &CompiledTask) -> bool {
             CompiledOperator::Primitive {
                 operator: TaskOperatorV1::ReviewReduce {},
                 ..
-            } | CompiledOperator::ReviewDomain { .. }
+            }
         )
     })
 }
@@ -583,10 +596,6 @@ fn slot_of(node: &CompiledNode) -> Option<&str> {
                 | TaskOperatorV1::Verify { slot }
                 | TaskOperatorV1::FixVerify { slot },
             ..
-        }
-        | CompiledOperator::ReviewDomain {
-            operation: ReviewOperation::Reviewer { slot } | ReviewOperation::Scatter { slot },
-            ..
         } => Some(slot),
         _ => None,
     }
@@ -594,7 +603,7 @@ fn slot_of(node: &CompiledNode) -> Option<&str> {
 
 /// The Worker `plan` binds `slot` to, named by Provider kind, model and effort only: never the
 /// binding's label or principal, and a model value that is not a model identity is `unknown`.
-fn bound_worker(plan: &ExecutionPlanV3, slot: &str) -> Option<TaskReportWorkerV1> {
+fn bound_worker(plan: &ExecutionPlan, slot: &str) -> Option<TaskReportWorkerV1> {
     plan.bindings
         .get(slot)
         .map(|binding| match &binding.execution {
@@ -626,7 +635,7 @@ fn slot_role(graph: &CompiledTask, slot: &str) -> String {
 /// bookkeeping nodes (seal, bind, reduce, accept, select) and Provider admission are left out.
 fn pipeline(
     cas: &Cas,
-    plan: &ExecutionPlanV3,
+    plan: &ExecutionPlan,
     graph: &CompiledTask,
 ) -> Result<TaskReportPipelineV1, String> {
     let root = graph
@@ -858,13 +867,13 @@ fn tally_runs(events: &[(u64, u64, Mark)]) -> Option<EventTimes> {
 
 /// Each recorded plan and its compiled graph, read once.
 #[derive(Default)]
-struct Plans(BTreeMap<String, (ExecutionPlanV3, CompiledTask)>);
+struct Plans(BTreeMap<String, (ExecutionPlan, CompiledTask)>);
 
 impl Plans {
-    fn get(&mut self, cas: &Cas, id: &str) -> Result<(&ExecutionPlanV3, &CompiledTask), String> {
+    fn get(&mut self, cas: &Cas, id: &str) -> Result<(&ExecutionPlan, &CompiledTask), String> {
         if !self.0.contains_key(id) {
-            let plan: ExecutionPlanV3 = artifact(cas, id, EXECUTION_PLAN_V4)?;
-            let graph: CompiledTask = artifact(cas, &plan.compiled_graph_id, COMPILED_TASK_V1)?;
+            let plan: ExecutionPlan = artifact(cas, id, EXECUTION_PLAN_V4)?;
+            let graph: CompiledTask = artifact(cas, &plan.compiled_graph_id, COMPILED_TASK_V4)?;
             self.0.insert(id.to_owned(), (plan, graph));
         }
         let (plan, graph) = &self.0[id];
@@ -1133,16 +1142,6 @@ fn role_and_worker(
                 false,
             ),
         },
-        Some(CompiledOperator::ReviewDomain { operation, .. }) => match operation {
-            ReviewOperation::Reviewer { slot } | ReviewOperation::Scatter { slot } => {
-                (slot_role(graph, slot), bound_worker(plan, slot), true)
-            }
-            ReviewOperation::Generation => ("review_generation".into(), None, false),
-            ReviewOperation::Gate => ("review_gate".into(), None, false),
-            ReviewOperation::Gather => ("review_gather".into(), None, false),
-            ReviewOperation::Ledger => ("review_ledger".into(), None, false),
-            ReviewOperation::Slicer => ("review_slicer".into(), None, false),
-        },
         // All listed slots share one captured Provider capability.
         Some(CompiledOperator::ProviderAdmission { bindings }) => (
             "provider_admission".into(),
@@ -1152,9 +1151,6 @@ fn role_and_worker(
                 .and_then(|slot| bound_worker(plan, slot)),
             false,
         ),
-        Some(CompiledOperator::ReviewIntegrationChecks { .. }) => {
-            ("integration_checks".into(), None, false)
-        }
         Some(CompiledOperator::RootInputs) => ("root_inputs".into(), None, false),
         Some(CompiledOperator::Select) => ("select".into(), None, false),
     })

@@ -15,7 +15,7 @@
     "pointer": "/invented",
     "op": "add",
     "value": true,
-    "expected_content_id": "sha256:d10b19ec526ada9d4903a91d949df8e296960158643a44ade4c362d91c24f792"
+    "expected_content_id": "sha256:8928792b9a51bb7854682c27ce6ebf2f4caa69b17faf5263ac72d2ba02b2cb5b"
   },
   {
     "contract": "execution-plan",
@@ -210,7 +210,7 @@
     "pointer": "/contract/inputs/requirements/artifact_type",
     "op": "replace",
     "value": "requirements",
-    "expected_content_id": "sha256:80b69bd445a024a926bf79cf78a95113bcf467e9c49427a2d21b15461f2f4c0e"
+    "expected_content_id": "sha256:08a78e312dcb8352656e6b38fe80433c5282a65f969600105f422a4135ad5c01"
   },
   {
     "contract": "pipeline-definition",
@@ -219,7 +219,7 @@
     "pointer": "/contract/outputs/document/root_default",
     "op": "add",
     "value": "empty_review_history",
-    "expected_content_id": "sha256:d5e9bf6730acedda1d06e798bead91b3c5607ba646f673dc0f45605595212933"
+    "expected_content_id": "sha256:324dda2789bcd47592237b3f9dcaa5bf3827707bdbb9d266142feb1f0b93cb03"
   },
   {
     "contract": "pipeline-definition",
@@ -228,7 +228,7 @@
     "pointer": "/contract/inputs/requirements/root_default",
     "op": "add",
     "value": "invent_source",
-    "expected_content_id": "sha256:191f6be08c948617d98bc2644c03921322d5ab174a4833348d37ec10f39c3947"
+    "expected_content_id": "sha256:e1872e2e767a37727783e9dd2cc5b99c21de2f6d1a7a32adeaa18a3999cad6b9"
   },
   {
     "contract": "pipeline-definition",
@@ -236,7 +236,7 @@
     "layer": "semantic",
     "pointer": "/coverage/checked",
     "op": "remove",
-    "expected_content_id": "sha256:8c1e8148820d555c89b3e3803630b0394c0ada7b35353df9038ebbaad79f0560"
+    "expected_content_id": "sha256:d820b61f6d0b48739ba25423a07145e91743ece0881fd5ac5d030372ff81d3d1"
   },
   {
     "contract": "pipeline-definition",
@@ -272,7 +272,7 @@
         }
       }
     ],
-    "expected_content_id": "sha256:8be5ba739772119eb5ada54b02593ec5ae0b9a44a7a62aac001651c43386fb68"
+    "expected_content_id": "sha256:7a4646b2f04d473485c72bf56dd6e8164faccd190b75ca34da789837c3a60ac6"
   },
   {
     "contract": "pipeline-definition",
@@ -281,7 +281,7 @@
     "pointer": "/outputs/document/node",
     "op": "replace",
     "value": "missing",
-    "expected_content_id": "sha256:4b668db46f5d6a50cfac297381c9f91313567248b68bd84c08f345b99f4c96e8"
+    "expected_content_id": "sha256:e820883da0a49209bb03ffe989bd20c3151f88d0e22f76ce08f4a12be2661b28"
   },
   {
     "contract": "pipeline-definition",
@@ -292,7 +292,7 @@
     "value": {
       "op": "while"
     },
-    "expected_content_id": "sha256:82ac59efe6ef8c75fa4b2dc9a5711fce21716012749f52abf0a4003dc9a99cf1"
+    "expected_content_id": "sha256:d6341415630e4180b7fddb43c2e95abb25ef13641bdfbc5507a949f288518295"
   },
   {
     "contract": "pipeline-definition",
@@ -301,7 +301,7 @@
     "pointer": "/max_attempts",
     "op": "replace",
     "value": 0,
-    "expected_content_id": "sha256:be191be90002beb035828dbebefbe387b712d240928f9fa2ca8f6a5822c624e7"
+    "expected_content_id": "sha256:427b463ad2f26d9392d71492a6f7c2a9c89b265b514627aa92293366e53a8141"
   },
   {
     "contract": "execution-plan",
@@ -472,7 +472,7 @@
     "layer": "shape",
     "pointer": "/contract/inputs/requirements/covers",
     "op": "remove",
-    "expected_content_id": "sha256:fa3ca2cea2084fcfb023abf8262ff821f60a0444a6a5bbf8badf9406ba99e466"
+    "expected_content_id": "sha256:9a62a63b65d11556a5f85235878494b8600703bb9a1ebd78d035e9d3632e0e66"
   },
   {
     "contract": "pipeline-definition",
@@ -489,7 +489,7 @@
         "lint"
       ]
     },
-    "expected_content_id": "sha256:9aed4a130e86e6dc97e1d8dad8a53b7ce791bf40dacd820f85ad907b5f15dd08"
+    "expected_content_id": "sha256:230bdb1a62275251e184bef30e4bc5780b483cbcf78f7bd12194869e72a08e92"
   },
   {
     "contract": "pipeline-definition",
@@ -501,7 +501,7 @@
       "op": "check",
       "checks": []
     },
-    "expected_content_id": "sha256:845f95f0179bc31cb1116cd949b79266845d6e1b807080b6442b98838da98319"
+    "expected_content_id": "sha256:a3e0cc132b39c66c17da0abe58e0bfc68a87343ad81c0a9548d0a7156e2cd4e8"
   },
   {
     "contract": "pipeline-definition",
@@ -516,7 +516,7 @@
       ],
       "remote_checks": []
     },
-    "expected_content_id": "sha256:b281dcc4f76df42ac8a7b22e1c320060407e87681b7f48e4975f6924e2d39043"
+    "expected_content_id": "sha256:85f4e16e353af771aae264dd45bca4595fd1930d699738ba1a95f2d31b71427c"
   },
   {
     "contract": "task-revision",

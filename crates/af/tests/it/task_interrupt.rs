@@ -27,7 +27,7 @@ fn alive(pid: u32) -> bool {
     .is_ok()
 }
 
-struct ChildGuard(Option<std::process::Child>);
+pub(crate) struct ChildGuard(pub(crate) Option<std::process::Child>);
 impl Drop for ChildGuard {
     fn drop(&mut self) {
         if let Some(child) = &mut self.0 {

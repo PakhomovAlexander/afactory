@@ -2,8 +2,8 @@ use super::*;
 
 pub(super) fn compact_subject(
     cas: &Cas,
-    bound: &TaskReviewSubjectV1,
-) -> Result<TaskReviewSubjectV2, String> {
+    bound: &ResolvedReviewSubject,
+) -> Result<TaskReviewSubject, String> {
     let change_scope = bound
         .change_set
         .as_ref()
@@ -32,7 +32,8 @@ pub(super) fn compact_subject(
             })
         })
         .transpose()?;
-    let value = TaskReviewSubjectV2 {
+    let value = TaskReviewSubject {
+        schema: "af.task-review-subject/3".into(),
         subject_id: bound.subject_id.clone(),
         subject: bound.subject.clone(),
         snapshot_id: bound.snapshot_id.clone(),
@@ -47,8 +48,8 @@ pub(super) fn compact_subject(
 
 pub(super) fn expand_subject(
     cas: &Cas,
-    value: TaskReviewSubjectV2,
-) -> Result<TaskReviewSubjectV1, String> {
+    value: TaskReviewSubject,
+) -> Result<ResolvedReviewSubject, String> {
     value.validate()?;
     let changes = value
         .subject
@@ -61,7 +62,7 @@ pub(super) fn expand_subject(
             serde_json::from_slice(&bytes).map_err(|e| e.to_string())
         })
         .transpose()?;
-    let bound = TaskReviewSubjectV1 {
+    let bound = ResolvedReviewSubject {
         subject_id: value.subject_id.clone(),
         subject: value.subject.clone(),
         change_set: changes,
@@ -82,15 +83,15 @@ impl ReviewTaskDomain {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-    ) -> Result<TaskReviewSubjectV1, String> {
-        let (_, value) = self.value(cas, input, "subject", TASK_REVIEW_SUBJECT_V2)?;
+    ) -> Result<ResolvedReviewSubject, String> {
+        let (_, value) = self.value(cas, input, "subject", TASK_REVIEW_SUBJECT_V3)?;
         expand_subject(cas, value)
     }
 
     pub(super) fn assignment(
         &self,
         ledger: &Ledger,
-        subject: &TaskReviewSubjectV1,
+        subject: &ResolvedReviewSubject,
         reviewer: &str,
     ) -> Result<TaskReviewAssignmentV1, String> {
         // Match the canonical prior-row exclusions, then narrow to the original logical source.
@@ -139,7 +140,7 @@ impl ReviewTaskDomain {
         }
         let mut outputs = BTreeMap::from([(
             "subject".into(),
-            self.put(cas, input, TASK_REVIEW_SUBJECT_V2, snapshot, &compact, refs)?,
+            self.put(cas, input, TASK_REVIEW_SUBJECT_V3, snapshot, &compact, refs)?,
         )]);
         let ledger = self.prior_ledger(cas, input, &bound, 0)?;
         for name in self.policy.reviewers.keys() {
@@ -163,13 +164,13 @@ impl ReviewTaskDomain {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        subject: &TaskReviewSubjectV1,
+        subject: &ResolvedReviewSubject,
     ) -> Result<TaskReviewAssignmentV1, String> {
         let (_, assignment): (_, TaskReviewAssignmentV1) =
             self.value(cas, input, "assignment", TASK_REVIEW_ASSIGNMENT_V1)?;
         assignment.validate()?;
-        let address = self.graph.nodes[&input.node]
-            .inputs
+        let address = self
+            .input_addresses(input)?
             .get("assignment")
             .ok_or("Reviewer has no captured assignment binding")?;
         let ledger = self.prior_ledger(cas, input, subject, 0)?;
@@ -208,6 +209,17 @@ impl ReviewTaskDomain {
     ) -> Result<(), String> {
         let worker = &self.graph.nodes[&self.graph.nodes[&input.node].inputs[name].node];
         let address = &worker.inputs["assignment"];
+        self.validate_assignment_provenance(cas, input, result, expected, address)
+    }
+
+    pub(super) fn validate_assignment_provenance(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        result: &af_contracts::ArtifactEnvelope,
+        expected: &TaskReviewAssignmentV1,
+        address: &af_graph::task::Address,
+    ) -> Result<(), String> {
         let expected_run = match invocation_producer(cas, input, None)? {
             Producer::KernelOperation { run_id, .. } => run_id,
             _ => unreachable!(),

@@ -101,6 +101,13 @@ registry_home() {
 }
 
 case "$setup" in
+waiter_state)
+    # Each sample gets its own public-writer fixture and final production lease. Setup is
+    # outside the measured CLI lifetime; the waiter still opens and validates cold.
+    mkdir "$scratch/waiter" "$scratch/repo"
+    /usr/bin/python3 -I "$fixtures/waiter-state.py" "$scratch/waiter" "$probe" "$argument" \
+        >"$scratch/writer.json"
+    ;;
 task_repository)
     task_repository
     ;;
@@ -127,6 +134,17 @@ seed_task_state)
     probe_writer
     test -f "$scratch/seed/probe-work/events.sqlite"
     ;;
+seed_native_review_state)
+    repository "$fixtures/native-review-roots/repo" "$scratch/native-review-repo"
+    mkdir "$scratch/seed"
+    (cd "$scratch/native-review-repo" &&
+        "$af" review run --file "$fixtures/native-review-roots/task.json" \
+            --state "$scratch/seed/native-review" --json >"$scratch/review.json")
+    mkdir "$scratch/seed/native-review-probe"
+    probe_writer
+    rm -r "$scratch/seed/native-review-probe"
+    test -f "$scratch/seed/native-review/events.sqlite"
+    ;;
 seed_campaign_state)
     repository "$fixtures/campaign-roots/repo" "$scratch/campaign-repo"
     mkdir "$scratch/seed"
@@ -142,6 +160,17 @@ seed_campaign_state)
 seed_publish)
     test -d "$scratch/seed"
     copy_tree "$scratch/seed" "$argument"
+    ;;
+dev_flow_cold)
+    # The driver creates its own private HOME, Store and empty compiled cache.
+    ;;
+dev_flow_primed)
+    # Untimed setup: run only the first real Task, then privately copy its valid Round-0 layer.
+    PYTHONDONTWRITEBYTECODE=1 python3 -I "$fixtures/default-light-smoke/driver.py" --af "$af" \
+        --work "$scratch/prime" --prime-only --output "$scratch/prime.json" \
+        >"$scratch/prime-summary.json"
+    mkdir -p "$scratch/work/home/cache"
+    cp -R "$scratch/prime/home/cache"/. "$scratch/work/home/cache"/
     ;;
 registry_empty)
     registry_home

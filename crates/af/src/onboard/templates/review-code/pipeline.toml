@@ -1,4 +1,4 @@
-schema = "af.pipeline/1"
+schema = "af.pipeline/6"
 name = "onboard/review-code"
 version = "1.1.0"
 max_attempts = 8

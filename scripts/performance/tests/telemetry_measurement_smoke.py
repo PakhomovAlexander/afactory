@@ -29,9 +29,21 @@ def docker(*args):
                                    env=builds.docker_client_environment())
 
 
+def execution_directories(selected):
+    own = Path(selected.directory)
+    own.mkdir(exist_ok=True)
+    work, capture = own / "run", own / "capture"
+    # This is also the private NSS account home, independently of the CI umask.
+    work.mkdir(mode=0o700)
+    capture.mkdir()
+    return work, capture
+
+
 def main():
     assert shutil.which("docker"), "Docker unavailable: live measurement smoke was not run"
     assert os.getuid() != 0, "smoke requires a real non-root runner-owned checkout"
+    subprocess.run(["cargo", "build", "--locked", "--example", "perf-supervisor"],
+                   cwd=ROOT, check=True)
     image = builds.BuildImage("docker", IMAGE)
     root = Path(tempfile.mkdtemp(prefix="af-telemetry-measurement-smoke-"))
     sentinel = root / "operator-sentinel"
@@ -52,10 +64,7 @@ def main():
 
         def execute(label, script, inspect=False, selected=executor, readable=()):
             own = Path(selected.directory)
-            own.mkdir(exist_ok=True)
-            work, capture = own / "run", own / "capture"
-            work.mkdir()
-            capture.mkdir()
+            work, capture = execution_directories(selected)
             env = {"PATH": "/usr/bin:/bin", "HOME": str(work), "TMPDIR": str(work),
                    "PYTHONDONTWRITEBYTECODE": "1"}
             if inspect:
@@ -157,6 +166,8 @@ else:
     raise AssertionError('filesystem did not enforce aggregate allocation')
 '''.replace("UNLINK", repr(unlinked)))
                 assert result.code == 0 and result.stdout == b"aggregate ENOSPC\n", result.stderr
+            from tests import contained_flow_probe
+            contained_flow_probe.run(ROOT / "target/debug/examples/perf-supervisor", owner)
             from tests import telemetry_diagnostic_smoke
             telemetry_diagnostic_smoke.run(root, mount, image, environment, cpus, ROOT, docker, owner)
             with tempfile.TemporaryDirectory(dir=root) as context:

@@ -1,5 +1,5 @@
 {
-  "schema": "af.pipeline/2",
+  "schema": "af.pipeline/6",
   "name": "builtin/oriented-document",
   "version": "1.0.0",
   "contract": {

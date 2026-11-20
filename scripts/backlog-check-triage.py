@@ -3,7 +3,7 @@
 
 Reads the author's `af/issue-triage@1` document from the `Triage` section of its report (the
 Markdown `af task output --port report` writes with `--format markdown` or `--format
-canonical-markdown`, or the `af.document-draft/2` draft) and the verifier's from the one fenced
+canonical-markdown`, or the `af.document-draft/3` draft) and the verifier's from the one fenced
 json block of its `af/ReportEvaluation@1` summary, validates both against
 `schemas/issue-triage-v1.json`, applies the hard rules and the merge rule, and prints one
 `af/issue-triage-merged@1` record on stdout.
@@ -300,8 +300,8 @@ def author_document(*, document=None, draft=None):
     canonical-markdown`) escape every fence, so a `Triage` section without a fence is read
     through `canonical_text` first."""
     if draft is not None:
-        if not isinstance(draft, dict) or draft.get('schema') != 'af.document-draft/2':
-            raise Refusal('author-draft', 'the draft is not an af.document-draft/2 document')
+        if not isinstance(draft, dict) or draft.get('schema') != 'af.document-draft/3':
+            raise Refusal('author-draft', 'the draft is not an af.document-draft/3 document')
         if not isinstance(draft.get('sections'), list):
             raise Refusal('author-draft', 'the draft sections must be an array')
         sections = {}
@@ -647,7 +647,7 @@ def main(argv=None):
     author = parser.add_mutually_exclusive_group(required=True)
     author.add_argument('--document', help='the author\'s report as `af task output TASK --port report` writes it '
                                            'with --format markdown or --format canonical-markdown')
-    author.add_argument('--draft', help='the author\'s af.document-draft/2 JSON')
+    author.add_argument('--draft', help='the author\'s af.document-draft/3 JSON')
     parser.add_argument('--evaluation', required=True, help='the verifier\'s af/ReportEvaluation@1 JSON payload')
     parser.add_argument('--repo', default='.', help='the Git repository holding --main (default: .)')
     parser.add_argument('--pulls', help='a JSON list of the merged pull request numbers, written by the runner')

@@ -458,7 +458,7 @@ fn code_task_domain_cold_fallback_preserves_existing_environment() {
 fn run_code_task_domain_fixture(mapping: Option<PathBuf>, cold: bool, review_wrapper: bool) {
     use af_contracts::Producer;
     use af_contracts::task::EXECUTION_PLAN_V4;
-    use af_contracts::task::pipeline::{PipelineDefinitionV1, ReceiptOutcomeV1};
+    use af_contracts::task::pipeline::{PipelineDefinition, ReceiptOutcomeV1};
     use af_contracts::task::plan::IndependencePolicyV1;
     use af_contracts::task::verification::{TASK_CHECK_RECEIPT_V2, TaskCheckReceiptV2};
     use af_contracts::task::{TASK_REVISION_V1, TaskRevisionV1};
@@ -537,7 +537,7 @@ fn run_code_task_domain_fixture(mapping: Option<PathBuf>, cold: bool, review_wra
     }])
     .unwrap();
     let origin = cas
-        .put_json(&json!({"fixture":"toolchain-domain"}))
+        .put_json(&json!({"schema":"af.task-source-origin/3","kind":"captured","repository_id":"fixture","source_revision":null,"content_digest":manifest.content_digest()}))
         .unwrap();
     let snapshot = capture_snapshot(&cas, &manifest, &origin, None).unwrap();
     let source = source_tree(&cas, producer(), &snapshot, vec![]).unwrap();
@@ -546,8 +546,8 @@ fn run_code_task_domain_fixture(mapping: Option<PathBuf>, cold: bool, review_wra
             "artifact_type":kind,"cardinality":"one","optional":false,"affinity":affinity,"covers":covers
         })
     };
-    let pipeline: PipelineDefinitionV1 = serde_json::from_value(json!({
-        "schema":"af.pipeline/1","name":"fixture/toolchain","version":"1.0.0",
+    let pipeline: PipelineDefinition = serde_json::from_value(json!({
+        "schema":"af.pipeline/6","name":"fixture/toolchain","version":"1.0.0",
         "contract":{"inputs":{"source":port(SOURCE_TREE_V1,json!({"kind":"unbound"}),vec![])},
             "outputs":{"receipt":port(TASK_CHECK_RECEIPT_V2,json!({"kind":"same_as","input":"source"}),vec!["checked"])}},
         "accepts":{"kinds":["implement"],"required_facts":{}},"slots":{},

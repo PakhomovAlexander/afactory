@@ -36,7 +36,7 @@
       "image": "ubuntu-24.04"
     }
   ],
-  "schema": "af.perf-equivalence/1",
+  "schema": "af.perf-equivalence/2",
   "golden": {
     "actions_run_id": 8101,
     "lab_run_id": "gh8101_a1_primary",

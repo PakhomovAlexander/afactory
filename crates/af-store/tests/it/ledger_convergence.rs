@@ -1,6 +1,6 @@
 //! Ledger convergence scenarios: how re-reports, resolutions and Rounds move one Finding.
 //!
-//! Each test folds events through `Ledger::apply_event` — `RoundStarted@1` for Scope authority,
+//! Each test folds events through `Ledger::apply_event` — native Subject binding for Scope authority,
 //! `GenerationAdvanced@1` for the Round counter, `FindingReported@1` over an immutable
 //! `FindingReport@1` artifact — and pins the projected Finding and the convergence verdict under
 //! one clean Round, at most three, gate `major`.
@@ -13,17 +13,14 @@
 //! above what the Resolution accepted or its Subject is not the one the Resolution was decided
 //! on, and the Finding becomes `contested`. `canonical_identity.rs` pins that rule.
 
-use af_contracts::{
-    EventType, FindingReport, Location, Producer, RoundStartedPayloadV1, RunEvent, Severity,
-    SubjectV1,
-};
+use af_contracts::{EventType, FindingReport, Location, Producer, RunEvent, Severity, SubjectV1};
 use af_store::ledger::TransitionKind;
 use af_store::{Cas, Convergence, ConvergencePolicy, Finding, Ledger, Status, Verdict};
 
 const KEY: &str = "claim";
 
 fn digest(byte: char) -> String {
-    format!("sha256:{}", byte.to_string().repeat(64))
+    af_store::canonical::blob_content_id(byte.to_string().as_bytes())
 }
 
 fn event(
@@ -54,10 +51,11 @@ struct Run {
 }
 
 impl Run {
-    /// A whole-tree Campaign whose first Round has started.
+    /// A native whole-tree Subject whose first Round has started.
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let cas = Cas::open(dir.path()).unwrap();
+        cas.put(b"c").unwrap();
         let subject_id = cas
             .put_json(&serde_json::to_value(SubjectV1::whole_tree(digest('c'))).unwrap())
             .unwrap();
@@ -72,24 +70,13 @@ impl Run {
     }
 
     fn start_round(&mut self, round: u32) {
-        let payload = RoundStartedPayloadV1 {
-            round,
-            epoch: 1,
-            campaign_manifest_id: digest('d'),
-            subject_id: self.subject_id.clone(),
-            prior_finding_set_id: digest('e'),
-            prior_demand_set_id: digest('f'),
-        };
-        self.apply(event(
-            EventType::RoundStartedV1,
-            serde_json::to_value(payload).unwrap(),
-            Vec::new(),
-        ));
-        self.apply(event(
-            EventType::GenerationAdvancedV1,
-            serde_json::json!({ "round": round }),
-            Vec::new(),
-        ));
+        if self.ledger.round == 0 {
+            self.ledger = Ledger::for_task_subject(&self.cas, &self.subject_id, round).unwrap();
+        } else {
+            self.ledger
+                .bind_task_subject(&self.cas, &self.subject_id, round)
+                .unwrap();
+        }
     }
 
     fn next_round(&mut self) {

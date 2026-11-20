@@ -501,8 +501,8 @@ email first of all.
     Every Survey is an entry of kind `survey` of the machine budget (ADR-0144 clause 4): its
     record's allocated CAS bytes, taken out of the Project Store entry's, last used at its
     cutoff, its `path` the CAS object. `af storage` lists it, and its documents become
-    `af/storage@3` ([schema](../../schemas/storage-v3.json)) and `af/storage-prune@3`
-    ([schema](../../schemas/storage-prune-v3.json)), each gaining the kind `survey` (`@2` of the
+    `af/storage@3` (schema) and `af/storage-prune@3`
+    (schema), each gaining the kind `survey` (`@2` of the
     prune document did; `@3` adds its `unknown` total, below), and their earlier versions are
     refused; a sweep's `af/TaskStorageSweep@2` counts a Survey's removal in
     `omitted_removals` without listing it, its kinds those of `@1` (its version is `@2` for its

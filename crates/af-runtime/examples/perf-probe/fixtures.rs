@@ -196,7 +196,7 @@ const OUTPUT_SCHEMA: &str = r#"{"type":"object","additionalProperties":false,"re
 
 const INSTRUCTIONS: &str = "Performance fixture Worker. It is never executed.\n";
 
-const PIPELINE: &str = r#"schema = "af.pipeline/1"
+const PIPELINE: &str = r#"schema = "af.pipeline/6"
 name = "perf/two-node"
 version = "1.0.0"
 max_attempts = 3
@@ -355,7 +355,7 @@ pub fn persistence_blob() -> Vec<u8> {
         .collect()
 }
 
-/// Lease renewals the state-append diagnostic writes and reads back.
+/// Lease release/take transitions the state-append diagnostic writes and reads back.
 pub const PERSISTENCE_EVENTS: u64 = 100;
 
 /// Exactly this many valid relevant events in the state projection fixture's Task log.
@@ -365,18 +365,27 @@ pub const PROJECTION_EVENTS: u64 = 10_000;
 /// (`fixtures/performance/cli.toml`, registry fixture `cli_state_10000`).
 pub const CLI_STATE_EVENTS: u64 = 10_000;
 
-/// Exactly this many valid relevant events in the CLI Campaign fixture's Campaign log
-/// (`fixtures/performance/cli.toml`, seed `campaign_state`).
-pub const CLI_CAMPAIGN_EVENTS: u64 = 10_000;
+/// Waiter workloads keep the old small CLI fixture and add controlled event, artifact and
+/// historical-Task scales. History is in the same Store; it is not a registry of other Stores.
+pub const WAIT_STATES: &[&str] = &[
+    "cli_wait_small_100",
+    "cli_wait_small_10000",
+    "cli_wait_large_10000",
+    "cli_wait_small_history_100",
+    "cli_wait_large_history_100",
+];
 
-/// The CLI Campaign fixture's label: the side's own `af review run --campaign` wrote it, and
-/// its log is the Campaign run `campaign-<label>` beside the review's own Task log.
-pub const CLI_CAMPAIGN: &str = "perf-campaign";
+pub fn wait_state(id: &str) -> Option<(u64, bool, usize)> {
+    Some(match id {
+        "cli_wait_small_100" => (100, false, 0),
+        "cli_wait_small_10000" => (10_000, false, 0),
+        "cli_wait_large_10000" => (10_000, true, 0),
+        "cli_wait_small_history_100" => (10_000, false, 100),
+        "cli_wait_large_history_100" => (10_000, true, 100),
+        _ => return None,
+    })
+}
 
-/// The Findings the fixture's reviewer reports in its one Round, one per line of
-/// `src/fixture.txt` in `fixtures/performance/cli/campaign-roots/repo`.
-pub const CLI_CAMPAIGN_FINDINGS: usize = 100;
-
-/// The Campaign state directory the side's `af review run` wrote, relative to the parent of the
-/// writer's scratch: the setup creates the scratch beside it.
-pub const CLI_CAMPAIGN_STATE: &str = "campaign";
+/// Exactly this many current Task events in the native Review seed
+/// (`fixtures/performance/cli.toml`, seed `native_review_state`).
+pub const CLI_NATIVE_REVIEW_EVENTS: u64 = 10_000;

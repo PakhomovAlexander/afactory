@@ -3,7 +3,7 @@
 //! with no usage report at capacity, ADR-0143), two
 //! Tasks of one Store (one of them later collected, and reported alone), and two Tasks under two
 //! pipelines, one whose review round recorded a major and a minor finding. Every `--json` document validates against
-//! `schemas/task-report-v3.json`, every Markdown block passes `scripts/check-pr-report.py` (beside
+//! `schemas/task-report-v4.json`, every Markdown block passes `scripts/check-pr-report.py` (beside
 //! the lines added block a description also carries, ADR-0195), and
 //! neither carries a Provider label, a path or an account the Store or the machine holds.
 
@@ -54,7 +54,7 @@ fn stdout(output: &Output) -> String {
 /// The `--json` document, validated against the published schema.
 fn document(repo: &Path, state: &Path, ids: &[&str]) -> Value {
     let value: Value = serde_json::from_str(&stdout(&report(repo, state, ids, true))).unwrap();
-    schemas::valid(&schemas::validator("task-report-v3.json"), &value);
+    schemas::valid(&schemas::validator("task-report-v4.json"), &value);
     value
 }
 
@@ -328,7 +328,7 @@ fn a_task_resumed_once_reports_two_runs_and_active_time_below_its_wall_time() {
     // has no review to report.
     assert!(
         markdown.contains(
-            "\n**fixture/implementation@1.0.0**: implement (command) → gate (pagination) → \
+            "\n**fixture/implementation@1.0.1**: implement (command) → gate (pagination) → \
              evaluate (command)\n"
         ),
         "{markdown}"
@@ -457,7 +457,7 @@ fn fixture_report(f: &Fixture, json: bool) -> String {
     let text = stdout(&command.output().unwrap());
     if json {
         let value: Value = serde_json::from_str(&text).unwrap();
-        schemas::valid(&schemas::validator("task-report-v3.json"), &value);
+        schemas::valid(&schemas::validator("task-report-v4.json"), &value);
     }
     text
 }
@@ -646,7 +646,7 @@ fn a_capacity_failure_without_usage_is_charged_zero_and_reported_as_unknown() {
     // `af task show --json`: the settlement carries the marker and a closed diagnostic.
     let shown = f.cli(&["task", "show", "release-notes"]);
     let shown: Value = serde_json::from_slice(&shown.stdout).unwrap();
-    schemas::valid(&schemas::validator("task-inspection-v17.json"), &shown);
+    schemas::valid(&schemas::validator("task-inspection-v21.json"), &shown);
     assert_eq!(shown["unknown_usage_attempts"], 1, "{shown:#}");
     let settled = shown["execution_records"]
         .as_array()
@@ -679,7 +679,7 @@ fn a_capacity_failure_without_usage_is_charged_zero_and_reported_as_unknown() {
     assert!(listed.contains("5712 (+1 unknown)"), "{listed}");
     let listed: Value = serde_json::from_slice(&f.cli(&["task", "list"]).stdout).unwrap();
     schemas::valid(
-        &schemas::validator("task-list-entry-v4.json"),
+        &schemas::validator("task-list-entry-v5.json"),
         &listed["tasks"][0],
     );
     assert_eq!(
@@ -766,7 +766,7 @@ fn a_collected_task_keeps_its_unknown_usage_count() {
             .stdout,
     )
     .unwrap();
-    schemas::valid(&schemas::validator("task-gc-v1.json"), &preview);
+    schemas::valid(&schemas::validator("task-gc-v2.json"), &preview);
     assert_eq!(
         preview["tasks"][0]["unknown_usage_attempts"], 1,
         "{preview:#}"
@@ -778,7 +778,7 @@ fn a_collected_task_keeps_its_unknown_usage_count() {
         serde_json::json!(["release-notes"]),
         "{collected:#}"
     );
-    schemas::valid(&schemas::validator("task-gc-v1.json"), &collected);
+    schemas::valid(&schemas::validator("task-gc-v2.json"), &collected);
 
     // `af task list`: the tombstone keeps the count, in both forms.
     let listed = fixture_text(&f, &["task", "list"]);
@@ -790,7 +790,7 @@ fn a_collected_task_keeps_its_unknown_usage_count() {
     assert!(row.contains("collected "), "{row}");
     let listed: Value = serde_json::from_slice(&f.cli(&["task", "list"]).stdout).unwrap();
     let entry = &listed["tasks"][0];
-    schemas::valid(&schemas::validator("task-list-entry-v4.json"), entry);
+    schemas::valid(&schemas::validator("task-list-entry-v5.json"), entry);
     assert_eq!(entry["unknown_usage_attempts"], 1, "{entry:#}");
     assert_eq!(entry["collected"]["unknown_usage_attempts"], 1, "{entry:#}");
     schemas::valid(
@@ -1179,7 +1179,7 @@ print(json.dumps({'type':'turn.completed','usage':usage}))
 /// finished.
 #[test]
 fn a_refresh_that_binds_a_node_to_another_worker_charges_each_attempt_to_its_own_worker() {
-    use af_contracts::task::pipeline::PipelineDefinitionV1;
+    use af_contracts::task::pipeline::PipelineDefinition;
     use af_pipeline_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
     use std::os::unix::fs::PermissionsExt;
     let directory = tempfile::tempdir().unwrap();
@@ -1227,7 +1227,7 @@ fn a_refresh_that_binds_a_node_to_another_worker_charges_each_attempt_to_its_own
     worker.signature.attempt.as_mut().unwrap().wall_ms = 180000;
     std::fs::write(&manifest, toml::to_string(&worker).unwrap()).unwrap();
     let definition = packages.join("implementation/pipeline.toml");
-    let mut command: PipelineDefinitionV1 =
+    let mut command: PipelineDefinition =
         toml::from_str(&std::fs::read_to_string(&definition).unwrap()).unwrap();
     // The abandoned Attempt keeps its charge, so the finishing run needs a second implementer
     // Attempt within the slot and pipeline limits.
@@ -1249,7 +1249,7 @@ fn a_refresh_that_binds_a_node_to_another_worker_charges_each_attempt_to_its_own
     for name in ["model-implementer", "model-implementation"] {
         catalog["packages"].as_table_mut().unwrap().insert(
             format!("fixture/{name}"),
-            toml::Value::try_from(serde_json::json!({"version": "1.0.0", "digest": "",
+            toml::Value::try_from(serde_json::json!({"version": if name == "model-implementation" { &model.version } else { &worker.version }, "digest": "",
                 "path": format!(".af/task-packages/fixture/{name}")}))
             .unwrap(),
         );
@@ -1372,7 +1372,7 @@ fn a_refresh_that_binds_a_node_to_another_worker_charges_each_attempt_to_its_own
 
     let value = document(&repo, &state, &[task_interrupt::TASK]);
     let task = &value["tasks"][0];
-    assert_eq!(task["pipeline"], "fixture/implementation@1.0.0", "{task:#}");
+    assert_eq!(task["pipeline"], "fixture/implementation@1.0.1", "{task:#}");
     assert_eq!(task["runs"], 2, "the refresh is not a run: {task:#}");
     let rows: Vec<&Value> = task["nodes"]
         .as_array()
@@ -1481,7 +1481,7 @@ fn several_tasks_give_one_row_each_in_order_and_an_unknown_id_prints_nothing() {
             .to_string()
     );
     for task in tasks {
-        assert_eq!(task["pipeline"], "fixture/plain@1.0.0");
+        assert_eq!(task["pipeline"], "fixture/plain@1.0.1");
         assert_eq!(task["runs"], 1);
         assert_eq!(task["attempts"]["failed"], 0);
     }
@@ -1499,7 +1499,7 @@ fn several_tasks_give_one_row_each_in_order_and_an_unknown_id_prints_nothing() {
     assert_eq!(
         markdown
             .lines()
-            .filter(|line| line.starts_with("**fixture/plain@1.0.0**: "))
+            .filter(|line| line.starts_with("**fixture/plain@1.0.1**: "))
             .count(),
         1,
         "{markdown}"
@@ -1575,7 +1575,7 @@ fn several_tasks_give_one_row_each_in_order_and_an_unknown_id_prints_nothing() {
     };
     // The collected Task's plan is gone: one line says its pipeline is not retained.
     assert_eq!(pipelines(&markdown).len(), 2, "{markdown}");
-    assert!(pipelines(&markdown)[0].starts_with("**fixture/plain@1.0.0**: "));
+    assert!(pipelines(&markdown)[0].starts_with("**fixture/plain@1.0.1**: "));
     assert_eq!(pipelines(&markdown)[1], TASK_REPORT_UNKNOWN_PIPELINE);
     assert_block_is_checked(&markdown);
 
@@ -1923,14 +1923,14 @@ fn two_pipelines_lead_the_block_in_first_use_order_above_one_row_per_round() {
         .collect();
     assert_eq!(
         labels,
-        ["fixture/implementation@1.0.0", "fixture/plain@1.0.0"],
+        ["fixture/implementation@1.0.1", "fixture/plain@1.0.1"],
         "{value:#}"
     );
     let markdown = stdout(&report(&repo, &state, &ids, false));
     let lines: Vec<&str> = markdown.lines().collect();
     assert_eq!(lines[..3], [TASK_REPORT_BEGIN, "### af task report", ""]);
     assert!(
-        lines[3].starts_with("**fixture/implementation@1.0.0**: implement (command) → "),
+        lines[3].starts_with("**fixture/implementation@1.0.1**: implement (command) → "),
         "{markdown}"
     );
     assert!(
@@ -1939,7 +1939,7 @@ fn two_pipelines_lead_the_block_in_first_use_order_above_one_row_per_round() {
     );
     assert_eq!(
         lines[5],
-        "**fixture/plain@1.0.0**: implement (command) → gate (pagination) → evaluate (command)",
+        "**fixture/plain@1.0.1**: implement (command) → gate (pagination) → evaluate (command)",
         "{markdown}"
     );
     assert_eq!(
@@ -2008,7 +2008,7 @@ fn two_pipelines_lead_the_block_in_first_use_order_above_one_row_per_round() {
         .collect();
     assert_eq!(
         pipelines,
-        ["**fixture/plain@1.0.0", "**fixture/implementation@1.0.0"],
+        ["**fixture/plain@1.0.1", "**fixture/implementation@1.0.1"],
         "{reversed}"
     );
     assert_block_is_checked(&reversed);
@@ -2026,7 +2026,11 @@ fn a_report_warns_when_two_candidates_take_the_same_adr_number() {
     assert_eq!(script.matches(marker).count(), 1, "{script}");
     let adr = "import os\nname='second' if 'again' in json.dumps(request) else 'first'\n\
                os.makedirs('docs/adr', exist_ok=True)\n\
-               open('docs/adr/0205-%s.md' % name,'w').write('# 196\\n')\n";
+               open('docs/adr/0205-%s.md' % name,'w').write('# 196\\n')\n\
+               open('docs/adr/2026-11-05-%s.md' % name,'w').write('# distinct')\n\
+               open('docs/adr/2026-11-05-shared.md','w').write('# shared')\n\
+               open('docs/adr/2026-11-05-\\x1b[31mred\\nforged\\tend.md','w').write('# controls')\n\
+               open('docs/adr/2026-11-05-same%s.md' % ('\\x01' if name == 'first' else '\\x02'),'w').write('# distinct controls')\n";
     std::fs::write(
         &worker,
         script.replacen(marker, &format!("{adr}{marker}"), 1),
@@ -2071,6 +2075,25 @@ fn a_report_warns_when_two_candidates_take_the_same_adr_number() {
         "{said}"
     );
     assert!(flat.contains(", gc-newer (docs/adr/0205-"), "{said}");
+    assert!(
+        flat.contains("ADR 2026-11-05-shared is added by 2 Tasks"),
+        "{said}"
+    );
+    assert!(
+        flat.contains("ADR 2026-11-05-?[31mred?forged?end is added by 2 Tasks"),
+        "{said}"
+    );
+    assert!(
+        !said.contains(['\u{1b}', '\t', '\u{1}', '\u{2}']),
+        "{said:?}"
+    );
+    assert!(!flat.contains("ADR 2026-11-05-first is added"), "{said}");
+    assert!(!flat.contains("ADR 2026-11-05-second is added"), "{said}");
+    assert!(!flat.contains("ADR 2026-11-05-same? is added"), "{said}");
+    assert!(
+        !flat.contains("renumber") && !flat.contains("README"),
+        "{said}"
+    );
     for line in said.lines() {
         assert!(line.chars().count() <= 100, "{line}");
     }

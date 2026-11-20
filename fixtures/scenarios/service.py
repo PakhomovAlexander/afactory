@@ -15,7 +15,7 @@ request = json.load(sys.stdin)
 intent = request["intent_id"].split(":")[1]
 receipt = root / (intent + ".json")
 response = {
-    "schema": "af/scenario-adapter-response@1",
+    "schema": "af/scenario-adapter-response@3",
     "intent_id": request["intent_id"],
     "input_digest": request["input_digest"],
     "outcome": "absent",
@@ -35,7 +35,7 @@ if request["method"] == "observe":
             "revision": current["revision"],
             "condition": condition,
             "satisfied": current.get(condition, False),
-            "evidence": "service revision " + current["revision"],
+            "evidence": current.get("evidence", "service revision " + current["revision"]),
         },
     )
 elif request["method"] == "reconcile":

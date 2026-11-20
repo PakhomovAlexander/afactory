@@ -1,5 +1,5 @@
 {
-  "schema": "af.catalog-contract-fixtures/1",
+  "schema": "af.catalog-contract-fixtures/2",
   "pipelines": {
     "backlog/triage": {
       "contract": {
@@ -144,7 +144,7 @@
         },
         "outputs": {
           "draft": {
-            "artifact_type": "af/DocumentDraft@2",
+            "artifact_type": "af/DocumentDraft@3",
             "cardinality": "one",
             "optional": false,
             "affinity": {
@@ -172,7 +172,7 @@
         "author"
       ],
       "worker_input_type": "af/ReportInput@1",
-      "worker_output_type": "af/DocumentDraft@2",
+      "worker_output_type": "af/DocumentDraft@3",
       "attempt": {
         "tokens": 40000,
         "wall_ms": 500000
@@ -289,9 +289,9 @@
   },
   "kinds": {
     "backlog/triage-kind": {
-      "schema": "af.task-kind/1",
+      "schema": "af.task-kind/3",
       "name": "backlog/triage-kind",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "kind": "triage",
       "profile": "report"
     }

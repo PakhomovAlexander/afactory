@@ -1,5 +1,5 @@
 {
-  "schema": "af.perf-history/1",
+  "schema": "af.perf-history/2",
   "comparison": "trend_across_runs",
   "runs": [
     {

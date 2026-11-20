@@ -54,6 +54,113 @@ pub(super) fn restore_cost(
     Ok(authority.provider_admission.clone())
 }
 
+/// Admission is common Task work. The same selected receipts are reused by ordinary execution.
+pub(super) fn doctor(args: crate::cli::DoctorArgs) -> Result<i32, String> {
+    use super::*;
+    let (repo, state) = crate::project::resolve_inspect(&args.inspect)?;
+    let (_, state) = state_path(&repo, state.as_deref())?;
+    require_store(&state)?;
+    let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
+    let mut store = EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())?;
+    let id = &args.task_id;
+    let projection = store
+        .task_projection(&cas, id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| task_not_found(&state, id))?;
+    if projection.plan_id.as_deref() != Some(&args.confirm_plan)
+        || !af_contracts::is_digest(&args.confirm_plan)
+    {
+        return Err("Provider doctor requires the exact captured --confirm-plan PLAN_ID; inspect the Task first".into());
+    }
+    if matches!(projection.phase, TaskPhaseV1::Finished { .. }) {
+        return Err("A finished Task cannot run another admission".into());
+    }
+    let authority: RunAuthority = serde_json::from_value(
+        cas.get_json(&projection.revision.authority.policy_id)
+            .map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let mut compiler = planning::restore(&cas, &projection, &authority)?;
+    let plan: ExecutionPlan = artifact(&cas, &args.confirm_plan, EXECUTION_PLAN_V4)?;
+    if plan.preparation.is_some() {
+        return Err("Provider doctor requires an executable native Task plan".into());
+    }
+    let graph: CompiledTask = artifact(&cas, &plan.compiled_graph_id, COMPILED_TASK_V4)?;
+    compiler = restore_experimental_slots(compiler, &graph)?;
+    let root = &graph
+        .calls
+        .get("root")
+        .ok_or("Task has no captured root")?
+        .pipeline;
+    let adapters = bind_models(
+        &cas,
+        &mut compiler,
+        &authority,
+        &projection.revision_id,
+        root,
+    )?;
+    compiler.validate_plan(&cas, &projection.revision, &plan)?;
+    let profile = selected_profile(&compiler, &authority, &projection.revision.kind, None)?;
+    let inner = captured_domain(
+        &cas,
+        &authority,
+        profile,
+        graph.clone(),
+        &plan,
+        &compiler,
+        &state,
+        &repo,
+    )?;
+    let models = model_bindings(&plan, &graph, &adapters)?;
+    let domain = ProviderTaskDomain {
+        graph: &graph,
+        models: &models,
+        inner: inner.as_ref(),
+    };
+    let environment = domain::environment(&cas, &authority, profile)?;
+    let host = CapturedTaskHost::capture_with_models(
+        &cas,
+        &compiler,
+        &projection.revision,
+        &plan,
+        graph.clone(),
+        environment.as_ref(),
+        &domain,
+        &models,
+    )?;
+    let developer = developer::host(&cas, &authority, None);
+    let trusted = CapturedTaskAuthority::new(&compiler, &host, developer.as_ref());
+    let lease = recovery::take_lease(&cas, &mut store, id, &format!("cli-{}", writer_pid()))?;
+    let outcome: Result<bool, String> = (|| {
+        confirm_current_plan(&cas, &store, id, Some(&args.confirm_plan))?;
+        store
+            .recover_task_attempts(&cas, &lease)
+            .map_err(|e| e.to_string())?;
+        if !projection.admitted {
+            store
+                .admit_task_plan(&cas, &lease, &trusted)
+                .map_err(|e| e.to_string())?;
+        }
+        let shared = af_store::SharedEventStore::new(&mut store);
+        let cancellation = std::sync::atomic::AtomicBool::new(false);
+        crate::interrupt::forwarding(&cancellation, || {
+            let runtime = TaskRuntime::with_store(shared, &cas, lease.clone(), &trusted, &host)?
+                .with_cancellation(&cancellation)
+                .with_lease_timing(recovery::timing());
+            let report = runtime.execute_provider_admissions()?;
+            crate::interrupt::check()?;
+            Ok(report.ready())
+        })
+    })();
+    let released = store
+        .release_task_lease(&cas, &lease)
+        .map_err(|e| e.to_string());
+    let ready = outcome?;
+    released?;
+    present(&cas, &store, id, args.inspect.json, false)?;
+    Ok(if ready { 0 } else { 6 })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -7,11 +7,8 @@ mod support;
 
 mod code_policy_schema;
 mod optimization_producers;
-mod receipt_authority;
 mod remote_checks;
-mod task_campaign_review;
 mod task_implementation;
-mod task_review;
 mod task_review_execute_checks;
 mod task_runtime;
 mod telemetry_processes;

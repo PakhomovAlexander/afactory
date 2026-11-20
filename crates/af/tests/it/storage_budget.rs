@@ -236,8 +236,8 @@ fn action_only_scenario_start_resume_and_ant_tick_install_and_sweep_the_storage_
     let literal =
         |kind: &str, data: Value| json!({"source":"literal","value":{"type":kind,"value":data}});
     let bundle = json!({
-        "schema":"af/scenario-bundle@5","root":"main","definitions":{"main":{
-            "schema":"af/scenario@5","inputs":{"file":"text"},"outputs":{"ok":"boolean"},
+        "schema":"af/scenario-bundle@10","root":"main","definitions":{"main":{
+            "schema":"af/scenario@10","inputs":{"file":"text"},"outputs":{"ok":"boolean"},
             "steps":[{"id":"write","operation":{"kind":"action","grant":grant,
                 "requires_decision":false,"required_condition":null},
                 "inputs":{"file":{"source":"input","port":"file"},
@@ -249,7 +249,7 @@ fn action_only_scenario_start_resume_and_ant_tick_install_and_sweep_the_storage_
             "authority":{"task_plans":[],"task_templates":[],"grants":[grant],"decision_owners":[]},"limits":limits
         }}
     });
-    let policy = json!({"schema":"af/scenario-policy@5","adapters":{},"task_plans":[],"task_templates":[],
+    let policy = json!({"schema":"af/scenario-policy@8","adapters":{},"task_plans":[],"task_templates":[],
         "decision_keys":{},"file_roots":[owned]});
     let write = |path: &Path, value: &Value| {
         std::fs::write(path, serde_json::to_vec(value).unwrap()).unwrap();
@@ -304,9 +304,9 @@ fn action_only_scenario_start_resume_and_ant_tick_install_and_sweep_the_storage_
             _ => {
                 write(
                     &ant_file,
-                    &json!({"schema":"af/ant@5","id":"daily","scenario":bundle,
+                    &json!({"schema":"af/ant@11","id":"daily","scenario":bundle,
                     "inputs":{"file":{"type":"text","value":id}},
-                    "schedule":{"timezone":"UTC","hour":12,"minute":0,"start_unix_ms":due},
+                    "schedule":{"kind":"daily","timezone":"UTC","hour":12,"minute":0,"start_unix_ms":due},
                     "owner":"owner","notification":"local:owner","execution":{"overlap":"skip",
                         "missed":"skip","lateness_ms":1000,"per_run":limits,
                         "rolling_tokens":0,"rolling_window_ms":86400000}}),
@@ -874,7 +874,7 @@ fn claude_review(machine: &Machine) -> (PathBuf, PathBuf, PathBuf) {
         providers.insert(package, toml::Value::String("claude-personal".into()));
     }
     let pipeline_dir = repo.join(".af/task-packages/fixture/review");
-    let mut pipeline: af_contracts::task::pipeline::PipelineDefinitionV1 =
+    let mut pipeline: af_contracts::task::pipeline::PipelineDefinition =
         toml::from_str(&std::fs::read_to_string(pipeline_dir.join("pipeline.toml")).unwrap())
             .unwrap();
     pipeline.max_attempts = 4;
@@ -933,6 +933,7 @@ fn run_claude_review(machine: &Machine, repo: &Path, state: &Path, env: &[(&str,
         &env,
         &[
             "review",
+            "run",
             "--file",
             "review.json",
             "--json",
@@ -1029,7 +1030,7 @@ fn the_sweep_that_ends_a_run_is_an_observation_of_its_task() {
     let (stdout, stderr) = text(&newer);
     assert!(newer.status.success(), "{stdout}\n{stderr}");
     let shown = json(&show("gc-newer", true));
-    schemas::valid(&schemas::validator("task-inspection-v17.json"), &shown);
+    schemas::valid(&schemas::validator("task-inspection-v21.json"), &shown);
     let [sweep] = shown["storage_sweeps"].as_array().unwrap().as_slice() else {
         panic!("one storage sweep: {shown}");
     };
@@ -1067,20 +1068,37 @@ fn mode(path: &Path) -> u32 {
 /// `af review run --state DIR`: a run that fails right after it opened its Store, which is all
 /// these tests need (no policy revision is given).
 fn review_run(machine: &Machine, repo: &Path, state: &Path, env: &[(&str, &str)]) -> Output {
-    machine.af(
+    // A current, valid Task request opens its Store before refusing the unborn source.
+    // No old Campaign execution/configuration is used to exercise generic storage admission.
+    let request = machine.root.join("storage-admission.json");
+    std::fs::write(&request, r#"{"schema":"af.task-file/1","task_id":"keep","kind":"review","goal":"Storage admission","strategy":"light","facts":{},"limits":{"tokens":1000,"max_attempts":3,"wall_ms":60000,"verification":{"tokens":0,"attempts":3,"wall_ms":15000}}}"#).unwrap();
+    let output = machine.af(
         repo,
         env,
         &[
             "review",
             "run",
+            "--file",
+            request.to_str().unwrap(),
             "--repo",
             repo.to_str().unwrap(),
-            "--campaign",
-            "keep",
             "--state",
             state.to_str().unwrap(),
         ],
-    )
+    );
+    // Plant the still-supported registered Review category in this disposable machine.
+    // Generic accounting/retention/removal safety for that category survives frontend retirement.
+    let registry = machine.state_home().join("af/stores.toml");
+    if let Ok(text) = std::fs::read_to_string(&registry) {
+        let mut value: toml::Value = toml::from_str(&text).unwrap();
+        for entry in value["store"].as_array_mut().unwrap() {
+            if entry["path"].as_str() == state.to_str() {
+                entry["kind"] = "review".into();
+            }
+        }
+        std::fs::write(registry, toml::to_string(&value).unwrap()).unwrap();
+    }
+    output
 }
 
 fn git_repo(machine: &Machine) -> PathBuf {
@@ -1155,7 +1173,11 @@ fn an_explicit_state_directory_must_be_new_empty_or_afs_and_a_new_store_is_priva
             }
         }
         assert!(state.join("events.sqlite").is_file());
-        for directory in ["cas", "cas/objects", "git-home"] {
+        assert!(
+            !state.join("git-home").exists(),
+            "native capture uses an ephemeral private home"
+        );
+        for directory in ["cas", "cas/objects"] {
             assert_eq!(mode(&state.join(directory)), 0o700, "{directory}");
         }
     }
@@ -1374,7 +1396,7 @@ fn a_sweep_whose_remainder_cannot_be_measured_leaves_a_replayable_receipt_on_its
         machine.af(&repo, &[], &args)
     };
     let shown = json(&show(true));
-    schemas::valid(&schemas::validator("task-inspection-v17.json"), &shown);
+    schemas::valid(&schemas::validator("task-inspection-v21.json"), &shown);
     let [sweep] = shown["storage_sweeps"].as_array().unwrap().as_slice() else {
         panic!("one storage sweep: {shown}");
     };

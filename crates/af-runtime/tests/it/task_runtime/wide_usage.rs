@@ -84,14 +84,18 @@ fn failed_worker_and_provider_overruns_retain_exact_usage_in_the_common_runtime(
                 } else {
                     Ok(bytes)
                 },
-                usage: Some(
-                    af_runner::TokenUsage {
-                        input_tokens: Some(if n == self.overrun_at { u64::MAX } else { cost }),
-                        chargeable_tokens: if n == self.overrun_at { u64::MAX } else { cost },
-                        ..Default::default()
-                    }
+                usage: Some(af_contracts::task::usage::TaskTokenUsageV3 {
+                    input_tokens: Some(
+                        u128::from(if n == self.overrun_at { u64::MAX } else { cost }).into(),
+                    ),
+                    chargeable_tokens: u128::from(if n == self.overrun_at {
+                        u64::MAX
+                    } else {
+                        cost
+                    })
                     .into(),
-                ),
+                    ..Default::default()
+                }),
                 native_failure: None,
             }
         }

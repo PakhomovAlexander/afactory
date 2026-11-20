@@ -1,15 +1,13 @@
-//! The native output schema of a Worker's reply. A typed Worker request derives it from its own
-//! captured output schemas (ADR-0103, ADR-0208); a review-Campaign reviewer's prompt carries the
-//! flat `ReviewerResult@2` contract, whose schema is [`reviewer_result`] (ADR-0246). Every
-//! adapter that constrains a reply natively builds it here, through [`ReplyContract`], so the two
-//! cannot drift: Claude Code receives [`ReplyContract::transport`] inline as `--json-schema`;
-//! Codex receives [`ReplyContract::strict`] as the `--output-schema` file.
-//!
-//! The native facility only refuses a structurally wrong reply before it is charged as a
-//! reply failure. It never replaces the kernel's validation: the captured contract, or the
-//! Reviewer Result parser and admission, still admits or refuses every reply in full.
+//! Provider-native output schemas derived from a Task Worker's captured request (ADR-0103,
+//! ADR-0208). Claude Code receives the transport schema inline as `--json-schema`; Codex
+//! receives its strict projection through `--output-schema`. The kernel still enforces the
+//! complete captured payload contracts, including every constraint omitted by that projection.
 
 use serde_json::{Map, Value, json};
+
+mod dialect;
+pub use dialect::validate_strict;
+use dialect::{allows_type, compatible_literals, has_type, scalar_type};
 
 use super::{MAX_WORKER_BYTES, WORKER_REPLY_FORMAT, WorkerRequest};
 
@@ -19,9 +17,6 @@ pub enum ReplyContract {
     /// The typed request's own captured output schemas (ADR-0103, ADR-0208). A captured legacy
     /// prompt has none and runs unconstrained.
     Request,
-    /// The flat `ReviewerResult@2` of a review-Campaign reviewer with its proposal and notes
-    /// transport fields, whatever prompt carries it (ADR-0246).
-    ReviewerResult,
 }
 
 impl ReplyContract {
@@ -30,7 +25,6 @@ impl ReplyContract {
     pub fn transport(self, input: &[u8]) -> Result<Option<Value>, String> {
         match self {
             Self::Request => transport(input),
-            Self::ReviewerResult => Ok(Some(reviewer_result())),
         }
     }
 
@@ -39,9 +33,6 @@ impl ReplyContract {
     pub fn strict(self, input: &[u8]) -> Result<Option<Value>, String> {
         match self {
             Self::Request => strict(input),
-            Self::ReviewerResult => project(&reviewer_result(), 0)
-                .map(Some)
-                .ok_or_else(|| "The Reviewer Result schema has no strict projection".into()),
         }
     }
 
@@ -50,88 +41,8 @@ impl ReplyContract {
     pub fn normalize_strict_reply(self, input: &[u8], reply: &[u8]) -> Vec<u8> {
         match self {
             Self::Request => normalize_strict_reply(input, reply),
-            Self::ReviewerResult => {
-                let Ok(mut value) = serde_json::from_slice::<Value>(reply) else {
-                    return reply.to_vec();
-                };
-                strip_optional_nulls(&mut value, &reviewer_result(), 0);
-                serde_json::to_vec(&value).unwrap_or_else(|_| reply.to_vec())
-            }
         }
     }
-}
-
-/// The structural schema of a review-Campaign reviewer's final message: the `ReviewerResult@2`
-/// fields of `schemas/reviewer-result-v2.json` with their types, required fields, enums and
-/// closed objects, beside the two transport fields a reply may carry next to the flat result,
-/// the optional `proposal` (ADR-0038) and `notes` (warm layers). Every value rule the result
-/// schema adds — string bounds and patterns, the canonical path grammar, the line and confidence
-/// ranges, the change-wide line rule — and every rule of the Campaign itself, such as one
-/// disposition per assigned prior Finding, stays the kernel's, unchanged (ADR-0246).
-pub fn reviewer_result() -> Value {
-    let string = || json!({"type":"string"});
-    let strings = || json!({"type":"array","items":{"type":"string"}});
-    json!({
-        "type":"object", "additionalProperties":false,
-        "required":["reports","benchmark_demands","dispositions"],
-        "properties":{
-            "reports":{"type":"array","items":{
-                "type":"object", "additionalProperties":false,
-                "required":["severity","file","title","body","fix"],
-                "properties":{
-                    "severity":{"enum":["blocker","major","minor"]},
-                    "file":string(),
-                    "line":{"type":["integer","null"]},
-                    "title":string(),
-                    "body":string(),
-                    "fix":string(),
-                    "confidence":{"type":["number","null"]},
-                    "rule_id":string(),
-                    "occurrence_key":string()
-                }
-            }},
-            "benchmark_demands":{"type":"array","items":{
-                "type":"object", "additionalProperties":false,
-                "required":["claim","why","suggested_method"],
-                "properties":{"claim":string(),"why":string(),"suggested_method":string()}
-            }},
-            "dispositions":{"type":"array","items":{
-                "type":"object", "additionalProperties":false,
-                "required":["finding_id","position","reason"],
-                "properties":{
-                    "finding_id":string(),
-                    "position":{"enum":["corroborate","not_reproduced","dispute"]},
-                    "reason":string()
-                }
-            }},
-            "proposal":{
-                "type":"object", "additionalProperties":false,
-                "required":["patch","paths","description"],
-                "properties":{
-                    "patch":string(),
-                    "report_indexes":{"type":"array","items":{"type":"integer"}},
-                    "finding_ids":strings(),
-                    "evidence_ids":strings(),
-                    "paths":strings(),
-                    "description":string(),
-                    "auto_apply_nominated":{"type":"boolean"}
-                }
-            },
-            "notes":{
-                "type":"object", "additionalProperties":false,
-                "properties":{
-                    "inspected":strings(),
-                    "model_of_change":string(),
-                    "open_questions":strings(),
-                    "hints":{"type":"array","items":{
-                        "type":"object", "additionalProperties":false,
-                        "required":["path","note"],
-                        "properties":{"path":string(),"note":string()}
-                    }}
-                }
-            }
-        }
-    })
 }
 
 /// The typed request `input` renders, when it is one: None for a captured legacy prompt.
@@ -174,8 +85,6 @@ pub fn transport(input: &[u8]) -> Result<Option<Value>, String> {
     };
     let mut properties = Map::new();
     for (index, (port, mut payload)) in request.output_schemas.into_iter().enumerate() {
-        // Captured contracts already forbid $id and external references. No resolver or schema
-        // simplification is added here; the original Kernel validator remains authoritative.
         match &mut payload {
             Value::Object(schema) if !schema.contains_key("$id") => {
                 schema.insert(
@@ -200,6 +109,39 @@ pub fn transport(input: &[u8]) -> Result<Option<Value>, String> {
     })))
 }
 
+/// Plan-time preflight and invocation share the exact whole output-port projection.
+/// Unsupported contracts deliberately retain kernel-only validation. Invalid contracts refuse.
+pub fn strict_outputs(
+    schemas: &std::collections::BTreeMap<String, Value>,
+) -> Result<Option<Value>, String> {
+    // Check every port before deciding unsupported mode; a reference in one port must not
+    // hide a malformed schema in another.
+    for (port, payload) in schemas {
+        super::schema_validator(payload)
+            .map_err(|error| format!("Worker output port {port}: {error}"))?;
+    }
+    let mut properties = Map::new();
+    for (port, payload) in schemas {
+        let Some(payload) = project(payload, 0) else {
+            return Ok(None);
+        };
+        properties.insert(port.clone(), json!({"type":"array","items":payload}));
+    }
+    let schema = json!({
+        "type":"object", "additionalProperties":false, "required":["schema","outputs"],
+        "properties":{
+            "schema":{"type":"string","enum":["af.worker-reply/1"]},
+            "outputs":{
+                "type":"object", "additionalProperties":false,
+                "required": properties.keys().cloned().map(Value::String).collect::<Vec<_>>(),
+                "properties":properties
+            }
+        }
+    });
+    validate_strict(&schema)?;
+    Ok(Some(schema))
+}
+
 /// The keywords a strict native schema keeps; every other one is the kernel's alone to apply.
 const STRICT_KEYWORDS: [&str; 8] = [
     "type",
@@ -217,17 +159,87 @@ const STRICT_KEYWORDS: [&str; 8] = [
 /// optional property becomes required and nullable, `oneOf` becomes `anyOf`, and every keyword
 /// a strict facility does not take (`allOf`, `not`, `if`, string and number bounds, …) is left to
 /// the kernel. None when the schema cannot be projected: a boolean schema, an open map, a
-/// reference, a schema without a type.
+/// reference, or an untyped schema without inferable scalar literals.
 fn project(schema: &Value, depth: usize) -> Option<Value> {
     if depth > 32 {
         return None;
     }
+    if !compatible_literals(schema) {
+        return None;
+    }
     let schema = schema.as_object()?;
-    if schema.contains_key("$ref") || schema.contains_key("$defs") {
+    if schema.contains_key("$ref")
+        || schema.contains_key("$defs")
+        || schema.contains_key("patternProperties")
+    {
+        return None;
+    }
+    // Literal values are data, never schema nodes (including object keys named `$ref`).
+    if schema.contains_key("oneOf") && schema.contains_key("anyOf") {
+        return None;
+    }
+    let mut schema = schema.clone();
+    let literals = if let Some(value) = schema.get("const") {
+        Some(vec![value.clone()])
+    } else {
+        schema.get("enum").and_then(Value::as_array).cloned()
+    };
+    if let Some(values) = literals {
+        let values: Vec<_> = values
+            .into_iter()
+            .filter(|value| {
+                schema
+                    .get("type")
+                    .is_none_or(|types| allows_type(types, value))
+            })
+            .collect();
+        if values.iter().any(|v| scalar_type(v).is_none()) {
+            return None;
+        }
+        if values.is_empty() {
+            return None;
+        }
+        if !schema.contains_key("type") {
+            let mut types = Vec::new();
+            for value in &values {
+                let kind = scalar_type(value)?;
+                if !types.contains(&kind) {
+                    types.push(kind);
+                }
+            }
+            schema.insert(
+                "type".into(),
+                if types.len() == 1 {
+                    json!(types[0])
+                } else {
+                    json!(types)
+                },
+            );
+        }
+        schema.remove("const");
+        schema.insert("enum".into(), json!(values));
+    }
+    // Object/array keywords alone do not exclude scalar instances. In particular, an
+    // untyped union branch must not acquire an implicit object type. Scalar literal
+    // inference above is safe because the literal restriction excludes other types.
+    if !schema.contains_key("type")
+        && ["properties", "required", "additionalProperties", "items"]
+            .iter()
+            .any(|key| schema.contains_key(*key))
+    {
+        return None;
+    }
+    // Required/nullable rewriting cannot compose independently across sibling structural
+    // constraints and union branches. A closed enclosing object may require a synthetic
+    // field that a closed branch forbids; array items can contain the same conflict.
+    // Preserve the complete request in kernel-only mode rather than narrow its solutions.
+    if (schema.contains_key("anyOf") || schema.contains_key("oneOf"))
+        && (has_type(schema.get("type"), "object") || has_type(schema.get("type"), "array"))
+    {
         return None;
     }
     let mut projected = Map::new();
-    for (key, value) in schema {
+    for (key, value) in &schema {
         let key = if key == "oneOf" {
             "anyOf"
         } else {
@@ -238,7 +250,12 @@ fn project(schema: &Value, depth: usize) -> Option<Value> {
         }
         let value = match key {
             "properties" | "required" | "additionalProperties" => continue,
-            "items" => project(value, depth + 1)?,
+            "items" => {
+                if schema.contains_key("type") && !has_type(schema.get("type"), "array") {
+                    continue;
+                }
+                project(value, depth + 1)?
+            }
             "anyOf" => Value::Array(
                 value
                     .as_array()?
@@ -250,15 +267,10 @@ fn project(schema: &Value, depth: usize) -> Option<Value> {
         };
         projected.insert(key.into(), value);
     }
-    let is_object = schema.get("type").and_then(Value::as_str) == Some("object")
-        || schema.contains_key("properties");
+    let is_object = has_type(schema.get("type"), "object");
     if is_object {
         // A strict object is closed: an open map has no strict form.
-        if schema
-            .get("additionalProperties")
-            .is_some_and(|value| value != &Value::Bool(false))
-            || !schema.contains_key("additionalProperties") && !schema.contains_key("properties")
-        {
+        if schema.get("additionalProperties") != Some(&Value::Bool(false)) {
             return None;
         }
         let required: Vec<&str> = schema
@@ -280,7 +292,7 @@ fn project(schema: &Value, depth: usize) -> Option<Value> {
                 );
             }
         }
-        projected.insert("type".into(), json!("object"));
+        projected.entry("type").or_insert(json!("object"));
         projected.insert(
             "required".into(),
             Value::Array(properties.keys().cloned().map(Value::String).collect()),
@@ -288,11 +300,10 @@ fn project(schema: &Value, depth: usize) -> Option<Value> {
         projected.insert("properties".into(), Value::Object(properties));
         projected.insert("additionalProperties".into(), Value::Bool(false));
     }
-    if !projected.contains_key("type")
-        && !projected.contains_key("anyOf")
-        && !projected.contains_key("enum")
-        && !projected.contains_key("const")
-    {
+    if has_type(projected.get("type"), "array") && !projected.contains_key("items") {
+        return None;
+    }
+    if !projected.contains_key("type") && !projected.contains_key("anyOf") {
         return None;
     }
     Some(Value::Object(projected))
@@ -307,24 +318,7 @@ pub fn strict(input: &[u8]) -> Result<Option<Value>, String> {
     let Some(request) = typed_request(input)? else {
         return Ok(None);
     };
-    let mut properties = Map::new();
-    for (port, payload) in &request.output_schemas {
-        let Some(payload) = project(payload, 0) else {
-            return Ok(None);
-        };
-        properties.insert(port.clone(), json!({"type":"array","items":payload}));
-    }
-    Ok(Some(json!({
-        "type":"object", "additionalProperties":false, "required":["schema","outputs"],
-        "properties":{
-            "schema":{"type":"string","enum":["af.worker-reply/1"]},
-            "outputs":{
-                "type":"object", "additionalProperties":false,
-                "required": properties.keys().cloned().map(Value::String).collect::<Vec<_>>(),
-                "properties":properties
-            }
-        }
-    })))
+    strict_outputs(&request.output_schemas)
 }
 
 /// Remove what a strict facility made the model write and the captured contract never asked
@@ -340,7 +334,10 @@ pub fn normalize_strict_reply(input: &[u8], reply: &[u8]) -> Vec<u8> {
     let Some(outputs) = value.get_mut("outputs").and_then(Value::as_object_mut) else {
         return reply.to_vec();
     };
-    outputs.retain(|_, items| items.as_array().is_none_or(|items| !items.is_empty()));
+    outputs.retain(|port, items| {
+        !request.output_schemas.contains_key(port)
+            || items.as_array().is_none_or(|items| !items.is_empty())
+    });
     for (port, items) in outputs.iter_mut() {
         let (Some(schema), Some(items)) = (request.output_schemas.get(port), items.as_array_mut())
         else {
@@ -357,6 +354,10 @@ fn strip_optional_nulls(value: &mut Value, schema: &Value, depth: usize) {
     if depth > 32 {
         return;
     }
+    // Preserve original valid values before attempting synthetic-null removal in a union.
+    if super::schema_validator(schema).is_ok_and(|v| v.is_valid(value)) {
+        return;
+    }
     if let (Some(object), Some(properties)) = (
         value.as_object_mut(),
         schema.get("properties").and_then(Value::as_object),
@@ -366,7 +367,13 @@ fn strip_optional_nulls(value: &mut Value, schema: &Value, depth: usize) {
             .and_then(Value::as_array)
             .map(|names| names.iter().filter_map(Value::as_str).collect())
             .unwrap_or_default();
-        object.retain(|name, field| !field.is_null() || required.contains(&name.as_str()));
+        object.retain(|name, field| {
+            !field.is_null()
+                || required.contains(&name.as_str())
+                || properties.get(name).is_none_or(|schema| {
+                    super::schema_validator(schema).is_ok_and(|v| v.is_valid(&Value::Null))
+                })
+        });
         for (name, field) in object.iter_mut() {
             if let Some(property) = properties.get(name) {
                 strip_optional_nulls(field, property, depth + 1);
@@ -377,6 +384,38 @@ fn strip_optional_nulls(value: &mut Value, schema: &Value, depth: usize) {
         for item in items {
             strip_optional_nulls(item, item_schema, depth + 1);
         }
+    }
+    if super::schema_validator(schema).is_ok_and(|v| v.is_valid(value)) {
+        return;
+    }
+    // Normalize siblings first; a branch may only remove nulls when the complete
+    // enclosing contract accepts the result. Prefer the valid candidate retaining the
+    // most nulls: an earlier alternative must not erase a later one's legal nulls.
+    fn nulls(value: &Value) -> usize {
+        match value {
+            Value::Null => 1,
+            Value::Array(items) => items.iter().map(nulls).sum(),
+            Value::Object(fields) => fields.values().map(nulls).sum(),
+            _ => 0,
+        }
+    }
+    let mut best = None;
+    for keyword in ["anyOf", "oneOf"] {
+        if let Some(branches) = schema.get(keyword).and_then(Value::as_array) {
+            for branch in branches {
+                let mut normalized = value.clone();
+                strip_optional_nulls(&mut normalized, branch, depth + 1);
+                let retained = nulls(&normalized);
+                if super::schema_validator(schema).is_ok_and(|v| v.is_valid(&normalized))
+                    && best.as_ref().is_none_or(|(count, _)| retained > *count)
+                {
+                    best = Some((retained, normalized));
+                }
+            }
+        }
+    }
+    if let Some((_, normalized)) = best {
+        *value = normalized;
     }
 }
 
@@ -434,7 +473,7 @@ mod tests {
     fn an_open_map_or_a_reference_has_no_strict_projection() {
         for payload in [
             json!({"type":"object","additionalProperties":{"type":"string"}}),
-            json!({"type":"object","properties":{"a":{"$ref":"#/$defs/a"}},"additionalProperties":false}),
+            json!({"type":"object","properties":{"a":{"$ref":"#/$defs/a"}},"$defs":{"a":{"type":"string"}},"additionalProperties":false}),
             json!(true),
         ] {
             let schemas = BTreeMap::from([("result".to_string(), payload)]);
@@ -454,157 +493,511 @@ mod tests {
         assert_eq!(port["maxItems"], 1024);
         assert_eq!(port["items"]["$id"], "urn:afactory:worker-output:0");
     }
-
-    /// The structural part of a published schema: its types, required fields, enums, closed
-    /// objects and items, with local references inlined. What [`reviewer_result`] must equal.
-    fn structural(schema: &Value, root: &Value) -> Value {
-        if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
-            let name = reference.strip_prefix("#/$defs/").unwrap();
-            return structural(&root["$defs"][name], root);
-        }
-        let mut kept = Map::new();
-        for (key, value) in schema.as_object().unwrap() {
-            let value = match key.as_str() {
-                "type" | "required" | "additionalProperties" | "enum" => value.clone(),
-                "items" => structural(value, root),
-                "properties" => Value::Object(
-                    value
-                        .as_object()
-                        .unwrap()
-                        .iter()
-                        .map(|(name, property)| (name.clone(), structural(property, root)))
-                        .collect(),
-                ),
-                _ => continue,
-            };
-            kept.insert(key.clone(), value);
-        }
-        Value::Object(kept)
-    }
-
-    /// ADR-0246: the Campaign reviewer's native schema is the structure of the published
-    /// `ReviewerResult@2` schema, nothing more and nothing less, beside the two transport fields
-    /// whose properties are exactly the fields of their Rust declarations.
     #[test]
-    fn the_reviewer_schema_is_the_published_result_structure_and_its_transport_fields() {
-        let published: Value =
-            serde_json::from_str(include_str!("../../../../schemas/reviewer-result-v2.json"))
-                .unwrap();
-        let mut native = reviewer_result();
-        let properties = native["properties"].as_object_mut().unwrap();
-        let proposal = properties.remove("proposal").unwrap();
-        let notes = properties.remove("notes").unwrap();
-        assert_eq!(native, structural(&published, &published));
-
-        let declared = |value: Value| {
-            value
-                .as_object()
-                .unwrap()
-                .keys()
-                .cloned()
-                .collect::<std::collections::BTreeSet<_>>()
-        };
-        let full_proposal = serde_json::to_value(crate::ReviewerProposalDeclaration {
-            patch: "diff".into(),
-            report_indexes: vec![0],
-            finding_ids: vec!["F".into()],
-            evidence_ids: vec!["E".into()],
-            paths: vec!["a.rs".into()],
-            description: "d".into(),
-            auto_apply_nominated: true,
-        })
-        .unwrap();
-        let full_notes = serde_json::to_value(crate::ReviewerNotesDeclaration {
-            inspected: vec!["a.rs".into()],
-            model_of_change: "m".into(),
-            open_questions: vec!["q".into()],
-            hints: vec![crate::ReviewerNoteHint {
-                path: "a.rs".into(),
-                note: "n".into(),
-            }],
-        })
-        .unwrap();
-        assert_eq!(
-            declared(proposal["properties"].clone()),
-            declared(full_proposal.clone())
-        );
-        assert_eq!(
-            declared(notes["properties"].clone()),
-            declared(full_notes.clone())
-        );
-        let validator = jsonschema::draft202012::new(&reviewer_result()).unwrap();
-        let reply = json!({"reports":[],"benchmark_demands":[],"dispositions":[],
-            "proposal":full_proposal,"notes":full_notes});
-        assert!(validator.is_valid(&reply), "{reply}");
-        // Structurally wrong replies the native facility refuses: the `findings` alias, a
-        // missing field, a field the contract does not define, a severity outside the enum.
-        for wrong in [
-            json!({"findings":[],"benchmark_demands":[],"dispositions":[]}),
-            json!({"reports":[],"benchmark_demands":[]}),
-            json!({"reports":[],"benchmark_demands":[],"dispositions":[],"summary":"ok"}),
-            json!({"reports":[{"severity":"critical","file":"","title":"t","body":"b","fix":"f"}],
-                "benchmark_demands":[],"dispositions":[]}),
+    fn scalar_literal_matrix_keeps_types_values_and_explicit_restrictions() {
+        for (payload, expected_type, expected_enum) in [
+            (
+                json!({"const":"custom.issue-triage/2"}),
+                json!("string"),
+                json!(["custom.issue-triage/2"]),
+            ),
+            (
+                json!({"enum":[null,"bug","perf"]}),
+                json!(["null", "string"]),
+                json!([null, "bug", "perf"]),
+            ),
+            (
+                json!({"enum":[null,true,1,"x"]}),
+                json!(["null", "boolean", "number", "string"]),
+                json!([null, true, 1, "x"]),
+            ),
+            (
+                json!({"type":"integer","enum":[1,1.5,"1",null]}),
+                json!("integer"),
+                json!([1]),
+            ),
+            (
+                json!({"type":["string","null"],"enum":[null,"x",4]}),
+                json!(["string", "null"]),
+                json!([null, "x"]),
+            ),
         ] {
-            assert!(!validator.is_valid(&wrong), "{wrong}");
+            let projected = strict(&request(BTreeMap::from([("result".into(), payload)])))
+                .unwrap()
+                .unwrap();
+            let leaf = &projected["properties"]["outputs"]["properties"]["result"]["items"];
+            assert_eq!(leaf["type"], expected_type);
+            assert_eq!(leaf["enum"], expected_enum);
+            validate_strict(&projected).unwrap();
         }
     }
 
-    /// ADR-0246: Codex receives the strict projection of the reviewer schema, every property
-    /// required and every optional one nullable, and what it made the model write — `null` for
-    /// an absent proposal, notes, line or rule — is removed before the kernel parses the reply.
     #[test]
-    fn the_reviewer_strict_projection_round_trips_to_the_flat_result() {
-        let strict = ReplyContract::ReviewerResult.strict(b"").unwrap().unwrap();
-        let required: std::collections::BTreeSet<_> = strict["required"]
-            .as_array()
+    fn local_reference_targets_obey_shared_bounds_and_literal_boundaries() {
+        use super::super::schema_validator;
+        for location in ["default", "const", "enum/0"] {
+            for target in [
+                json!({"$id":"https://example.test/other","type":"string"}),
+                json!({"$ref":"https://example.test/other"}),
+            ] {
+                let mut schema = json!({"default":target,"const":target,"enum":[target]});
+                schema["$ref"] = json!(format!("#/{location}"));
+                assert!(schema_validator(&schema).is_err(), "{schema}");
+                schema.as_object_mut().unwrap().remove("$ref");
+                schema_validator(&schema).unwrap();
+            }
+        }
+        let cycle = json!({"$ref":"#/default","default":{"$ref":"#/default"}});
+        schema_validator(&cycle).unwrap();
+        let mut deep = json!({"type":"string"});
+        for _ in 0..65 {
+            deep = json!({"items":deep});
+        }
+        assert!(schema_validator(&json!({"$ref":"#/default","default":deep})).is_err());
+        let refs: Vec<_> = (0..8200).map(|_| json!({"$ref":"#/default"})).collect();
+        assert!(schema_validator(&json!({"allOf":refs,"default":{"type":"string"}})).is_err());
+        schema_validator(&json!({"allOf":[{"$ref":"#/default"},{"$ref":"#/default"}],"default":{"type":"string"}})).unwrap();
+    }
+
+    #[test]
+    fn local_reference_fragments_match_kernel_resolution_before_admission() {
+        use super::super::schema_validator;
+        for (reference, name) in [
+            ("#/a%20b", "a b"),
+            ("#/%D1%81%D1%85%D0%B5%D0%BC%D0%B0", "схема"),
+            ("#/%7e0", "~"),
+            ("#/%7E1", "/"),
+            ("#/%7E01", "~1"),
+            ("#/a%2520b", "a%20b"),
+        ] {
+            let mut schema = json!({"$ref":reference});
+            schema[name] = json!({"type":"string"});
+            let validator = schema_validator(&schema).unwrap();
+            assert!(validator.is_valid(&json!("ok")), "{schema}");
+            assert!(!validator.is_valid(&json!(1)), "{schema}");
+            // The encoded-name decoy must not hide a forbidden real target.
+            schema[&reference[2..]] = json!({"type":"integer"});
+            for forbidden in [
+                json!({"$id":"https://example.test/other","type":"string"}),
+                json!({"$ref":"https://example.test/other"}),
+            ] {
+                schema[name] = forbidden;
+                assert!(schema_validator(&schema).is_err(), "{schema}");
+            }
+        }
+        // Decode separators before pointer splitting, and resolve array indexes exactly
+        // as referencing does (its usize parser also accepts leading zeros).
+        for reference in ["#/default%2F0", "#/default/00"] {
+            let schema = json!({"$ref":reference,"default":[{"type":"string"}]});
+            assert!(schema_validator(&schema).unwrap().is_valid(&json!("ok")));
+        }
+        for fragment in ["%", "%2", "%GG", "%FF", "%C3%28"] {
+            let reference = format!("#/{fragment}");
+            let mut schema = json!({"$ref":reference});
+            schema[fragment] = json!({"type":"string"});
+            // Invalid URI escapes / non-UTF8 fragments fail under the pinned library;
+            // a raw encoded-key decoy never authorizes a different decoded target.
+            assert!(jsonschema::draft202012::options().build(&schema).is_err());
+            assert!(schema_validator(&schema).is_err());
+        }
+        for reference in ["#anchor", "https://example.test/schema", "file:///schema"] {
+            assert!(schema_validator(&json!({"$ref":reference})).is_err());
+        }
+    }
+
+    #[test]
+    fn literal_contradictions_use_kernel_numeric_equality() {
+        for (value, member, projected) in [
+            (json!(1), json!(1.0), true),
+            (json!(1.0), json!(1), true),
+            (json!(-0.0), json!(0), true),
+            (json!([1, {"n": 2}]), json!([1.0, {"n": 2.0}]), false),
+            (json!({"n": [1]}), json!({"n": [1.0]}), false),
+        ] {
+            let payload = json!({"const":value,"enum":[member]});
+            let validator = super::super::schema_validator(&payload).unwrap();
+            assert!(validator.is_valid(&value), "{payload}");
+            assert!(validator.is_valid(&member), "{payload}");
+            let result = strict(&request(BTreeMap::from([("result".into(), payload)]))).unwrap();
+            assert_eq!(result.is_some(), projected);
+            if let Some(schema) = result {
+                validate_strict(&schema).unwrap();
+                let leaf = &schema["properties"]["outputs"]["properties"]["result"]["items"];
+                let projected_validator = super::super::schema_validator(leaf).unwrap();
+                assert!(projected_validator.is_valid(&value));
+                assert!(projected_validator.is_valid(&member));
+            }
+        }
+        for (value, member) in [
+            (json!(1), json!(1.5)),
+            (json!(9007199254740993_u64), json!(9007199254740992_u64)),
+            (json!([1, {"n": 2}]), json!([1.0, {"n": 3.0}])),
+            (json!({"n": [1]}), json!({"n": [2.0]})),
+        ] {
+            let payload = json!({"const":value,"enum":[member]});
+            assert!(
+                !super::super::schema_validator(&payload)
+                    .unwrap()
+                    .is_valid(&value)
+            );
+            assert!(
+                strict(&request(BTreeMap::from([("result".into(), payload)])))
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_unsupported_and_literal_objects_are_distinct_for_the_whole_request() {
+        for invalid in [json!({"type":"bogus"}), json!({"$ref":"#/$defs/missing"})] {
+            let outputs =
+                BTreeMap::from([("a_open".into(), json!(true)), ("z_bad".into(), invalid)]);
+            assert!(strict(&request(outputs)).unwrap_err().contains("z_bad"));
+        }
+        for literal in [
+            json!({"enum":[]}),
+            json!({"const":{"$ref":"https://invalid.test","type":"bogus"}}),
+            json!({"enum":[{"$id":"literal","properties":4}]}),
+        ] {
+            // This is a valid kernel schema with literal data, intentionally unsupported by
+            // scalar projection. Neither validator resolves or interprets the object's keys.
+            super::super::schema_validator(&literal).unwrap();
+            assert_eq!(
+                strict(&request(BTreeMap::from([("result".into(), literal)]))).unwrap(),
+                None
+            );
+        }
+        for (payload, instance) in [
+            (
+                json!({"anyOf":[{"type":"string","const":1},{"type":"string"}]}),
+                json!("ok"),
+            ),
+            (
+                json!({"type":"object","additionalProperties":false,"properties":{"optional":{"type":"string","const":1}}}),
+                json!({}),
+            ),
+            (
+                json!({"type":"object","properties":{"name":{"type":"string"}}}),
+                json!({"name":"x","extra":1}),
+            ),
+        ] {
+            assert!(
+                super::super::schema_validator(&payload)
+                    .unwrap()
+                    .is_valid(&instance)
+            );
+            assert!(
+                strict_outputs(&BTreeMap::from([
+                    ("result".into(), payload),
+                    ("other".into(), json!({"type":"string"})),
+                ]))
+                .unwrap()
+                .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn untyped_structural_keywords_keep_whole_request_kernel_only() {
+        for untyped in [
+            json!({"properties":{"name":{"type":"string"}},"additionalProperties":false}),
+            json!({"required":["name"],"additionalProperties":false}),
+            json!({"additionalProperties":false}),
+            json!({"properties":{}}),
+            json!({"items":{"type":"string"}}),
+        ] {
+            for payload in [
+                untyped.clone(),
+                json!({"anyOf":[untyped.clone(),{"type":"boolean"}]}),
+                json!({"oneOf":[untyped.clone(),{"type":"boolean"}]}),
+                json!({"anyOf":[{"type":"boolean"},{"anyOf":[untyped]}]}),
+            ] {
+                let outputs = BTreeMap::from([
+                    ("result".into(), payload.clone()),
+                    ("other".into(), json!({"type":"string"})),
+                ]);
+                let input = request(outputs.clone());
+                let reply = json!({"schema":"af.worker-reply/1","outputs":{"result":["done"]}});
+                assert!(
+                    super::super::schema_validator(&payload)
+                        .unwrap()
+                        .is_valid(&json!("done"))
+                );
+                let transport = transport(&input).unwrap().unwrap();
+                assert!(
+                    jsonschema::validator_for(&transport)
+                        .unwrap()
+                        .is_valid(&reply)
+                );
+                assert_eq!(strict_outputs(&outputs).unwrap(), None, "{payload}");
+                assert_eq!(strict(&input).unwrap(), None, "{payload}");
+            }
+        }
+        // Explicit object types still project, and scalar literals may safely infer a type
+        // even when irrelevant structural keywords are present.
+        for payload in [
+            json!({"type":"object","properties":{"name":{"type":"string"}},"additionalProperties":false}),
+            json!({"const":"done","properties":{}}),
+            json!({"enum":["done",null],"items":{"type":"string"}}),
+        ] {
+            let input = request(BTreeMap::from([("result".into(), payload)]));
+            validate_strict(&strict(&input).unwrap().unwrap()).unwrap();
+        }
+    }
+
+    #[test]
+    fn emitted_dialect_validator_rejects_malformed_structures_with_paths_and_bounds() {
+        for bad in [
+            json!({"const":"x"}),
+            json!({"type":"array"}),
+            json!({"type":"object","properties":{},"required":[]}),
+            json!({"anyOf":[]}),
+            json!({"type":"string","enum":[4]}),
+            json!({"type":["null","null"]}),
+            json!({"type":"number","minimum":0}),
+        ] {
+            assert!(
+                validate_strict(&bad)
+                    .unwrap_err()
+                    .starts_with("Strict schema ")
+            );
+        }
+        let mut nested = json!({"type":"string"});
+        for _ in 0..34 {
+            nested = json!({"type":"array","items":nested});
+        }
+        assert!(validate_strict(&nested).unwrap_err().contains("bound"));
+    }
+
+    #[test]
+    fn nested_nullable_arrays_unions_preserve_null_and_kernel_constraints() {
+        let payload = json!({"type":"object","additionalProperties":false,"required":["items"],"properties":{
+            "nullable":{"enum":[null,"bug"]},
+            "items":{"type":["array","null"],"items":{"oneOf":[
+                {"type":"object","required":["tag"],"additionalProperties":false,"properties":{"tag":{"const":"a"},"note":{"type":"string"}}},
+                {"type":"null"}
+            ]}}
+        }});
+        let input = request(BTreeMap::from([("result".into(), payload)]));
+        let projected = strict(&input).unwrap().unwrap();
+        validate_strict(&projected).unwrap();
+        let normalized = normalize_strict_reply(&input, br#"{"schema":"af.worker-reply/1","outputs":{"result":[{"nullable":null,"items":[{"tag":"a","note":null},null]}]}}"#);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&normalized).unwrap()["outputs"]["result"][0],
+            json!({"nullable":null,"items":[{"tag":"a"},null]})
+        );
+    }
+    #[test]
+    fn union_normalization_respects_enclosing_required_nullable_fields() {
+        for required in [json!(["a"]), json!([])] {
+            let payload = json!({"type":"object","required":required,
+            "properties":{"a":{"type":["string","null"]},"b":{"type":"string"}},
+            "additionalProperties":false,"anyOf":[
+                {"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"}},"additionalProperties":false},
+                {"type":"object","required":["a"],"properties":{"a":{"type":"null"},"b":{"type":"string"}},"additionalProperties":false}
+            ]});
+            let input = request(BTreeMap::from([("result".into(), payload.clone())]));
+            let reply =
+                json!({"schema":"af.worker-reply/1","outputs":{"result":[{"a":null,"b":null}]}});
+            // Sibling object/union rewriting is deliberately unsupported. Keep testing
+            // normalization independently against the complete original kernel contract.
+            assert_eq!(strict(&input).unwrap(), None);
+            let normalized: Value = serde_json::from_slice(&normalize_strict_reply(
+                &input,
+                &serde_json::to_vec(&reply).unwrap(),
+            ))
+            .unwrap();
+            let item = &normalized["outputs"]["result"][0];
+            assert_eq!(item, &json!({"a":null}));
+            assert!(
+                super::super::schema_validator(&payload)
+                    .unwrap()
+                    .is_valid(item)
+            );
+        }
+    }
+
+    #[test]
+    fn union_normalization_preserves_nullable_values_declared_only_in_alternatives() {
+        for keyword in ["anyOf", "oneOf"] {
+            for reverse in [false, true] {
+                let mut branches = vec![
+                    json!({"type":"object","additionalProperties":false,
+                        "properties":{"a":{"type":"string"},"b":{"type":"string"}}}),
+                    json!({"type":"object","additionalProperties":false,
+                        "properties":{"a":{"type":"null"},"b":{"type":"string"}}}),
+                ];
+                if reverse {
+                    branches.reverse();
+                }
+                let payload = json!({keyword:branches});
+                // Exercise both direct union payloads and nested array items.
+                for nested in [false, true] {
+                    let schema = if nested {
+                        json!({"type":"array","items":payload})
+                    } else {
+                        payload.clone()
+                    };
+                    let input = request(BTreeMap::from([("result".into(), schema.clone())]));
+                    let item = if nested {
+                        json!([{"a":null,"b":null}])
+                    } else {
+                        json!({"a":null,"b":null})
+                    };
+                    let reply = json!({"schema":"af.worker-reply/1","outputs":{"result":[item]}});
+                    assert!(
+                        super::super::schema_validator(&strict(&input).unwrap().unwrap())
+                            .unwrap()
+                            .is_valid(&reply)
+                    );
+                    let normalized: Value = serde_json::from_slice(&normalize_strict_reply(
+                        &input,
+                        &serde_json::to_vec(&reply).unwrap(),
+                    ))
+                    .unwrap();
+                    let item = &normalized["outputs"]["result"][0];
+                    let expected = if nested {
+                        json!([{"a":null}])
+                    } else {
+                        json!({"a":null})
+                    };
+                    assert_eq!(item, &expected, "{keyword}, reverse={reverse}");
+                    assert!(
+                        super::super::schema_validator(&schema)
+                            .unwrap()
+                            .is_valid(item)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pattern_properties_keep_explicit_unsupported_projection() {
+        let payload = json!({"type":"object","patternProperties":{"^x":{"type":"string"}},
+            "additionalProperties":false,"required":["x"]});
+        assert!(
+            super::super::schema_validator(&payload)
+                .unwrap()
+                .is_valid(&json!({"x":"ok"}))
+        );
+        assert_eq!(
+            strict(&request(BTreeMap::from([("result".into(), payload)]))).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn sibling_structural_unions_keep_whole_request_kernel_only() {
+        for keyword in ["anyOf", "oneOf"] {
+            let branch_a = json!({"type":"object","properties":{"a":{"type":"string"}},
+                "additionalProperties":false});
+            let branch_b = json!({"type":"object","properties":{"b":{"type":"string"}},
+                "additionalProperties":false});
+            let mut object = json!({"type":"object","additionalProperties":false,
+                "properties":{"a":{"type":"string"},"b":{"type":"string"}}});
+            object[keyword] = json!([branch_a, branch_b]);
+            let mut nullable = object.clone();
+            nullable["type"] = json!(["object", "null"]);
+            let mut array = json!({"type":"array","items":{
+                "type":"object","additionalProperties":false,
+                "properties":{"a":{"type":"string"},"b":{"type":"string"}}}});
+            array[keyword] = json!([
+                {"type":"array","items":branch_a},
+                {"type":"array","items":branch_b}
+            ]);
+            let mut nullable_array = array.clone();
+            nullable_array["type"] = json!(["array", "null"]);
+            for (payload, instance) in [
+                (object.clone(), json!({"a":"x"})),
+                (nullable, json!({"b":"x"})),
+                (array, json!([{"a":"x"}])),
+                (nullable_array, json!([{"b":"x"}])),
+                (
+                    json!({"type":"array","items":object.clone()}),
+                    json!([{"a":"x"}]),
+                ),
+                (
+                    json!({"type":"object","additionalProperties":false,"required":["nested"],
+                    "properties":{"nested":object.clone()}}),
+                    json!({"nested":{"b":"x"}}),
+                ),
+                (
+                    json!({"anyOf":[object,{"type":"boolean"}]}),
+                    json!({"a":"x"}),
+                ),
+            ] {
+                assert!(
+                    super::super::schema_validator(&payload)
+                        .unwrap()
+                        .is_valid(&instance),
+                    "{payload}: {instance}"
+                );
+                let outputs = BTreeMap::from([
+                    ("result".into(), payload.clone()),
+                    ("other".into(), json!({"const":"safe"})),
+                ]);
+                let input = request(outputs.clone());
+                let reply = json!({"schema":"af.worker-reply/1","outputs":{"result":[instance]}});
+                assert!(
+                    jsonschema::validator_for(&transport(&input).unwrap().unwrap())
+                        .unwrap()
+                        .is_valid(&reply)
+                );
+                assert_eq!(strict_outputs(&outputs).unwrap(), None, "{payload}");
+                assert_eq!(strict(&input).unwrap(), None, "{payload}");
+            }
+            // Standalone typed branches still support synthetic nulls. Scalar unions
+            // have no sibling structural rewrite and remain safe to constrain natively.
+            let mut standalone = json!({});
+            standalone[keyword] = json!([branch_a, branch_b]);
+            let mut scalar = json!({"type":["string","null"]});
+            scalar[keyword] = json!([{"const":"safe"},{"type":"null"}]);
+            for (payload, instance) in [
+                (standalone, json!({"a":"x"})),
+                (scalar.clone(), json!("safe")),
+                (scalar, Value::Null),
+            ] {
+                assert!(
+                    super::super::schema_validator(&payload)
+                        .unwrap()
+                        .is_valid(&instance)
+                );
+                let input = request(BTreeMap::from([("result".into(), payload)]));
+                let projected = strict(&input).unwrap().unwrap();
+                validate_strict(&projected).unwrap();
+                let reply = json!({"schema":"af.worker-reply/1","outputs":{"result":[instance]}});
+                assert!(
+                    super::super::schema_validator(&projected)
+                        .unwrap()
+                        .is_valid(&reply)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_scalars_ignore_object_keywords_and_union_null_is_preserved() {
+        let payload = json!({"type":"string","const":"x","properties":{"x":{"type":"string"}},"items":{"type":"string"}});
+        let projected = strict(&request(BTreeMap::from([("result".into(), payload)])))
             .unwrap()
-            .iter()
-            .map(|name| name.as_str().unwrap())
-            .collect();
-        assert_eq!(
-            required,
-            std::collections::BTreeSet::from([
-                "benchmark_demands",
-                "dispositions",
-                "notes",
-                "proposal",
-                "reports"
-            ])
-        );
-        assert_eq!(
-            strict["properties"]["proposal"]["anyOf"][1],
-            json!({"type":"null"})
-        );
-        let report = &strict["properties"]["reports"]["items"];
-        assert_eq!(report["additionalProperties"], json!(false));
-        assert_eq!(
-            report["required"].as_array().unwrap().len(),
-            report["properties"].as_object().unwrap().len()
-        );
-        let written = br#"{"reports":[{"severity":"minor","file":"a.rs","line":null,"title":"t","body":"b","fix":"f","confidence":0.5,"rule_id":null,"occurrence_key":null}],"benchmark_demands":[],"dispositions":[],"proposal":null,"notes":null}"#;
-        let validator = jsonschema::draft202012::new(&strict).unwrap();
-        assert!(validator.is_valid(&serde_json::from_slice(written).unwrap()));
-        let normalized = ReplyContract::ReviewerResult.normalize_strict_reply(b"", written);
-        assert_eq!(
-            serde_json::from_slice::<Value>(&normalized).unwrap(),
-            json!({"reports":[{"severity":"minor","file":"a.rs","title":"t","body":"b","fix":"f","confidence":0.5}],
-                "benchmark_demands":[],"dispositions":[]})
-        );
-        let parsed = crate::parse_reviewer_result(std::str::from_utf8(&normalized).unwrap());
-        assert_eq!(parsed.unwrap().reports.len(), 1);
-        assert_eq!(
-            crate::parse_proposal_declaration(std::str::from_utf8(&normalized).unwrap()),
-            Ok(None)
-        );
-        assert_eq!(
-            ReplyContract::ReviewerResult.normalize_strict_reply(b"", b"not json"),
-            b"not json"
-        );
-        // The typed-request contract is the one it always was.
-        assert_eq!(ReplyContract::Request.strict(b"a legacy prompt"), Ok(None));
-        assert_eq!(
-            ReplyContract::ReviewerResult.transport(b"a legacy prompt"),
-            Ok(Some(reviewer_result()))
+            .unwrap();
+        let item = &projected["properties"]["outputs"]["properties"]["result"]["items"];
+        assert_eq!(item, &json!({"type":"string","enum":["x"]}));
+        let payload = json!({"anyOf":[
+            {"type":"object","properties":{"a":{"type":"string"}},"additionalProperties":false},
+            {"type":"object","properties":{"a":{"type":"null"}},"additionalProperties":false}
+        ]});
+        let input = request(BTreeMap::from([("result".into(), payload)]));
+        let reply =
+            br#"{"schema":"af.worker-reply/1","outputs":{"result":[{"a":null}],"unknown":[]}}"#;
+        let normalized: Value =
+            serde_json::from_slice(&normalize_strict_reply(&input, reply)).unwrap();
+        assert_eq!(normalized["outputs"]["result"][0], json!({"a":null}));
+        assert!(
+            normalized["outputs"].get("unknown").is_some(),
+            "normalization cannot erase undeclared ports before kernel validation"
         );
     }
 }

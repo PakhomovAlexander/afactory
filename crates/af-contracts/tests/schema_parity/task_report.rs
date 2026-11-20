@@ -1,4 +1,4 @@
-//! `af/task-report@3` (ADR-0142): the Rust document and the published schema agree, the
+//! `af/task-report@4` (ADR-0142): the Rust document and the published schema agree, the
 //! checked-in fixture a test Store printed is valid, and the closed shape refuses a Provider
 //! label, a principal, a null for an unknown figure and Attempts on a collected Task.
 use super::{assert_invalid, assert_valid, validator, workspace_root};
@@ -172,7 +172,7 @@ fn report() -> TaskReportV3 {
 fn task_report_document_and_schema_agree_in_both_directions() {
     let report = report();
     let value = serde_json::to_value(&report).unwrap();
-    assert_valid("task-report-v3.json", &value);
+    assert_valid("task-report-v4.json", &value);
     assert_eq!(
         serde_json::from_value::<TaskReportV3>(value.clone()).unwrap(),
         report
@@ -185,7 +185,7 @@ fn task_report_document_and_schema_agree_in_both_directions() {
     let invalid = |edit: &dyn Fn(&mut Value), why: &str| {
         let mut changed = value.clone();
         edit(&mut changed);
-        assert_invalid("task-report-v3.json", &changed, why);
+        assert_invalid("task-report-v4.json", &changed, why);
         assert!(
             serde_json::from_value::<TaskReportV3>(changed.clone())
                 .map_err(|e| e.to_string())
@@ -332,7 +332,7 @@ fn task_report_document_and_schema_agree_in_both_directions() {
     // An incomplete round: the review ran, its counts are unknown.
     let mut incomplete = value.clone();
     unknown_counts(&mut incomplete);
-    assert_valid("task-report-v3.json", &incomplete);
+    assert_valid("task-report-v4.json", &incomplete);
     let parsed: TaskReportV3 = serde_json::from_value(incomplete.clone()).unwrap();
     parsed.validate().unwrap();
     assert_eq!(parsed.tasks[0].findings.as_ref().unwrap().major, None);
@@ -369,7 +369,7 @@ fn task_report_document_and_schema_agree_in_both_directions() {
     );
     // A version 2 document fails closed: a changed shape is a new version (ADR-0145).
     invalid(
-        &|v| v["schema"] = json!("af/task-report@2"),
+        &|v| v["schema"] = json!("af/task-report@3"),
         "the previous version",
     );
 }
@@ -378,7 +378,7 @@ fn task_report_document_and_schema_agree_in_both_directions() {
 fn the_checked_in_fixture_is_a_valid_document() {
     let path = workspace_root().join("fixtures/task-report/report.json");
     let value: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-    assert_valid("task-report-v3.json", &value);
+    assert_valid("task-report-v4.json", &value);
     serde_json::from_value::<TaskReportV3>(value)
         .unwrap()
         .validate()
@@ -398,7 +398,7 @@ fn the_model_pattern_and_the_rust_rule_agree() {
         let mut changed = value.clone();
         changed.pointer_mut("/tasks/0/nodes/0/worker").unwrap()["model"] = json!(model);
         assert_eq!(
-            validator("task-report-v3.json").is_valid(&changed),
+            validator("task-report-v4.json").is_valid(&changed),
             is_model_identity(model),
             "the schema and the Rust rule disagree on {model:?}"
         );
@@ -441,7 +441,7 @@ fn unknown_usage_counts_add_up_and_carry_closed_causes() {
     let unknown = TaskReportV3::new(pipelines, tasks).unwrap();
     assert_eq!(unknown.totals.unknown_usage, 3);
     let value = serde_json::to_value(&unknown).unwrap();
-    assert_valid("task-report-v3.json", &value);
+    assert_valid("task-report-v4.json", &value);
     assert_eq!(
         value["tasks"][0]["attempts"]["unknown_usage_causes"],
         json!([{"cause":"capacity","attempts":1},{"cause":"lease_expired","attempts":1}])
@@ -498,7 +498,7 @@ fn unknown_usage_counts_add_up_and_carry_closed_causes() {
     ] {
         let mut changed = value.clone();
         changed["tasks"][0]["attempts"]["unknown_usage_causes"][0] = edit;
-        assert_invalid("task-report-v3.json", &changed, why);
+        assert_invalid("task-report-v4.json", &changed, why);
     }
     let mut missing = value.clone();
     missing["totals"]
@@ -506,7 +506,7 @@ fn unknown_usage_counts_add_up_and_carry_closed_causes() {
         .unwrap()
         .remove("unknown_usage");
     assert_invalid(
-        "task-report-v3.json",
+        "task-report-v4.json",
         &missing,
         "the totals always carry the count",
     );

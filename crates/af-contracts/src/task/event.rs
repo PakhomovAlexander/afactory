@@ -18,22 +18,6 @@ pub enum TaskChangeV1 {
         plan_id: String,
         report_id: String,
     },
-    ReviewIntegrationSelected {
-        phase_id: String,
-    },
-    ReviewIntegrationFinished {
-        phase_id: String,
-        report_id: String,
-        #[serde(
-            default,
-            skip_serializing_if = "Option::is_none",
-            deserialize_with = "super::present_option"
-        )]
-        integration_committed_event_id: Option<String>,
-    },
-    ReviewContinued {
-        handoff_id: String,
-    },
     AdoptionObservationRecorded {
         observation_id: String,
     },
@@ -147,15 +131,6 @@ impl TaskTransitionV1 {
             require(is_digest(id), "Invalid Task transition artifact ID")?;
         }
         match &self.change {
-            TaskChangeV1::ReviewIntegrationFinished {
-                integration_committed_event_id,
-                ..
-            } => require(
-                integration_committed_event_id
-                    .as_deref()
-                    .is_none_or(super::review_integration::event_id),
-                "Invalid Integration finalization evidence",
-            ),
             TaskChangeV1::SourceRefreshed {
                 plan_id, waiting, ..
             } => require(
@@ -209,13 +184,6 @@ impl TaskTransitionV1 {
             } => {
                 vec![task_revision_id, plan_id, report_id]
             }
-            TaskChangeV1::ReviewIntegrationSelected { phase_id } => vec![phase_id],
-            TaskChangeV1::ReviewIntegrationFinished {
-                phase_id,
-                report_id,
-                ..
-            } => vec![phase_id, report_id],
-            TaskChangeV1::ReviewContinued { handoff_id } => vec![handoff_id],
             TaskChangeV1::AdoptionObservationRecorded { observation_id } => vec![observation_id],
             TaskChangeV1::SourceRefreshed {
                 revision_id,

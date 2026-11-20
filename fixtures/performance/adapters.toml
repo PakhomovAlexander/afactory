@@ -31,7 +31,7 @@ contracts = [
   "canonical_validate_v1",
   "cas_raw_get_verify_v1",
   "cas_typed_get_validate_v1",
-  "persistence_fs_v1",
+  "persistence_fs_v3",
   "sentinel_canonical_v1",
   "source_capture_seed_v1",
   "source_capture_v2",

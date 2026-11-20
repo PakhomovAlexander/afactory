@@ -293,35 +293,3 @@ impl SemanticClosureV1 {
         Ok(())
     }
 }
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SliceSetAcceptedPayloadV1 {
-    pub slice_set_id: String,
-    pub slice_set_artifact_id: String,
-}
-
-impl SliceSetAcceptedPayloadV1 {
-    pub fn validate(&self) -> Result<(), &'static str> {
-        if !crate::is_digest(&self.slice_set_id) || !crate::is_digest(&self.slice_set_artifact_id) {
-            return Err("SliceSetAccepted@1 contains an invalid artifact ID");
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RecordedSetPayloadV1 {
-    pub artifact_id: String,
-    pub record_id: String,
-}
-
-impl RecordedSetPayloadV1 {
-    pub fn validate(&self) -> Result<(), &'static str> {
-        if !crate::is_digest(&self.artifact_id) || !crate::is_digest(&self.record_id) {
-            return Err("recorded set contains an invalid artifact ID");
-        }
-        Ok(())
-    }
-}

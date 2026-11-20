@@ -257,5 +257,6 @@ def release(doc, repository):
     out = dict((key, doc[key]) for key in ("id", "tag_name", "html_url", "upload_url",
                                            "target_commitish", "prerelease", "draft"))
     require_upload(out["upload_url"].split("{", 1)[0], repository)
+    out["body"] = doc.get("body")
     out["assets"] = [asset(item) for item in doc["assets"]]
     return out

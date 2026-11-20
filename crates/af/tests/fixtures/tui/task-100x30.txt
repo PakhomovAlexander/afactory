@@ -1,20 +1,20 @@
-~/hub                       |TASK  pagination-cli  implement: "Implement this Jira ticket: offset/~"
-v hub  (project)            |PLAN  ########  configured  STATE done  started hh:mm:ssZ  elapsed  <t>
-  v providers/              |SNAP  source ########  derived ########  policy ########
-      claude-main           |
-      codex-ambient         |PROGRESS  6 / 6 stages
-  v workers/                |  [ok]  inputs
-      fixture/evaluator     |  [ok]  implement                         0 tok
-      fixture/implementer   |  [ok]  seal
-  v pipelines/              |  [ok]  check  <t>        0 tok
-      review                |  [ok]  evaluate                          0 tok
-      fixture/implementation|  [ok]  accept
-  v tasks/                  |
-    v done/ (1)             |TOKENS  chargeable 0  input -  output -  cache read -  reasoning -
-        pagination-c~  100% |TIME  wall  <t>  checks  <t>  dependency prep -
-    v failed/ (1)           |
-        pagination-u~  100% |HISTORY  (af task show)
-  v campaigns/              |     0  opened                              ########
+Overview                    |TASK  pagination-cli  implement: "Implement this Jira ticket: offset/~"
+Steps                       |PLAN  ########  configured  STATE done  started hh:mm:ssZ  elapsed  <t>
+  > [ok] inputs             |SNAP  source ########  derived ########  policy ########
+  > [ok] implement          |
+  > [ok] seal               |PROGRESS  6 / 6 stages
+  > [ok] check              |  [ok]  inputs
+  > [ok] evaluate           |  [ok]  implement                         0 tok
+  > [ok] accept             |  [ok]  seal
+Artifacts                   |  [ok]  check  <t>        0 tok
+History                     |  [ok]  evaluate                          0 tok
+                            |  [ok]  accept
+                            |
+                            |TOKENS  chargeable 0  input -  output -  cache read -  reasoning -
+                            |TIME  wall  <t>  checks  <t>  dependency prep -
+                            |
+                            |HISTORY  (af task show)
+                            |     0  opened                              ########
                             |     1  plan_proposed                       ########
                             |     2  plan_admitted                       ########
                             |     4  execution_recorded invocation       ########
@@ -27,4 +27,4 @@ v hub  (project)            |PLAN  ########  configured  STATE done  started hh:
                             |    11  execution_recorded settled          ########
                             |    12  execution_recorded published        ########
                             |    13  execution_recorded invocation       ########
-NORMAL  tasks/pagination-cli                j/k move  Enter open  zo/zc fold  / search  :cmd  q quit
+INSPECT navigation  j/k move  l/Enter open  Left parent  Tab focus  h/Esc back

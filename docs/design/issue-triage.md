@@ -155,16 +155,23 @@ and are not issue labels.
 
 ## 5. The size rubric
 
+The replacement operator catalog and its exact model roles are staged in
+[Issue-oriented operator Pipelines](../../fixtures/issue-workflows/README.md). After its reviewed
+installation, `pipeline/light`, `pipeline/default` and `pipeline/design` remain classification
+hints; the launcher chooses concrete issue-oriented names and checks scope facts. The table
+below supplies current staged execution guidance. Captured Tasks retain their original rubric
+bytes; new execution uses the versioned catalog.
+
 The rubric is what makes two models and the owner reach the same estimate. Sizes are evaluated
 in descending order, `XL`, `L`, `M`, `S`, and the first match wins. Insufficient evidence
 produces `needs-info`, never an invented size.
 
 | Size | Test, in order | Default pipeline | Model and reviewers |
 |---|---|---|---|
-| `XL` | Needs a design document and owner decisions before any code. | `design` | Design rounds with the owner; no implementation Task until the design is accepted |
-| `L` | Changes a contract, schema version, budget or sandbox boundary, or needs several Tasks. | `design` | A workstream: one design review by GPT-6.1 Terra high before the first implementing Task, then `default` per Task |
-| `M` | Everything understood well enough to implement that is not `L` or `S`: two or three crates, a new fixture or test class, an additive field under an existing document version, a new or amended ADR that records a bounded change. | `default` (`default/implementation`, ADR-0253) | GPT-6.1 Sol high implementer; GPT-6.1 Terra bugs and correctness reviewers (correctness required); GPT-6.1 Terra medium gate-quality reviewer; GPT-6.1 Terra high evaluator. Findings from every bound reviewer count toward convergence |
-| `S` | All of: one module; repro present or derivable from the evidence; no schema, contract or budget change; no new fixture or test class; no ADR. | `light` (`default-light/implementation`, ADR-0262) | Implementer: `gpt-6.1-sol` high; correctness reviewer: `gpt-6.1-terra` high; evaluator: `gpt-6.1-terra` high |
+| `XL` | Needs a design document and owner decisions before any code. | `design` (`design/astra-kimi`) | Astra medium design challenged independently by Terra high and Kimi high, accepted by Sol medium; no implementation Task until the design is accepted |
+| `L` | Changes a contract, schema version, budget or sandbox boundary, or needs several Tasks. | `design` (`design/astra-kimi`) | A workstream: accepted Astra medium design challenged independently by Terra high and Kimi high, accepted by Sol medium before the first implementing Task, then `default` per Task |
+| `M` | Everything understood well enough to implement that is not `L` or `S`: two or three crates, a new fixture or test class, an additive field under an existing document version, a new or amended ADR that records a bounded change. | `default` (`bugfix/default-codex` or `impl/default-codex`) | GPT-6.1 Sol medium implementer; GPT-6.1 Terra high bugs and correctness reviewers; GPT-6 Astra medium evaluator. Every bound result is required for closure |
+| `S` | All of: one module; repro present or derivable from the evidence; no schema, contract or budget change; no new fixture or test class; no ADR. | `light` (`bugfix/light-kimi-terra-sol`) | Implementer: Pi `kimi-coding/k3.1-pro` high; correctness reviewer: `gpt-6.1-terra` high; evaluator: `gpt-6.1-sol` medium |
 
 Two rules the check enforces mechanically (§6.3):
 
@@ -194,14 +201,14 @@ a package named `kernel/triage` would not create one. Triage therefore runs as t
 profile**, which already has the shape decision 2 asks for: one author, a protected token-free
 check, and one independent verifier reading the same Snapshot (ADR-0133, decisions 1 and 5).
 
-- The business kind is `triage`, an `af.task-kind/1` package with `profile = "report"`, so Task
+- The business kind is `triage`, an `af.task-kind/3` package with `profile = "report"`, so Task
   files and `af task list` say what the Task is while the kernel runs the installed operators.
 - The **author** slot is the first triager: Codex `gpt-6.1-sol`, `model_reasoning_effort =
   "medium"`, Provider `codex-personal`, `read-source` only (no `execute-checks`, so no shell).
-  It returns an `af/DocumentDraft@2` with two required sections, `Triage` (the
+  It returns an `af/DocumentDraft@3` with two required sections, `Triage` (the
   `af/issue-triage@1` document in one fenced `json` block, §6.3) and `Rationale`, beside the
   sections the installed report policy requires of every report (`Findings` and
-  `Recommendation` in this repository), and `repository_citations` for every file it relied on.
+  `Recommendation` in this repository), and tagged `repository` entries in `citations` for every file it relied on.
   Owner decision, 2026-10-30: the installed report policy's required sections apply in addition
   to `Triage` and `Rationale`, so in this repository a triage draft has four.
 - `report_seal` and `report_check` are the kernel's: the Document is bound to the exact source

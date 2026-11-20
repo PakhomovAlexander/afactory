@@ -24,7 +24,7 @@ fn producer() -> Producer {
 }
 
 fn source_invocation(cas: &Cas, manifest: &Manifest) -> TaskInvocationV1 {
-    let origin = cas.put_json(&json!({"fixture":"origin"})).unwrap();
+    let origin = cas.put_json(&json!({"schema":"af.task-source-origin/3","kind":"captured","repository_id":"fixture","source_revision":null,"content_digest":manifest.content_digest()})).unwrap();
     let snapshot = capture_snapshot(cas, manifest, &origin, None).unwrap();
     let source = source_tree(cas, producer(), &snapshot, vec![]).unwrap();
     TaskInvocationV1 {

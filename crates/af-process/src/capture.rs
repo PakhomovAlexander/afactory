@@ -1,3 +1,4 @@
+use crate::SpawnAdmission;
 use crate::control::{ReceiveError, cancelled, receive};
 use crate::drain::{Drain, Drained, collect_after_kill_until, collect_cancellable, drain_observed};
 use crate::observe::{ObservedStream, OutputObserver, Tap};
@@ -200,6 +201,52 @@ pub fn run_supervised_captured_bounded(
     )
 }
 
+/// Bounded capture under the caller's original absolute execution deadline.
+/// Spawn admission and retries check expiry/cancellation; launch time consumes the allowance.
+pub fn run_supervised_captured_bounded_until(
+    command: &mut Command,
+    input: Option<Vec<u8>>,
+    deadline: Instant,
+    exit_policy: ExitPolicy,
+    cancellation: Option<&AtomicBool>,
+    cap: usize,
+) -> SupervisedCapture {
+    captured_until(
+        command,
+        input,
+        deadline,
+        exit_policy,
+        cancellation,
+        None,
+        Caps::both(cap),
+    )
+}
+
+/// Capture a client admitted under execution authority, but allowed to settle under a
+/// separate absolute deadline and cancellation signal after it starts. Admission is checked
+/// after the platform creation lock and before every spawn attempt, including busy retries.
+#[allow(clippy::too_many_arguments)]
+pub fn run_supervised_captured_bounded_settling_until(
+    command: &mut Command,
+    input: Option<Vec<u8>>,
+    admission: SpawnAdmission<'_>,
+    settlement_deadline: Instant,
+    exit_policy: ExitPolicy,
+    settlement_cancellation: Option<&AtomicBool>,
+    cap: usize,
+) -> SupervisedCapture {
+    captured_until_with_admission(
+        command,
+        input,
+        settlement_deadline,
+        exit_policy,
+        settlement_cancellation,
+        None,
+        Caps::both(cap),
+        admission,
+    )
+}
+
 /// [`run_supervised_captured_bounded`] whose drains also offer every chunk they read to
 /// `observer` when one is given ([`run_supervised_captured_observed`]): the one call a Worker's
 /// harness makes, capped as evidence and observed by Telemetry at once.
@@ -243,7 +290,7 @@ where
     let capture = run_supervised_controlled(
         command,
         Some(writer),
-        timeout,
+        Instant::now() + timeout,
         exit_policy,
         cancellation,
         None,
@@ -261,6 +308,53 @@ pub(crate) fn captured_inner(
     observer: Option<&OutputObserver>,
     caps: Caps,
 ) -> SupervisedCapture {
+    captured_until(
+        command,
+        input,
+        Instant::now() + timeout,
+        exit_policy,
+        cancellation,
+        observer,
+        caps,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn captured_until(
+    command: &mut Command,
+    input: Option<Vec<u8>>,
+    deadline: Instant,
+    exit_policy: ExitPolicy,
+    cancellation: Option<&AtomicBool>,
+    observer: Option<&OutputObserver>,
+    caps: Caps,
+) -> SupervisedCapture {
+    captured_until_with_admission(
+        command,
+        input,
+        deadline,
+        exit_policy,
+        cancellation,
+        observer,
+        caps,
+        SpawnAdmission {
+            deadline,
+            cancellation,
+        },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn captured_until_with_admission(
+    command: &mut Command,
+    input: Option<Vec<u8>>,
+    deadline: Instant,
+    exit_policy: ExitPolicy,
+    cancellation: Option<&AtomicBool>,
+    observer: Option<&OutputObserver>,
+    caps: Caps,
+    admission: SpawnAdmission<'_>,
+) -> SupervisedCapture {
     let writer = input.map(|input| {
         move |stdin: &mut dyn Write| match stdin.write_all(&input) {
             Ok(()) => Ok(()),
@@ -268,14 +362,15 @@ pub(crate) fn captured_inner(
             Err(error) => Err(error),
         }
     });
-    run_supervised_controlled(
+    run_supervised_controlled_with_admission(
         command,
         writer,
-        timeout,
+        deadline,
         exit_policy,
         cancellation,
         observer,
         caps,
+        admission,
     )
     .into_capture()
 }
@@ -408,7 +503,7 @@ where
     run_supervised_controlled(
         command,
         writer,
-        timeout,
+        Instant::now() + timeout,
         exit_policy,
         None,
         None,
@@ -419,11 +514,41 @@ where
 fn run_supervised_controlled<E, F>(
     command: &mut Command,
     writer: Option<F>,
-    timeout: Duration,
+    deadline: Instant,
     exit_policy: ExitPolicy,
     cancellation: Option<&AtomicBool>,
     observer: Option<&OutputObserver>,
     caps: Caps,
+) -> StreamCapture<E>
+where
+    E: Send,
+    F: FnOnce(&mut dyn Write) -> Result<(), E> + Send,
+{
+    run_supervised_controlled_with_admission(
+        command,
+        writer,
+        deadline,
+        exit_policy,
+        cancellation,
+        observer,
+        caps,
+        SpawnAdmission {
+            deadline,
+            cancellation,
+        },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_supervised_controlled_with_admission<E, F>(
+    command: &mut Command,
+    writer: Option<F>,
+    deadline: Instant,
+    exit_policy: ExitPolicy,
+    cancellation: Option<&AtomicBool>,
+    observer: Option<&OutputObserver>,
+    caps: Caps,
+    admission: SpawnAdmission<'_>,
 ) -> StreamCapture<E>
 where
     E: Send,
@@ -447,9 +572,17 @@ where
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    let mut child = match crate::spawn::spawn(command) {
+    let no_cancellation = AtomicBool::new(false);
+    let mut child = match crate::spawn::spawn_until(
+        command,
+        admission.deadline,
+        &[
+            admission.cancellation.unwrap_or(&no_cancellation),
+            cancellation.unwrap_or(&no_cancellation),
+        ],
+    ) {
         Ok(child) => child,
-        Err(error) => return StreamCapture::empty(SupervisedError::Spawn(error)),
+        Err(error) => return StreamCapture::empty(error),
     };
     let stdin_pipe = child.stdin.take();
     let stdout_pipe = child.stdout.take().expect("stdout was piped");
@@ -475,7 +608,6 @@ where
         };
         let stdout = drain_observed(stdout_pipe, caps.stdout, tap(ObservedStream::Stdout));
         let stderr = drain_observed(stderr_pipe, caps.stderr, tap(ObservedStream::Stderr));
-        let deadline = Instant::now() + timeout;
         let waited =
             wait_exact_cancellable(deadline, cancellation, &leader, exit_policy.kills_group());
         if let Some(tree) = &tree {
@@ -557,6 +689,102 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settling_capture_refuses_delayed_admission_under_original_authority() {
+        for cancel in [false, true] {
+            let flag = std::sync::Arc::new(AtomicBool::new(false));
+            let deadline = Instant::now() + Duration::from_millis(100);
+            let hook_flag = flag.clone();
+            crate::spawn::ADMISSION_HOOK.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move || {
+                    if cancel {
+                        hook_flag.store(true, std::sync::atomic::Ordering::Release);
+                    } else {
+                        let (_send, receive) = std::sync::mpsc::channel::<()>();
+                        assert!(matches!(
+                            receive
+                                .recv_timeout(deadline.saturating_duration_since(Instant::now())),
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                        ));
+                    }
+                }));
+            });
+            let capture = run_supervised_captured_bounded_settling_until(
+                Command::new("/bin/sh").args(["-c", "printf create-client-started"]),
+                None,
+                SpawnAdmission {
+                    deadline,
+                    cancellation: Some(&flag),
+                },
+                deadline + Duration::from_secs(10),
+                ExitPolicy::KillDescendants,
+                Some(&AtomicBool::new(false)),
+                4096,
+            );
+            crate::spawn::ADMISSION_HOOK.with(|hook| *hook.borrow_mut() = None);
+            assert!(if cancel {
+                matches!(capture.status, Err(SupervisedError::Cancelled))
+            } else {
+                matches!(capture.status, Err(SupervisedError::TimedOut { .. }))
+            });
+            assert!(capture.pid.is_none());
+            assert!(capture.rusage.is_none());
+            assert!(capture.stdout.is_empty() && capture.stderr.is_empty());
+        }
+    }
+
+    #[test]
+    fn expired_and_zero_allowances_refuse_spawn_without_pid_or_usage() {
+        for absolute in [false, true] {
+            let mut command = Command::new("/path/that/must/never/be/spawned");
+            let capture = if absolute {
+                run_supervised_captured_bounded_until(
+                    &mut command,
+                    None,
+                    Instant::now(),
+                    ExitPolicy::KillDescendants,
+                    None,
+                    32,
+                )
+            } else {
+                run_supervised_captured_bounded(
+                    &mut command,
+                    None,
+                    Duration::ZERO,
+                    ExitPolicy::KillDescendants,
+                    None,
+                    32,
+                )
+            };
+            assert!(matches!(
+                capture.status,
+                Err(SupervisedError::TimedOut { .. })
+            ));
+            assert!(capture.pid.is_none());
+            assert!(capture.rusage.is_none());
+        }
+    }
+
+    #[test]
+    fn expired_duplex_admission_runs_neither_process_nor_protocol_callbacks() {
+        let result = crate::run_supervised_duplex_cancellable_until(
+            &mut Command::new("/path/that/must/never/be/spawned"),
+            Instant::now(),
+            ExitPolicy::KillDescendants,
+            &AtomicBool::new(false),
+            |_| -> Result<(), ()> { panic!("writer must not run") },
+            |_| -> usize { panic!("reader must not run") },
+        );
+        assert!(matches!(
+            result,
+            Err(SupervisedError::TimedOut {
+                pid: None,
+                rusage: None,
+                ..
+            })
+        ));
+    }
 
     fn status() -> ExitStatus {
         crate::reap::status(std::process::Command::new("/bin/sh").args(["-c", "exit 0"])).unwrap()

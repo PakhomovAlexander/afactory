@@ -24,7 +24,7 @@ class BuildBounds(TempDir):
         with open(self.sentinel, "wb") as stream:
             stream.write(b"operator sentinel")
 
-    def test_regular_binary_is_copied_and_hashed_then_mutation_refuses(self):
+    def test_regular_binary_is_copied_and_hashed_then_metadata_invisible_mutation_refuses(self):
         with open(self.binary, "wb") as stream:
             stream.write(b"real admitted bytes")
         digest = telemetry_build.admit_binary(self.state, self.output, self.timing)
@@ -32,12 +32,22 @@ class BuildBounds(TempDir):
         self.assertTrue(digest.startswith("sha256:"))
         os.unlink(os.path.join(self.output, "af"))
         original = telemetry_build.admission.copy_fd
+        before = os.stat(self.binary)
+        fstat = os.fstat
+        def unchanged_metadata(fd):
+            actual = fstat(fd)
+            if (actual.st_dev, actual.st_ino) == (before.st_dev, before.st_ino):
+                return before
+            return actual
         def changed(*args, **kwargs):
             result = original(*args, **kwargs)
             with open(self.binary, "wb") as stream:
                 stream.write(b"changed same length")
             return result
-        with mock.patch.object(telemetry_build.admission, "copy_fd", changed):
+        # Exercise an actual same-size write while exposing exactly the original metadata:
+        # timestamp granularity, or restored metadata, cannot stand in for byte validation.
+        with mock.patch.object(telemetry_build.admission, "copy_fd", changed), \
+                mock.patch.object(telemetry_build.os, "fstat", unchanged_metadata):
             with self.assertRaisesRegex(ContractError, "mutated"):
                 telemetry_build.admit_binary(self.state, self.output, self.timing)
 

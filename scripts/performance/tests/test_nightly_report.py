@@ -93,7 +93,7 @@ def passing_verdict(verdict):
 
 
 def report_of(verdict, plan):
-    """A valid af.perf-report/3 of `verdict` on the partial-scope fixture's template."""
+    """A valid af.perf-report/4 of `verdict` on the partial-scope fixture's template."""
     doc = fixture("report/valid-partial-scope.json")
     template = doc["cases"][0]
     doc["run_id"], doc["plan_digest"], doc["verdict"] = (verdict["run_id"],
@@ -518,6 +518,8 @@ class Night(TempDir):
                        core=dict(machine["core"], tier="nightly", shards=4))
         self.executor_config = self.path("executor.toml")
         write(self.executor_config, toml(machine).encode())
+        # Operator authority must stay private even under a group-writable host umask.
+        os.chmod(self.executor_config, 0o600)
         self.config = self.path("nightly.toml")
         self.write_config()
         self.github = FakeGitHub()
@@ -527,12 +529,13 @@ class Night(TempDir):
         values = {"executor_config": self.executor_config, "history_nights": 14,
                   "headline_instances": HEADLINE}
         values.update(report)
-        doc = {"schema": "af.nightly-config/1", "repository": "owner/af",
+        doc = {"schema": "af.nightly-config/2", "repository": "owner/af",
                "mirror": self.path("mirror.git"), "builds_root": self.builds,
                "build_image": "sha256:" + "1" * 64, "qemu_aarch64": "/usr/bin/qemu-aarch64-static",
                "sign_key": self.path("sign.key"), "public_key": self.path("sign.pub"),
                "required_checks": ["check / lint"], "report": values}
         write(self.config, toml(doc).encode())
+        os.chmod(self.config, 0o600)
 
     def night(self, name="nightly-build/valid-built.json"):
         """The night's record and, for a built night, its two archives."""

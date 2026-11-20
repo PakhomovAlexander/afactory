@@ -54,6 +54,6 @@ Task output. A report for one activated post-Round Integration phase also carrie
 `phase_id` and has exactly one executed or failed node. A diagnostic retains at most 65,536
 Unicode characters and marks truncation.
 A Task without reports remains readable; no reports are invented during inspection.
-The contracts are [TaskRunReport@2](../../schemas/task-run-report-v2.json) and
+The contracts are [TaskRunReport@2](../../schemas/task-run-report-v3.json) and
 [TaskDiagnostic@1](../../schemas/task-diagnostic-v1.json), with the authority and recovery
 decision in [ADR-0065](../adr/0065-persist-task-run-diagnostics-and-recover-domain-publication.md).

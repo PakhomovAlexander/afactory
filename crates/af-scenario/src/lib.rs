@@ -6,8 +6,13 @@
 pub mod adapter;
 pub mod checks;
 pub mod contract;
+pub mod driver;
 pub mod host;
+pub mod implementation;
+pub mod nightly;
 pub mod performance;
+pub mod presentation;
+pub mod retention;
 pub mod roadmap;
 pub mod runtime;
 pub mod schedule;
@@ -21,6 +26,8 @@ pub use host::Host;
 #[cfg(test)]
 mod admission_tests;
 #[cfg(test)]
+mod interval_tests;
+#[cfg(test)]
 mod tests;
 
 #[cfg(test)]
@@ -28,3 +35,5 @@ use {
     contract::*, schedule::*, state::*, std::collections::BTreeMap, std::path::PathBuf,
     store::Store,
 };
+
+pub mod task_outcome;

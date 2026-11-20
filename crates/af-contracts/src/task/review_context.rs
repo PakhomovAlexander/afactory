@@ -2,7 +2,7 @@
 use super::require;
 use serde::{Deserialize, Serialize};
 
-pub const TASK_REVIEW_SUBJECT_V2: &str = "af/TaskReviewSubject@2";
+pub const TASK_REVIEW_SUBJECT_V3: &str = "af/TaskReviewSubject@3";
 pub const TASK_REVIEW_ASSIGNMENT_V1: &str = "af/TaskReviewAssignment@1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,7 +42,8 @@ pub struct TaskReviewChangeScopeV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TaskReviewSubjectV2 {
+pub struct TaskReviewSubject {
+    pub schema: String,
     pub subject_id: String,
     pub subject: crate::SubjectV1,
     pub snapshot_id: String,
@@ -61,44 +62,67 @@ pub struct TaskReviewSubjectV2 {
     )]
     pub change_scope: Option<TaskReviewChangeScopeV1>,
 }
-impl TaskReviewSubjectV2 {
+impl TaskReviewSubject {
     pub fn validate(&self) -> Result<(), String> {
-        let changes = match (&self.subject.kind, &self.change_scope) {
-            (crate::SubjectKind::WholeTree, None) => None,
+        require(
+            self.schema == "af.task-review-subject/3",
+            "Unsupported Review Subject schema",
+        )?;
+        validate_subject_identity(
+            &self.subject_id,
+            &self.subject,
+            &self.snapshot_id,
+            &self.prior_history_id,
+            self.continuation_id.as_deref(),
+            self.round,
+        )?;
+        match (&self.subject.kind, &self.change_scope) {
+            (crate::SubjectKind::WholeTree, None) => Ok(()),
             (crate::SubjectKind::Diff, Some(scope)) => {
                 scope.patch.validate()?;
-                Some(crate::ChangeSetV1 {
-                    base_snapshot_id: self
-                        .subject
+                require(
+                    !scope.changed_paths.is_empty(),
+                    "Review Diff requires exact nonempty scope",
+                )?;
+                crate::change_set::validate_change_scope(
+                    self.subject
                         .base_snapshot_id
-                        .clone()
+                        .as_deref()
                         .ok_or("Diff has no Base")?,
-                    head_snapshot_id: self.snapshot_id.clone(),
-                    changed_paths: scope.changed_paths.clone(),
-                    renames: scope.renames.clone(),
-                    rename_detection_truncated: scope.rename_detection_truncated,
-                    canonical_patch_base64: String::new(),
-                    git_version: scope.git_version.clone(),
-                    diff_policy_version: scope.diff_policy_version.clone(),
-                })
+                    &self.snapshot_id,
+                    &scope.changed_paths,
+                    &scope.renames,
+                    &scope.git_version,
+                    &scope.diff_policy_version,
+                )
             }
-            _ => {
-                return Err(
-                    "Review Subject must retain its exact readable Change Set scope".into(),
-                );
-            }
-        };
-        super::review::TaskReviewSubjectV1 {
-            subject_id: self.subject_id.clone(),
-            subject: self.subject.clone(),
-            change_set: changes,
-            snapshot_id: self.snapshot_id.clone(),
-            prior_history_id: self.prior_history_id.clone(),
-            continuation_id: self.continuation_id.clone(),
-            round: self.round,
+            _ => Err("Review Subject must retain its exact readable Change Set scope".into()),
         }
-        .validate()
     }
+}
+
+pub(super) fn validate_subject_identity(
+    subject_id: &str,
+    subject: &crate::SubjectV1,
+    snapshot_id: &str,
+    prior_history_id: &str,
+    continuation_id: Option<&str>,
+    round: u32,
+) -> Result<(), String> {
+    subject.validate()?;
+    require(
+        subject.head_snapshot_id == snapshot_id,
+        "Review Subject has a stale Snapshot",
+    )?;
+    require(
+        [subject_id, snapshot_id, prior_history_id]
+            .into_iter()
+            .all(crate::is_digest)
+            && (1..=16).contains(&round)
+            && continuation_id.is_none_or(crate::is_digest)
+            && (continuation_id.is_none() || round > 1),
+        "Review Subject requires bounded Round and exact Subject, Snapshot and history",
+    )
 }
 
 /// Only the named logical reviewer's prior claims. Other reviewers' history stays host-only.

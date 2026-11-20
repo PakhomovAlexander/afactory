@@ -1,32 +1,9 @@
-//! `.af/af.lock`: a reviewer pinned by content digest, never `latest`; since v0.8.0 also the
-//! `af` release that wrote the lock, pinned by its archive digests.
-//!
-//! A reviewer is a package — a directory holding `reviewer.toml` (name, version, the runner
-//! command) and whatever prompt or support files it needs. Packages live in the project's
-//! registry directory (`.af/workers`), and the lockfile pins each reviewer the pipeline may use
-//! to an exact version *and* a content digest over every byte in the package.
-//!
-//! Three rules, each the refusal of a specific failure:
-//!
-//! 1. **Not locked, not run.** A reviewer absent from the lockfile does not resolve, whatever
-//!    the registry contains. There is no "use whatever is installed" path, because that path
-//!    is `latest` wearing a different name.
-//! 2. **The digest decides.** If the registry copy's digest does not match the pin, resolution
-//!    fails loudly: the operator must learn the project's copy changed, not silently review
-//!    with a different one.
-//! 3. **Verify before interpreting.** The package is read once into memory, the digest is
-//!    checked over those bytes, and only then is `reviewer.toml` parsed — from the verified
-//!    bytes, not from a second read the filesystem could have changed in between.
-//!
-//! Versions are exact (`major.minor.patch`, digits only). `latest`, ranges, and wildcards are
-//! refused at parse time so a floating pin cannot even be *written*, let alone resolved.
+//! Release pins and bounded, digest-verified current Task package reads.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-
-use crate::CommandSpec;
 
 #[derive(Debug)]
 pub enum LockError {
@@ -43,31 +20,6 @@ pub enum LockError {
         name: String,
         digest: String,
     },
-    /// The refusal that keeps `latest` out: an unlocked reviewer never runs.
-    NotLocked {
-        name: String,
-    },
-    /// The registry has no package by that name. `path` is the directory a disk registry
-    /// looked for; a captured registry has none.
-    NotFound {
-        name: String,
-        path: Option<PathBuf>,
-    },
-    DigestMismatch {
-        name: String,
-        root: PathBuf,
-        locked: String,
-        found: String,
-    },
-    VersionMismatch {
-        name: String,
-        locked: String,
-        manifest: String,
-    },
-    NameMismatch {
-        requested: String,
-        manifest: String,
-    },
     /// A symlink can point outside the package, so its target would be content the digest
     /// silently depends on. Refused rather than followed or skipped.
     Symlink {
@@ -81,14 +33,6 @@ pub enum LockError {
     UnsupportedPath {
         name: String,
         path: PathBuf,
-    },
-    UnsupportedSubject {
-        name: String,
-        subject: af_contracts::SubjectKind,
-    },
-    MissingManifest {
-        name: String,
-        root: PathBuf,
     },
     /// The package holds more files or bytes, or one file of it more bytes, than the walk was
     /// bounded to ([`PackageBounds`]); refused before the excess is read.
@@ -112,82 +56,32 @@ impl std::fmt::Display for LockError {
         match self {
             LockError::Parse(e) => write!(f, "lockfile: {e}"),
             LockError::InvalidName { name } => {
-                write!(f, "reviewer name `{name}` is not a safe registry component")
+                write!(f, "package name `{name}` is not a safe registry component")
             }
             LockError::Floating { name, version } => write!(
                 f,
-                "reviewer `{name}` pins version `{version}`, which does not name exactly one \
+                "package `{name}` pins version `{version}`, which does not name exactly one \
                  release; a pin must be `major.minor.patch` — a run never resolves `latest`"
             ),
             LockError::MalformedDigest { name, digest } => write!(
                 f,
-                "reviewer `{name}` pins digest `{digest}`, which is not `sha256:` plus 64 hex \
+                "package `{name}` pins digest `{digest}`, which is not `sha256:` plus 64 hex \
                  digits; a malformed digest pins nothing"
-            ),
-            LockError::NotLocked { name } => write!(
-                f,
-                "reviewer `{name}` is not in the lockfile; an unlocked reviewer does not run"
-            ),
-            LockError::NotFound {
-                name,
-                path: Some(path),
-            } => write!(
-                f,
-                "reviewer `{name}` is locked but missing from the registry ({} does not exist)",
-                path.display()
-            ),
-            LockError::NotFound { name, path: None } => write!(
-                f,
-                "reviewer `{name}` is locked but missing from the captured packages"
-            ),
-            LockError::DigestMismatch {
-                name,
-                root,
-                locked,
-                found,
-            } => write!(
-                f,
-                "reviewer `{name}` at {} does not match its pin: locked {locked}, found {found}; \
-                 the package changed since it was locked",
-                root.display()
-            ),
-            LockError::VersionMismatch {
-                name,
-                locked,
-                manifest,
-            } => write!(
-                f,
-                "reviewer `{name}` manifest says version {manifest} but the lock pins {locked}"
-            ),
-            LockError::NameMismatch {
-                requested,
-                manifest,
-            } => write!(
-                f,
-                "package resolved for `{requested}` declares itself `{manifest}`"
             ),
             LockError::Symlink { name, path } => write!(
                 f,
-                "reviewer `{name}` contains a symlink at {}; a package is regular files only",
+                "package `{name}` contains a symlink at {}; a package is regular files only",
                 path.display()
             ),
             LockError::UnsupportedFileType { name, path } => write!(
                 f,
-                "reviewer `{name}` contains a non-regular file at {}; a package is regular files only",
+                "package `{name}` contains a non-regular file at {}; a package is regular files only",
                 path.display()
             ),
             LockError::UnsupportedPath { name, path } => write!(
                 f,
-                "reviewer `{name}` contains a path that is not valid UTF-8 at {}; refusing a lossy digest name",
+                "package `{name}` contains a path that is not valid UTF-8 at {}; refusing a lossy digest name",
                 path.display()
-            ),
-            LockError::UnsupportedSubject { name, subject } => {
-                write!(f, "reviewer `{name}` does not accept `{subject}` subjects")
-            }
-            LockError::MissingManifest { name, root } => write!(
-                f,
-                "reviewer `{name}` at {} has no reviewer.toml",
-                root.display()
             ),
             LockError::TooLarge {
                 name,
@@ -209,121 +103,7 @@ impl std::fmt::Display for LockError {
 
 impl std::error::Error for LockError {}
 
-/// `reviewer.toml` at a package root.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PackageManifest {
-    pub name: String,
-    pub version: String,
-    pub subjects: Vec<af_contracts::SubjectKind>,
-    pub runner: CommandSpec,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReviewerBackend {
-    Pi,
-    Codex,
-    Claude,
-}
-
-impl std::fmt::Display for ReviewerBackend {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Pi => write!(f, "pi"),
-            Self::Codex => write!(f, "codex"),
-            Self::Claude => write!(f, "claude"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReviewerRunnerSettings {
-    pub backend: ReviewerBackend,
-    pub model: String,
-    pub effort: String,
-}
-
-/// Read the model settings from a typed package manifest. Only the two adapter flag shapes the
-/// kernel owns are recognized; ambiguity is refused rather than guessed around.
-pub fn reviewer_runner_settings_from_manifest(
-    manifest: &PackageManifest,
-) -> Result<ReviewerRunnerSettings, LockError> {
-    let basename = Path::new(&manifest.runner.program)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| LockError::Parse("reviewer runner program has no basename".into()))?;
-    let backend = match basename {
-        "pi" => ReviewerBackend::Pi,
-        "codex" => ReviewerBackend::Codex,
-        "claude" => ReviewerBackend::Claude,
-        other => {
-            return Err(LockError::Parse(format!(
-                "reviewer runner `{other}` has no configurable model profile"
-            )));
-        }
-    };
-    let model_index = unique_option_value(&manifest.runner.args, "--model")?;
-    let effort_index = match backend {
-        ReviewerBackend::Pi | ReviewerBackend::Claude => {
-            unique_option_value(&manifest.runner.args, "--effort")?
-        }
-        ReviewerBackend::Codex => unique_codex_effort(&manifest.runner.args)?,
-    };
-    let effort = match backend {
-        ReviewerBackend::Pi | ReviewerBackend::Claude => {
-            manifest.runner.args[effort_index].value.clone()
-        }
-        ReviewerBackend::Codex => manifest.runner.args[effort_index]
-            .value
-            .strip_prefix("model_reasoning_effort=")
-            .expect("the index was selected by this prefix")
-            .trim_matches(['\'', '"'])
-            .to_string(),
-    };
-    Ok(ReviewerRunnerSettings {
-        backend,
-        model: manifest.runner.args[model_index].value.clone(),
-        effort,
-    })
-}
-
-fn unique_option_value(args: &[crate::ArgSpec], option: &str) -> Result<usize, LockError> {
-    let matches: Vec<usize> = args
-        .iter()
-        .enumerate()
-        .filter_map(|(index, argument)| (argument.value == option).then_some(index + 1))
-        .collect();
-    let [index] = matches.as_slice() else {
-        return Err(LockError::Parse(format!(
-            "reviewer runner must contain exactly one `{option}` option"
-        )));
-    };
-    if *index >= args.len() {
-        return Err(LockError::Parse(format!(
-            "reviewer runner `{option}` has no value"
-        )));
-    }
-    Ok(*index)
-}
-
-fn unique_codex_effort(args: &[crate::ArgSpec]) -> Result<usize, LockError> {
-    let matches: Vec<usize> = args
-        .windows(2)
-        .enumerate()
-        .filter_map(|(index, pair)| {
-            (pair[0].value == "-c" && pair[1].value.starts_with("model_reasoning_effort="))
-                .then_some(index + 1)
-        })
-        .collect();
-    let [index] = matches.as_slice() else {
-        return Err(LockError::Parse(
-            "Codex runner must contain exactly one model_reasoning_effort override".into(),
-        ));
-    };
-    Ok(*index)
-}
-
-/// One pinned reviewer.
+/// Retained lock metadata beside the independently byte-bound release pin.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Pin {
@@ -376,111 +156,6 @@ pub struct Lockfile {
     pub workers: BTreeMap<String, Pin>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pipelines: BTreeMap<String, Pin>,
-}
-
-/// A reviewer that survived resolution. The type itself lives with the adapters
-/// (`af-runner`), which consume it; this module is the resolver that mints it.
-pub use af_runner::ResolvedReviewer;
-
-/// Where reviewer packages are read from: one directory on disk, or the package bytes a
-/// Campaign captured.
-pub struct Registry {
-    root: Option<PathBuf>,
-    captured: BTreeMap<String, BTreeMap<String, Vec<u8>>>,
-}
-
-impl Registry {
-    /// A registry directory holding one package directory per reviewer name.
-    pub fn new(root: impl Into<PathBuf>) -> Registry {
-        Registry {
-            root: Some(root.into()),
-            captured: BTreeMap::new(),
-        }
-    }
-
-    /// A registry reconstructed from a Campaign's immutable package artifacts.
-    pub fn captured(packages: BTreeMap<String, BTreeMap<String, Vec<u8>>>) -> Registry {
-        Registry {
-            root: None,
-            captured: packages,
-        }
-    }
-
-    fn read(&self, name: &str) -> Result<(PathBuf, BTreeMap<String, Vec<u8>>), LockError> {
-        self.read_with(name, &mut |_| {})
-    }
-
-    /// [`Registry::read`], with `before_open` run between the walk's checks and its opens, the
-    /// package root's included; only the race regressions give it a body.
-    fn read_with(
-        &self,
-        name: &str,
-        before_open: &mut dyn FnMut(&Path),
-    ) -> Result<(PathBuf, BTreeMap<String, Vec<u8>>), LockError> {
-        if let Some(files) = self.captured.get(name) {
-            return Ok((
-                PathBuf::from("<captured-authority>").join(name),
-                files.clone(),
-            ));
-        }
-        let (root, located) = self.locate(name)?;
-        // The directory `locate` checked is the one read: its root is opened without following a
-        // symlink and must still be that very directory, so a package swapped after the check is
-        // refused rather than read from wherever the swap points.
-        let files = collect_no_follow(
-            name,
-            &root,
-            RootLink::Located(located),
-            Some(AUTHORITY_PACKAGE_BOUNDS),
-            before_open,
-        )?;
-        Ok((root, files))
-    }
-
-    /// The package directory for `name` under the registry root, with the device and inode it
-    /// was found to have. Whether that copy verifies is the next question.
-    fn locate(&self, name: &str) -> Result<(PathBuf, (u64, u64)), LockError> {
-        if name.is_empty()
-            || !name.bytes().enumerate().all(|(index, byte)| {
-                byte.is_ascii_alphanumeric() || (index > 0 && matches!(byte, b'-' | b'_'))
-            })
-        {
-            return Err(LockError::InvalidName {
-                name: name.to_string(),
-            });
-        }
-        let Some(root) = &self.root else {
-            return Err(LockError::NotFound {
-                name: name.to_string(),
-                path: None,
-            });
-        };
-        let candidate = root.join(name);
-        match std::fs::symlink_metadata(&candidate) {
-            Ok(metadata) if metadata.file_type().is_symlink() => Err(LockError::Symlink {
-                name: name.to_string(),
-                path: candidate,
-            }),
-            Ok(metadata) if metadata.is_dir() => {
-                use std::os::unix::fs::MetadataExt;
-                Ok((candidate, (metadata.dev(), metadata.ino())))
-            }
-            Ok(_) => Err(LockError::UnsupportedFileType {
-                name: name.to_string(),
-                path: candidate,
-            }),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                Err(LockError::NotFound {
-                    name: name.to_string(),
-                    path: Some(candidate),
-                })
-            }
-            Err(error) => Err(LockError::Io {
-                path: candidate,
-                error: error.to_string(),
-            }),
-        }
-    }
 }
 
 /// Exactly one release: `major.minor.patch`, digits only.
@@ -542,8 +217,8 @@ pub struct PackageBounds {
     pub file_bytes: usize,
 }
 
-/// The bounds of a Worker package af reads as authority: a pinned reviewer package and its
-/// digest ([`package_digest`], [`Registry`]).
+/// The bounds of a current Worker package af reads as authority: its files and its
+/// digest ([`package_digest`]).
 pub const AUTHORITY_PACKAGE_BOUNDS: PackageBounds = PackageBounds {
     files: MAX_PACKAGE_FILES,
     bytes: MAX_PACKAGE_BYTES as usize,
@@ -839,6 +514,7 @@ pub fn package_digest_from_files(files: &BTreeMap<String, Vec<u8>>) -> String {
         .iter()
         .map(|(path, bytes)| (path.as_str(), af_store::canonical::blob_content_id(bytes)))
         .collect();
+    // Stable package digest domain, shared by current Task catalogs; unrelated to a manifest reader.
     let payload = serde_json::json!({ "kind": "reviewer-package@1", "files": listed });
     af_store::canonical::content_id(&payload).expect("digest map is admissible JSON")
 }
@@ -970,149 +646,6 @@ impl Lockfile {
 
     pub fn to_toml(&self) -> String {
         toml::to_string_pretty(self).expect("a lockfile serializes")
-    }
-
-    /// Resolve one locked reviewer: locate, verify the digest, then read the manifest from the
-    /// verified bytes.
-    fn resolve_package(
-        &self,
-        name: &str,
-        registry: &Registry,
-    ) -> Result<(ResolvedReviewer, Vec<af_contracts::SubjectKind>), LockError> {
-        let pin = self.workers.get(name).ok_or_else(|| LockError::NotLocked {
-            name: name.to_string(),
-        })?;
-        validate_pin(name, pin)?;
-        let (root, files) = registry.read(name)?;
-
-        let found = package_digest_from_files(&files);
-        if found != pin.digest {
-            return Err(LockError::DigestMismatch {
-                name: name.to_string(),
-                root,
-                locked: pin.digest.clone(),
-                found,
-            });
-        }
-
-        let manifest = Self::manifest(name, &root, &files)?;
-        if manifest.name != name {
-            return Err(LockError::NameMismatch {
-                requested: name.to_string(),
-                manifest: manifest.name,
-            });
-        }
-        if manifest.version != pin.version {
-            return Err(LockError::VersionMismatch {
-                name: name.to_string(),
-                locked: pin.version.clone(),
-                manifest: manifest.version,
-            });
-        }
-
-        let subjects = manifest.subjects;
-        let reviewer = ResolvedReviewer::new(
-            name,
-            manifest.version,
-            found,
-            root,
-            manifest.runner.build(),
-            files,
-        );
-        Ok((reviewer, subjects))
-    }
-
-    pub fn resolve_for_subject(
-        &self,
-        name: &str,
-        registry: &Registry,
-        subject: af_contracts::SubjectKind,
-    ) -> Result<ResolvedReviewer, LockError> {
-        let (reviewer, subjects) = self.resolve_package(name, registry)?;
-        if !subjects.contains(&subject) {
-            return Err(LockError::UnsupportedSubject {
-                name: name.to_string(),
-                subject,
-            });
-        }
-        Ok(reviewer)
-    }
-
-    /// Compute the pin for a package as it stands — what lock generation records.
-    ///
-    /// The same validation as resolution: a manifest with a floating version cannot be pinned,
-    /// so the refusal happens when the lock is written rather than on the first run after.
-    pub fn pin(name: &str, registry: &Registry) -> Result<Pin, LockError> {
-        let (root, files) = registry.read(name)?;
-        Self::pin_from_files(name, &root, &files)
-    }
-
-    /// Compute one exact package pin from already captured bytes.
-    ///
-    /// Generators use this path before anything exists on disk. It applies the same manifest,
-    /// name, version, path, and digest validation as registry-backed locking; callers cannot
-    /// mint a syntactically plausible pin around malformed package bytes.
-    pub fn pin_package_files(
-        name: &str,
-        files: &BTreeMap<String, Vec<u8>>,
-    ) -> Result<Pin, LockError> {
-        Self::pin_from_files(name, Path::new("<generated-package>"), files)
-    }
-
-    fn pin_from_files(
-        name: &str,
-        root: &Path,
-        files: &BTreeMap<String, Vec<u8>>,
-    ) -> Result<Pin, LockError> {
-        let manifest = Self::manifest(name, root, files)?;
-        if manifest.name != name {
-            return Err(LockError::NameMismatch {
-                requested: name.to_string(),
-                manifest: manifest.name,
-            });
-        }
-        if !exact_version(&manifest.version) {
-            return Err(LockError::Floating {
-                name: name.to_string(),
-                version: manifest.version,
-            });
-        }
-        Ok(Pin {
-            version: manifest.version,
-            digest: package_digest_from_files(files),
-        })
-    }
-
-    fn manifest(
-        name: &str,
-        root: &Path,
-        files: &BTreeMap<String, Vec<u8>>,
-    ) -> Result<PackageManifest, LockError> {
-        let bytes = files
-            .get("reviewer.toml")
-            .ok_or_else(|| LockError::MissingManifest {
-                name: name.to_string(),
-                root: root.to_path_buf(),
-            })?;
-        let text = std::str::from_utf8(bytes)
-            .map_err(|e| LockError::Parse(format!("reviewer.toml for `{name}`: {e}")))?;
-        let manifest: PackageManifest = toml::from_str(text).map_err(|e| {
-            LockError::Parse(crate::excerpt::bounded(&format!(
-                "reviewer.toml for `{name}`: {e}"
-            )))
-        })?;
-        if manifest.subjects.is_empty() {
-            return Err(LockError::Parse(format!(
-                "reviewer.toml for `{name}` accepts no Subject kind"
-            )));
-        }
-        let unique: BTreeSet<_> = manifest.subjects.iter().collect();
-        if unique.len() != manifest.subjects.len() {
-            return Err(LockError::Parse(format!(
-                "reviewer.toml for `{name}` contains duplicate Subject kinds"
-            )));
-        }
-        Ok(manifest)
     }
 }
 

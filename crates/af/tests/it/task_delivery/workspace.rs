@@ -36,13 +36,13 @@ fn ordinary_accepted_candidate_export_preserves_bytes_and_refuses_forged_provena
     std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).unwrap();
     let request_path = parent.join("request.json");
     let into = parent.join("candidate");
-    let request = json!({"schema":"af/git-candidate-source-request@1",
+    let request = json!({"schema":"af/git-candidate-source-request@2",
         "receipt":{"task_id":task_id,"plan_id":task.plan_id,"revision_id":task.revision_id,
             "result_id":result_id,"charged_tokens":outcome["chargeable_tokens"].as_str().unwrap().parse::<u64>().unwrap(),"result":outcome["result"]},
         "source_commit":source_commit,"candidate_snapshot_id":outcome["result"]["outputs"]["snapshot"]["snapshot_id"],
         "predecessor_snapshot_id":null});
     crate::schemas::valid(
-        &crate::schemas::validator("git-candidate-source-request-v1.json"),
+        &crate::schemas::validator("git-candidate-source-request-v2.json"),
         &request,
     );
     let export = || {
@@ -78,7 +78,7 @@ fn ordinary_accepted_candidate_export_preserves_bytes_and_refuses_forged_provena
     assert_eq!(code, 0, "{stdout}\n{stderr}");
     let receipt: Value = serde_json::from_str(&stdout).unwrap();
     crate::schemas::valid(
-        &crate::schemas::validator("git-candidate-source-v1.json"),
+        &crate::schemas::validator("git-candidate-source-v2.json"),
         &receipt,
     );
     assert_eq!(
@@ -166,7 +166,7 @@ fn privately_installed_workspace_adapter_prepares_native_accepted_candidate_with
     std::fs::write(&ssh, "Host github.com\n  BatchMode yes\n").unwrap();
     std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o600)).unwrap();
     let git = std::fs::canonicalize("/usr/bin/git").unwrap();
-    let config = json!({"schema":"af/git-workspace-config@2", "repository":"octo/documentation","repository_id":17,
+    let config = json!({"schema":"af/git-workspace-config@3", "repository":"octo/documentation","repository_id":17,
         "actor":{"id":7,"login":"automation"}, "token_file":machine.join("absent-token"),"state_dir":machine.join("receipts"),
         "repo":repo,"task_store":state,"worktree_root":worktrees,"base":"main","branch_prefix":"accepted",
         "source_commit":origin.source_revision().unwrap(),"source_content_digest":source.content_digest,
@@ -197,7 +197,7 @@ fn privately_installed_workspace_adapter_prepares_native_accepted_candidate_with
     let receipt = json!({"task_id":task.task_id,"plan_id":task.plan_id,"revision_id":task.revision_id,"result_id":result_id,
         "charged_tokens":0,"result":outcome["result"]});
     let text = |value: Value| json!({"type":"text","value":value});
-    let request = json!({"schema":"af/scenario-adapter-request@4","method":"execute","intent_id":format!("sha256:{}","a".repeat(64)),
+    let request = json!({"schema":"af/scenario-adapter-request@8","method":"execute","intent_id":format!("sha256:{}","a".repeat(64)),
         "input_digest":format!("sha256:{}","b".repeat(64)),"operation":"prepare_candidate_v1","destination":"github:octo/documentation",
         "inputs":{"subject":text(json!(result_id)),"revision":text(outcome["result"]["outputs"]["snapshot"]["snapshot_id"].clone()),
             "body":text(json!("{\"schema\":\"af/git-workspace-content@1\",\"title\":\"Accepted pagination\",\"body\":\"Exact candidate\"}")),

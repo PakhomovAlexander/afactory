@@ -2117,7 +2117,7 @@ fn project(
                     match problem.line {
                         Some(_) => format!(
                             "correct {place} by hand ({}), then re-pin it, as its package changed \
-                             since .af/af.lock pinned it: {repin}; then recheck: {recheck}",
+                             since .af/task-catalog.toml pinned it: {repin}; then recheck: {recheck}",
                             problem.message
                         ),
                         None if stop_is_lock(&problem, toplevel) => format!(
@@ -2286,81 +2286,55 @@ mod tests {
         assert!(!setup.contains("--login"));
     }
 
-    /// The `.af/` file named is the one onboarding's reader stops at, in its order (#331 D2): with
-    /// both the lock and the selected pipeline malformed, the pipeline, which it reads first; a
-    /// typed error is located by its line (D3); a symbolic link (here to a malformed file outside
-    /// `.af/`) and a file above the bound are named without being read; and a pipeline no
-    /// route selects is never read at all.
+    /// Doctor follows the same native catalog reader as onboarding, including typed locations
+    /// and no-follow bounds; unrelated retired Campaign files are never parsed.
     #[test]
     fn the_authority_scan_follows_the_reader_and_reads_no_link_or_oversized_file() {
         let root = tempfile::tempdir().unwrap();
-        let outside = root.path().join("outside.toml");
+        let repo = root.path();
+        for (path, bytes) in crate::onboard::fixture_files(repo) {
+            let path = repo.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        }
+        let catalog = repo.join(".af/task-catalog.toml");
+        let kept = std::fs::read_to_string(&catalog).unwrap();
+        std::fs::create_dir_all(repo.join(".af/pipelines")).unwrap();
+        std::fs::write(repo.join(".af/pipelines/retired.toml"), "secret = [\n").unwrap();
+        assert!(crate::onboard::authority_stop(repo).is_none());
+        // Native Task catalogs also work without the optional Project file or release pin.
+        let project = repo.join(".af/af.toml");
+        let lock = repo.join(".af/af.lock");
+        let project_bytes = std::fs::read(&project).unwrap();
+        let lock_bytes = std::fs::read(&lock).unwrap();
+        std::fs::remove_file(&project).unwrap();
+        std::fs::remove_file(&lock).unwrap();
+        assert!(crate::onboard::authority_stop(repo).is_none());
+        let facts = crate::onboard::authority_facts(repo).unwrap();
+        assert_eq!(facts.workers.len(), 4);
+        assert_eq!(facts.gates.len(), 1);
+        assert!(!project.exists() && !lock.exists());
+        std::fs::write(&project, project_bytes).unwrap();
+        std::fs::write(&lock, lock_bytes).unwrap();
+        std::fs::write(&catalog, "schema = 4\n").unwrap();
+        let stop = crate::onboard::authority_stop(repo).unwrap();
+        assert_eq!(stop.file, catalog);
+        assert_eq!(stop.line, Some(1));
+        assert!(stop.message.contains("invalid type"));
+        std::fs::remove_file(&catalog).unwrap();
+        let outside = root.path().join("outside");
         std::fs::write(&outside, "secret = [\n").unwrap();
-        let repo = root.path().join("repo");
-        let af = repo.join(".af");
-        std::fs::create_dir_all(af.join("pipelines")).unwrap();
-        let project = format!(
-            "version = 1\n[project]\nname = \"x\"\nmin_af = \"{}\"\n[defaults]\npipeline = \"review\"\n",
-            self_management::VERSION
-        );
-        std::fs::write(af.join("af.toml"), &project).unwrap();
-        std::fs::write(af.join("af.lock"), "version = 1\nbroken = [\n").unwrap();
-        std::fs::write(af.join("pipelines/review.toml"), "x = 1\nbroken = [\n").unwrap();
-        // Sorted before `review.toml`, and read by no reader: never named.
-        std::fs::write(af.join("pipelines/a-unused.toml"), "broken = [\n").unwrap();
-        let stop = |repo: &Path| crate::onboard::authority_stop(repo).map(authority_problem);
-        let named = |stop: Option<Problem>| {
-            let stop = stop.expect("a stop");
-            (
-                stop.file.unwrap().strip_prefix(&af).unwrap().to_path_buf(),
-                stop.line,
-                stop.message,
-            )
-        };
-        let (file, line, _) = named(stop(&repo));
-        assert_eq!(
-            (file.to_str().unwrap(), line),
-            ("pipelines/review.toml", Some(2))
-        );
-        std::fs::write(af.join("pipelines/review.toml"), "version = \"one\"\n").unwrap();
-        let (file, line, message) = named(stop(&repo));
-        assert_eq!(
-            (file.to_str().unwrap(), line),
-            ("pipelines/review.toml", Some(1))
-        );
-        assert!(message.contains("invalid type"), "{message}");
-        // A typed error in the project file is located too, before anything else is read.
-        std::fs::write(
-            af.join("af.toml"),
-            project.replace("version = 1", "version = \"one\""),
-        )
-        .unwrap();
-        let (file, line, message) = named(stop(&repo));
-        assert_eq!((file.to_str().unwrap(), line), ("af.toml", Some(1)));
-        assert!(message.contains("invalid type"), "{message}");
-        std::fs::write(af.join("af.toml"), &project).unwrap();
-        // A link is named without its target being read.
-        std::fs::remove_file(af.join("pipelines/review.toml")).unwrap();
-        std::os::unix::fs::symlink(&outside, af.join("pipelines/review.toml")).unwrap();
-        let (file, line, message) = named(stop(&repo));
-        assert_eq!(
-            (file.to_str().unwrap(), line),
-            ("pipelines/review.toml", None)
-        );
-        assert!(message.contains("not a symlink"), "{message}");
-        assert!(!message.contains("secret"), "{message}");
-        assert!(super::toml_problem(&af.join("pipelines/review.toml")).is_none());
-        // So is a file above the bound.
-        std::fs::remove_file(af.join("pipelines/review.toml")).unwrap();
-        let big = "# padding\n".repeat(usize::try_from(MAX_SCAN_BYTES).unwrap() / 10 + 1);
-        std::fs::write(af.join("pipelines/review.toml"), big + "broken = [\n").unwrap();
-        let (file, line, message) = named(stop(&repo));
-        assert_eq!(
-            (file.to_str().unwrap(), line),
-            ("pipelines/review.toml", None)
-        );
-        assert!(message.contains("onboarding reads at most"), "{message}");
-        assert!(super::toml_problem(&af.join("pipelines/review.toml")).is_none());
+        std::os::unix::fs::symlink(&outside, &catalog).unwrap();
+        let stop = crate::onboard::authority_stop(repo).unwrap();
+        assert_eq!(stop.file, catalog);
+        assert!(stop.message.contains("not a symlink"));
+        assert!(!stop.message.contains("secret"));
+        std::fs::remove_file(&catalog).unwrap();
+        std::fs::write(&catalog, "# padding\n".repeat(1024 * 1024 / 10 + 1)).unwrap();
+        let stop = crate::onboard::authority_stop(repo).unwrap();
+        assert_eq!(stop.file, catalog);
+        assert!(stop.message.contains("onboarding reads at most"));
+        std::fs::write(catalog, kept).unwrap();
     }
 
     /// C3 item 29: a root `mdutil -s` reports indexed is named, one named `*.noindex` is never

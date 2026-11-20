@@ -219,7 +219,7 @@ impl ReviewTaskDomain {
                 },
             );
         }
-        let plan: ExecutionPlanV3 = serde_json::from_value(envelope(cas, &input.plan_id)?.payload)
+        let plan: ExecutionPlan = serde_json::from_value(envelope(cas, &input.plan_id)?.payload)
             .map_err(|e| e.to_string())?;
         let continuation = VerificationContinuationV1 {
             task_revision_id: plan.task_revision_id,
@@ -480,7 +480,7 @@ impl ReviewTaskDomain {
         cas: &Cas,
         input: &TaskInvocationV1,
     ) -> Result<TaskRevisionV1, String> {
-        let plan: ExecutionPlanV3 = serde_json::from_value(envelope(cas, &input.plan_id)?.payload)
+        let plan: ExecutionPlan = serde_json::from_value(envelope(cas, &input.plan_id)?.payload)
             .map_err(|e| e.to_string())?;
         serde_json::from_value(envelope(cas, &plan.task_revision_id)?.payload)
             .map_err(|e| e.to_string())

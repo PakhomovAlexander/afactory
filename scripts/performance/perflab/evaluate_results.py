@@ -499,8 +499,12 @@ def _metric_shape(plan, cases, record):
     if identity["parameters"] != ({} if sentinel else case["parameters"]):
         return "names another parameter assignment than its planned instance"
     boundary = "library_region" if sentinel else case["timing"]["boundary"]
+    primary_scope = ("reaped_child_rusage" if boundary == "child_process_lifetime"
+                     and primary in ("total_cpu_ms", "user_cpu_ms", "system_cpu_ms",
+                                     "wait4_maxrss_bytes", "page_faults", "context_switches")
+                     else PRIMARY_SCOPES[boundary])
     if primary in record["metric_scopes"] \
-            and record["metric_scopes"][primary] != PRIMARY_SCOPES[boundary]:
+            and record["metric_scopes"][primary] != primary_scope:
         return "reports %s with scope %s, not its timing boundary %s" % (
             primary, record["metric_scopes"][primary], boundary)
     for key, metric in record["metrics"].items():
@@ -578,6 +582,7 @@ def _case(plan, case, evidence, health_entry, reasons):
     primary = case["primary_metric"]["key"]
     entry = {
         "instance_id": case["instance_id"], "criticality": case["criticality"],
+        "execution_class": case["execution_class"],
         "exploratory": case["exploratory"], "shard": case["shard"], "pairs": case["pairs"],
         "rank": case["rank"], "alpha": case["alpha"], "metric": case["primary_metric"],
         "tolerance": {"relative": case["tolerance"]["relative"],

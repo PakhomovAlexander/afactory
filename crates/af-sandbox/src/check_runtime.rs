@@ -50,10 +50,17 @@ impl CheckRuntime {
             path,
         };
         for (_, name) in LAYOUT {
-            std::fs::create_dir(runtime.path.join(name))?;
+            let mut builder = std::fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            builder.create(runtime.path.join(name))?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
+                // Restore owner access when an unusually restrictive umask removed it.
                 std::fs::set_permissions(
                     runtime.path.join(name),
                     std::fs::Permissions::from_mode(0o700),
@@ -154,6 +161,92 @@ impl Drop for CheckRuntime {
 
 #[cfg(test)]
 mod tests {
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_runtime_and_cache_directories_are_private_under_varied_umasks() {
+        use std::os::unix::fs::PermissionsExt;
+
+        const CHILD: &str = "AF_TEST_PRIVATE_RUNTIME_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            for mask in ["0002", "0022", "0077"] {
+                let output = std::process::Command::new("/bin/sh")
+                    .args(["-c", "umask \"$1\"; exec \"$2\" --exact \"$3\" --nocapture", "fixture", mask])
+                    .arg(std::env::current_exe().unwrap())
+                    .arg("check_runtime::tests::owned_runtime_and_cache_directories_are_private_under_varied_umasks")
+                    .env(CHILD, "1")
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "umask {mask}: {}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed;"));
+            }
+            return;
+        }
+        let private = |path: &Path| {
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o700,
+                "{}",
+                path.display()
+            );
+        };
+        let runtime = CheckRuntime::new().unwrap();
+        private(runtime.path());
+        for (_, path) in runtime.environment() {
+            private(Path::new(&path));
+        }
+        let attempt = crate::attempt_directory().unwrap();
+        private(attempt.path());
+        let parent = runtime.path().join("cache/af");
+        let cache = parent.join(crate::task_build_cache::TASK_BUILD_CACHE_DIRECTORY);
+        let project = "a".repeat(64);
+        let toolchain = "b".repeat(64);
+        let key = crate::lock_task_build_cache_key(
+            &cache,
+            &project,
+            &toolchain,
+            std::time::Duration::ZERO,
+        )
+        .unwrap()
+        .unwrap();
+        let crate::TaskBuildCacheLock::Held(directory) = key
+            .lock_kind("cargo_target", std::time::Duration::ZERO)
+            .unwrap()
+        else {
+            panic!("uncontended fixture lock")
+        };
+        directory.ensure().unwrap();
+        for path in [
+            &parent,
+            &cache,
+            &cache.join(&project),
+            key.path(),
+            directory.path(),
+        ] {
+            private(path);
+        }
+        // Creating the cache's parent must leave an existing operator directory's mode alone.
+        let existing = runtime.path().join("operator-cache");
+        std::fs::create_dir(&existing).unwrap();
+        std::fs::set_permissions(&existing, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _other = crate::lock_task_build_cache_key(
+            &existing.join("af/cache"),
+            &project,
+            &toolchain,
+            std::time::Duration::ZERO,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            std::fs::metadata(&existing).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+    }
 
     #[test]
     fn a_preserved_worker_runtime_keeps_its_private_roots_for_the_operator() {

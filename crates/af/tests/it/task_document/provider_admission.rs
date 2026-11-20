@@ -44,7 +44,7 @@ else:
  kind='author'; r=json.loads(request)
  assert set(r['inputs'])=={'requirements','sources'}
  s=r['inputs']['sources'][0]['payload']['sources']
- message=json.dumps({'schema':'af.worker-reply/1','outputs':{'draft':[{'schema':'af.document-draft/1','title':'Release notes','sections':[{'heading':'Summary','body':'\n\n'.join(s[k]['text'] for k in sorted(s))}],'citations':sorted(s)}]}})
+ message=json.dumps({'schema':'af.worker-reply/1','outputs':{'draft':[{'schema':'af.document-draft/3','title':'Release notes','sections':[{'heading':'Summary','body':'\n\n'.join(s[k]['text'] for k in sorted(s))}],'citations':[{'kind':'source','name':name} for name in sorted(s)]}]}})
  usage={'input_tokens':3,'cached_input_tokens':0,'output_tokens':2,'reasoning_output_tokens':0,'cache_write_input_tokens':0}
 with open(home+'/calls','a') as f: f.write(kind+'\n')
 if '-o' in sys.argv:
@@ -107,7 +107,7 @@ print(json.dumps({'type':'turn.completed','usage':usage}))
                 .as_str()
                 .unwrap(),
         );
-        let mut pipeline: af_contracts::task::pipeline::PipelineDefinitionV1 =
+        let mut pipeline: af_contracts::task::pipeline::PipelineDefinition =
             toml::from_str(&std::fs::read_to_string(package.join("pipeline.toml")).unwrap())
                 .unwrap();
         pipeline.max_attempts = 4;
@@ -389,7 +389,7 @@ fn admission_tokens_and_wall_exceeding_original_task_limits_refuse_paid_dispatch
 
 fn catalog_schema(schema: &Value) -> jsonschema::Validator {
     let contracts: Value = serde_json::from_str(include_str!(
-        "../../../../../schemas/task-contracts-v3.json"
+        "../../../../../schemas/task-contracts-v4.json"
     ))
     .unwrap();
     let planner: Value = serde_json::from_str(include_str!(
@@ -398,7 +398,7 @@ fn catalog_schema(schema: &Value) -> jsonschema::Validator {
     .unwrap();
     let registry = jsonschema::Registry::new()
         .add(
-            "urn:af:schema:task-contracts:3",
+            "urn:af:schema:task-contracts:4",
             jsonschema::Resource::from_contents(contracts),
         )
         .unwrap()
@@ -613,156 +613,213 @@ fn pi_task_admission_typed_result_retry_and_account_drift_use_the_common_path() 
         "rotate-after-admission",
         "replace-endpoint-after-admission",
     ] {
-        let mut f = Fixture::new(true, 5, 49152);
-        let (sdk, path, state) = crate::fake_models::install_pi(f._root.path(), &f.home, mode);
-        f.path = path;
-        let kimi = mode.starts_with("kimi-");
-        if mode == "kimi-document" {
-            // Exercise actual Task admission and Worker settlement with total native usage
-            // and unknown cache, rather than an SDK's initialized cache zero.
-            let mut fixture: Value =
-                serde_json::from_slice(&std::fs::read(&state).unwrap()).unwrap();
-            fixture["usage"] = json!({"prompt_tokens":439,"completion_tokens":38,
+        pi_task_case(mode);
+    }
+}
+
+#[test]
+fn pi_terminal_rate_limit_with_complete_usage_outranks_conflicting_diagnostic_in_task_reports() {
+    pi_task_case("kimi-terminal-error-after-admission");
+}
+
+fn pi_task_case(mode: &str) {
+    let mut f = Fixture::new(true, 5, 49152);
+    let (sdk, path, state) = crate::fake_models::install_pi(f._root.path(), &f.home, mode);
+    f.path = path;
+    let kimi = mode.starts_with("kimi-");
+    if matches!(
+        mode,
+        "kimi-document" | "kimi-terminal-error-after-admission"
+    ) {
+        // Exercise actual Task admission and Worker settlement with total native usage
+        // and unknown cache, rather than an SDK's initialized cache zero.
+        let mut fixture: Value = serde_json::from_slice(&std::fs::read(&state).unwrap()).unwrap();
+        fixture["usage"] = json!({"prompt_tokens":439,"completion_tokens":38,
                 "completion_tokens_details":{"reasoning_tokens":24}});
-            std::fs::write(&state, serde_json::to_vec(&fixture).unwrap()).unwrap();
-        }
-        let backend = match mode {
-            "api-key-document" => "anthropic",
-            "custom-document" => "team-compatible",
-            "cloud-document" => "google-vertex",
-            _ if kimi => "kimi-coding",
-            _ => "openai-codex",
-        };
-        let generic = backend != "openai-codex" && !kimi;
-        if generic {
-            let mut data: Value = serde_json::from_slice(&std::fs::read(&state).unwrap()).unwrap();
-            data["backend"] = json!(backend);
-            data["model"] = json!("sdk-code");
-            data["mode"] = json!("document");
-            data["api"] = json!("openai-completions");
-            std::fs::write(&state, serde_json::to_vec(&data).unwrap()).unwrap();
-            std::fs::write(
-                f.home.join("auth.json"),
-                serde_json::to_vec(
-                    &json!({(backend):{"type":"api_key","key":"SYNTHETIC_CONTEXT_SECRET"}}),
-                )
-                .unwrap(),
+        std::fs::write(&state, serde_json::to_vec(&fixture).unwrap()).unwrap();
+    }
+    let backend = match mode {
+        "api-key-document" => "anthropic",
+        "custom-document" => "team-compatible",
+        "cloud-document" => "google-vertex",
+        _ if kimi => "kimi-coding",
+        _ => "openai-codex",
+    };
+    let generic = backend != "openai-codex" && !kimi;
+    if generic {
+        let mut data: Value = serde_json::from_slice(&std::fs::read(&state).unwrap()).unwrap();
+        data["backend"] = json!(backend);
+        data["model"] = json!("sdk-code");
+        data["mode"] = json!("document");
+        data["api"] = json!("openai-completions");
+        std::fs::write(&state, serde_json::to_vec(&data).unwrap()).unwrap();
+        std::fs::write(
+            f.home.join("auth.json"),
+            serde_json::to_vec(
+                &json!({(backend):{"type":"api_key","key":"SYNTHETIC_CONTEXT_SECRET"}}),
             )
-            .unwrap();
-            if mode == "cloud-document" {
-                std::fs::write(f.home.join("auth.json"), "{}").unwrap();
-                let context = f.home.join("af-context.json");
-                std::fs::write(&context, r#"{"schema":"af.pi-context/1","environment":{"GOOGLE_CLOUD_API_KEY":"SYNTHETIC_CLOUD_SECRET"}}"#).unwrap();
-                std::fs::set_permissions(&context, std::fs::Permissions::from_mode(0o600)).unwrap();
-            }
+            .unwrap(),
+        )
+        .unwrap();
+        if mode == "cloud-document" {
+            std::fs::write(f.home.join("auth.json"), "{}").unwrap();
+            let context = f.home.join("af-context.json");
+            std::fs::write(&context, r#"{"schema":"af.pi-context/1","environment":{"GOOGLE_CLOUD_API_KEY":"SYNTHETIC_CLOUD_SECRET"}}"#).unwrap();
+            std::fs::set_permissions(&context, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
-        if kimi || generic {
-            // Successful context-only admission requires explicit trusted policy. The
-            // pi-light compile fixture separately proves strict principal-policy refusal.
-            f.catalog["independence"] = json!({"command_workers_by_package":true,
+    }
+    if kimi || generic {
+        // Successful context-only admission requires explicit trusted policy. The
+        // pi-light compile fixture separately proves strict principal-policy refusal.
+        f.catalog["independence"] = json!({"command_workers_by_package":true,
                 "distinct_principals":false,"distinct_providers":false,"distinct_models":false});
-        }
-        std::fs::write(f.home.join("providers.toml"),toml::to_string(&json!({"version":4,"providers":[{"id":"pi-personal","kind":"pi","backend":backend,"auth_dir":f.home,"sdk_entrypoint":sdk}]})).unwrap()).unwrap();
-        f.catalog["providers"] = json!({"builtin/document-author":"pi-personal"});
-        let package = f.repo.join(
-            f.catalog["packages"]["builtin/document-author"]["path"]
-                .as_str()
-                .unwrap(),
-        );
-        let mut worker: TaskWorkerManifest =
-            toml::from_str(&std::fs::read_to_string(package.join("worker.toml")).unwrap()).unwrap();
-        worker.runner = TaskWorkerRunner::Model {
-            provider_kind: "pi".into(),
-            model: if kimi {
-                "k3"
-            } else if generic {
-                "sdk-code"
-            } else {
-                "o3"
-            }
-            .into(),
-            effort: "high".into(),
-        };
-        std::fs::write(
-            package.join("worker.toml"),
-            toml::to_string(&worker).unwrap(),
-        )
-        .unwrap();
-        f.catalog["packages"]["builtin/document-author"]["digest"] = json!(
-            af_pipeline_config::lock::package_digest("builtin/document-author", &package).unwrap()
-        );
-        std::fs::write(
-            f.repo.join(".af/task-catalog.toml"),
-            toml::to_string(&f.catalog).unwrap(),
-        )
-        .unwrap();
-        commit(&f.repo);
-        let planned = success(f.cli(&["task", "plan", "--file", "document.json"]));
-        let binding = &planned["plan"]["bindings"]["root.slots.author"];
-        // The exact execution identity is captured even when this plan renderer changes its
-        // slot labels; inspect the canonical plan rather than manufacturing a Pi authority.
-        let cas = af_store::Cas::open_existing(f.state.join("cas")).unwrap();
-        let envelope = cas.get_json(planned["plan_id"].as_str().unwrap()).unwrap();
-        let text = envelope.to_string();
-        assert!(text.contains(backend), "{binding}\n{text}");
-        assert!(!text.contains("SYNTHETIC_CONTEXT_SECRET"));
-        assert!(!text.contains("SYNTHETIC_CLOUD_SECRET"));
-        if kimi || generic {
-            let execution = &envelope["payload"]["bindings"]["root.slots.author"]["execution"];
-            assert!(execution["principal_id"].is_null(), "{execution}");
-            assert_eq!(execution["pi"]["identity_mode"], "unavailable");
-            assert!(
-                execution["pi"]["auth_context_id"]
-                    .as_str()
-                    .unwrap()
-                    .starts_with("sha256:")
-            );
-        }
-        let out = f.cli(&["task", "run", "--execute", "release-notes"]);
-        let done: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| {
-            panic!(
-                "{}\n{}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            )
-        });
-        let calls = std::fs::read_to_string(state.with_extension("json.calls")).unwrap();
-        if matches!(
-            mode,
-            "replace-after-admission"
-                | "replace-endpoint-after-admission"
-                | "kimi-replace-auth-after-admission"
-        ) {
-            assert!(!out.status.success(), "{done}");
-            assert_eq!(calls, "admission\n");
-            assert_eq!(done["chargeable_tokens"], if kimi { "15" } else { "5" });
+    }
+    std::fs::write(f.home.join("providers.toml"),toml::to_string(&json!({"version":4,"providers":[{"id":"pi-personal","kind":"pi","backend":backend,"auth_dir":f.home,"sdk_entrypoint":sdk}]})).unwrap()).unwrap();
+    f.catalog["providers"] = json!({"builtin/document-author":"pi-personal"});
+    let package = f.repo.join(
+        f.catalog["packages"]["builtin/document-author"]["path"]
+            .as_str()
+            .unwrap(),
+    );
+    let mut worker: TaskWorkerManifest =
+        toml::from_str(&std::fs::read_to_string(package.join("worker.toml")).unwrap()).unwrap();
+    worker.runner = TaskWorkerRunner::Model {
+        provider_kind: "pi".into(),
+        model: if kimi {
+            "k3"
+        } else if generic {
+            "sdk-code"
         } else {
-            assert!(
-                out.status.success(),
-                "{done}\n{}",
-                String::from_utf8_lossy(&out.stderr)
-            );
-            assert_eq!(done["result"]["acceptance"], "satisfied");
-            assert_eq!(
-                calls,
-                if mode == "retry" {
-                    "admission\nworker\nworker\n"
-                } else {
-                    "admission\nworker\n"
-                }
-            );
-            assert_eq!(
-                done["chargeable_tokens"],
-                if mode == "retry" {
-                    "15"
-                } else if generic {
-                    "30"
-                } else if kimi {
-                    "954"
-                } else {
-                    "10"
-                }
-            );
+            "o3"
         }
+        .into(),
+        effort: "high".into(),
+    };
+    std::fs::write(
+        package.join("worker.toml"),
+        toml::to_string(&worker).unwrap(),
+    )
+    .unwrap();
+    f.catalog["packages"]["builtin/document-author"]["digest"] = json!(
+        af_pipeline_config::lock::package_digest("builtin/document-author", &package).unwrap()
+    );
+    std::fs::write(
+        f.repo.join(".af/task-catalog.toml"),
+        toml::to_string(&f.catalog).unwrap(),
+    )
+    .unwrap();
+    commit(&f.repo);
+    let planned = success(f.cli(&["task", "plan", "--file", "document.json"]));
+    let binding = &planned["plan"]["bindings"]["root.slots.author"];
+    // The exact execution identity is captured even when this plan renderer changes its
+    // slot labels; inspect the canonical plan rather than manufacturing a Pi authority.
+    let cas = af_store::Cas::open_existing(f.state.join("cas")).unwrap();
+    let envelope = cas.get_json(planned["plan_id"].as_str().unwrap()).unwrap();
+    let text = envelope.to_string();
+    assert!(text.contains(backend), "{binding}\n{text}");
+    assert!(!text.contains("SYNTHETIC_CONTEXT_SECRET"));
+    assert!(!text.contains("SYNTHETIC_CLOUD_SECRET"));
+    if kimi || generic {
+        let execution = &envelope["payload"]["bindings"]["root.slots.author"]["execution"];
+        assert!(execution["principal_id"].is_null(), "{execution}");
+        assert_eq!(execution["pi"]["identity_mode"], "unavailable");
+        assert!(
+            execution["pi"]["auth_context_id"]
+                .as_str()
+                .unwrap()
+                .starts_with("sha256:")
+        );
+    }
+    let out = f.cli(&["task", "run", "--execute", "release-notes"]);
+    let done: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| {
+        panic!(
+            "{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+    });
+    let calls = std::fs::read_to_string(state.with_extension("json.calls")).unwrap();
+    if mode == "kimi-terminal-error-after-admission" {
+        assert!(!out.status.success(), "{done}");
+        assert_eq!(calls, "admission\nworker\n");
+        assert_eq!(done["chargeable_tokens"], "954");
+        assert_eq!(done["state"]["cause"], "provider_capacity", "{done}");
+        let shown = success(f.cli(&["task", "show", "release-notes"]));
+        assert_eq!(shown["state"]["cause"], "provider_capacity", "{shown}");
+        let store = af_store::EventStore::open_read_only(f.state.join("events.sqlite")).unwrap();
+        let projection = store
+            .task_projection(&cas, "release-notes")
+            .unwrap()
+            .unwrap();
+        let execution = projection.execution.unwrap();
+        let failed = execution
+            .attempt_accounting()
+            .into_iter()
+            .find(|a| a.reservation.node == "root.nodes.author")
+            .unwrap();
+        assert_eq!(failed.charged_tokens, 477);
+        assert!(failed.unknown_usage.is_none());
+        let raw: Vec<Value> = failed
+            .raw_artifact_ids
+            .iter()
+            .map(|id| cas.get_json(id).unwrap())
+            .collect();
+        assert!(
+            raw.iter().any(|v| v["type"] == "af/NativeFailureEvidence@1"
+                && v["payload"] == json!({"schema":"af.native-failure/1","kind":"quota"})),
+            "{raw:?}"
+        );
+        assert!(raw.iter().any(|v| v["schema"] == "af.pi-host/7"
+            && v["diagnostic"] == "model_unavailable"
+            && v["accounting_complete"] == true));
+        let Some(af_contracts::task::execution::TaskAttemptResultV1::Failed {
+            diagnostic_id, ..
+        }) = &failed.result
+        else {
+            panic!("{:?}", failed.result);
+        };
+        let diagnostic = cas.get_json(diagnostic_id).unwrap();
+        let error = diagnostic["error"].as_str().unwrap();
+        assert!(error.contains("model_unavailable"), "{error}");
+        assert!(
+            !error.contains("billing") && !error.contains("malformed_reply"),
+            "{error}"
+        );
+    } else if matches!(
+        mode,
+        "replace-after-admission"
+            | "replace-endpoint-after-admission"
+            | "kimi-replace-auth-after-admission"
+    ) {
+        assert!(!out.status.success(), "{done}");
+        assert_eq!(calls, "admission\n");
+        assert_eq!(done["chargeable_tokens"], if kimi { "15" } else { "5" });
+    } else {
+        assert!(
+            out.status.success(),
+            "{done}\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(done["result"]["acceptance"], "satisfied");
+        assert_eq!(
+            calls,
+            if mode == "retry" {
+                "admission\nworker\nworker\n"
+            } else {
+                "admission\nworker\n"
+            }
+        );
+        assert_eq!(
+            done["chargeable_tokens"],
+            if mode == "retry" {
+                "15"
+            } else if generic {
+                "30"
+            } else if kimi {
+                "954"
+            } else {
+                "10"
+            }
+        );
     }
 }

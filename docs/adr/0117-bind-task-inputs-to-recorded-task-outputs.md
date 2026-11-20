@@ -4,6 +4,9 @@ Status: accepted, 2026-09-23; amended by
 [ADR-0134](0134-bind-any-declared-root-port-to-recorded-task-outputs.md): any root input the
 selected Pipeline declares may be bound, not only `source`, `history` and `sources`, and a
 `many` port may be bound from several recorded outputs.
+SourceOrigin generations superseded by
+[the current-contract consolidation](2026-11-08-consolidate-current-contracts-and-task-review.md);
+current contracts and bounds are documented in the [capability plan](../design/current-contracts-and-task-review.md).
 
 ## Context
 

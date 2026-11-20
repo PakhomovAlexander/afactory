@@ -132,14 +132,15 @@ fn aggregate_disk_bounds_are_mandatory_finite_exact_and_within_machine_authority
 
 #[test]
 fn worker_storage_recovery_intent_has_strict_versioned_schema_parity() {
-    let schema = validator("worker-storage-v1.json");
-    let valid = json!({"schema":"af.worker-storage/1","runtime":"/usr/bin/docker","name":"af-storage-Ab123"});
-    let lease: WorkerStorageLeaseV1 = serde_json::from_value(valid.clone()).unwrap();
+    let schema = validator("worker-storage-v2.json");
+    let valid = json!({"schema":"af.worker-storage/2","runtime":"/usr/bin/docker","name":"af-storage-Ab123"});
+    let lease: WorkerStorageLeaseV2 = serde_json::from_value(valid.clone()).unwrap();
     lease.validate().unwrap();
     assert!(schema.is_valid(&valid));
     assert_eq!(serde_json::to_value(lease).unwrap(), valid);
     for (field, value) in [
         ("schema", "af.worker-storage/0"),
+        ("schema", "af.worker-storage/1"),
         ("name", "unrelated-volume"),
         ("name", "af-storage-../../host"),
         ("runtime", "relative"),
@@ -148,7 +149,7 @@ fn worker_storage_recovery_intent_has_strict_versioned_schema_parity() {
         invalid[field] = json!(value);
         assert!(!schema.is_valid(&invalid));
         assert!(
-            serde_json::from_value::<WorkerStorageLeaseV1>(invalid)
+            serde_json::from_value::<WorkerStorageLeaseV2>(invalid)
                 .unwrap()
                 .validate()
                 .is_err()
@@ -157,7 +158,7 @@ fn worker_storage_recovery_intent_has_strict_versioned_schema_parity() {
     let mut invalid = valid;
     invalid["worker_path"] = json!("/host");
     assert!(!schema.is_valid(&invalid));
-    assert!(serde_json::from_value::<WorkerStorageLeaseV1>(invalid).is_err());
+    assert!(serde_json::from_value::<WorkerStorageLeaseV2>(invalid).is_err());
 }
 
 #[test]
@@ -507,23 +508,10 @@ fn worker_cache_policies_warm_selections_build_provenance_and_capture_receipts_h
 }
 
 #[test]
-fn a_worker_cache_is_refused_as_gate_capture_evidence() {
-    use af_contracts::{
-        BuildCacheCapturedPayloadV1, BuildCacheKindV1, EventType, event::validate_event_payload,
-    };
-    let payload = BuildCacheCapturedPayloadV1 {
-        gate_node: "gate".into(),
-        gate_attempt_id: Some("a".repeat(26)),
-        head_snapshot_id: identity(),
-        kind: BuildCacheKindV1::Worker,
-        limits: af_contracts::BuildCacheLimitsV1::default(),
-        build_cache_artifact_id: Some(identity()),
-        refused: None,
-        entries: 1,
-        bytes: 1,
-    };
-    let value = serde_json::to_value(payload).unwrap();
-    assert!(validate_event_payload(EventType::BuildCacheCapturedV1, &value).is_err());
-    let event = serde_json::json!({"event_id":"a".repeat(26),"run_id":"task:fixture","sequence":1,"type":"BuildCacheCaptured@1","occurred_at":"2026-11-04T00:00:00Z","payload":value});
-    assert!(!validator("run-event-v1.json").is_valid(&event));
+fn retired_gate_capture_events_cannot_admit_worker_cache_evidence() {
+    assert!(
+        "BuildCacheCaptured@1"
+            .parse::<af_contracts::EventType>()
+            .is_err()
+    );
 }

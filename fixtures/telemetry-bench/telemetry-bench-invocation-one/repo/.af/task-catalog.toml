@@ -3,12 +3,12 @@ code_policy = ".af/code-policy.toml"
 
 [packages."bench/stream"]
 version = "1.0.0"
-digest = "sha256:a5e0b9ff5e38578f12f31ad0fdf1420a2aea202b973caf80575eccf68f3a2d76"
+digest = "sha256:8aff22d744337b7e565b1d3b5c60463077aa80307db44bb03ae847be3602da91"
 path = ".af/task-packages/bench/stream"
 
 [packages."bench/invocation"]
-version = "1.0.0"
-digest = "sha256:fa17cbc33ccfe3a1ae7e9e4752365ee0c804df09608a60ee6765275363aa98f6"
+version = "1.0.1"
+digest = "sha256:d392b244e774302f4038ca3d523759167a72422ec2adb494d75f01fe7abfb894"
 path = ".af/task-packages/bench/invocation"
 
 [providers]

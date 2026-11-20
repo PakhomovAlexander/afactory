@@ -16,7 +16,6 @@ compile_error!("af supports Linux and macOS only");
 
 pub mod build_cache;
 pub mod cache;
-pub mod campaign;
 pub mod change_set;
 pub mod credential;
 pub mod demand;
@@ -28,7 +27,6 @@ pub mod finding;
 pub mod finding_set;
 pub mod grouping;
 pub mod hex;
-pub mod integration;
 pub mod json;
 pub mod patch;
 pub mod path;
@@ -46,33 +44,29 @@ pub mod warm;
 pub mod warm_workspace;
 
 pub use warm_workspace::{
-    WARM_WORKSPACE_ID_HEX_LEN, WorkspaceBasisV1, WorkspaceFallbackReasonV1,
-    WorkspaceRebasedPayloadV1, is_warm_workspace_id,
+    WARM_WORKSPACE_ID_HEX_LEN, WorkspaceBasisV1, WorkspaceFallbackReasonV1, is_warm_workspace_id,
 };
 
 pub use warm::{
     BuildCacheDropReasonV1, DEFAULT_WORKER_NOTES_BYTES, HeadDeltaDropReasonV1, HeadDeltaEntryV1,
     HeadDeltaInputs, HeadDeltaMarkV1, HeadDeltaV1, InspectedPathV1, MAX_HEAD_DELTA_BYTES,
-    MAX_WORKER_NOTES_BYTES, PathHintV1, TreeView, WarmLayerV3, WarmSetSelectedPayloadV3, WarmSetV3,
-    WorkerNotesDropReasonV1, WorkerNotesRecordedPayloadV1, WorkerNotesV1, compute_head_delta_marks,
+    MAX_WORKER_NOTES_BYTES, PathHintV1, TreeView, WarmLayerV3, WarmSetV3, WorkerNotesDropReasonV1,
+    WorkerNotesV1, compute_head_delta_marks,
 };
 
 pub use build_cache::{
-    BUILD_CACHE_MAX_DEPTH_V1, BUILD_CACHE_MAX_PATH_BYTES_V1, BuildCacheCapturedPayloadV1,
-    BuildCacheKindV1, BuildCacheLimitsV1, BuildCacheRefusalReasonV1, BuildCacheTrustV1,
-    BuildCacheV2, DEFAULT_BUILD_CACHE_BYTES_V1, DEFAULT_BUILD_CACHE_ENTRIES_V1,
-    MAX_BUILD_CACHE_BYTES_V1, MAX_BUILD_CACHE_ENTRIES_V1, validate_build_cache_path_v1,
+    BUILD_CACHE_MAX_DEPTH_V1, BUILD_CACHE_MAX_PATH_BYTES_V1, BuildCacheKindV1, BuildCacheLimitsV1,
+    BuildCacheRefusalReasonV1, BuildCacheTrustV1, BuildCacheV2, DEFAULT_BUILD_CACHE_BYTES_V1,
+    DEFAULT_BUILD_CACHE_ENTRIES_V1, MAX_BUILD_CACHE_BYTES_V1, MAX_BUILD_CACHE_ENTRIES_V1,
+    validate_build_cache_path_v1,
 };
 
 pub use cache::{
     CacheManifestEntryV1, CacheManifestV1, CachePathEncodingV1, MAX_CACHE_BYTES_V1,
-    MAX_CACHE_COPY_BYTES_V1, MAX_CACHE_ENTRIES_V1, validate_cache_path_v1,
+    MAX_CACHE_COPY_BYTES_V1, MAX_CACHE_ENTRIES_V1, RunCacheKindV5, validate_cache_path_v1,
 };
-pub use campaign::{
-    AuthorityFileV1, CANONICAL_FINDING_IDENTITY_POLICY, CampaignBudgetV1, CampaignConvergenceV1,
-    CampaignManifestV1, CampaignOpenedPayloadV1, CampaignReviewerV1, ReviewerPackageV1,
-    RoundInputSupersededPayloadV1, RoundStartedPayloadV1,
-};
+/// Path-independent canonical Finding identity used by native Task review.
+pub const CANONICAL_FINDING_IDENTITY_POLICY: &str = "report-derived@1";
 pub use change_set::{ChangeSetV1, PathRenameV1};
 pub use credential::CredentialModeV1;
 pub use demand::{
@@ -83,23 +77,13 @@ pub use demand::{
 pub use disposition::{FindingDispositionPosition, FindingDispositionV1};
 pub use envelope::{ArtifactEnvelope, Producer};
 pub use event::{
-    EventType, MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PortArtifactsV1,
-    PortCardinality, RunCacheFailureReasonV5, RunCacheFailureV5, RunCacheKindV5,
-    RunCacheMaterializationV5, RunCacheSnapshotV5, RunEvent, RunExecutionBindingV4,
-    RunExecutionProviderV4, RunFailureReasonV3, RunIsolationV4, RunNodeOutcomeV2, RunNodeReportV2,
-    RunReportExecutionV6, RunReportPayloadV6, RunSandboxModeV4, RunSuppressionReasonV2,
-    RunVerdictV3, SnapshotAffinity, TaskReviewAccountingV1, UnknownEventType, is_artifact_type,
-    run_report_closes_round,
+    EventType, PortCardinality, RunEvent, SnapshotAffinity, UnknownEventType, is_artifact_type,
 };
 pub use exec::{Arg, ArgError, Command, Provenance};
 pub use finding::{FindingReport, Location, Relation, RelationKind, Severity};
 pub use finding_set::{FINDING_REDUCER_VERSION_V2, FindingSetEntryV1, FindingSetV1};
 pub use grouping::{FindingGroupingAction, FindingGroupingEventPayloadV1, FindingGroupingV1};
-pub use integration::{
-    IntegrationCandidateV1, IntegrationCheckV1, IntegrationChecksCompletedPayloadV1,
-    IntegrationChecksV1, IntegrationCommittedPayloadV1, IntegrationConflictPayloadV1,
-    IntegrationPlanV1, IntegrationPreparedPayloadV1,
-};
+
 pub use json::{NumericDomainError, admit};
 pub use patch::{
     ClaimRef, ClaimRefKind, PatchProposal, ProposalAcceptedPayloadV1, ProposalCandidateV1,
@@ -116,13 +100,12 @@ pub use resolution::{
     FixVerificationV1, PolicyTimeV1, ResolutionChallengeKind, ResolutionChallengeV1,
 };
 pub use reviewer_result::{
-    ReportAdmissionError, ReviewerResultContract, ReviewerResultRejection, ReviewerStageOutput,
+    ReportAdmissionError, ReviewerResultRejection, ReviewerStageOutput,
     validate_reviewer_result_v2, validate_reviewer_result_v2_classified,
 };
 pub use slice::{
-    CloseoutPolicyV1, RecordedSetPayloadV1, ReviewSliceV1, SemanticClosureV1,
-    SemanticDispositionV1, ShardOutcomeV1, ShardReceiptV1, ShardSetV1, SliceCoverageV1,
-    SliceSetAcceptedPayloadV1, SliceSetV1,
+    CloseoutPolicyV1, ReviewSliceV1, SemanticClosureV1, SemanticDispositionV1, ShardOutcomeV1,
+    ShardReceiptV1, ShardSetV1, SliceCoverageV1, SliceSetV1,
 };
 pub use snapshot::{Capture, SourceSnapshot, Submodule};
 pub use subject::{SubjectKind, SubjectV1};

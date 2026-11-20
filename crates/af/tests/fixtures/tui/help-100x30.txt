@@ -7,10 +7,9 @@ v hub  (project)            |
       fixture/evaluator     |  pipelines/   af task plan and af task explain --tree, token-free
       fixture/implementer   |  tasks/       the Tasks of every Task Store: this scope's, every
   v pipelines/              |               --state DIR the Store registry records, and :state DIR
-      review                |  campaigns/   every review Campaign, as af review campaigns lists it
-      fixture/implementation|
-  v tasks/                  |: <af command>   runs any af command line here (:task list,
-  v campaigns/              |                 :review campaigns, :provider status), with the
+      review                |
+      fixture/implementation|: <af command>   runs any af command line here (:task list,
+  v tasks/                  |                 :task list, :provider status), with the
                             |                 terminal handed to it; Enter comes back.
                             |
                             |KEYS  (docs/design/tui.md section 4)
@@ -27,4 +26,5 @@ v hub  (project)            |
                             |?                  this help
                             |Tab <C-w>l <C-w>h  move focus between the bar and the main pane
                             |]] [[              next / previous folder
+                            |Enter o            open the selected node in the main pane
 HELP  hub                                                                   j/k scroll  q close help

@@ -30,15 +30,20 @@ substitution within the same context cannot be detected. Its embedded SDK host e
 no shell. See the [Pi Provider design](../design/pi-provider.md) for setup, the exact support
 matrix and token-free fixture evidence; paid live smoke was not run.
 
-`af onboard --tasks` generates `onboard/implementer`, `onboard/bugs`,
-`onboard/correctness` and `onboard/evaluator` with `codex-main` Provider aliases.
-The implementer uses `gpt-6.1-sol` at high effort; the independent judging Workers use
-`gpt-6.1-terra` at high effort. `--runner` selects the review-authority profile;
-Task Workers always require a Codex Provider, including on a Claude-only machine.
-If the local registry uses another ID, map those package
-names to that ID in `[providers]` of a machine-local bindings file and pass
-`--bindings FILE` to `af task plan`. The implementer and independent judging Workers
-use distinct models; one registered login can serve them.
+Default `af onboard` emits standalone Review and implementation authority together. The explicit
+`af onboard --tasks` mode previews or adds that catalog only where Task settings and target
+files are absent; it refuses an existing `[task]` table even in preview mode. Use plain
+`af onboard` to validate existing Task authority.
+
+The generated `onboard/implementer` and `onboard/evaluator` use `codex-main`: the implementer
+uses `gpt-6.1-sol` at high effort and the independent evaluator `gpt-6.1-terra` at high effort.
+`--runner` selects the `onboard/bugs` and `onboard/correctness` Review Workers and their Provider
+aliases: `codex-main` with `gpt-6.1-terra` at high effort, or `claude-main` with
+`claude-opus-5-5` at high effort. Implementation and evaluation always require a Codex Provider,
+including on a Claude-only machine.
+If the local registry uses another ID, map those package names to that ID in `[providers]` of a
+machine-local bindings file and pass `--bindings FILE` to `af task plan`. The implementer and
+independent judging Workers use distinct models; one registered login can serve them.
 
 Additional packages must use `local/*` names, exact version/digest pins and paths beneath
 the bindings file's directory. They use the same Worker manifest and input/output schemas
@@ -63,3 +68,41 @@ The plan includes the effective package and every default package whose contract
 its replacement. Resume recompiles those captured bytes and settings; it does not read the
 local file again. The integration fixture runs Alice and Bob against the same Pipeline,
 changes their local files after planning, and verifies both captured executions.
+
+Scenario `template-pin --bindings FILE` uses this same bounded capture from the original file
+location. Its version 2 template seals the full native authority closure in the Task Store.
+Concurrent identical pins create one durable record; repeating a pin validates that exact record
+and refuses conflicting, corrupt or duplicate history, including noncanonical event metadata.
+Pin validation probes at most two indexed sequence entries, including negative sequences, and
+bounds each required event text field to 256 UTF-8 bytes before decoding. Optional metadata must
+be absent. Fresh planning uses the same bounded read; corrupt history cannot trigger a full replay
+under pin publication's writer lock. Template artifact verification precedes that lock.
+A process-owned shared CAS reservation protects capture and reused objects through publication;
+Task collection refuses while it is held. Git and package capture leave SQLite available for
+unrelated Task heartbeat renewals. Process death releases the reservation automatically.
+Fresh Tasks and restarts restore that closure without reading local paths, even after the
+bindings and package directories are deleted. Committed customer Pipelines and policy remain
+anchored to the exact authority commit; local additions remain Workers only. A new binding
+requires a new template pin and Scenario/policy confirmation. See
+[Fresh Task templates](../scenarios.md#fresh-task-templates).
+
+## Report evaluation dependencies
+
+Report verifiers may declare any number of prior `af/ReportEvaluation@1` inputs with
+project-chosen names. Each is required, cardinality `one`, and `same_as` the `source` input.
+The captured graph binds each to its exact verifier node's `result` port. Admission requires
+distinct passed evaluations of the same document, sources, checks, Snapshot and requirements;
+missing, stale or substituted evaluations are refused. A verifier with no prior evaluations
+remains valid. Each dependency must appear in the Worker's `signature.retains` entry for `result`;
+output admission checks that the result envelope retains its exact input artifact ID, so the
+accepted report evidence preserves every declared prior evaluation in its lineage.
+The consuming package owns its dependency count and independence bindings.
+
+## Afactory operator catalog migration
+
+Afactory's staged [issue-oriented catalog](../../fixtures/issue-workflows/README.md) owns its
+nine public selections, exact role definitions and pins. Its launcher admits only personal
+account aliases in local bindings; it refuses slot/package replacements for these selections.
+This consuming policy leaves the generic native binding capability above available to other
+projects. Use the read-only migration inventory before changing machine-local workstream
+choices; do not rewrite the captured bindings or package bytes of historical Tasks.

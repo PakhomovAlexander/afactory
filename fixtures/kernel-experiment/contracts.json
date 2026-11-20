@@ -1,5 +1,5 @@
 {
-  "schema": "af.catalog-contract-fixtures/1",
+  "schema": "af.catalog-contract-fixtures/2",
   "pipelines": {
     "kernel/experiment": {
       "contract": {

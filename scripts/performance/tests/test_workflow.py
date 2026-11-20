@@ -169,6 +169,32 @@ class RequiredPythonCompatibility(unittest.TestCase):
         self.assertIn("PYTHONDONTWRITEBYTECODE: '1'", joined)
         self.assertIn('validation-telemetry-smoke-${{ github.run_attempt }}', joined)
 
+    def test_measurement_smoke_host_build_has_pinned_rust_and_inherited_wrapper(self):
+        # The first smoke builds in Docker; the measurement smoke additionally builds
+        # the authority supervisor on the host, inheriting the workflow's wrapper.
+        from perflab import toml_file
+        toolchain = toml_file.loads(read(os.path.join(ROOT, 'rust-toolchain.toml')),
+                                    'rust-toolchain.toml')['toolchain']['channel']
+        self.assertIn('  RUSTC_WRAPPER: sccache', self.text.split('jobs:')[0])
+        actions = steps(self.jobs['telemetry-build-smoke'])
+        measurement = next(i for i, step in enumerate(actions)
+                           if 'telemetry_measurement_smoke.py' in '\n'.join(step))
+        install = '        run: rustup toolchain install ' + toolchain + \
+                  ' --profile minimal --component clippy,rustfmt'
+        rust = next(i for i, step in enumerate(actions) if install in step)
+        wrapper_action = ('      - uses: mozilla-actions/sccache-action@'
+                          'fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11')
+        wrapper = next(i for i, step in enumerate(actions) if wrapper_action in step)
+        self.assertLess(rust, measurement)
+        self.assertLess(wrapper, measurement)
+        # Reuse the approved host prerequisites, without suppressing the real build.
+        self.assertIn(install, '\n'.join(self.jobs['base']))
+        self.assertIn(wrapper_action, self.jobs['base'])
+        smoke = read(os.path.join(ROOT, 'scripts/performance/tests/'
+                                  'telemetry_measurement_smoke.py')).decode()
+        self.assertIn('subprocess.run(["cargo", "build", "--locked", "--example", '
+                      '"perf-supervisor"],\n                   cwd=ROOT, check=True)', smoke)
+
     def test_every_action_stays_pinned_to_a_commit(self):
         for line in self.text.splitlines():
             match = re.match(r"^\s*(?:- )?uses: (\S+)", line)

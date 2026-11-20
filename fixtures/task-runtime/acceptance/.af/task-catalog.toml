@@ -7,8 +7,8 @@ digest = "sha256:574c6b1c174c4be9236b9deefd50edc3ca6b8813508b9374b5e57bd53ab50f1
 path = ".af/task-packages/fixture/evaluator"
 
 [packages."fixture/implementation"]
-version = "1.0.0"
-digest = "sha256:3ea9b6ee43b2ba773c04b19d89ed777befd1a8f16155a568e27c54fd46b2462c"
+version = "1.0.1"
+digest = "sha256:3d6c41acf50f34f433fe8f5ac4e672d29a9bf59779f5c52177d914003c8b8323"
 path = ".af/task-packages/fixture/implementation"
 
 [packages."fixture/implementer"]

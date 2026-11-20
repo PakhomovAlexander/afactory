@@ -10,15 +10,15 @@
 //!   payload's digest and size (`af.store.event.payload_digest`, `.payload_bytes`); at `content`
 //!   the payload itself is a blob the event names, redacted as a record of the kernel's own (its
 //!   identity members kept) and counted against the process's content allowance;
-//! - at `spans` and above, for a Campaign's log, a `finding` record (`af/TelemetryFinding@2`)
+//! - at `spans` and above, for a native Task Review log, a `finding` record (`af/TelemetryFinding@2`)
 //!   for every Report admitted into the Ledger and whenever a summarized field of a Finding
 //!   changes, with the event `af.finding.disposition` keyed by the Finding key when its status
 //!   does, and a `demand` record (`af/TelemetryDemand@2`) — the Demand's own Subject and the
 //!   Snapshot bound to it — with the events `af.demand.opened`, `af.demand.evidence_satisfied`
 //!   (with the Evidence id; an admitted reuse that satisfies a stale Demand again included),
 //!   `af.demand.stale` and `af.demand.waived`, keyed by the Demand id and never by a Finding
-//!   key (ADR-0007). Every summary carries the log and committed sequence of its cause. They come from the Ledger projection the committed
-//!   events fold into — the Reports the events reference, read from the CAS — so a reader
+//!   key (ADR-0007). Every summary carries the log and committed sequence of its cause. They come from the canonical Ledger recomputed from committed native Round receipts
+//!   and their original captured plans, so a reader
 //!   needs no Store. At `content` an admitted Finding's body is a blob named by
 //!   `af.finding.body`, keyed by the Finding key, whenever it differs from the body last
 //!   recorded;
@@ -49,7 +49,7 @@ use af_contracts::{EventType, RunEvent};
 use af_store::store::observer::{Commit, CommitObserver, WallCommit};
 use af_store::store::task::execution::read_execution_record;
 use af_store::store::task::read_task_transition;
-use af_store::{Cas, CasError, EventStore, LedgerProjection};
+use af_store::{Cas, CasError, EventStore, Ledger};
 use af_telemetry::blob::{Document, Media};
 use af_telemetry::content::{Scope, event::FINDING_BODY};
 use af_telemetry::level::Level;
@@ -80,33 +80,13 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// The ledger events after which Findings and Demands are compared with what was recorded.
-fn changes_ledger(event_type: EventType) -> bool {
-    matches!(
-        event_type,
-        EventType::FindingReportedV1
-            | EventType::FindingResolvedV1
-            | EventType::FindingsGroupedV1
-            | EventType::FindingsUngroupedV1
-            | EventType::DemandRecordedV1
-            | EventType::DemandWaivedV1
-            | EventType::EvidenceAddedV1
-            | EventType::EvidenceReuseAdmittedV1
-            | EventType::EvidenceSatisfiedV1
-            | EventType::ChangeAttestedV1
-            | EventType::FixVerifiedV1
-            | EventType::FindingResolutionRecordedV1
-            | EventType::FindingResolutionChallengedV1
-            | EventType::PolicyTimeAdvancedV1
-            | EventType::RoundStartedV1
-    )
-}
-
-/// What one Campaign log's summaries were last recorded as.
+/// What one native Task log's summaries were last recorded as.
 struct LedgerWatch {
     /// The projection after the last event folded in; `None` once it failed: the log's
     /// summaries stop, and the failure was reported once.
-    projection: Option<LedgerProjection>,
+    projection: Option<Ledger>,
+    through_sequence: Option<u64>,
+    failed: bool,
     /// Each Finding's last recorded summary, its record position fields cleared: a summary is
     /// written again whenever any summarized field differs.
     findings: BTreeMap<String, Finding>,
@@ -118,6 +98,9 @@ struct LedgerWatch {
     bodies: BTreeMap<String, String>,
     /// Each Demand's last recorded summary, its record position fields cleared.
     demands: BTreeMap<String, Demand>,
+    satisfactions: std::collections::BTreeSet<String>,
+    baseline_findings: BTreeMap<String, String>,
+    baseline_demands: BTreeMap<String, String>,
     /// The Snapshot bound to each Subject the log made active, by Subject id.
     subjects: BTreeMap<String, String>,
     /// The current Round's epoch.
@@ -128,7 +111,7 @@ struct LedgerWatch {
 struct State {
     /// The Store directory's `af.store_id`, by database path; `None` when it cannot be named.
     stores: BTreeMap<PathBuf, Option<String>>,
-    /// Campaign logs, by Store and run id.
+    /// Native Task logs, by Store and run id.
     ledgers: BTreeMap<(String, String), LedgerWatch>,
 }
 
@@ -315,7 +298,7 @@ impl StoreMirror {
             return;
         };
         for event in commit.events {
-            if event.event_type != EventType::TaskTransitionV5 {
+            if event.event_type != EventType::TaskTransitionV6 {
                 continue;
             }
             let Ok(transition) = read_task_transition(event) else {
@@ -429,127 +412,236 @@ impl StoreMirror {
     // --------------------------------------------------------------------------------------
     // Finding and Demand summaries
 
-    fn summaries(&self, writer: &Writer, store_id: &str, commit: &Commit<'_>) {
-        let mut logs: Vec<&str> = Vec::new();
-        for event in commit.events {
-            if !event.run_id.starts_with("task:") && !logs.contains(&event.run_id.as_str()) {
-                logs.push(&event.run_id);
-            }
+    /// Current complete native Round outputs in one committed Task event.
+    fn native_rounds(cas: &Cas, event: &RunEvent) -> Result<(u64, Vec<String>), String> {
+        use af_contracts::task::execution::{TASK_OUTPUT_V1, TaskOutputV1};
+        use af_contracts::task::review::{
+            ReviewConclusionV1, TASK_REVIEW_ROUND_V1, TaskReviewRoundV1,
+        };
+        if event.event_type != EventType::TaskTransitionV6 {
+            return Ok((0, vec![]));
         }
-        for log in logs {
-            let events: Vec<&RunEvent> = commit
-                .events
-                .iter()
-                .filter(|event| event.run_id == log)
-                .collect();
-            let key = (store_id.to_string(), log.to_string());
-            // Held through the fold: commits a Store made on two threads fold one at a time.
-            let mut state = lock(&self.state);
-            let mut watch = state.ledgers.remove(&key);
-            let outcome = self.fold(
-                writer,
-                store_id,
-                commit.store,
-                commit.cas,
-                log,
-                &events,
-                &mut watch,
-            );
-            if let Err(reason) = outcome {
-                if let Some(watch) = &mut watch {
-                    watch.projection = None;
+        let transition = read_task_transition(event).map_err(|e| e.to_string())?;
+        let TaskChangeV1::ExecutionRecorded { record_id } = transition.change else {
+            return Ok((transition.epoch, vec![]));
+        };
+        let record = read_execution_record(cas, &record_id).map_err(|e| e.to_string())?;
+        let TaskExecutionRecordV1::Published { output_id, .. } = record.record else {
+            return Ok((transition.epoch, vec![]));
+        };
+        let output = cas.get_artifact(&output_id).map_err(|e| e.to_string())?;
+        if output.artifact_type != TASK_OUTPUT_V1 {
+            return Err("Published output has another type".into());
+        }
+        let output: TaskOutputV1 =
+            serde_json::from_value(output.payload).map_err(|e| e.to_string())?;
+        output.validate()?;
+        let mut ids = Vec::new();
+        for port in output
+            .outputs
+            .values()
+            .filter(|p| p.artifact_type == TASK_REVIEW_ROUND_V1)
+        {
+            for id in &port.artifact_ids {
+                let record = cas.get_artifact(id).map_err(|e| e.to_string())?;
+                if record.artifact_type != TASK_REVIEW_ROUND_V1 {
+                    return Err("Native Round output has another type".into());
                 }
-                self.failed(writer, Some(store_id), &reason);
-            }
-            if let Some(watch) = watch {
-                state.ledgers.insert(key, watch);
+                let round: TaskReviewRoundV1 =
+                    serde_json::from_value(record.payload).map_err(|e| e.to_string())?;
+                round.validate()?;
+                if round.conclusion != ReviewConclusionV1::Incomplete {
+                    ids.push(id.clone());
+                }
             }
         }
+        Ok((transition.epoch, ids))
     }
 
-    /// Fold `events`, committed to the Campaign log `log`, into its projection, recording every
-    /// admission and change of a Finding or Demand they cause.
-    #[allow(clippy::too_many_arguments)]
-    fn fold(
-        &self,
-        writer: &Writer,
-        store_id: &str,
-        store: &EventStore,
-        cas: &Cas,
-        log: &str,
-        events: &[&RunEvent],
-        watch: &mut Option<LedgerWatch>,
-    ) -> Result<(), String> {
-        let Some(first) = events.first().map(|event| event.sequence) else {
-            return Ok(());
-        };
-        if watch.is_none() {
-            *watch = Some(LedgerWatch {
-                projection: Some(
-                    LedgerProjection::from_events(log, &[], cas)
-                        .map_err(|error| error.to_string())?,
-                ),
-                findings: BTreeMap::new(),
-                nodes: BTreeMap::new(),
-                models: BTreeMap::new(),
-                bodies: BTreeMap::new(),
-                demands: BTreeMap::new(),
-                subjects: BTreeMap::new(),
-                epoch: None,
-            });
-        }
-        let watch = watch.as_mut().expect("inserted above");
-        // A projection that failed once stays failed: its log was reported then.
-        let Some(projection) = watch.projection.as_mut() else {
-            return Ok(());
-        };
-        let span = Self::summary_span(store_id);
-        // Events committed since by a process that records nothing (an operator's `af review
-        // evidence satisfy`, a resolution) or by an earlier execution: folded in first and
-        // summarized at their own sequences, never mirrored as this execution's commits. A
-        // reader lists a lifecycle event two executions recorded once.
-        let behind = projection.event_count() < first;
-        let catch_up: Vec<RunEvent> = if behind {
-            store
-                .replay_from(log, projection.event_count())
-                .map_err(|error| error.to_string())?
-                .into_iter()
-                .filter(|event| event.sequence < first)
-                .collect()
-        } else {
-            Vec::new()
-        };
-        for event in catch_up.iter().chain(events.iter().copied()) {
-            let projection = watch.projection.as_mut().expect("checked above");
-            // Folded already: a later commit on another thread was told first and caught up.
-            if event.sequence < projection.event_count() {
+    fn summaries(&self, writer: &Writer, store_id: &str, commit: &Commit<'_>) {
+        for trigger in commit.events {
+            match Self::native_rounds(commit.cas, trigger) {
+                Ok((_, ids)) if ids.is_empty() => continue,
+                Ok(_) => {}
+                Err(reason) => {
+                    self.failed(writer, Some(store_id), &reason);
+                    continue;
+                }
+            }
+            let mut state = lock(&self.state);
+            let watch = state
+                .ledgers
+                .entry((store_id.into(), trigger.run_id.clone()))
+                .or_insert_with(|| LedgerWatch {
+                    projection: None,
+                    through_sequence: None,
+                    failed: false,
+                    findings: BTreeMap::new(),
+                    nodes: BTreeMap::new(),
+                    models: BTreeMap::new(),
+                    bodies: BTreeMap::new(),
+                    demands: BTreeMap::new(),
+                    satisfactions: Default::default(),
+                    baseline_findings: Default::default(),
+                    baseline_demands: Default::default(),
+                    subjects: BTreeMap::new(),
+                    epoch: None,
+                });
+            if watch.failed
+                || watch
+                    .through_sequence
+                    .is_some_and(|s| s >= trigger.sequence)
+            {
                 continue;
             }
-            note_epoch(&mut watch.epoch, event);
-            let projection = watch.projection.as_mut().expect("checked above");
-            projection
-                .apply_event(event, cas)
-                .map_err(|error| format!("the Ledger of {log} cannot fold a commit: {error}"))?;
-            if event.event_type == EventType::FindingReportedV1
-                && let Some(key) = event.payload.get("key").and_then(|key| key.as_str())
-                && let Some(node) = &event.node_id
-            {
-                watch.nodes.insert(key.to_string(), node.clone());
-                match super::bound_model(event.attempt_id.as_deref(), node) {
-                    Some(model) => watch.models.insert(key.to_string(), model),
-                    None => watch.models.remove(key),
-                };
-            }
-            if changes_ledger(event.event_type) {
-                self.record_changes(writer, store_id, span.as_ref(), log, event, cas, watch);
+            // A post-commit callback can arrive late. Catch up the exact committed prefix in
+            // sequence order before comparing summaries; never roll the watch back to a late
+            // callback or miss a subsequent A -> B -> A disposition.
+            let mut apply = || -> Result<(), String> {
+                let first = watch.through_sequence.map_or(0, |s| s + 1);
+                let events = commit
+                    .store
+                    .replay_from(&trigger.run_id, first)
+                    .map_err(|e| e.to_string())?;
+                let span = Self::summary_span(store_id);
+                for event in events.iter().take_while(|e| e.sequence <= trigger.sequence) {
+                    let (epoch, ids) = Self::native_rounds(commit.cas, event)?;
+                    for id in ids {
+                        let ledger = crate::task::review::ReviewTaskDomain::recorded_ledger(
+                            commit.cas, &id,
+                        )?;
+                        let models = native_models(commit.cas, &id)?;
+                        if watch.projection.is_none() {
+                            let round: af_contracts::task::review::TaskReviewRoundV1 =
+                                serde_json::from_value(
+                                    commit
+                                        .cas
+                                        .get_artifact(&id)
+                                        .map_err(|e| e.to_string())?
+                                        .payload,
+                                )
+                                .map_err(|e| e.to_string())?;
+                            if let Some(port) =
+                                round.invocation.inputs.get("decisions").filter(|port| {
+                                    port.artifact_type
+                                        == af_contracts::task::review_decisions::REVIEW_DECISIONS_V1
+                                })
+                            {
+                                let batch: af_contracts::task::review_decisions::ReviewDecisionsV1 =
+                                    serde_json::from_value(
+                                        commit
+                                            .cas
+                                            .get_artifact(&port.artifact_ids[0])
+                                            .map_err(|e| e.to_string())?
+                                            .payload,
+                                    )
+                                    .map_err(|e| e.to_string())?;
+                                let prior = crate::task::review::ReviewTaskDomain::recorded_ledger(
+                                    commit.cas,
+                                    &batch.review_id,
+                                )?;
+                                watch.baseline_findings = prior
+                                    .findings()
+                                    .into_iter()
+                                    .map(|f| (f.key.clone(), f.status.as_str().into()))
+                                    .collect();
+                                watch.baseline_demands = prior
+                                    .demand_views()
+                                    .into_iter()
+                                    .map(|d| (d.demand_id, enum_text(&d.status)))
+                                    .collect();
+                                let (_, satisfaction_ids, _) =
+                                    prior.demand_reduction_artifact_ids();
+                                watch.satisfactions.extend(satisfaction_ids);
+                            } else if let Some(port) = round.invocation.inputs.get("history") {
+                                // recorded_ledger above recomputed this Round and its exact
+                                // prior history. A new discovery Task must not re-emit any
+                                // inherited satisfaction/reuse, even when it remains current
+                                // or a waiver wins the final view. Read the checked prior Set's
+                                // identities without rebuilding that Ledger a second time.
+                                let history: af_contracts::task::review::ReviewHistoryV1 =
+                                    serde_json::from_value(
+                                        commit
+                                            .cas
+                                            .get_artifact(&port.artifact_ids[0])
+                                            .map_err(|e| e.to_string())?
+                                            .payload,
+                                    )
+                                    .map_err(|e| e.to_string())?;
+                                if let af_contracts::task::review::ReviewHistoryV1::Recorded {
+                                    demand_set_id,
+                                    ..
+                                } = history
+                                {
+                                    let record = commit
+                                        .cas
+                                        .get_artifact(&demand_set_id)
+                                        .map_err(|e| e.to_string())?;
+                                    if record.artifact_type != af_contracts::contract::DEMAND_SET_V1
+                                    {
+                                        return Err(
+                                            "Review history lost its current Demand Set".into()
+                                        );
+                                    }
+                                    let prior: af_contracts::DemandSetV1 =
+                                        serde_json::from_value(record.payload)
+                                            .map_err(|e| e.to_string())?;
+                                    watch.satisfactions.extend(prior.satisfaction_artifact_ids);
+                                }
+                            }
+                        }
+                        for finding in ledger.findings() {
+                            if let Some(report) = finding.reports.last()
+                                && let Ok(record) = commit.cas.get_artifact(&report.report_id)
+                                && let af_contracts::Producer::Attempt {
+                                    node_id,
+                                    attempt_id,
+                                    ..
+                                } = record.producer
+                            {
+                                watch.nodes.insert(finding.key.clone(), node_id.clone());
+                                let model = match models.get(&(node_id.clone(), attempt_id.clone()))
+                                {
+                                    Some(model) => model.clone(),
+                                    None => super::bound_model(Some(&attempt_id), &node_id),
+                                };
+                                match model {
+                                    Some(model) => {
+                                        watch.models.insert(finding.key.clone(), model);
+                                    }
+                                    None => {
+                                        watch.models.remove(&finding.key);
+                                    }
+                                }
+                            }
+                        }
+                        watch.epoch = Some(epoch);
+                        watch.projection = Some(ledger);
+                        self.record_changes(
+                            writer,
+                            store_id,
+                            span.as_ref(),
+                            &event.run_id,
+                            event,
+                            commit.cas,
+                            watch,
+                        );
+                    }
+                    watch.through_sequence = Some(event.sequence);
+                }
+                Ok(())
+            };
+            if let Err(reason) = apply() {
+                watch.failed = true;
+                watch.projection = None;
+                self.failed(writer, Some(store_id), &reason);
             }
         }
-        Ok(())
     }
 
-    /// Record what `event`, just folded into the log's projection, changed: a `finding`
-    /// summary for the Finding an admitted Report names and for every Finding whose summarized
-    /// fields changed, with a disposition event when its status did; the Demand lifecycle
+    /// Record what the committed native Round changed: a `finding` summary for every Finding
+    /// whose canonical summarized fields changed, with a disposition when its status did;
+    /// the Demand lifecycle
     /// events it caused; and a `demand` summary for every Demand whose summarized fields
     /// changed. Every summary and lifecycle record carries the event's log and committed
     /// sequence, by which a reader orders them.
@@ -567,7 +659,9 @@ impl StoreMirror {
         let Some(projection) = &watch.projection else {
             return;
         };
-        let ledger = projection.ledger();
+        let ledger = projection;
+        let baseline_findings = std::mem::take(&mut watch.baseline_findings);
+        let baseline_demands = std::mem::take(&mut watch.baseline_demands);
         let sequence = i64::try_from(event.sequence).unwrap_or(i64::MAX);
         let base = || {
             Attrs::new()
@@ -583,10 +677,6 @@ impl StoreMirror {
                 .subjects
                 .insert(subject.to_string(), snapshot.to_string());
         }
-        // The Finding an admitted Report names gets a summary whether or not it changed.
-        let admitted = (event.event_type == EventType::FindingReportedV1)
-            .then(|| event.payload.get("key").and_then(|key| key.as_str()))
-            .flatten();
         let span_id = span.map(|span| span.span_id.clone()).unwrap_or_default();
         let mut findings = Vec::new();
         let keeps_content = writer.level().keeps_content();
@@ -625,10 +715,12 @@ impl StoreMirror {
                 epoch: watch.epoch,
             };
             let previous = watch.findings.get(&finding.key);
-            if previous == Some(&summary) && admitted != Some(finding.key.as_str()) {
+            if previous == Some(&summary) {
                 continue;
             }
-            let previous_status = previous.map(|previous| previous.status.clone());
+            let previous_status = previous
+                .map(|previous| previous.status.clone())
+                .or_else(|| baseline_findings.get(&finding.key).cloned());
             watch.findings.insert(finding.key.clone(), summary.clone());
             // At `content` the body goes beside the summary whenever it is new.
             let body = (keeps_content && !finding.body.is_empty())
@@ -670,49 +762,56 @@ impl StoreMirror {
                 }
             }
         }
-        // A satisfaction: a new one, or an admitted reuse of an earlier one.
-        let satisfied = event.artifact_refs.first().and_then(|record| {
-            ledger.demand_views().into_iter().find_map(|view| {
-                let demand = ledger.demand(&view.demand_id)?;
-                let evidence = match event.event_type {
-                    EventType::EvidenceSatisfiedV1 => demand
-                        .satisfactions
-                        .iter()
-                        .find(|satisfaction| &satisfaction.record_id == record)
-                        .map(|satisfaction| satisfaction.satisfaction.evidence_id.clone()),
-                    // A reuse is a satisfaction transition only when it makes the Demand
-                    // satisfied again (a stale Demand back to `satisfied`).
-                    EventType::EvidenceReuseAdmittedV1 => demand
-                        .reuse_admissions
-                        .iter()
-                        .find(|admission| &admission.record_id == record)
-                        .filter(|_| {
-                            enum_text(&view.status) == "satisfied"
-                                && watch
-                                    .demands
-                                    .get(&view.demand_id)
-                                    .is_none_or(|previous| previous.status != "satisfied")
-                        })
-                        .and_then(|admission| {
-                            demand
-                                .satisfactions
-                                .iter()
-                                .find(|satisfaction| {
-                                    satisfaction.artifact_id == admission.admission.satisfaction_id
-                                })
-                                .map(|satisfaction| satisfaction.satisfaction.evidence_id.clone())
-                        }),
-                    _ => None,
-                }?;
-                Some((view.demand_id.clone(), evidence))
-            })
-        });
-        if let Some((demand_id, evidence_id)) = satisfied {
-            let attrs = base()
-                .id("af.demand.id", demand_id)
-                .id("af.evidence.id", evidence_id);
-            if !self.event(writer, store_id, span, DEMAND_EVIDENCE_SATISFIED, attrs) {
-                return;
+        // Native publication carries a complete checked Ledger, rather than legacy
+        // EvidenceSatisfied events. Compare exact canonical satisfaction/admission identities
+        // after committed-prefix catch-up; a delayed callback cannot emit them twice.
+        for view in ledger.demand_views() {
+            let Some(demand) = ledger.demand(&view.demand_id) else {
+                continue;
+            };
+            // Demand status is a final projection: a later waiver in this same committed
+            // batch must not erase its satisfaction. The view selects exact current Subject
+            // or explicitly admitted reuse identities, excluding stale satisfactions. The
+            // watch is seeded with every prior-history identity, including reuse admissions.
+            for satisfaction in &demand.satisfactions {
+                if view.satisfaction_ids.contains(&satisfaction.artifact_id)
+                    && watch.satisfactions.insert(satisfaction.artifact_id.clone())
+                {
+                    let attrs = base().id("af.demand.id", view.demand_id.clone()).id(
+                        "af.evidence.id",
+                        satisfaction.satisfaction.evidence_id.clone(),
+                    );
+                    if !self.event(writer, store_id, span, DEMAND_EVIDENCE_SATISFIED, attrs) {
+                        return;
+                    }
+                }
+            }
+            for admission in &demand.reuse_admissions {
+                if !view.satisfaction_ids.contains(&admission.artifact_id)
+                    || !watch.satisfactions.insert(admission.artifact_id.clone())
+                {
+                    continue;
+                }
+                let Some(satisfaction) = demand
+                    .satisfactions
+                    .iter()
+                    .find(|s| s.artifact_id == admission.admission.satisfaction_id)
+                else {
+                    continue;
+                };
+                let attrs = base()
+                    .id("af.demand.id", view.demand_id.clone())
+                    .id(
+                        "af.evidence.id",
+                        satisfaction.satisfaction.evidence_id.clone(),
+                    )
+                    .id(
+                        "af.evidence.reuse_admission_id",
+                        admission.artifact_id.clone(),
+                    );
+                if !self.event(writer, store_id, span, DEMAND_EVIDENCE_SATISFIED, attrs) {
+                    return;
+                }
             }
         }
         for view in ledger.demand_views() {
@@ -740,7 +839,8 @@ impl StoreMirror {
             let previous = watch
                 .demands
                 .get(&view.demand_id)
-                .map(|previous| previous.status.clone());
+                .map(|previous| previous.status.clone())
+                .or_else(|| baseline_demands.get(&view.demand_id).cloned());
             if watch.demands.get(&view.demand_id) == Some(&summary) {
                 continue;
             }
@@ -756,10 +856,17 @@ impl StoreMirror {
             if !self.summary(writer, store_id, span, |writer| writer.demand(record)) {
                 return;
             }
+            if previous.is_none() {
+                let attrs = base()
+                    .id("af.demand.id", view.demand_id.clone())
+                    .text("af.demand.status", status.clone());
+                if !self.event(writer, store_id, span, DEMAND_OPENED, attrs) {
+                    return;
+                }
+            }
             let lifecycle = match (previous.as_deref(), status.as_str()) {
-                (None, _) => Some(DEMAND_OPENED),
-                (Some(previous), "stale") if previous != "stale" => Some(DEMAND_STALE),
-                (Some(previous), "waived") if previous != "waived" => Some(DEMAND_WAIVED),
+                (previous, "stale") if previous != Some("stale") => Some(DEMAND_STALE),
+                (previous, "waived") if previous != Some("waived") => Some(DEMAND_WAIVED),
                 _ => None,
             };
             if let Some(name) = lifecycle {
@@ -927,14 +1034,6 @@ fn enum_text(value: &impl serde::Serialize) -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
-fn note_epoch(epoch: &mut Option<u64>, event: &RunEvent) {
-    if event.event_type == EventType::RoundStartedV1
-        && let Some(value) = event.payload.get("epoch").and_then(|epoch| epoch.as_u64())
-    {
-        *epoch = Some(value);
-    }
-}
-
 /// The `TaskTokenUsage@3` a committed record names; a record the Store committed names a
 /// readable one, so a failure is the mirror's, never an absent counter.
 fn token_usage(cas: &Cas, id: &str) -> Result<TaskTokenUsageV3, String> {
@@ -1028,6 +1127,113 @@ fn counters(mut attrs: Attrs, prefix: &str, usage: Option<&TaskTokenUsageV3>) ->
 
 /// The separately identified native observation: its counters under `af.usage.native.*` and
 /// whether it completes the charge.
+// Called only after complete native reconstruction. Source attribution follows the exact
+// selected Attempt and its own captured plan, including across a later human Task/process.
+// No node-name fallback supplies a model for another Attempt.
+fn native_models(
+    cas: &Cas,
+    round_id: &str,
+) -> Result<BTreeMap<(String, String), Option<String>>, String> {
+    use af_contracts::task::pipeline::TaskOperatorV1;
+    use af_contracts::task::{
+        EXECUTION_PLAN_V4, REVIEW_HISTORY_V1, TASK_REVISION_V1, TaskRevisionV1, plan::*, review::*,
+    };
+    use af_graph::task::{CompiledOperator, CompiledTask};
+    let mut id = round_id.to_owned();
+    let mut models = BTreeMap::new();
+    for _ in 0..16 {
+        let record = cas.get_artifact(&id).map_err(|e| e.to_string())?;
+        if record.artifact_type != TASK_REVIEW_ROUND_V1 {
+            return Err("Attribution lost its current native Round".into());
+        }
+        let round: TaskReviewRoundV1 =
+            serde_json::from_value(record.payload).map_err(|e| e.to_string())?;
+        let record = cas
+            .get_artifact(&round.invocation.plan_id)
+            .map_err(|e| e.to_string())?;
+        if record.artifact_type != EXECUTION_PLAN_V4 {
+            return Err("Attribution lost its original plan".into());
+        }
+        let plan: ExecutionPlan =
+            serde_json::from_value(record.payload).map_err(|e| e.to_string())?;
+        let revision = cas
+            .get_artifact(&plan.task_revision_id)
+            .map_err(|e| e.to_string())?;
+        if revision.artifact_type != TASK_REVISION_V1 {
+            return Err("Attribution lost its original Task".into());
+        }
+        let revision: TaskRevisionV1 =
+            serde_json::from_value(revision.payload).map_err(|e| e.to_string())?;
+        let run =
+            af_store::store::task::task_run_id(&revision.task_id).map_err(|e| e.to_string())?;
+        let graph: CompiledTask = serde_json::from_value(
+            cas.get_artifact(&plan.compiled_graph_id)
+                .map_err(|e| e.to_string())?
+                .payload,
+        )
+        .map_err(|e| e.to_string())?;
+        for result in round.selected_results.values() {
+            let record = cas.get_artifact(result).map_err(|e| e.to_string())?;
+            let af_contracts::Producer::Attempt {
+                run_id,
+                node_id,
+                attempt_id,
+            } = record.producer
+            else {
+                continue;
+            };
+            if run_id != run {
+                continue;
+            } // Human receipts retain another Task's originals.
+            let node = graph
+                .nodes
+                .get(&node_id)
+                .or_else(|| {
+                    node_id
+                        .rsplit_once(".slice")
+                        .and_then(|(parent, _)| graph.nodes.get(parent))
+                })
+                .ok_or("Original reviewer has no captured node")?;
+            let CompiledOperator::Primitive {
+                operator:
+                    TaskOperatorV1::Verify { slot } | TaskOperatorV1::ReviewScatter { slot, .. },
+                ..
+            } = &node.operator
+            else {
+                return Err("Original reviewer has no reserved captured slot".into());
+            };
+            let binding = plan
+                .bindings
+                .get(slot)
+                .ok_or("Original reviewer lost its captured binding")?;
+            let model = match &binding.execution {
+                WorkerExecutionV3::Model { model, .. } => Some(model.clone()),
+                WorkerExecutionV3::Command {} => None,
+            };
+            models.insert((node_id, attempt_id), model);
+        }
+        let history_id = round
+            .invocation
+            .inputs
+            .get("history")
+            .and_then(|p| p.artifact_ids.first())
+            .ok_or("Attribution lost native history")?;
+        let history = cas.get_artifact(history_id).map_err(|e| e.to_string())?;
+        if history.artifact_type != REVIEW_HISTORY_V1 {
+            return Err("Attribution changed native history type".into());
+        }
+        match serde_json::from_value::<ReviewHistoryV1>(history.payload)
+            .map_err(|e| e.to_string())?
+        {
+            ReviewHistoryV1::Empty {} => return Ok(models),
+            ReviewHistoryV1::Recorded {
+                round_report_id, ..
+            } => id = round_report_id,
+        }
+    }
+    Err("Attribution exceeds bounded native history".into())
+}
+
 fn native_attrs(attrs: Attrs, native: Option<&TaskUsageObservationV1>) -> Attrs {
     let Some(native) = native else {
         return attrs;

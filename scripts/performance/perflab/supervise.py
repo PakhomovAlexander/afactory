@@ -5,8 +5,10 @@ explicitly trusted local mode (`process_group` containment, cases declared witho
 containment on macOS), or as the native PID 1 of a pinned Linux sample container
 (`pid_namespace` containment) built by `container_argv`, in which only the per-sample directory
 of the verified scratch filesystem is writable (ADR-0168). Its reply is one
-`af.perf-supervisor-result/5` line followed by exactly the retained bytes of the child's stdout
-and stderr; a request may add an untimed fixture setup, stdout patterns to count and selectors
+`af.perf-supervisor-result/6` line followed by exactly the retained bytes of the child's stdout,
+stderr and declared evidence files. Evidence is captured after a verified-empty PID namespace
+and before scratch cleanup, bounded to 64 files, 1 MiB each and 16 MiB in total; a request may
+add an untimed fixture setup, stdout patterns to count and selectors
 of declared fields it observes over the whole stdout as one JSON document (ADR-0172). Timing,
 draining, descendant lifecycle and kills are the supervisor's (`af_process::sample`); this
 module only frames, bounds and checks the reply and keeps the host-side container preparation
@@ -88,7 +90,8 @@ SUPERVISOR_PATH = "/perf/bin/perf-supervisor"
 BINARIES = "/perf/bin"
 FIXTURES = "/perf/fixtures"
 
-Supervised = collections.namedtuple("Supervised", "result stdout stderr host_wall_ns diagnostics")
+Supervised = collections.namedtuple("Supervised", "result stdout stderr host_wall_ns diagnostics "
+                                   "evidence", defaults=(None,))
 
 
 class SupervisorFailure(ContractError):
@@ -109,17 +112,19 @@ class SupervisorFailure(ContractError):
 
 def request(argv, environment, cwd, stdin, timeout_ms, stdout_cap, log_cap,
             containment="process_group", scratch=None, grace_ms=5000, setup=None,
-            patterns=(), selectors=()):
+            patterns=(), selectors=(), evidence_paths=()):
     """A supervisor request; `setup`, when given, is (argv, environment, cwd, timeout_ms) of
     the untimed fixture step the supervisor runs first, `patterns` the byte patterns it counts
     over the child's whole stdout (ADR-0168) and `selectors` the declared JSON fields it
-    observes over it as one document (ADR-0172)."""
+    observes over it as one document (ADR-0172). `evidence_paths` declares sorted unique paths
+    relative to owned scratch, captured only after a verified-empty PID namespace."""
     doc = {"schema": contracts.SUPERVISOR_REQUEST_SCHEMA, "argv": list(argv),
            "environment": dict(environment), "cwd": cwd, "stdin": stdin,
            "timeout_ms": timeout_ms, "stdout_cap_bytes": stdout_cap, "log_cap_bytes": log_cap,
            "cleanup_grace_ms": grace_ms, "containment": containment, "scratch": scratch,
            "setup": None, "stdout_patterns": list(patterns),
-           "stdout_json": [dict(selector) for selector in selectors]}
+           "stdout_json": [dict(selector) for selector in selectors],
+           "evidence_paths": list(evidence_paths)}
     if setup is not None:
         setup_argv, setup_environment, setup_cwd, setup_timeout_ms = setup
         doc["setup"] = {"argv": list(setup_argv), "environment": dict(setup_environment),
@@ -128,15 +133,27 @@ def request(argv, environment, cwd, stdin, timeout_ms, stdout_cap, log_cap,
 
 
 def read_reply(data, request_doc, where="perf-supervisor"):
-    """(result, stdout, stderr) from a framed reply, refused unless every length agrees."""
+    """(result, stdout, stderr, evidence) from one exactly framed sample reply.
+
+    Evidence is an all-or-nothing, declared path-to-bytes mapping, read by the supervisor after
+    a verified-empty namespace and before scratch cleanup. No host reads a live sample path.
+    """
     end = data.find(b"\n")
     require(0 < end <= limits.RECORD_BYTES_MAX, where + ": no bounded result line")
     result = contracts.validate_supervisor_result(
         loads_strict(data[:end], where, limits.RECORD_BYTES_MAX), where)
     body = data[end + 1:]
     out, err = result["stdout"]["retained"], result["stderr"]["retained"]
-    require(len(body) == out + err, where + ": %d payload bytes, the result declares %d"
-            % (len(body), out + err))
+    evidence = result["evidence"]
+    declared_paths = request_doc["evidence_paths"]
+    require((evidence is None) == (not declared_paths),
+            where + ": evidence reported exactly when requested")
+    files = [] if evidence is None else evidence["files"]
+    require(not files or [item["path"] for item in files] == declared_paths,
+            where + ": evidence paths differ from this sample's declaration")
+    payload_bytes = out + err + sum(item["bytes"] for item in files)
+    require(len(body) == payload_bytes, where + ": %d payload bytes, the result declares %d"
+            % (len(body), payload_bytes))
     require(out <= request_doc["stdout_cap_bytes"]
             and out + err <= request_doc["log_cap_bytes"],
             where + ": retained more than the request's caps")
@@ -155,7 +172,12 @@ def read_reply(data, request_doc, where="perf-supervisor"):
                 len(item["matches"]) == len(selector["equals"])
                 for item, selector in zip(observed["selectors"], declared)))),
             where + ": one JSON observation per requested selector, one count per value")
-    return result, body[:out], body[out:]
+    transferred = None if evidence is None or evidence["status"] != "complete" else {}
+    offset = out + err
+    for item in files:
+        transferred[item["path"]] = body[offset:offset + item["bytes"]]
+        offset += item["bytes"]
+    return result, body[:out], body[out:out + err], transferred
 
 
 def backstop_seconds(request_doc, margin=HOST_MARGIN_SECONDS):
@@ -253,9 +275,9 @@ def launch(launcher, request_doc, deadline=None, clock=time.monotonic,
                 raise ContractError("Popen did not transfer a process handle")
             out, err, replied = _cancel(process, reserve, until, clock)
             if replied and process.returncode == 0:
-                result, child_out, child_err = read_reply(out, request_doc)
+                result, child_out, child_err, evidence = read_reply(out, request_doc)
                 supervised = Supervised(result, child_out, child_err,
-                    time.monotonic_ns() - launched_ns, err[-STDERR_MAX:])
+                    time.monotonic_ns() - launched_ns, err[-STDERR_MAX:], evidence)
         except BaseException as cleanup:
             add_note(error, "Supervisor cancellation unconfirmed: %s" % cleanup)
             if not isinstance(cleanup, Exception):
@@ -304,8 +326,8 @@ def _launched_reply(process, data, request_doc, seconds, reserve, bound, by_dead
     supervised, failure = None, None
     if process.returncode == 0:
         try:
-            result, out, err = read_reply(stdout, request_doc)
-            supervised = Supervised(result, out, err, host_wall_ns, diagnostics)
+            result, out, err, evidence = read_reply(stdout, request_doc)
+            supervised = Supervised(result, out, err, host_wall_ns, diagnostics, evidence)
         except ContractError as error:
             failure = str(error)
     else:
@@ -418,6 +440,8 @@ def optional_metrics(result, wanted):
     """The declared optional metrics a supervised result supports, as exact decimals, and the
     reason for each one it does not (`({key: metric}, {key: reason})`).
 
+    Total CPU is user plus system CPU from that same record, summed before conversion.
+    Wall time is the child process lifetime, including startup and final rendering.
     CPU, faults, switches and `wait4_maxrss_bytes` come from the one reaped child's rusage,
     already converted to bytes per platform; each counter is the sum of that record's own
     minor and major (or voluntary and involuntary) fields, never of overlapping records.
@@ -429,6 +453,8 @@ def optional_metrics(result, wanted):
     ms = lambda nanos: {"value": format_decimal(Fraction(int(nanos), 1000000)),  # noqa: E731
                         "unit": "ms"}
     sources = {
+        "wall_ms": lambda: ms(result["timing"]["child_wall_ns"]),
+        "total_cpu_ms": lambda: ms(int(usage["user_cpu_ns"]) + int(usage["system_cpu_ns"])),
         "user_cpu_ms": lambda: ms(usage["user_cpu_ns"]),
         "system_cpu_ms": lambda: ms(usage["system_cpu_ns"]),
         "page_faults": lambda: {"value": str(usage["minor_faults"] + usage["major_faults"]),
@@ -440,7 +466,9 @@ def optional_metrics(result, wanted):
     }
     for key in wanted:
         if key in sources:
-            if usage is None:
+            if key == "wall_ms" and result["timing"]["child_wall_ns"] is None:
+                unavailable[key] = "child lifetime was not observed"
+            elif usage is None and key != "wall_ms":
                 unavailable[key] = ("rusage unavailable: %s" % result["rusage_unavailable"])[:256]
             else:
                 metrics[key] = sources[key]()
@@ -807,7 +835,7 @@ class _Spent(Exception):
 
 def scratch_environment(root):
     """HOME, XDG and TMPDIR of a child, all inside its private scratch."""
-    return {"HOME": root, "TMPDIR": root, "XDG_CACHE_HOME": root, "XDG_CONFIG_HOME": root,
+    return {"HOME": root, "AF_TEST_WAKE_ACCOUNT_HOME": root, "TMPDIR": root, "XDG_CACHE_HOME": root, "XDG_CONFIG_HOME": root,
             "XDG_DATA_HOME": root, "XDG_STATE_HOME": root}
 
 

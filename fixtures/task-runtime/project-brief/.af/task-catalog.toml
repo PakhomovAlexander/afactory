@@ -9,13 +9,13 @@ digest = "sha256:4a1d03705b92bb7dda61a95f4ccdf2c03bfbac7a0f950cf6230f237c98f1ca4
 path = ".af/task-packages/fixture/evaluator"
 
 [packages."fixture/exposing"]
-version = "1.0.0"
-digest = "sha256:10c3a9f4f5f10f55785f187b917a86ee85bf9fc2075e3c80e9f22bf0eb73feb9"
+version = "1.0.1"
+digest = "sha256:590c545726bf503815b749f37a42895425a6871746c29a60f46dbd3d271999c2"
 path = ".af/task-packages/fixture/exposing"
 
 [packages."fixture/forged"]
-version = "1.0.0"
-digest = "sha256:1852eca268be328f55b5df1003b19e1c94951246992612a16edf85fa3b09cf49"
+version = "1.0.1"
+digest = "sha256:9ae35e9fc163c8aa54f73658f77667f3814c89503ac12957c429a44a86cffdf0"
 path = ".af/task-packages/fixture/forged"
 
 [packages."fixture/forger"]
@@ -29,8 +29,8 @@ digest = "sha256:3e446beefa6c4ed82e0e3a2e648441553c9ed7cc0b324f99ea424529c421c53
 path = ".af/task-packages/fixture/implementer"
 
 [packages."fixture/oriented"]
-version = "1.0.0"
-digest = "sha256:1ed9c1275e92a593eb3f7c507605813a4a58b0732eb439d8546e737ea3e8831d"
+version = "1.0.1"
+digest = "sha256:4aac7c9306b2eeec34d4efb2b33ccfb7ff16d0c5800a4adc69ee45677eadc2f4"
 path = ".af/task-packages/fixture/oriented"
 
 [independence]

@@ -76,10 +76,10 @@ produces `needs-info`, never an invented size.
 
 | Size | Test, in order | Default pipeline | Model and reviewers |
 |---|---|---|---|
-| `XL` | Needs a design document and owner decisions before any code. | `design` | Design rounds with the owner; no implementation Task until the design is accepted |
-| `L` | Changes a contract, schema version, budget or sandbox boundary, or needs several Tasks. | `design` | A workstream: one design review by GPT-6.1 Terra high before the first implementing Task, then `default` per Task |
-| `M` | Everything understood well enough to implement that is not `L` or `S`: two or three crates, a new fixture or test class, an additive field under an existing document version, a new or amended ADR that records a bounded change. | `default` (`default/implementation`, ADR-0253) | GPT-6.1 Sol high implementer; GPT-6.1 Terra bugs and correctness reviewers (correctness required); GPT-6.1 Terra medium gate-quality reviewer; GPT-6.1 Terra high evaluator. Findings from every bound reviewer count toward convergence |
-| `S` | All of: one module; repro present or derivable from the evidence; no schema, contract or budget change; no new fixture or test class; no ADR. | `light` (`default-light/implementation`, ADR-0262) | Implementer: `gpt-6.1-sol` high; correctness reviewer: `gpt-6.1-terra` high; evaluator: `gpt-6.1-terra` high |
+| `XL` | Needs a design document and owner decisions before any code. | `design` (`design/astra-kimi`) | Astra medium design challenged independently by Terra high and Kimi high, accepted by Sol medium; no implementation Task until the design is accepted |
+| `L` | Changes a contract, schema version, budget or sandbox boundary, or needs several Tasks. | `design` (`design/astra-kimi`) | A workstream: accepted Astra medium design challenged independently by Terra high and Kimi high, accepted by Sol medium before the first implementing Task, then `default` per Task |
+| `M` | Everything understood well enough to implement that is not `L` or `S`: two or three crates, a new fixture or test class, an additive field under an existing document version, a new or amended ADR that records a bounded change. | `default` (`bugfix/default-codex` or `impl/default-codex`) | GPT-6.1 Sol medium implementer; GPT-6.1 Terra high bugs and correctness reviewers; GPT-6 Astra medium evaluator. Every bound result is required for closure |
+| `S` | All of: one module; repro present or derivable from the evidence; no schema, contract or budget change; no new fixture or test class; no ADR. | `light` (`bugfix/light-kimi-terra-sol`) | Implementer: Pi `kimi-coding/k3.1-pro` high; correctness reviewer: `gpt-6.1-terra` high; evaluator: `gpt-6.1-sol` medium |
 
 Two rules the check enforces mechanically (§6.3):
 
@@ -146,7 +146,7 @@ violation.
 
 ## Write
 
-Return one `af.document-draft/2` draft:
+Return one `af.document-draft/3` draft:
 
 - `title`: `Triage of issue #N`.
 - `sections`, in this order:
@@ -160,13 +160,16 @@ Return one `af.document-draft/2` draft:
     repository's policy requires `Findings`, for what each captured source and cited file you
     relied on says, and `Recommendation`, for the pipeline and the acceptance line.
   Do not write Markdown syntax outside the fenced block: the kernel renders and escapes your text.
-- `citations`: the names of the captured sources you relied on, sorted in byte order and unique.
-- `repository_citations`: every file you relied on, as `{ "path": "<path>" }` or
-  `{ "path": "<path>", "line": <n> }`, sorted by path and then line, spelled exactly as the
-  Snapshot's Manifest spells it. The kernel refuses a path the Snapshot does not hold as a
-  text file, and a line past the end of the file, so a path an issue invented fails the check.
+- `citations`: one set of explicitly tagged entries. A captured source is
+  `{ "kind": "source", "name": "<captured source name>" }`. A repository citation is
+  `{ "kind": "repository", "location": { "path": "<path>", "line": <n> } }`;
+  omit `line` when citing the whole file. List each entry once; the kernel records source names
+  in byte order, followed by repository paths and lines in order. At most 32 source citations
+  and 64 repository citations are admitted. Paths use the exact source Snapshot Manifest
+  spelling, relative to the repository root. The kernel checks that each location is a regular
+  or executable text file and that any cited line exists in that exact Snapshot.
 
 ## Reply
 
 Return the reply envelope the request describes with one `draft` payload in the
-`af.document-draft/2` shape its schema gives.
+`af.document-draft/3` shape its schema gives.

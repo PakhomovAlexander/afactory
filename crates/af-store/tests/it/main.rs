@@ -6,9 +6,7 @@
 mod support;
 
 mod attempt_wall;
-mod campaign_authority;
 mod canonical_identity;
-mod crash_replay;
 mod ledger_convergence;
 mod optimization_economics;
 mod report_scope;

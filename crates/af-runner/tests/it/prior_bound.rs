@@ -1,110 +1,4 @@
-use std::collections::BTreeMap;
-
-use af_contracts::{ChangeSetV1, SubjectV1};
-use af_runner::{MAX_CHANGE_SET_BYTES, ReviewerInputArtifact, ReviewerInputs};
-
-use crate::render_support::render;
-
-fn inputs_with_change_set(change_set: serde_json::Value) -> Result<ReviewerInputs, String> {
-    let encoded = af_store::canonical::canonicalize(&change_set).unwrap();
-    let artifact_id = af_store::canonical::blob_content_id(&encoded);
-    Ok(ReviewerInputs {
-        artifacts: BTreeMap::from([(
-            "change_set".into(),
-            vec![ReviewerInputArtifact::change_set_from_encoded(
-                artifact_id,
-                &encoded,
-            )?],
-        )]),
-        ..ReviewerInputs::default()
-    })
-}
-
-#[test]
-fn oversized_prior_findings_fail_closed_without_silent_truncation() {
-    let prior = serde_json::json!({
-        "subject_id": format!("sha256:{}", "a".repeat(64)),
-        "round": 2,
-        "findings": [{
-            "finding_id": "large",
-            "severity": "blocker",
-            "body": "x".repeat(256 * 1024),
-        }],
-    });
-    let rendered = render(&ReviewerInputs {
-        prior_findings: Some(prior),
-        ..ReviewerInputs::default()
-    });
-
-    let error = rendered.expect_err("an inexact prompt must never reach a reviewer");
-    assert!(error.contains("partitioning is required"), "{error}");
-}
-
-#[test]
-fn non_utf8_change_set_patches_remain_byte_exact_in_the_prompt() {
-    let change_set = ChangeSetV1::new(
-        format!("sha256:{}", "a".repeat(64)),
-        format!("sha256:{}", "b".repeat(64)),
-        vec!["src/raw.txt".into()],
-        vec![],
-        b"diff --git a/src/raw.txt b/src/raw.txt\n-\xff\n+\xfe\n",
-        "git version test",
-        "review.kernel/git-tree-diff@test",
-    )
-    .unwrap();
-    let encoded = change_set.canonical_patch_base64.clone();
-    let rendered =
-        render(&inputs_with_change_set(serde_json::to_value(change_set).unwrap()).unwrap())
-            .unwrap();
-
-    assert!(rendered.contains(&encoded));
-    assert!(!rendered.contains('\u{fffd}'));
-}
-
-#[test]
-fn git_build_options_stay_in_the_artifact_but_not_the_reviewer_prompt() {
-    let change_set = ChangeSetV1::new(
-        format!("sha256:{}", "a".repeat(64)),
-        format!("sha256:{}", "b".repeat(64)),
-        vec!["src/a.rs".into()],
-        vec![],
-        b"patch",
-        "git version 2.54.0\ncpu: arm64\nsizeof-long: 8\n",
-        "review.kernel/git-tree-diff@test",
-    )
-    .unwrap();
-    let value = serde_json::to_value(&change_set).unwrap();
-    let encoded = af_store::canonical::canonicalize(&value).unwrap();
-    let artifact_id = af_store::canonical::blob_content_id(&encoded);
-    let inputs = inputs_with_change_set(value).unwrap();
-    let artifact = &inputs.artifacts["change_set"][0];
-    assert_eq!(artifact.artifact_id(), artifact_id);
-    let prompt = render(&inputs).unwrap();
-    assert!(prompt.contains("git version 2.54.0"), "{prompt}");
-    assert!(!prompt.contains("cpu: arm64"), "{prompt}");
-    assert!(!prompt.contains("sizeof-long: 8"), "{prompt}");
-    let decoded: ChangeSetV1 = serde_json::from_slice(&encoded).unwrap();
-    assert_eq!(decoded.git_version, change_set.git_version);
-}
-
-#[test]
-fn encoded_change_sets_are_fully_validated_before_prompt_rendering() {
-    let change_set = ChangeSetV1::new(
-        format!("sha256:{}", "a".repeat(64)),
-        format!("sha256:{}", "b".repeat(64)),
-        vec!["src/a.rs".into(), "src/b.rs".into()],
-        vec![],
-        b"patch",
-        "git version test",
-        "review.kernel/git-tree-diff@test",
-    )
-    .unwrap();
-    let mut value = serde_json::to_value(change_set).unwrap();
-    value["changed_paths"] = serde_json::json!(["src/b.rs", "src/a.rs"]);
-
-    let error = inputs_with_change_set(value).unwrap_err();
-    assert!(error.contains("sorted, unique, and relative"), "{error}");
-}
+use af_contracts::{ChangeSetV1, MAX_CHANGE_SET_BYTES, SubjectV1};
 
 #[test]
 fn resolved_change_sets_bind_verified_bytes_without_requiring_reserialization_identity() {
@@ -117,7 +11,7 @@ fn resolved_change_sets_bind_verified_bytes_without_requiring_reserialization_id
         head.clone(),
         vec!["src/a.rs".into()],
         vec![],
-        b"patch",
+        b"diff --git a/src/a.rs b/src/a.rs\n-\xff\n+\xfe\n",
         "git version test",
         "review.kernel/git-tree-diff@test",
     )
@@ -136,20 +30,59 @@ fn resolved_change_sets_bind_verified_bytes_without_requiring_reserialization_id
     assert_eq!(resolved_change_set.artifact_id(), artifact_id);
     assert_eq!(resolved_change_set.encoded_bytes(), encoded.len());
 
-    let input = ReviewerInputArtifact::from_resolved_change_set(resolved_change_set).unwrap();
-    assert_eq!(input.artifact_id(), artifact_id);
-    let inputs = ReviewerInputs {
-        artifacts: BTreeMap::from([("renamed_diff".into(), vec![input])]),
-        ..ReviewerInputs::default()
-    };
-    let command_document = serde_json::to_value(&inputs).unwrap();
-    let delivered = &command_document["artifacts"]["renamed_diff"][0];
+    assert_eq!(resolved_change_set.change_set().changed_paths, ["src/a.rs"]);
     assert_eq!(
-        delivered["artifact_type"],
-        af_contracts::contract::CHANGE_SET_V1
+        resolved_change_set.change_set().canonical_patch().unwrap(),
+        b"diff --git a/src/a.rs b/src/a.rs\n-\xff\n+\xfe\n"
     );
-    assert_eq!(delivered["value"]["changed_paths"][0], "src/a.rs");
-    assert!(delivered["value"]["canonical_patch_base64"].is_string());
+    assert_eq!(cas.get(&artifact_id).unwrap(), encoded);
+    // The same verified Change Set travels as captured data on a native Task input. Its
+    // base64 patch and metadata remain lossless; no Campaign prompt renderer interprets it.
+    use af_contracts::task::{ArtifactInputV1, execution::TaskInvocationV1};
+    use af_runner::task::{WorkerContract, WorkerRequest};
+    use serde_json::json;
+    use std::collections::BTreeMap;
+    let frame = cas
+        .put_artifact(
+            af_contracts::contract::CHANGE_SET_V1,
+            af_contracts::Producer::KernelOperation {
+                run_id: "native-input".into(),
+                node_id: None,
+                operation_id: "capture@1".into(),
+            },
+            vec![artifact_id.clone()],
+            None,
+            value.clone(),
+        )
+        .unwrap()
+        .0;
+    let invocation = TaskInvocationV1 {
+        plan_id: cas.put(b"plan").unwrap(),
+        node: "root.worker".into(),
+        inputs: BTreeMap::from([(
+            "change".into(),
+            ArtifactInputV1 {
+                artifact_type: af_contracts::contract::CHANGE_SET_V1.into(),
+                artifact_ids: vec![frame.clone()],
+                cardinality: af_contracts::PortCardinality::One,
+                snapshot_id: None,
+            },
+        )]),
+    };
+    let contract = WorkerContract::capture(
+        &cas,
+        json!({"type":"object"}),
+        BTreeMap::from([("result".into(), json!({"type":"object"}))]),
+    )
+    .unwrap();
+    let context_id = contract
+        .prepare(&cas, &invocation, &[], "Inspect only declared data")
+        .unwrap();
+    let (context, rendered) = contract.read_context(&cas, &context_id).unwrap();
+    let request: WorkerRequest = serde_json::from_slice(&rendered).unwrap();
+    assert_eq!(request.inputs["change"][0].artifact_id, frame);
+    assert_eq!(request.inputs["change"][0].payload, value);
+    assert_eq!(context.manifest.rendered_bytes, rendered.len() as u64);
 }
 
 #[test]
@@ -177,4 +110,33 @@ fn oversized_change_sets_are_refused_while_resolving_subject_authority() {
         .unwrap();
     let error = af_store::resolve_subject(&cas, &subject_id).unwrap_err();
     assert!(error.to_string().contains("limit is 4194304"), "{error}");
+}
+
+#[test]
+fn unsorted_change_set_paths_refuse_at_current_subject_admission() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = af_store::Cas::open(directory.path()).unwrap();
+    let base = format!("sha256:{}", "a".repeat(64));
+    let head = format!("sha256:{}", "b".repeat(64));
+    let change = ChangeSetV1::new(
+        base.clone(),
+        head.clone(),
+        vec!["src/a.rs".into(), "src/b.rs".into()],
+        vec![],
+        b"patch",
+        "git version test",
+        "review.kernel/git-tree-diff@test",
+    )
+    .unwrap();
+    let mut value = serde_json::to_value(change).unwrap();
+    value["changed_paths"] = serde_json::json!(["src/b.rs", "src/a.rs"]);
+    let id = cas.put_json(&value).unwrap();
+    let subject = cas
+        .put_json(&serde_json::to_value(SubjectV1::diff(head, base, id)).unwrap())
+        .unwrap();
+    let error = af_store::resolve_subject(&cas, &subject).unwrap_err();
+    assert!(
+        error.to_string().contains("sorted, unique, and relative"),
+        "{error}"
+    );
 }

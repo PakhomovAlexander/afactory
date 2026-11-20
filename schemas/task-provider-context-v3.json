@@ -29,7 +29,7 @@
       "$ref": "urn:af:schema:task-provider-admission:4"
     },
     "rendered_id": {
-      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
     },
     "manifest": {
       "type": "object",
@@ -62,7 +62,7 @@
                 "const": "installed Provider admission"
               },
               "artifact_id": {
-                "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
+                "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
               },
               "rendered_bytes": {
                 "const": 23

@@ -62,12 +62,12 @@ references when a document, an exit code, a Task file, a state or a refusal need
 steps before work: `af help json`, `af help exit-codes`, `af help task-file`,
 `af help task-states` and `af help errors CAUSE`.
 
-A review outside a Task starts the same way: `af review plan --json` previews it token-free,
-and when selectors or Provider bindings are missing, its refusal's `next_action` names the next
-command when one command fixes it, and a refusal for missing bindings carries in `details.plan`
-what the review would run. When af finds the default branch, the selectors refusal names the
-command with the selectors af would choose, even while reviewers still need a Provider: the
-refusal of that command then names how to bind them.
+A standalone Review is also a Task: `af review plan --file ../review.json --json` captures its
+native plan without an Attempt. Supply committed Task catalog authority; `af onboard` emits a
+standalone example to copy outside the checkout. Select authority and reviewed source independently
+with `--authority`, `--base` and `--candidate` or `--uncommitted`. Inspect the exact recorded plan,
+then run `af review resume TASK_ID --confirm-plan PLAN_ID`. Provider bindings use the catalog's
+aliases and the common `--bindings` file. Retired Campaign selectors/configuration are refused.
 
 ## Running af from inside an agent
 
@@ -97,7 +97,7 @@ prints the command's catalog. `af schema show ID` prints the schema of any docum
 ## 1. Plan
 
 `af task plan --file TASK_FILE --json` captures the Task file and the checkout and compiles the
-plan without running anything: one `af/task-inspection@17` document whose `plan_id` is the
+plan without running anything: one `af/task-inspection@21` document whose `plan_id` is the
 plan to confirm and whose `state.next_action` is the command that runs it. A plan that does
 not fit its limits is refused with `af/task-selection@3`, whose `next_action` is the `--fit`
 command that plans with the smallest limits that fit.
@@ -105,7 +105,7 @@ command that plans with the smallest limits that fit.
 ## 2. Run, or run in the background
 
 `af task run TASK_ID --confirm-plan PLAN_ID --json` runs exactly that plan and prints the
-finished Task as `af/task-inspection@17`. While it waits it prints on stderr one line per node
+finished Task as `af/task-inspection@21`. While it waits it prints on stderr one line per node
 that starts or finishes, with the time since the run started and the tokens charged so far
 (`af task run: implement finished (2 min elapsed, 41k tokens so far)`), and every 5 minutes a
 heartbeat (`af task run: implement running 23 min, 412k tokens, host load 11.2`); `--quiet`
@@ -113,24 +113,26 @@ keeps them back.
 
 An agent that must not hold a terminal for the whole run detaches it:
 `af task run TASK_ID --confirm-plan PLAN_ID --detach --json` returns once the run holds the
-Task, with one `af/task-detached@3` document naming its pid, its host and its log, a file under
+Task, with one `af/task-detached@4` document naming its pid, its host and its log, a file under
 the Store's `runs/` directory, and `admitted: true`. A run not admitted within 2 minutes is not
 claimed to run: exit 4, `admitted: false` and `next_action` `af task status TASK_ID`. The run
 survives the shell that started it. Then
 `af task wait TASK_ID --json` blocks until the Task settles and exits with its exit code
 (`--timeout S` gives up with exit 124), and `af task status TASK_ID --json` answers at once;
-both print `af/task-status@2`: the state, the node that runs, the time since the Task's clock
+the timeout starts after the Task is opened, and final status adds to the total command time.
+Waiting still checks artifact integrity and lease expiry when the log is unchanged.
+Both print `af/task-status@3`: the state, the node that runs, the time since the Task's clock
 started, the tokens reserved, charged and remaining, and any unknown usage. When the Store has a
 check span from the same repository and code policy for a check in this plan, status and plan show
 its last recorded duration; with no such history they show no hint. `af task wait --bell` rings
 only on terminal stderr at completion. `--notify` requests an OS notification without changing
 the wait result if the notifier is unavailable. `af task cancel TASK_ID --json` stops the run and
-its Worker processes, recording who asked, and prints `af/task-cancelled@2`; the Task stays
+its Worker processes, recording who asked, and prints `af/task-cancelled@3`; the Task stays
 resumable with
 `af task run TASK_ID`.
 
 To follow the run instead of only waiting for it, `af task events TASK_ID` prints JSON lines on
-stdout, one `af/task-event@1` document per event of the Task's log: its `sequence`, the Store's
+stdout, one `af/task-event@3` document per event of the Task's log: its `sequence`, the Store's
 own, gap-free from 0, what changed (`change`, and `detail` for an execution record, a wait or a
 Provider event), the node and Attempt it concerns, and a settled Attempt's `result` and exact
 `charged_tokens`. Once the Task settles it prints exactly one terminal record, `record:
@@ -145,7 +147,8 @@ here is one `af/error@2` line.
 
 Every document above carries `state`: `phase`, `outcome`, `cause` and `next_action`, the one
 command to run next. The exit code says the same to a script: 0 verified, 3 changes requested,
-4 exhausted or cancelled, 5 gate failed, 6 Provider failed, 7 expired (`af help exit-codes`).
+4 exhausted or cancelled, 5 gate failed, 6 Provider failed, 7 expired, 8 kernel execution failed
+(`af help exit-codes`).
 stderr's last line is always `Task TASK_ID: phase/outcome/cause; next: COMMAND`. Branch on
 `state.outcome` and run `state.next_action`; never parse the prose. `next_action` carries the
 `--repo`, `--state` or `--workspace` the command was given, so it runs as printed. A refusal
@@ -154,7 +157,7 @@ node past its recovery allowance, also carries `cause`, `next_action` and `detai
 (`af help json`). A run SIGINT or SIGTERM stopped is one too, exit 130 or 143, `cause`
 `interrupted`, and its `next_action` continues it.
 
-Across many Tasks, `af task list --attention --json` prints one `af/task-attention@1` document:
+Across many Tasks, `af task list --attention --json` prints one `af/task-attention@2` document:
 every Task of the Store in exactly one group, read from its `state` alone. `approval`,
 `gate_failed`, `findings`, `deliver` and `stopped` have `needs_you` true, and each of their
 Tasks names its `state.next_action`; `running` and `nothing` have it false. Run the next
@@ -162,7 +165,7 @@ command of each Task in a group that needs you, or tell the person which ones wa
 
 ## 4. Read the findings
 
-`af task findings TASK_ID --json` prints the last review round as one `af/task-findings@2`
+`af task findings TASK_ID --json` prints the last review round as one `af/task-findings@3`
 document: per reviewer, each finding with its severity, confidence, title, file and line, the
 quoted evidence and the proposed fix, the round's counts by severity, and the evaluator's
 verdict on that round with its reason. `--round N` reads an earlier round, with its own
@@ -182,7 +185,10 @@ a path is `reviewed`, `partially_reviewed`, `not_reviewed` or `outside_round`. A
 verified fixed only when the round's `verified_fixed` names it with its verification record; a
 `fixed` status or a later change to the file is not proof.
 `af task findings TASK_ID --format sarif` prints the same findings as one SARIF 2.1.0 log for
-code-scanning tools; a review Campaign's report takes the same `--format sarif`.
+code-scanning tools. `af review ledger TASK_ID --format sarif` selects the complete canonical
+Finding Set, including unresolved earlier claims with their current statuses and original Report
+provenance. Its JSON format is `af/review-ledger@3`; `af task findings` remains the current-Round
+report view.
 
 ## 5. Look at the change
 
@@ -234,4 +240,4 @@ default). When the script cannot print its block, nothing is printed and the com
 naming `--base REF`; a block it prints incomplete, without its end marker or its title, is
 refused the same way, naming what is missing. `gh pr create --body-file body.md` takes it
 unchanged. `af task report TASK_ID... --json` prints the same figures as one
-`af/task-report@3` document.
+`af/task-report@4` document.

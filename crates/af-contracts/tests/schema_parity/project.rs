@@ -1,5 +1,5 @@
 //! The Project and its Workspaces (ADR-0158): the three Project Store events, each against its
-//! own schema and inside `run-event-v1.json`, and the two `af project` documents.
+//! own schema and inside `run-event-v3.json`, and the two `af project` documents.
 //!
 //! What must stay unrepresentable is a host path in a record: a Workspace is named by an opaque
 //! ID and a label, and its paths exist only in the machine-local `workspaces.toml` and in the
@@ -41,7 +41,7 @@ fn event(event_type: EventType, payload: Value) -> Value {
 /// One payload: its own schema, the event envelope's, and the Rust validator agree.
 fn accepted(schema: &str, event_type: EventType, payload: &Value) {
     assert_valid(schema, payload);
-    assert_valid("run-event-v1.json", &event(event_type, payload.clone()));
+    assert_valid("run-event-v3.json", &event(event_type, payload.clone()));
     validate_event_payload(event_type, payload).unwrap();
 }
 
@@ -49,7 +49,7 @@ fn accepted(schema: &str, event_type: EventType, payload: &Value) {
 fn refused(schema: &str, event_type: EventType, payload: &Value, why: &str) {
     assert_invalid(schema, payload, why);
     assert_invalid(
-        "run-event-v1.json",
+        "run-event-v3.json",
         &event(event_type, payload.clone()),
         why,
     );

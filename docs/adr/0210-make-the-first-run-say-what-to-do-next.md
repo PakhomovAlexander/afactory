@@ -87,7 +87,7 @@ document has a `kind@version` (ADR-0145).
    check — `binary`, `path`, `shell`, `update`, `tools`, `providers`, `storage`, and `project`
    inside a repository — each `ok`, `warn` or `fail` with a one-line `fix:` and a `hint:`. Exit 0 when nothing
    failed, 1 when a check failed. `--json` prints one `af/doctor@2` document
-   (`schemas/doctor-v2.json`): `checks[] {id, status, detail, fix, hint}`. *Amended by the GA
+   (the then-current version-2 schema, now retired): `checks[] {id, status, detail, fix, hint}`. *Amended by the GA
    second fix round:* `fix` is only a command a shell runs as given (several joined by `&&`, an
    upper-case placeholder such as `SHELL` or `DIR` named in the hint), never prose; `hint` says
    what the command cannot (a placeholder's choices, a step to take first, what it does); both are

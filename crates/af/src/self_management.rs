@@ -414,7 +414,7 @@ fn staging_in_use(dir: &Path) -> bool {
 /// installer creates and locks its directory under it, so one unlocked here has no owner.
 fn recover_abandoned_staging(paths: &Paths) {
     for dir in staging_dirs(paths) {
-        if !staging_in_use(&dir) {
+        if !staging_in_use(&dir) && config::protect_wake_authority(&dir).is_ok() {
             let _ = std::fs::remove_dir_all(&dir);
         }
     }
@@ -1710,7 +1710,9 @@ fn stage_and_publish(
     let published = stage(&staging, binary, receipt)
         .map_err(InstallError::Other)
         .and_then(|()| publish(paths, version, lock_digest, &staging, anchor));
-    let _ = std::fs::remove_dir_all(&staging);
+    if config::protect_wake_authority(&staging).is_ok() {
+        let _ = std::fs::remove_dir_all(&staging);
+    }
     published
 }
 
@@ -1797,7 +1799,9 @@ fn begin_staging(
     let staging = paths
         .versions
         .join(format!(".{version}.{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&staging);
+    if config::protect_wake_authority(&staging).is_ok() {
+        let _ = std::fs::remove_dir_all(&staging);
+    }
     std::fs::create_dir(&staging)
         .map_err(|error| format!("creating {}: {error}", staging.display()))?;
     let held = std::fs::File::open(&staging)
@@ -1835,6 +1839,8 @@ fn publish(
         return Ok(binary);
     }
     let dir = version_dir(paths, version);
+    config::protect_wake_authority(staging)?;
+    config::protect_wake_authority(&dir)?;
     if dir.exists() {
         std::fs::remove_dir_all(&dir).map_err(|error| error.to_string())?;
     }
@@ -3928,6 +3934,22 @@ fn prune_versions(paths: &Paths, keep: usize) -> Result<usize, String> {
 pub(crate) fn uninstall(purge: bool) -> Result<(), String> {
     let paths = paths()?;
     require_receipt(&paths)?;
+    if purge {
+        // A purge also visits registered Stores and overlapping configured roots. Once
+        // authority exists (even partially), refuse the entire teardown before any unlink.
+        // Absence is NOT deletion permission for its reserved ancestry: purge_root and
+        // every whole-tree remover protect that path independently, closing first-grant races.
+        for authority in config::wake_authority_paths()? {
+            match std::fs::symlink_metadata(&authority) {
+                Ok(_) => return Err("purge refused: reserved OS-account wake authority may retain original-session uncertainty; uninstall without --purge preserves recovery state".into()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+                Err(error) => return Err(format!("inspecting wake authority before purge: {error}")),
+            }
+        }
+    }
+    // Refuse unsafe configured installation roots before removing the executable/link.
+    config::protect_wake_authority(&paths.versions)?;
+    config::protect_wake_authority(&paths.bin)?;
     // A detached check may be fetching a release to install into the versions about to go: refuse
     // rather than wait for its release source. Held to the end, the lock keeps a check scheduled
     // meanwhile from starting, and one that starts after finds this binary gone.
@@ -3999,10 +4021,7 @@ pub(crate) fn uninstall(purge: bool) -> Result<(), String> {
             config::cache_home()?.join("af"),
             config::data_home()?.join("af"),
         ] {
-            if let Some(identity) = measured_directory(&dir)? {
-                remove_below_parent(&dir, identity)?;
-                println!("removed {}", dir.display());
-            }
+            purge_root(&dir)?;
         }
     } else {
         println!("kept config, state, and cache (add --purge to remove them)");
@@ -4077,11 +4096,54 @@ fn measured_directory(dir: &Path) -> Result<Option<af_sandbox::Identity>, String
 /// never following a link below it, and only while it is still the directory `identity`
 /// measured when uninstall chose it (ADR-0144).
 fn remove_below_parent(dir: &Path, identity: af_sandbox::Identity) -> Result<(), String> {
+    config::protect_wake_authority(dir)?;
     let parent = dir
         .parent()
         .ok_or_else(|| format!("removing {}: it has no parent", dir.display()))?;
     af_sandbox::remove_beneath(parent, dir, Some(identity))
         .map_err(|error| format!("removing {}: {error}", dir.display()))
+}
+
+/// Remove siblings along the reserved authority's ancestry, never the ancestry itself.
+/// This rule applies before the first grant too: concurrent mkdir cannot race a root rmdir.
+/// Canonical configured roots handle aliases and overlapping data/cache/state selectors.
+fn purge_root(dir: &Path) -> Result<(), String> {
+    let Some(identity) = measured_directory(dir)? else {
+        return Ok(());
+    };
+    for authority in config::wake_authority_paths()? {
+        let resolved = config::canonical_root(dir);
+        if resolved.starts_with(&authority) {
+            println!("kept {}: reserved OS-account wake authority", dir.display());
+            return Ok(());
+        }
+        if authority.starts_with(&resolved) {
+            // No links are followed, including a substituted reserved child: it is kept.
+            for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
+                let entry = entry.map_err(|e| e.to_string())?;
+                let child = entry.path();
+                if authority.starts_with(resolved.join(entry.file_name())) {
+                    if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+                        purge_root(&child)?;
+                    }
+                } else {
+                    config::protect_wake_authority(&child)?;
+                    if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+                        if let Some(identity) = measured_directory(&child)? {
+                            remove_below_parent(&child, identity)?;
+                        }
+                    } else {
+                        std::fs::remove_file(&child).map_err(|e| e.to_string())?;
+                    }
+                }
+            }
+            println!("kept {}: reserved wake authority ancestry", dir.display());
+            return Ok(());
+        }
+    }
+    remove_below_parent(dir, identity)?;
+    println!("removed {}", dir.display());
+    Ok(())
 }
 
 // ------------------------------------------------------------------------------------------
@@ -4097,16 +4159,6 @@ pub(crate) fn completion_script(shell: Shell) -> Result<String, String> {
         .write_registration("COMPLETE", "af", "af", "af", &mut buf)
         .map_err(|error| error.to_string())?;
     String::from_utf8(buf).map_err(|error| error.to_string())
-}
-
-/// Candidates for `--campaign`: every Campaign under the default state root.
-pub(crate) fn complete_campaign(current: &OsStr) -> Vec<CompletionCandidate> {
-    let prefix = current.to_string_lossy();
-    crate::campaign_names_for_completion()
-        .into_iter()
-        .filter(|name| name.starts_with(prefix.as_ref()))
-        .map(CompletionCandidate::new)
-        .collect()
 }
 
 /// Candidates for a version argument: installed versions.
@@ -4231,6 +4283,7 @@ pub(crate) fn shell_files() -> Result<ShellFiles, String> {
 
 /// Remove `path` when it is a file or a link; anything else there is not af's to remove.
 fn remove_shell_file(path: &Path) -> Result<bool, String> {
+    config::protect_wake_authority(path)?;
     match std::fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(format!("inspecting {}: {error}", path.display())),

@@ -44,7 +44,7 @@ def main():
         kind = step["operation"]["kind"]
         if kind == "fresh_task":
             pin = pins[step["id"]]
-            if pin["schema"] != "af/scenario-template-pin@1":
+            if pin["schema"] != "af/scenario-template-pin@2":
                 raise ValueError("expected native template-pin envelope")
             if pin["template"]["max_tokens"] > step["operation"]["template"]["max_tokens"]:
                 raise ValueError("native package allowance exceeds the reviewed example reservation")
@@ -65,7 +65,7 @@ def main():
     root["admission"] = read(args.admission)
     if set(root["admission"]) != {"roadmap", "identity", "revision"}:
         raise ValueError("admission must be the exact native roadmap identity and revision")
-    policy = dict(schema="af/scenario-policy@5", adapters={"lab":dict(executable=launcher["executable"],
+    policy = dict(schema="af/scenario-policy@8", adapters={"lab":dict(executable=launcher["executable"],
         digest=launcher["digest"], operations=["experiment_submit_v1", "observe"], destinations=["native:claw"],
         max_wall_ms=30000, max_output_bytes=65536)}, task_plans=[], task_templates=sorted(set(digests)),
         decision_keys={}, file_roots=[])
@@ -102,8 +102,8 @@ def main():
         root["result"]["publication"] = step_ref("publish-performance")
         policy["adapters"]["performance-publication"] = adapter
         policy["performance_publications"]["performance-publication"] = scope
-    ant = dict(schema="af/ant@5", id="performance-native", scenario=copy.deepcopy(bundle), inputs={},
-        schedule=dict(timezone="UTC", hour=3, minute=0, start_unix_ms=1793664000000),
+    ant = dict(schema="af/ant@11", id="performance-native", scenario=copy.deepcopy(bundle), inputs={},
+        schedule=dict(kind="daily", timezone="UTC", hour=3, minute=0, start_unix_ms=1793664000000),
         owner="performance-owner", notification="local:performance-owner",
         execution=dict(overlap="skip", missed="skip", lateness_ms=60000, per_run=root["limits"],
                        rolling_tokens=96000000, rolling_window_ms=604800000))

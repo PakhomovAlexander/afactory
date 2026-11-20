@@ -238,6 +238,7 @@ pub(super) fn invoke(
     reserved_tokens: u64,
     environment: &[(String, String)],
     policy: super::ModelCallPolicy,
+    activity: Option<crate::activity::Sink>,
 ) -> WorkerReturn {
     let allowance = match super::RemainingTokenAllowance::new(reserved_tokens) {
         Ok(allowance) => allowance,
@@ -255,7 +256,7 @@ pub(super) fn invoke(
     };
     let started = Instant::now();
     let first = adapter
-        .invoke_with_allowance(
+        .invoke_with_activity(
             cas,
             workdir,
             request.clone(),
@@ -265,6 +266,7 @@ pub(super) fn invoke(
             environment,
             allowance,
             super::reply_schema::ReplyContract::Request,
+            activity.clone(),
         )
         .unwrap_or_else(|unstarted| *unstarted.0);
     let message = match &first.message {
@@ -337,7 +339,7 @@ pub(super) fn invoke(
     };
     let remaining = remaining.expect("checked above");
     let second = adapter
-        .invoke_with_allowance(
+        .invoke_with_activity(
             cas,
             workdir,
             reask,
@@ -359,6 +361,7 @@ pub(super) fn invoke(
             )
             .expect("positive remaining reservation"),
             super::reply_schema::ReplyContract::Request,
+            activity.clone(),
         )
         .unwrap_or_else(|unstarted| *unstarted.0);
     for id in &second.raw_artifact_ids {

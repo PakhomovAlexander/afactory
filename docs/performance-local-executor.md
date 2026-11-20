@@ -48,7 +48,7 @@ Copy [executor.example.toml](../scripts/performance/service/executor.example.tom
 Replace its deliberately unusable zero SHA and image digests with real accepted identities.
 Review paths, repository, machine/journal IDs, byte caps, queue bound, total wall bound, tier,
 local environment, shard count, case selection, telemetry profile and diagnostic settings.
-The configuration is `af.perf-executor/4`; misspellings and obsolete v1, v2 and v3
+The configuration is `af.perf-executor/5`; misspellings and obsolete v1 through v4
 configurations refuse. `[core.windows]` (optional; absent, or JSON `null`, keeps the tier's
 own) declares the `shard_sampling_minutes` and `run_total_minutes` a core plan freezes instead
 of its tier's; a declared table must supply both numbers (an empty table refuses), within the
@@ -195,7 +195,9 @@ profile's diagnostic tools (`tools`, with the host observer's actual capability 
 `host_observer`, checked under the machine exclusion) or the configured images (`tools`:
 `build_image`, `sample_image`, `image_toolchain`, `sample_runtime`, or `image_admission` with the
 refusal). A
-ready preflight is not a reservation: submit next.
+ready preflight is not a reservation: submit next. Pass `--output PATH` to write the validated
+receipt to a file instead of stdout, including a refused receipt; readiness exit codes stay
+unchanged. An output write error refuses the command with exit 4.
 
 Preflight, submission and the claim each check the configured `build_image` and
 `sample_image` as the compute account: pinned by digest, present on this host (nothing pulls),
@@ -583,7 +585,7 @@ the operator's to run, not something this change ran.
    `TAG` is `v0.14.0-rc.1`. `comparison-launch` retains the frozen plan and queues the
    partitions and the telemetry original; nothing runs until `comparison-run`, since the
    timers are stopped. Before it, check that the retained plan is the whole nightly family
-   (33 case instances, 31 judged and 2 exploratory, 2932 scheduled slots in 8 shards: the 2852
+   (39 case instances, 37 judged and 2 exploratory, 3436 scheduled slots in 8 shards: the 3356
    of the tier's 4 shards and the health sentinels of 4 more), that it froze the declared 45
    sampling and 120 run minutes, that the declaration partitions its shards into
    `[[0, 1], [2, 3], [4, 5], [6, 7]]` where every later partition reuses the first one's
@@ -610,7 +612,7 @@ the operator's to run, not something this change ran.
             sum(case["exploratory"] for case in cases),
             sum(len(schedule.expected_slots(plan, shard["index"])) for shard in plan["shards"]))
    print("plan: tier, environment, shards, instances, judged, exploratory, slots =", found)
-   assert found == ("nightly", "linux_x86_64_musl_claw", 8, 33, 31, 2, 2932), found
+   assert found == ("nightly", "linux_x86_64_musl_claw", 8, 39, 37, 2, 3436), found
    windows = (plan["limits"]["shard_sampling_minutes"], plan["limits"]["run_total_minutes"])
    parts = [item["shards"] for item in doc["partitions"]]
    print("windows: sampling, run total minutes =", windows, "partitions =", parts)
@@ -661,7 +663,7 @@ nothing here was executed by the change that documents it. `CLI` stands for
 measured run showed its shards do not fit their window, and
 configure the CPU-profile tools and `observer = "host_perf"` as above. The comparison
 measures the configured tier's family, not a fixed one: the full release comparison of the
-whole nightly family (33 case instances, 8 serial shards, the 12 manual telemetry runs) uses the
+whole nightly family (39 case instances, 8 serial shards, the 12 manual telemetry runs) uses the
 configuration and checks of [Validate an exact candidate producer](#validate-an-exact-candidate-producer)
 steps 3 and 5, on its own fresh journal.
 
@@ -797,21 +799,17 @@ read latency is judged only over its declared 10,000 corpus runs: a `corpus_runs
 is valid evidence but `not_judged`, and qualifying it needs `corpus_runs = 10000` that fits the
 profile's timeout. Keep the historical failed report unchanged beside new evidence.
 
-Telemetry overhead and invocation-cost runs select each side's fixture contract from the
-version its `af --version` prints: v0.13.0 measures under `check-receipt@1` (the same packages
-declaring `af/TaskCheckReceipt@1`, re-pinned to the digests the contract declares and its own
-`af catalog digest` prints), v0.14.0-rc.1 through v0.14.0-rc.6 under the committed
-`check-receipt@2`; a release no contract names (v0.11.9, say) is refused, never measured under
-the committed contract. The documents (`af/telemetry-overhead@2`,
-`af/telemetry-invocation-cost@2`) record the contract and every package pin.
-The [RC4/RC5/RC6 source evidence](telemetry.md#performance) records their supported
-receipt contract and fixture pins; unnamed future versions, stable 0.14.0 and nightly version
-strings still refuse.
+Telemetry overhead and invocation-cost runs use one `native-task-review@1` fixture contract.
+Source preflight compares both retained trees' current schema resource identities and constraints
+against the measurement authority (top-level descriptive annotations are not capability) before any claim or build. The measured binaries then reproduce
+committed package pins and plan the exact workload before timing. Equal release strings alone
+supply no capability proof. Unsupported formats retain their diagnostic and receive no alternate
+workload. The documents (`af/telemetry-overhead@3`, `af/telemetry-invocation-cost@3`) record
+the contract, release provenance and every package pin. See [the contract](telemetry.md#performance).
 
-A submission admits the selected releases' declared workloads before anything is reserved,
-claimed or built, from the release each side's retained source declares in its Cargo.lock: a
-telemetry original needs a fixture contract of the installed bench script for both sides, and a
-core original with CLI cases needs the authority's CLI registry and an adapter of it for both
+A submission admits each selected source's workload before anything is reserved, claimed or
+built. Telemetry requires the current schema identity/constraint contract for both sides. A core
+original uses the release each retained source declares in Cargo.lock: CLI cases need the authority's CLI registry and an adapter of it for both
 sides (`af_cli_v1` from 0.12.0-rc.3 on) whose command for every selected case and parameters is
 declared and runnable: `af_cli_v1` declares both `tui_open` fixtures pending, so a 0.12 side
 with a browser case is refused with that reason while its discovery commands stay admitted. Every
@@ -912,11 +910,11 @@ same tag is refused as a reused key. `--work profile` is refused. A core nightly
 unless the configuration's `core.tier` is `nightly`, naming the tier it found, so the quick
 configuration cannot take one by mistake.
 
-On the VM, [`scripts/nightly/measure.py`](../scripts/nightly/measure.py) is what submits and
-cycles nightlies: its unit, `af-nightly-measure.service`, runs the two submissions above for
-each built night and then `status` and `cycle` until both originals end or its deadline passes
-([the nightly chain](nightly.md#the-nightly-chain), ADR-0273), so no `af-perf-executor@` unit
-runs on `/etc/af-nightly/executor.toml`.
+On the VM, the [native nightly release Scenario](nightly.md#native-release-scenario) uses the
+full release-comparison family, with exact configured baseline/source commits, verified core,
+telemetry, trace and CPU-profile lanes. Its external worker alone drives the nightly executor;
+never run an `af-perf-executor@` service on that configuration. The legacy measure script remains
+an explicit diagnostic command, and its old automatic service chain is retired.
 
 Shards still run one after another. A core nightly is one build, then four shards of at most
 15 sampling minutes each. The plan freezes the tier's 180-minute run deadline, counted from the

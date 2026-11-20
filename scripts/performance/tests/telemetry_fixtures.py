@@ -23,9 +23,9 @@ def _contract(version):
     """The fixture contract the bench script records for `version` (`af X`)."""
     module = telemetry_lab.script_module("scripts/telemetry-overhead.py")
     release = module.release_version(version)
-    name = module.select_contract(release)
+    name = module.select_contract()
     return {"name": name, "release": release,
-            "check_receipt": module.FIXTURE_CONTRACTS[name]["check_receipt"], "fixtures": []}
+            "check_receipt": module.CHECK_RECEIPT_CURRENT, "fixtures": []}
 
 
 def _run(wall, rss=1000, segments=0):
@@ -34,7 +34,7 @@ def _run(wall, rss=1000, segments=0):
 
 def overhead_doc(seed, pairs, slow=1.0, scale="smoke", extra=None, version=VERSION):
     module = telemetry_lab.script_module("scripts/telemetry-overhead.py")
-    doc = {"schema": "af/telemetry-overhead@2", "af": {"path": "/x/af", "version": version},
+    doc = {"schema": "af/telemetry-overhead@3", "af": {"path": "/x/af", "version": version},
            "fixture_contract": _contract(version),
            "machine": {"os": "linux", "arch": "x86_64", "cpus": 4, "load1": 0.5},
            "protocol": {"pairs": pairs, "scale": scale, "seed": seed, "resamples": 10000,
@@ -58,7 +58,7 @@ def invocation_doc(seed, pairs, slow=1.0, version=VERSION):
 
     def run(wall):
         return dict(_run(wall), drain_ms=None, stdout_bytes=65536)
-    doc = {"schema": "af/telemetry-invocation-cost@2",
+    doc = {"schema": "af/telemetry-invocation-cost@3",
            "af": {"path": "/x/af", "version": version},
            "fixture_contract": _contract(version),
            "drain": {"boundary": "harness_last_write_to_command_exit",

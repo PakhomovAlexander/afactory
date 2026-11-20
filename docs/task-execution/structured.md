@@ -11,7 +11,7 @@ The decision is
 
 ## Package contract
 
-A kind package uses `schema = "af.task-kind/2"`, `profile = "structured"`, and its business
+A kind package uses `schema = "af.task-kind/3"`, `profile = "structured"`, and its business
 `kind`, plus `structured.json` with `schema: af.structured-contract/2`, `inputs`, `outputs`, and
 `require_container`. Every port has `artifact_type` and an embedded local `schema`. Only
 `custom/Name@N` artifact types are admitted; kernel port names and artifact types are reserved.
@@ -20,7 +20,7 @@ without a source Snapshot. Payloads and files are at most 64 KiB each; the contr
 256 KiB. Schemas cannot resolve remote files or URLs. Task input bytes and schema/package
 changes change the captured plan.
 
-The Pipeline declares `af.pipeline/4`, one Worker slot and `structured_accept`. It wires every
+The Pipeline declares `af.pipeline/6`, one Worker slot and `structured_accept`. It wires every
 root input to both nodes and each Worker output to `result_<port>` on acceptance. Acceptance
 returns each business port unchanged and `validation: af/StructuredValidation@1`, covering
 `structured`. The Worker's output schemas equal the kind's; every output retains every root

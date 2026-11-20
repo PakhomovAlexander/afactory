@@ -95,17 +95,14 @@ fn commit_all(repo: &Path) {
 }
 
 fn plan(repo: &Path) -> Output {
+    let file = repo.join(".af/task-packages/onboard/review-code/task.json");
     af(&[
         "review",
         "plan",
+        "--file",
+        file.to_str().unwrap(),
         "--repo",
         repo.to_str().unwrap(),
-        "--policy-rev",
-        "HEAD",
-        "--base",
-        "HEAD",
-        "--candidate",
-        "HEAD",
         "--json",
     ])
 }
@@ -177,6 +174,28 @@ fn a_receipted_release_pins_itself_with_every_published_digest() {
     let text = std::fs::read_to_string(lock_path(&repo)).unwrap();
     assert!(text.contains("[af]\nversion = "), "{text}");
     assert!(text.contains("[af.digests]"), "{text}");
+
+    // Reproduce the post-publication refresh on a hand-formatted current catalog.
+    // Signed release refreshes must change only the release pin, including on retry.
+    let catalog_path = repo.join(".af/task-catalog.toml");
+    let catalog = format!(
+        "# Keep project comments and layout.\n{}\n",
+        std::fs::read_to_string(&catalog_path).unwrap()
+    );
+    std::fs::write(&catalog_path, &catalog).unwrap();
+    set_lock_af_version(&repo, None);
+    for _ in 0..2 {
+        let refreshed = sandbox
+            .command(&real)
+            .args(["onboard", "--repo"])
+            .arg(&repo)
+            .args(["--refresh-lock", "--af", VERSION, "--json"])
+            .output()
+            .unwrap();
+        report(&refreshed);
+        assert_eq!(read_lock(&repo), lock);
+        assert_eq!(std::fs::read_to_string(&catalog_path).unwrap(), catalog);
+    }
 
     // Without the release source, the receipt still pins this target's bytes, with a warning.
     set_lock_af_version(&repo, None);
@@ -261,9 +280,16 @@ fn a_newer_af_proceeds_and_says_so() {
     let planned = plan(&repo);
     assert_eq!(planned.status.code(), Some(1), "{}", stderr(&planned));
     let document: serde_json::Value = serde_json::from_slice(&planned.stdout).unwrap();
-    assert_eq!(document["cause"], "review_binding_missing");
+    assert_eq!(document["schema"], "af/task-selection@3");
+    crate::schemas::valid(
+        &crate::schemas::validator("task-selection-v3.json"),
+        &document,
+    );
+    assert_eq!(document["selection"]["decision"]["kind"], "unavailable");
+    assert_eq!(document["attempts"], 0);
+    assert_eq!(document["chargeable_tokens"], 0);
     assert!(
-        stderr(&planned).contains("pinned by af 0.0.1"),
+        stderr(&planned).contains("pins af 0.0.1"),
         "the note goes to stderr, leaving JSON stdout intact: {}",
         stderr(&planned)
     );
@@ -304,7 +330,14 @@ fn an_unpinned_lock_stays_silent() {
     let planned = plan(&repo);
     assert_eq!(planned.status.code(), Some(1), "{}", stderr(&planned));
     let document: serde_json::Value = serde_json::from_slice(&planned.stdout).unwrap();
-    assert_eq!(document["cause"], "review_binding_missing");
+    assert_eq!(document["schema"], "af/task-selection@3");
+    crate::schemas::valid(
+        &crate::schemas::validator("task-selection-v3.json"),
+        &document,
+    );
+    assert_eq!(document["selection"]["decision"]["kind"], "unavailable");
+    assert_eq!(document["attempts"], 0);
+    assert_eq!(document["chargeable_tokens"], 0);
     assert!(
         !stderr(&planned).contains("pinned by af"),
         "{}",

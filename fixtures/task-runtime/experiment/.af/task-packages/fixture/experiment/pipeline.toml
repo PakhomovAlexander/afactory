@@ -1,8 +1,8 @@
 # Measure the source, implement, seal, check, then measure the candidate, compare it with the
 # baseline and evaluate it inside fixture/experiment-trial, which runs only after passed checks.
-schema = "af.pipeline/1"
+schema = "af.pipeline/6"
 name = "fixture/experiment"
-version = "1.0.0"
+version = "1.0.1"
 max_attempts = 6
 # One node at a time: no measurement shares the machine with other work of this Task.
 max_parallel = 1

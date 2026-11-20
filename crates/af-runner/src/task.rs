@@ -154,24 +154,132 @@ pub struct WorkerContract {
 /// Contracts are local captured data. External schema resolution would add undeclared
 /// filesystem/network inputs while validating a supposedly immutable Worker package.
 pub fn schema_validator(schema: &Value) -> Result<jsonschema::Validator, String> {
-    fn local(value: &Value, depth: usize, nodes: &mut usize) -> bool {
+    // Match referencing::ResourceRef::pointer: percent-decode UTF-8 before splitting
+    // segments and unescaping tildes. Malformed URI escapes remain literal here and
+    // are refused by the library's URI parser below; opaque anchors stay forbidden.
+    fn local_reference_target<'a>(root: &'a Value, reference: &str) -> Option<&'a Value> {
+        let bytes = reference.strip_prefix("#/")?.as_bytes();
+        let mut decoded = Vec::with_capacity(bytes.len());
+        let mut index = 0;
+        while index < bytes.len() {
+            if bytes[index] == b'%'
+                && let Some(pair) = bytes.get(index + 1..index + 3)
+                && let (Some(high), Some(low)) = (
+                    (pair[0] as char).to_digit(16),
+                    (pair[1] as char).to_digit(16),
+                )
+            {
+                decoded.push((high * 16 + low) as u8);
+                index += 3;
+            } else {
+                decoded.push(bytes[index]);
+                index += 1;
+            }
+        }
+        let pointer = std::str::from_utf8(&decoded).ok()?;
+        let mut target = root;
+        for segment in pointer.split('/') {
+            target = if let Some(array) = target.as_array() {
+                array.get(segment.parse::<usize>().ok()?)?
+            } else {
+                target
+                    .as_object()?
+                    .get(&segment.replace("~1", "/").replace("~0", "~"))?
+            };
+        }
+        Some(target)
+    }
+    fn local(
+        value: &Value,
+        root: &Value,
+        depth: usize,
+        nodes: &mut usize,
+        active: &mut std::collections::BTreeSet<usize>,
+    ) -> bool {
+        let identity = value as *const Value as usize;
+        if active.contains(&identity) {
+            return true;
+        }
         *nodes += 1;
         if depth > 64 || *nodes > 16384 {
             return false;
         }
-        match value {
-            Value::Object(map) => map.iter().all(|(key, value)| {
-                !matches!(
-                    key.as_str(),
-                    "$id" | "$schema" | "$dynamicRef" | "$recursiveRef"
-                ) && (key != "$ref" || value.as_str().is_some_and(|s| s.starts_with("#/")))
-                    && local(value, depth + 1, nodes)
-            }),
-            Value::Array(values) => values.iter().all(|v| local(v, depth + 1, nodes)),
-            _ => true,
+        let Some(map) = value.as_object() else {
+            return true;
+        };
+        if map.keys().any(|key| {
+            matches!(
+                key.as_str(),
+                "$id" | "$schema" | "$dynamicRef" | "$recursiveRef"
+            )
+        }) || map
+            .get("$ref")
+            .is_some_and(|v| !v.as_str().is_some_and(|s| s.starts_with("#/")))
+        {
+            return false;
         }
+        active.insert(identity);
+        if let Some(reference) = map.get("$ref").and_then(Value::as_str) {
+            let Some(target) = local_reference_target(root, reference) else {
+                return false;
+            };
+            if !local(target, root, depth + 1, nodes, active) {
+                return false;
+            }
+        }
+        for key in [
+            "properties",
+            "$defs",
+            "definitions",
+            "patternProperties",
+            "dependentSchemas",
+        ] {
+            if let Some(children) = map.get(key).and_then(Value::as_object)
+                && !children
+                    .values()
+                    .all(|v| local(v, root, depth + 1, nodes, active))
+            {
+                return false;
+            }
+        }
+        for key in [
+            "items",
+            "additionalProperties",
+            "unevaluatedProperties",
+            "unevaluatedItems",
+            "not",
+            "if",
+            "then",
+            "else",
+            "contains",
+            "propertyNames",
+            "contentSchema",
+        ] {
+            if let Some(child) = map.get(key)
+                && !local(child, root, depth + 1, nodes, active)
+            {
+                return false;
+            }
+        }
+        for key in ["allOf", "anyOf", "oneOf", "prefixItems"] {
+            if let Some(children) = map.get(key).and_then(Value::as_array)
+                && !children
+                    .iter()
+                    .all(|v| local(v, root, depth + 1, nodes, active))
+            {
+                return false;
+            }
+        }
+        active.remove(&identity);
+        true
     }
-    if !local(schema, 0, &mut 0) {
+    if !local(
+        schema,
+        schema,
+        0,
+        &mut 0,
+        &mut std::collections::BTreeSet::new(),
+    ) {
         return Err("Worker schema exceeds local resolution bounds".into());
     }
     jsonschema::draft202012::options()
@@ -571,6 +679,8 @@ fn worker_value(cas: &Cas, id: &str) -> Result<WorkerValue, String> {
 /// the kernel records as typed Task events (ADR-0208). Neither changes the Attempt's charge.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CallNotes {
+    /// The final native failure, carried to settlement independently of usage and prose.
+    pub native_failure: Option<crate::native_failure::NativeFailureKind>,
     /// The call failed for a reason the same input may get past after a wait.
     pub transient: Option<crate::native_failure::Transient>,
     /// What the call did about its Provider without failing, in order.
@@ -591,6 +701,7 @@ impl CallNotes {
         self.events.extend(later.events);
         self.transient = later.transient;
         self.environment = later.environment;
+        self.native_failure = later.native_failure;
         self.refusal_category = later.refusal_category.or(self.refusal_category);
         self
     }
@@ -731,17 +842,36 @@ pub trait WorkerModelAdapter: Send + Sync {
                 cancellation,
                 environment,
             ),
-            reply_schema::ReplyContract::ReviewerResult => self.invoke_constrained(
-                cas,
-                workdir,
-                input,
-                timeout,
-                access,
-                cancellation,
-                environment,
-                contract,
-            ),
         }
+    }
+
+    /// Optional live metadata for an exact host-bound Attempt. Unsupported adapters ignore it;
+    /// they never receive a path or permission to publish raw content through this channel.
+    #[allow(clippy::too_many_arguments)]
+    fn invoke_with_activity(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        access: WorkerAccess,
+        cancellation: Option<&AtomicBool>,
+        environment: &[(String, String)],
+        allowance: RemainingTokenAllowance,
+        contract: reply_schema::ReplyContract,
+        _activity: Option<crate::activity::Sink>,
+    ) -> Result<ModelWorkerReturn, Unstarted> {
+        self.invoke_with_allowance(
+            cas,
+            workdir,
+            input,
+            timeout,
+            access,
+            cancellation,
+            environment,
+            allowance,
+            contract,
+        )
     }
 
     /// `invoke`, with a program that could not be started told apart from every other return.
@@ -769,14 +899,12 @@ pub trait WorkerModelAdapter: Send + Sync {
     }
 
     /// `invoke_started` with the reply natively constrained to `contract`: `invoke` and
-    /// `invoke_started` are this with [`ReplyContract::Request`]. The Campaign Review host
-    /// dispatches every model reviewer with [`ReplyContract::ReviewerResult`] (ADR-0246). An
+    /// `invoke_started` are this with [`ReplyContract::Request`]. An
     /// adapter that spawns a native client overrides this and passes the contract's schema to
     /// its CLI (Claude Code `--json-schema`, Codex `--output-schema`); the default, for a double
     /// that spawns nothing, calls `invoke_started` unconstrained.
     ///
     /// [`ReplyContract::Request`]: reply_schema::ReplyContract::Request
-    /// [`ReplyContract::ReviewerResult`]: reply_schema::ReplyContract::ReviewerResult
     #[allow(clippy::too_many_arguments)]
     fn invoke_constrained(
         &self,
@@ -901,6 +1029,38 @@ pub fn invoke_model_with_policy(
     environment: &[(String, String)],
     policy: ModelCallPolicy,
 ) -> WorkerReturn {
+    invoke_model_with_activity(
+        cas,
+        workdir,
+        adapter,
+        contract,
+        context_id,
+        timeout,
+        access,
+        cancellation,
+        reserved_tokens,
+        environment,
+        policy,
+        None,
+    )
+}
+
+/// Task runtime entry with an optional, exact Attempt activity binding.
+#[allow(clippy::too_many_arguments)]
+pub fn invoke_model_with_activity(
+    cas: &Cas,
+    workdir: &Path,
+    adapter: &dyn WorkerModelAdapter,
+    contract: &WorkerContract,
+    context_id: &str,
+    timeout: Duration,
+    access: WorkerAccess,
+    cancellation: Option<&AtomicBool>,
+    reserved_tokens: u64,
+    environment: &[(String, String)],
+    policy: ModelCallPolicy,
+    activity: Option<crate::activity::Sink>,
+) -> WorkerReturn {
     let bytes = match contract.read_context(cas, context_id) {
         Ok((_, bytes)) => bytes,
         Err(error) => {
@@ -927,6 +1087,7 @@ pub fn invoke_model_with_policy(
         reserved_tokens,
         environment,
         policy,
+        activity,
     )
 }
 
@@ -936,46 +1097,20 @@ pub use reask::{extract_object, merge_usage};
 mod command;
 pub use command::{invoke_command, invoke_command_bytes};
 
-/// A set a Worker spells in any order is admitted in canonical order. A document draft's
-/// `citations` and `repository_citations` are sets the kernel records sorted and unique; a
-/// model that lists them in the order it used them is judged on what it cited, not on the
-/// order, so both are sorted and deduplicated here before the reply is validated. Any other
-/// value is left exactly as the Worker wrote it.
+/// Admit the current tagged citation set in the domain's canonical order. Invalid members
+/// remain untouched so schema admission reports them rather than erasing evidence.
 fn canonical_sets(value: &mut Value) {
-    let draft = matches!(
-        value.get("schema").and_then(Value::as_str),
-        Some("af.document-draft/1" | "af.document-draft/2")
-    );
-    if !draft {
+    if value.get("schema").and_then(Value::as_str) != Some("af.document-draft/3") {
         return;
     }
-    let Some(object) = value.as_object_mut() else {
-        return;
-    };
-    if let Some(Value::Array(citations)) = object.get_mut("citations")
-        && citations.iter().all(Value::is_string)
+    if let Some(citations) = value.get_mut("citations")
+        && let Ok(mut typed) = serde_json::from_value::<
+            Vec<af_contracts::task::document::DraftCitation>,
+        >(citations.clone())
     {
-        citations.sort_by(|a, b| a.as_str().cmp(&b.as_str()));
-        citations.dedup();
-    }
-    if let Some(Value::Array(cited)) = object.get_mut("repository_citations")
-        && cited.iter().all(Value::is_object)
-    {
-        // The kernel's order: by path, then a citation without a line before one with a line.
-        let key = |c: &Value| {
-            (
-                c.get("path")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_owned(),
-                c.get("line")
-                    .and_then(Value::as_u64)
-                    .map(|line| (1, line))
-                    .unwrap_or((0, 0)),
-            )
-        };
-        cited.sort_by_key(key);
-        cited.dedup();
+        typed.sort();
+        typed.dedup();
+        *citations = serde_json::to_value(typed).expect("citation serialization");
     }
 }
 
@@ -984,27 +1119,45 @@ mod canonical_set_tests {
     use super::*;
 
     #[test]
+    fn call_notes_keep_only_the_final_native_failure_after_another_call() {
+        use crate::native_failure::NativeFailureKind;
+        for final_kind in [None, Some(NativeFailureKind::Network)] {
+            let first = CallNotes {
+                native_failure: Some(NativeFailureKind::Quota),
+                ..Default::default()
+            };
+            let last = CallNotes {
+                native_failure: final_kind,
+                ..Default::default()
+            };
+            assert_eq!(first.then(last).native_failure, final_kind);
+        }
+    }
+
+    #[test]
     fn a_drafts_sets_are_admitted_in_canonical_order_and_nothing_else_is_touched() {
         let mut draft = serde_json::json!({
-            "schema": "af.document-draft/2",
+            "schema": "af.document-draft/3",
             "title": "t",
             "sections": [{"heading": "Findings", "body": "b"}],
-            "citations": ["r2", "r1", "r2", "bench"],
-            "repository_citations": [
-                {"path": "src/b.rs", "line": 3},
-                {"path": "src/a.rs", "line": 9},
-                {"path": "src/a.rs"},
-                {"path": "src/a.rs", "line": 9}
+            "citations": [
+                {"kind":"source","name":"r2"}, {"kind":"source","name":"r1"},
+                {"kind":"source","name":"r2"}, {"kind":"source","name":"bench"},
+                {"kind":"repository","location":{"path":"src/b.rs","line":3}},
+                {"kind":"repository","location":{"path":"src/a.rs","line":9}},
+                {"kind":"repository","location":{"path":"src/a.rs"}},
+                {"kind":"repository","location":{"path":"src/a.rs","line":9}}
             ]
         });
         canonical_sets(&mut draft);
-        assert_eq!(draft["citations"], serde_json::json!(["bench", "r1", "r2"]));
         assert_eq!(
-            draft["repository_citations"],
+            draft["citations"],
             serde_json::json!([
-                {"path": "src/a.rs"},
-                {"path": "src/a.rs", "line": 9},
-                {"path": "src/b.rs", "line": 3}
+                {"kind":"source","name":"bench"}, {"kind":"source","name":"r1"},
+                {"kind":"source","name":"r2"},
+                {"kind":"repository","location":{"path":"src/a.rs"}},
+                {"kind":"repository","location":{"path":"src/a.rs","line":9}},
+                {"kind":"repository","location":{"path":"src/b.rs","line":3}}
             ])
         );
         let mut other = serde_json::json!({"schema": "af.worker-reply/1", "citations": ["b", "a"]});

@@ -8,23 +8,29 @@ The data of the continuous performance laboratory
 [ADR-0172](../../docs/adr/0172-admit-candidate-files-through-bounded-descriptors-and-report-archive-and-trend-runs-offline.md),
 [ADR-0174](../../docs/adr/0174-diagnose-in-separate-child-runs-that-record-only-the-bracketed-region-and-share-one-test-executable-boundary.md)).
 
-- `suite.toml` — the reviewed registry (`af.perf-suite/4`): cases, parameter domains, oracles,
+- `suite.toml` — the reviewed registry (`af.perf-suite/6`): cases, parameter domains, oracles,
   the native probe and each library case's probe contract and the seed it reads (ADR-0170),
   policies, budgets, recipes,
   environments, tiers and limits. `python3 scripts/performance/cli.py list` validates and
   expands it and checks that the golden entries cover every native instance. Every recipe,
   environment and case is executable where its host provides it (ADR-0169); a host that cannot
   refuses at run time with its reason, which `cli.py capabilities` lists.
-- `cli.toml` — the whole-CLI commands (`af.perf-cli/6`, ADR-0168 to ADR-0172): per CLI adapter
+- `cli.toml` — the whole-CLI commands (`af.perf-cli/8`, ADR-0168 to ADR-0172): per CLI adapter
   and process instance, the actual AF argv, its untimed fixture setup and the independent
   oracle rules, and the seeds each side writes once per shard. `task show`'s whole output must
   be one complete JSON document whose `task_id`, history numbered exactly 0..9999 in order and
-  9,997 lease renewals the supervisor observes past any retained log (`json_stream_*`,
-  ADR-0172); whitespace, member order and undeclared fields are free. `cli/setup.sh` performs the
+  exact transition counts the supervisor observes past any retained log (`json_stream_*`,
+  ADR-0172 and the [Task observation decision](../../docs/adr/2026-11-10-reuse-validated-artifacts-for-task-observation.md)); whitespace, member order and undeclared fields are free. `cli/setup.sh` performs the
   setups and seed writers. `cli/task-roots` is the CLI Task fixture, whose catalog pins a test
   checks against the reference digests. `cli/campaign-roots` is the model-free review whose
   Campaign the `review ledger` and `review report` commands read; a test checks its pipeline
   pin.
+- `cli/waiter-state.py` selects the side's public-writer wait fixture. `cli_task_wait` keeps
+  the original 10,000-event fixture and adds small and `issue_255_large` authority, 100/10,000
+  events and zero/100 historical Tasks in the same Store. Every sample receives a final normal
+  lease; exit 124 and a running status are required. Total CPU is user plus system from one
+  rusage record; wall and RSS are separate. See the
+  [procedure](../../docs/measurements/task-wait-validation-reuse.md).
 - `cli/tui-open.py` — the stdlib-only 100x30 PTY driver (`af.perf-tui-open/1`), run as
   `{python} -I` with the absolute interpreter `{python}` names. It reports canonical decimal
   millisecond strings for first output (`splash_ms`) and for the read that completes the
@@ -56,7 +62,7 @@ The data of the continuous performance laboratory
   target, the counter cases, the child run's limits, the diagnostic recipes (each a verdict
   recipe of `suite.toml` with only features, symbols and frame pointers added) and every external
   tool with its pin, how it reports its version and its provisioning instructions.
-- `telemetry.toml` — the telemetry experiments (`af.perf-telemetry-lab/3`, ADR-0214): each
+- `telemetry.toml` — the telemetry experiments (`af.perf-telemetry-lab/4`, ADR-0214): each
   exactly a bench script of the telemetry design's §12 with its document, the product schema it
   is read through, its levels and the inputs that identify its measurement authority, and one
   bounded profile per trigger (rounds, pairs, scale, corpus size, timeout, work bytes and
@@ -96,7 +102,7 @@ unavailable until a reviewed activation binds a passing calibration cohort. Such
 (`af.perf-activation/3`, ADR-0183, ADR-0184) binds the cohort, its sealed parameters and its
 readiness as committed files by path and SHA-256, and the environment, recipe and CPU/image
 groups the cohort calibrated; an equivalent-adapter bridge also binds its execution evidence
-(`af.perf-equivalence/1`). Every active plan verifies those records locally, and the
+(`af.perf-equivalence/2`). Every active plan verifies those records locally, and the
 `Performance activation` workflow's `cli.py activate --verify-proposed` recomputes them from the
 retained Actions evidence before the activation change merges.
 
@@ -216,7 +222,7 @@ neither is the primary metric.
 
 `cli.py report --run DIR --output NEW_DIR` recomputes a run's verdict and writes `report.html`:
 self-contained, every evidence string escaped, and only the bundled script and style allowed by
-their hashes. It also writes the matching `report.json` (`af.perf-report/3`), `verdict.json`,
+their hashes. It also writes the matching `report.json` (`af.perf-report/4`), `verdict.json`,
 the job-summary table `summary.md` and `evidence/`, the verified bundle members the page links;
 `--job-summary $GITHUB_STEP_SUMMARY` appends the table. It exits with the verdict's code. Each
 `--diagnostic CHILD_DIR` links a verified diagnostic child run of this run: its copy goes below
@@ -254,7 +260,7 @@ python3 scripts/performance/cli.py profile --plan run.json --verdict verdict.jso
 
 `--case ID` (repeatable, at most 8) selects explicitly; `--verdict` selects the parent's
 regressed cases, then its inconclusive ones, by instance ID (3 by default, `--max-cases` at most
-8). The command freezes a child plan of scope `diagnostic` (`af.perf-run/7`, with the recipe's
+8). The command freezes a child plan of scope `diagnostic` (`af.perf-run/8`, with the recipe's
 declared kind, base recipe and tools), builds the diagnostic recipe like
 `cli.py build` (or takes `--build DIR`), and works within one wall deadline (15 minutes, at most
 30 with `--total-minutes`), a 128-MiB byte cap and a build cap, all checked while it runs.
@@ -357,3 +363,19 @@ packages, and tens of seconds for the 10,000-event Task log, which is written th
 FULL-synchronous transaction per event. A sample is a diagnostic: it is not a Performance
 Sample of a run, makes no speed claim, and a macOS timing establishes no Linux budget. Paired
 execution is `cli.py run`.
+
+## Proposed long-running development flow
+
+The opt-in `e2e_long_running` tier exercises three native Tasks with two continuations, cold and
+primed initial caches, and independent mock Providers. Eight measured pairs and two warmup pairs
+use a separate statistical algorithm; ordinary tiers retain their minimums and algorithms.
+Suite `/6` keeps the global cold-build allowance at 20 minutes for quick/nightly/release. Only
+`tiers.e2e_long_running.build_minutes` declares 45 minutes; each plan freezes its selected value
+without changing sampling windows, total deadlines or serial feasibility checks.
+The [source-port design](../../docs/design/long-running-development-flow.md) describes bounded
+supervisor evidence transfer, isolated compilation dose and post-delivery validation.
+The retained `af.perf-dev-flow/2` record embeds the current Task inspection, checks and
+findings documents; earlier flow and embedded document versions are refused.
+`make perf-dev-flow-probe` runs the actual four-case supervisor regression in provisioned Docker;
+ordinary deterministic tests require no host unprivileged user namespaces. This tier remains
+manual/proposed/calibration-only, with no activation or new measurement claim.

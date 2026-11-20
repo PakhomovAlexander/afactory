@@ -95,7 +95,7 @@ sys.stdout.write(open(home+'/result').read())
             providers.insert(package, toml::Value::String("claude-personal".into()));
         }
         let pipeline_dir = repo.join(".af/task-packages/fixture/review");
-        let mut pipeline: af_contracts::task::pipeline::PipelineDefinitionV1 =
+        let mut pipeline: af_contracts::task::pipeline::PipelineDefinition =
             toml::from_str(&std::fs::read_to_string(pipeline_dir.join("pipeline.toml")).unwrap())
                 .unwrap();
         pipeline.max_attempts = 4;

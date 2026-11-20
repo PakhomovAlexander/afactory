@@ -18,6 +18,9 @@ npx (for `markdownlint-cli2`), minisign, and 30 GiB
 free on the volume `target/` builds on. It installs and changes nothing,
 and exits 0 when everything is present, 1 otherwise (`scripts/prereqs.py`, issue #161).
 
+`release-check` requires real minisign for its signed release recovery regression. The shared
+CI base job installs it before running those checks, using apt on Linux and Homebrew on macOS.
+
 ## Toolchain
 
 `rust-toolchain.toml` pins the toolchain (`1.88.0`, with `clippy` and `rustfmt`); `rustup`
@@ -311,13 +314,54 @@ Either is fine; the prefixes are used but not required. Domain terms keep their 
   workflow refuses a description without exactly one well-formed block; Dependabot and
   `release/` pull requests are exempt. `python3 scripts/check-pr-report.py --body FILE`
   runs the same check locally.
-- The description also states the lines the pull request adds, per directory
-  ([ADR-0195](docs/adr/0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)),
-  in the template's `Lines added` section: the block `python3 scripts/pr-lines.py` prints, a
-  title with the total and a table with one row per directory — its figure, and its share as a
-  bar and a percentage. It counts `git diff --numstat` additions under the first directory of
-  each path, a file under a `tests` directory as `tests`, a root file under its own name,
-  figures rounded past 1000 (`12k`, `1.1k`, `463`). CI maintains the block
+- The description states additions and deletions per area in the template's `Lines added`
+  section ([ADR-0195](docs/adr/0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)).
+  `python3 scripts/pr-lines.py` prints the title and one `Area`/`Changes`/`+`/`−`/`Share of additions`
+  table. Root rows partition both `git diff --numstat BASE...HEAD` counts by actual first path
+  component; root files keep their names except for collision labels described below. Rename
+  changes belong to the destination. Binary, pure-rename 0/0 and other 0/0 entries contribute
+  no numeric rows.
+  `crates` includes all crate tests without a duplicate global test bucket. Crate children have
+  lowercase `main`, `tests`, `other` leaves; direct files remain file children. Rust paths inside
+  any `tests` directory within the crate, or named `tests.rs`, `test_*.rs`, `*_test.rs`, count as
+  tests. Remaining Rust under `src/` is main; everything else is other, including non-Rust test
+  fixtures, manifests, `build.rs` and ordinary examples. Inline `#[cfg(test)]` modules and
+  common/shared source remain main: this classifies paths, not Rust syntax.
+  Every parent reconciles additions and deletions independently with its children. Roots
+  reconcile with both PR totals; repeated subtotals are not additional lines. Nodes with either
+  count positive appear. Siblings sort by descending additions, descending deletions, raw name.
+  All root rows and crate parents are bold across all nonempty cells; terminal children are plain.
+  Children use four `&nbsp;` entities per depth, without arrows or directory suffixes.
+  For a file/directory sibling collision after removing slashes, the directory keeps its name
+  and only the file gets `name (file)`, then `(file2)`, `(file3)`, etc. until unique. Allocation
+  follows raw identity order and reserves all literal bare sibling names and allocated labels.
+  This display projection leaves exact JSON identities and both counters unchanged.
+  Literal Markdown/HTML syntax, whitespace and tree arrows in names are numeric entities,
+  with visible quotes around names containing whitespace, so filenames cannot spoof bold or
+  indentation (literal `&nbsp;` becomes `&#38;nbsp;`).
+  Separate `+` and `−` bar columns share one scale per sibling group: the largest exact
+  added or deleted count among those siblings. Children use their own sibling scale, not
+  their ancestor's scale. Bars have at most twelve full cells, with Unicode eighth blocks
+  (`▏▎▍▌▋▊▉█`) rounded half up using integers. Positive counts have at least a `▏` sliver;
+  zero counts have blank cells, including bold parent rows. Deletion-only rows have a blank
+  `+` cell and a visible `−` bar. Bars are presentation only and never appear in JSON.
+  Changes use compact `+382/−10` syntax. Figures are exact below 1000, rounded half up to 0.1k
+  below 10k and 1k thereafter. Shares use immediate parent additions (PR additions for roots),
+  rounded half up; positive shares below 0.5% show `<1%`. A zero child of a positive parent is
+  `0%`; a zero parent denominator is undefined, shown as `—`.
+  Deletion-only reports retain the table and `**Lines added: 0**` title. Only a diff with both
+  totals zero prints `**Lines added: none**` alone.
+  `--json` emits only `af/PrLines@4` (`schemas/pr-lines-v4.json`): exact `added`, `deleted`
+  totals and ordered `rows`, each with raw `name` (including internal directory suffix), exact
+  `added`, `deleted` and `children` (empty for leaves).
+  Earlier JSON shapes are refused, without aliases. The `af-pr-lines:v1` markers remain the
+  refresh container; there is no second table or schema heading. See the
+  [crate-report decision](docs/adr/2026-11-09-split-pr-additions-by-crate-and-code-kind.md).
+  Shape parsing checks parents, unique paths, valid kinds and bounded bar glyphs, including
+  blank zero bars and nonblank positive bars. It refuses the previous three-column human
+  format and never sums rounded figures. The checker regenerates the complete hierarchy
+  from exact commits to judge numeric correctness and each bar length independently.
+  CI maintains the block
   ([ADR-0270](docs/adr/0270-let-ci-maintain-the-lines-added-block.md)): the `PR report`
   workflow renders it again from the pull request's commits on every opening, edit and push,
   and when the description's block is missing or differs it writes the block into the
@@ -411,7 +455,8 @@ manual measurement: run `make perf-kernel-measure` before a pull request changin
 `crates/af-runtime/build.rs`, the experiment runtime or kernel receipts
 ([ADR-0252](docs/adr/0252-keep-the-kernel-experiment-measurement-out-of-every-gate.md)).
 
-`make release VERSION=X.Y.Z COMPAT='...'` opens a release PR with `release:fast` by default;
+`make release` (or `./dev release rc --repo PakhomovAlexander/afactory`) reserves the next RC
+and opens a normal release PR with `release:fast` by default;
 `PROFILE=full` selects all classes. Provision the ten canonical labels with `make test-labels` (dry-run),
 then explicitly `make test-labels APPLY=1`; no PR labels are assigned by that setup command.
 Release preparation checks the profile label exists before changing source, committing or pushing.
@@ -429,8 +474,8 @@ The post-publication Performance measurement is asynchronous, not a publication 
 Every validation profile, including fast and `no-perf`, runs the cheap offline
 `python3 -I scripts/release-contract.py` in `release-check`/`base-check`. Release preparation
 runs it after changing the workspace version and before committing or publishing its PR.
-Declare that exact version under the compatible telemetry fixture contract in
-`scripts/telemetry-overhead.py` with source/fixture evidence; unknown versions are refused.
+Preparation generates `scripts/release-contract.json` for the exact version and source,
+retaining the reviewed schema/fixture capability digest; undeclared versions and drift are refused.
 Lab schema parity excludes only the four exact Rust publication schemas, and still refuses
 missing, stale and retired lab schemas. This is contract validation, not a performance measurement.
 
@@ -438,6 +483,13 @@ After the release PR merges and publication succeeds, the release workflow opens
 PR from `release/pin-vVERSION` to `main`. **Review its CI and merge that PR too**: publication
 alone does not pin this repository. The pin binds every target's exact signed archive digest;
 only `.af/af.lock`'s `[af]` and `[af.digests]` may change. No release automation pushes to main.
+`scripts/prepare-release-pin.py` reads the explicitly selected published release through GitHub,
+verifies `SHA256SUMS` with the repository's trusted Minisign key and its signed version comment,
+and checks the complete target inventory. Archive-only signed releases such as RC3 are supported;
+when provenance is declared, its signed digest and repository/version identity must also match.
+It atomically replaces only the two pin tables, preserving all other lock bytes, policy, catalog
+and Worker pins. It never runs `af onboard`, requires a managed receipt, or installs or activates
+a release.
 See the [binding release decision](docs/adr/2026-11-09-review-release-contracts-and-pins-before-merge.md).
 
 Provision the repository Actions secret **`RELEASE_PIN_TOKEN`** with a fine-grained PAT restricted
@@ -468,3 +520,9 @@ put the lock more than one non-yanked release behind (`scripts/af-pin.py --check
 See [the complete class design](docs/test-classes.md) for precedence, catalog policy, retained evidence
 and `scripts/test-classes.py report --replay` commands. Real class timing reports keep wall time,
 summed test-seconds and runner cost separate; replay scenarios are estimates, not measured savings.
+
+## Developer release CLI
+
+Use the repository-owned `./dev release` commands for deterministic release preparation and
+recovery. See [setup, authorization, examples and recovery](docs/dev-release.md). `make release`
+delegates to this same path; it does not invoke the product CLI or models.

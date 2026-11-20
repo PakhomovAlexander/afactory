@@ -15,7 +15,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use af_contracts::task::plan::ExecutionPlanV3;
+use af_contracts::task::plan::ExecutionPlan;
 use af_contracts::{ArtifactEnvelope, Producer};
 use af_graph::task::CompiledTask;
 use af_runtime::task::host::CapturedTaskAuthority;
@@ -123,9 +123,11 @@ pub fn execute(request: &Request, work: &Path) -> Outcome {
             SetupHooks::default(),
             true,
         ),
-        "persistence_fs_v1" => persistence(request, work, started),
+        "persistence_fs_v3" => persistence(request, work, started),
         "cli_state_fixture_v1" => cli_state_fixture(work, started),
-        "cli_campaign_fixture_v1" => cli_campaign_fixture(request, started),
+        "cli_wait_original_fixture_v1" => cli_wait_fixture(request, work, started),
+        "cli_wait_fixture_v1" => cli_wait_fixture(request, work, started),
+        "cli_native_review_fixture_v1" => cli_native_review_fixture(request, started),
         "sentinel_canonical_v1" => sentinel(request, started),
         other => before_region(
             started,
@@ -504,8 +506,9 @@ fn source_capture(request: &Request, work: &Path, started: Instant) -> Outcome {
 
 // State projection ----------------------------------------------------------------------------
 
-/// The admitted fixture Task with exactly `events` relevant events in its log: open, propose,
-/// admit and production lease renewals, each through the protected public writer. A seed writer
+/// The admitted fixture Task with exactly `events` relevant events: open, propose, admit
+/// and production lease renewals through the protected public writer. Clock eligibility
+/// coordination belongs to setup, outside projection/CLI timing. A seed writer
 /// the driver gave a preparation directory ([`fixture_prep`]) writes the log there and publishes
 /// it to `work`; every sample writes it in `work` itself.
 pub fn event_log(work: &Path, events: u64) -> Result<(), Failure> {
@@ -532,7 +535,14 @@ fn write_event_log(work: &Path, events: u64) -> Result<(), Failure> {
     let run = fixture.run_id().map_err(fixture_error)?;
     let mut length = fixture.store.len(&run).map_err(fixture_error)?;
     while length < events {
-        fixture.renew().map_err(fixture_error)?;
+        fixture.renew().map_err(|error| {
+            classify(
+                &fixture.store,
+                &fixture.lease,
+                error,
+                FailureKind::FixtureFailed,
+            )
+        })?;
         length += 1;
     }
     let recorded = fixture.store.len(&run).map_err(fixture_error)?;
@@ -791,125 +801,139 @@ fn cli_state_fixture(work: &Path, started: Instant) -> Outcome {
     state_projection_sample(work, fixtures::CLI_STATE_EVENTS, false, started, |_| Ok(()))
 }
 
-/// The CLI Campaign fixture (ADR-0169). The side's own `af review run` wrote the Campaign
-/// [`fixtures::CLI_CAMPAIGN`] with exactly [`fixtures::CLI_CAMPAIGN_FINDINGS`] Findings into the
-/// state directory [`fixtures::CLI_CAMPAIGN_STATE`] beside this request's scratch. Its setup
-/// tops that Campaign's log up to exactly [`fixtures::CLI_CAMPAIGN_EVENTS`] events through the
-/// side's public Findings Ledger writer ([`Ingest`]), the one `af review group` and `af review
-/// ungroup` use: the second Finding is grouped under the first and released again, pair after
-/// pair, so the Ledger ends exactly as the review left it. An odd remainder first advances the
-/// policy clock once, through the writer `af review policy-time advance` uses. Every event is
-/// one the Ledger projection folds. Its region rebuilds that projection through a fresh Store,
-/// so the message's count is what was recorded, never what was intended.
-///
-/// [`Ingest`]: af_store::Ingest
-fn cli_campaign_fixture(request: &Request, started: Instant) -> Outcome {
-    let run = format!("campaign-{}", fixtures::CLI_CAMPAIGN);
-    let events = fixtures::CLI_CAMPAIGN_EVENTS;
+fn cli_wait_fixture(request: &Request, work: &Path, started: Instant) -> Outcome {
+    let (events, heavy, history) = if request.contract.contract_id == "cli_wait_original_fixture_v1"
+    {
+        (fixtures::CLI_STATE_EVENTS, false, 0)
+    } else {
+        fixtures::wait_state(request.text("state")).expect("admitted wait fixture")
+    };
+    sample(
+        started,
+        || {
+            let padding = if heavy {
+                let Envelope::Package { digits, tens } =
+                    fixtures::envelope_fixture("issue_255_large")
+                        .expect("large fixture")
+                        .envelope
+                else {
+                    unreachable!()
+                };
+                Some(fixtures::padding(digits, tens))
+            } else {
+                None
+            };
+            let fixture = if request.contract.contract_id == "cli_wait_original_fixture_v1" {
+                authority::build_original_waiter(work, events)?
+            } else {
+                authority::build_waiter(work, padding, events, history)?
+            };
+            Ok((None, fixture))
+        },
+        |fixture| {
+            fixture
+                .store
+                .task_projection(&fixture.cas, authority::TASK_ID)
+        },
+        |fixture, projected| {
+            let task = projected
+                .map_err(operation_error)?
+                .ok_or_else(|| operation_error("missing waiter Task"))?;
+            let run = fixture.run_id().map_err(operation_error)?;
+            let count = fixture.store.len(&run).map_err(operation_error)?;
+            let tasks = fixture
+                .store
+                .run_ids()
+                .map_err(operation_error)?
+                .iter()
+                .filter(|run| run.starts_with("task:"))
+                .count();
+            if count != events
+                || tasks != history + 1
+                || !task.lease_held_at(authority::now_ms().map_err(operation_error)?)
+            {
+                return Err(operation_error(
+                    "waiter fixture event count, history count or live lease differs",
+                ));
+            }
+            let (plan, graph) = load_plan_and_graph(
+                &fixture.cas,
+                task.plan_id
+                    .as_deref()
+                    .ok_or_else(|| operation_error("unplanned waiter"))?,
+            )?;
+            let semantic = authority::semantic_projection(&fixture.cas, &task, &plan, &graph)
+                .map_err(operation_error)?;
+            Ok(observed(
+                digest_of(&semantic)?,
+                count,
+                format!(
+                    "events={count} historical_tasks={history} issue_255_large={heavy}; final production lease"
+                ),
+            ))
+        },
+    )
+}
+
+/// Current native Review seed. Public lease transitions extend the same Task log without
+/// changing its selected Round, Findings, conclusion, charges or candidate.
+fn cli_native_review_fixture(request: &Request, started: Instant) -> Outcome {
     sample(
         started,
         || {
             let state = request
                 .scratch
                 .parent()
-                .ok_or_else(|| fixture_error("the writer's scratch has no parent"))?
-                .join(fixtures::CLI_CAMPAIGN_STATE);
-            let metadata = std::fs::symlink_metadata(&state).map_err(|error| {
-                fixture_error(format!("the Campaign state {}: {error}", state.display()))
-            })?;
-            if !metadata.is_dir() {
-                return Err(fixture_error(format!(
-                    "the Campaign state {} is not a directory",
-                    state.display()
-                )));
-            }
-            // With a preparation directory the top-up writes a copy of the reviewed state
-            // there, and the finished state replaces the reviewed one ([`fixture_prep`]).
-            let prep = fixture_prep()?;
-            let writer = match &prep {
-                None => state.clone(),
-                Some(prep) => {
-                    let staged = staging(prep, &state)?;
-                    copy_tree(&state, &staged)?;
-                    staged
-                }
-            };
-            {
-                let mut store =
-                    EventStore::open(writer.join("events.sqlite")).map_err(fixture_error)?;
-                let cas = Cas::open_existing(writer.join("cas")).map_err(fixture_error)?;
-                let mut length = store.len(&run).map_err(fixture_error)?;
-                if length == 0 || length > events {
-                    return Err(fixture_error(format!(
-                        "the reviewed Campaign log holds {length} events; it must hold between \
-                         1 and {events} before the top-up"
-                    )));
-                }
-                let mut ingest =
-                    af_store::Ingest::new(&mut store, &cas, &run).map_err(fixture_error)?;
-                let keys: Vec<String> = ingest
-                    .ledger()
-                    .findings()
-                    .iter()
-                    .map(|finding| finding.key.clone())
-                    .collect();
-                if keys.len() != fixtures::CLI_CAMPAIGN_FINDINGS {
-                    return Err(fixture_error(format!(
-                        "the reviewed Campaign holds {} Findings, not {}",
-                        keys.len(),
-                        fixtures::CLI_CAMPAIGN_FINDINGS
-                    )));
-                }
-                if (events - length) % 2 == 1 {
-                    ingest
-                        .advance_policy_time(1, "perf-fixture", "CLI Campaign fixture parity")
-                        .map_err(fixture_error)?;
-                    length += 1;
-                }
-                while length < events {
-                    ingest.group(&keys[1], &keys[0]).map_err(fixture_error)?;
-                    ingest.ungroup(&keys[1], &keys[0]).map_err(fixture_error)?;
-                    length += 2;
-                }
-            }
-            if prep.is_some() {
-                std::fs::remove_dir_all(&state)
-                    .and_then(|()| std::fs::create_dir(&state))
-                    .and_then(|()| std::fs::set_permissions(&state, metadata.permissions()))
-                    .map_err(|error| {
-                        fixture_error(format!("replacing {}: {error}", state.display()))
-                    })?;
-                publish(&writer, &state)?;
-            }
-            // Every writer handle is closed: the region reads through a fresh Store.
-            let store = EventStore::open(state.join("events.sqlite")).map_err(fixture_error)?;
+                .ok_or_else(|| fixture_error("missing seed parent"))?
+                .join("native-review");
+            let mut store = EventStore::open(state.join("events.sqlite")).map_err(fixture_error)?;
             let cas = Cas::open_existing(state.join("cas")).map_err(fixture_error)?;
-            Ok((None, (store, cas)))
+            let run = af_store::store::task::task_run_id("perf-review").map_err(fixture_error)?;
+            let initial = store
+                .task_projection(&cas, "perf-review")
+                .map_err(fixture_error)?
+                .ok_or_else(|| fixture_error("missing native Review Task"))?;
+            let length = store.len(&run).map_err(fixture_error)?;
+            if length == 0 || length + 2 > fixtures::CLI_NATIVE_REVIEW_EVENTS {
+                return Err(fixture_error(
+                    "native Review log has no room for a bounded lease",
+                ));
+            }
+            let lease = store
+                .take_task_lease(&cas, "perf-review", "perf-native-seed", 120_000)
+                .map_err(fixture_error)?;
+            for _ in (length + 1)..(fixtures::CLI_NATIVE_REVIEW_EVENTS - 1) {
+                store
+                    .renew_task_lease(&cas, &lease, 120_000)
+                    .map_err(fixture_error)?;
+            }
+            store
+                .release_task_lease(&cas, &lease)
+                .map_err(fixture_error)?;
+            let actual = store
+                .task_projection(&cas, "perf-review")
+                .map_err(fixture_error)?
+                .ok_or_else(|| fixture_error("missing native Review projection"))?;
+            if actual.phase != initial.phase
+                || actual.execution.as_ref().map(|e| &e.outputs)
+                    != initial.execution.as_ref().map(|e| &e.outputs)
+            {
+                return Err(fixture_error("native Review seed changed selected work"));
+            }
+            drop(store);
+            let store = EventStore::open(state.join("events.sqlite")).map_err(fixture_error)?;
+            Ok((None, (store, cas, run)))
         },
-        |(store, cas)| af_store::LedgerProjection::rebuild(store, cas, &run),
-        |(store, _), projection| {
-            let projection = projection.map_err(operation_error)?;
-            let recorded = store.len(&run).map_err(operation_error)?;
-            let ledger = projection.ledger();
-            let views = ledger.finding_views();
-            let open = views
-                .iter()
-                .filter(|finding| finding.status == af_store::Status::Open)
-                .count();
-            let value = json!({
-                "campaign": fixtures::CLI_CAMPAIGN,
-                "events": recorded,
-                "findings": views.len(),
-                "open": open,
-                "round": ledger.round,
-            });
+        |(store, cas, _)| store.task_projection(cas, "perf-review"),
+        |(store, _, run), projection| {
+            let projection = projection
+                .map_err(operation_error)?
+                .ok_or_else(|| operation_error("missing native Review Task"))?;
+            let count = store.len(&run).map_err(operation_error)?;
             Ok(observed(
-                digest_of(&value)?,
-                recorded,
-                format!(
-                    "events={recorded} findings={} open={open} projection=application_cold",
-                    views.len()
-                ),
+                digest_of(&serde_json::to_value(&projection.phase).map_err(operation_error)?)?,
+                count,
+                format!("events={count} native_review=perf-review projection=application_cold"),
             ))
         },
     )
@@ -924,18 +948,18 @@ pub enum AuthorityRegion {
 }
 
 /// How a sample holds its production lease. Immediately before the region every state-persistence
-/// request renews it, and every authority request takes a fresh one after its setup writer
+/// request hands it off, and every authority request takes a fresh one after its setup writer
 /// handed its lease over ([`PRODUCTION_LEASE`]); only the expiry tests keep the setup lease and
 /// let it lapse at that boundary, waiting until the Store itself reports it lapsed, to prove
 /// expiry is reported as the side's failure and never retried.
 #[derive(Debug, Clone, Copy)]
 pub struct LeasePolicy {
-    pub renew_before_region: bool,
+    pub refresh_before_region: bool,
     pub wait_for_expiry: bool,
 }
 
 pub const PRODUCTION_LEASE: LeasePolicy = LeasePolicy {
-    renew_before_region: true,
+    refresh_before_region: true,
     wait_for_expiry: false,
 };
 
@@ -1006,18 +1030,15 @@ pub fn classify(
     }
 }
 
-fn load_plan_and_graph(
-    cas: &Cas,
-    plan_id: &str,
-) -> Result<(ExecutionPlanV3, CompiledTask), Failure> {
-    let plan: ExecutionPlanV3 =
+fn load_plan_and_graph(cas: &Cas, plan_id: &str) -> Result<(ExecutionPlan, CompiledTask), Failure> {
+    let plan: ExecutionPlan =
         serde_json::from_value(cas.get_artifact(plan_id).map_err(operation_error)?.payload)
             .map_err(operation_error)?;
     let graph = compiled_graph(cas, &plan)?;
     Ok((plan, graph))
 }
 
-fn compiled_graph(cas: &Cas, plan: &ExecutionPlanV3) -> Result<CompiledTask, Failure> {
+fn compiled_graph(cas: &Cas, plan: &ExecutionPlan) -> Result<CompiledTask, Failure> {
     serde_json::from_value(
         cas.get_artifact(&plan.compiled_graph_id)
             .map_err(operation_error)?
@@ -1180,7 +1201,7 @@ pub fn authority_sample_from(
             after_region_capture().map_err(|error| (Some(author.clone()), fixture_error(error)))?;
             // The setup writers' leases ended after their writes; the region's own
             // production lease is taken here, as the last Store write before it.
-            let region_lease = if lease.renew_before_region {
+            let region_lease = if lease.refresh_before_region {
                 authority::take_fresh_lease(store, cas)
                     .map_err(|error| (Some(author.clone()), fixture_error(error)))?
             } else {
@@ -1269,7 +1290,7 @@ pub fn authority_sample_from(
             Some(padding),
             fixtures::TASK_LEASE_MS,
             authority::Setup {
-                hand_over: lease.renew_before_region,
+                hand_over: lease.refresh_before_region,
                 after_capture: hooks.after_capture,
                 between_writes: hooks.between_writes,
                 ..authority::Setup::default()
@@ -1374,8 +1395,8 @@ pub fn persistence_state_sample(work: &Path, lease: LeasePolicy, started: Instan
 ///
 /// Setup reads the run ID and the built log's length first, then refreshes the fixture's lease
 /// as its last successful operation, so the region starts with a full production lease whatever
-/// setup cost. The refresh appends exactly one event, counted into the prefix without reading
-/// the Store again. A failed refresh, or a renewal that fails in the region, is classified by
+/// setup cost. One renewal appends exactly one event, counted into the prefix
+/// without another full log read. A failed refresh or renewal in the region is classified by
 /// the Store's own lease state, and the first failure ends the sample without retry. A
 /// scheduler pause between the refresh and the region can still consume the lease; that is
 /// reported as `lease_expired`, never hidden. Only the expiry test passes a policy other than
@@ -1394,7 +1415,7 @@ pub fn persistence_state_sample_with(
             let run = fixture.run_id().map_err(fixture_error)?;
             let built = fixture.store.len(&run).map_err(fixture_error)?;
             before_refresh(&fixture).map_err(fixture_error)?;
-            let prefix = if lease.renew_before_region {
+            let prefix = if lease.refresh_before_region {
                 fixture.renew().map_err(|error| {
                     classify(
                         &fixture.store,
@@ -1414,6 +1435,7 @@ pub fn persistence_state_sample_with(
         },
         // Flush semantics: each renewal is one SQLite transaction at synchronous=FULL in
         // WAL mode, committed before the next begins; the read is a full ordered replay.
+        // v3 includes bounded clock-eligibility reads/waits before each of the 100 renewals.
         |(fixture, run, _): &mut (AuthorityFixture, String, u64)| {
             for _ in 0..fixtures::PERSISTENCE_EVENTS {
                 if let Err(error) = fixture.renew() {
@@ -1443,9 +1465,12 @@ pub fn persistence_state_sample_with(
             let contiguous = appended
                 .windows(2)
                 .all(|pair| pair[1].sequence == pair[0].sequence + 1);
-            if appended.len() as u64 != fixtures::PERSISTENCE_EVENTS || !contiguous {
+            let renewals = appended
+                .iter()
+                .all(|event| event.payload["change"]["kind"] == "lease_renewed");
+            if appended.len() as u64 != fixtures::PERSISTENCE_EVENTS || !contiguous || !renewals {
                 return Err(operation_error(format!(
-                    "read back {} appended events (contiguous: {contiguous})",
+                    "read back {} appended events (contiguous: {contiguous}, all renewals: {renewals})",
                     appended.len()
                 )));
             }
@@ -1468,7 +1493,7 @@ pub fn persistence_state_sample_with(
                 appended.len() as u64,
                 format!(
                     "flush=sqlite_wal_synchronous_full_per_event appended={} prefix={prefix} \
-                     lease=refreshed_before_region",
+                     lease=refreshed_before_region cadence=clock_eligible_in_region",
                     appended.len()
                 ),
             );

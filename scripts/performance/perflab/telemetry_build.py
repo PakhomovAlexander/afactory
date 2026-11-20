@@ -128,10 +128,22 @@ def admit_binary(state, output, timing):
                 + limits.RECORD_BYTES_MAX,
                 "binary admission would cross the free-disk floor")
         digest = admission.copy_fd(fd, info.st_size, os.path.join(output, "af"), timing, "compiled af")
+        # Coarse or coincident timestamps cannot establish unchanged source bytes. Re-read
+        # the held descriptor under the same byte bound and dominant deadline as the copy.
+        os.lseek(fd, 0, os.SEEK_SET)
+        require(admission.read_bounded(fd, info.st_size, timing, "compiled af",
+                                       "verifying compiled af") == digest,
+                "compiled af mutated during admission")
         after = os.fstat(fd)
         require((info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns) ==
                 (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns),
                 "compiled af mutated during admission")
+        # Same-size writes can share both timestamps, including on a local filesystem.
+        # Recheck the held source's bytes against the admitted copy, within the same bounds.
+        os.lseek(fd, 0, os.SEEK_SET)
+        current = admission.read_bounded(fd, info.st_size, timing, "compiled af",
+                                         "rechecking compiled af")
+        require(current == digest, "compiled af mutated during admission")
         os.chmod(os.path.join(output, "af"), 0o500)
         return digest
     finally:

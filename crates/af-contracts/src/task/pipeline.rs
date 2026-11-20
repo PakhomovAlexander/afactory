@@ -21,20 +21,23 @@ where
     Ok(set)
 }
 
-/// The unique version of a Pipeline's shape. Structured acceptance is `af.pipeline/4`.
-/// Other Pipelines use `/3` when a slot declares `recovery_attempts` (ADR-0209), `/2`
-/// when they declare a Project Brief without that allowance (ADR-0160), and `/1` otherwise.
-/// A shape labelled with an earlier or unrelated version is refused rather than read.
+/// The one current Pipeline format; capabilities are explicit optional declarations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String")]
 pub enum PipelineSchema {
-    #[serde(rename = "af.pipeline/1")]
-    V1,
-    #[serde(rename = "af.pipeline/2")]
-    V2,
-    #[serde(rename = "af.pipeline/3")]
-    V3,
-    #[serde(rename = "af.pipeline/4")]
-    V4,
+    #[serde(rename = "af.pipeline/6")]
+    V6,
+}
+
+impl TryFrom<String> for PipelineSchema {
+    type Error = &'static str;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        match value.as_str() {
+            "af.pipeline/6" => Ok(Self::V6),
+            _ => Err("Pipeline schema must be the string af.pipeline/6"),
+        }
+    }
 }
 
 /// How many abandoned Attempts a node recovers from when its slot declares no
@@ -88,8 +91,7 @@ pub struct PipelinePortV1 {
 }
 
 impl PipelinePortV1 {
-    /// Whether this declaration uses what only `af.pipeline/2` admits: the `project_brief` root
-    /// default or a `brief` variant.
+    /// Whether this declaration requests a Project Brief root default or variant.
     pub fn declares_brief(&self) -> bool {
         self.root_default == Some(RootDefaultV1::ProjectBrief) || self.brief.is_some()
     }
@@ -205,8 +207,8 @@ pub struct WorkerSlotV1 {
     #[serde(deserialize_with = "super::unique_set")]
     pub independent_from: BTreeSet<String>,
     /// How many of this slot's Attempts may be abandoned, by a lost writer or a host
-    /// cancellation, and dispatched again; absent means [`DEFAULT_RECOVERY_ATTEMPTS`]. Only an
-    /// `af.pipeline/3` slot declares it (ADR-0209).
+    /// cancellation, and dispatched again; absent means [`DEFAULT_RECOVERY_ATTEMPTS`].
+    /// The allowance is declared explicitly on the slot (ADR-0209).
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -304,6 +306,31 @@ pub enum TaskOperatorV1 {
         bindings: BTreeMap<String, String>,
     },
     ReviewBind {},
+    /// Bind the checked internal head and pending claims of a native Integration.
+    ReviewBindIntegrated {},
+    /// Pure native Proposal selection/composition; checks run as ordinary Task nodes.
+    ReviewIntegrate {
+        #[serde(deserialize_with = "super::unique_set")]
+        reviewers: BTreeSet<String>,
+        protected_paths: Vec<String>,
+    },
+    ReviewCommit {},
+    /// Expose only the prepared, still unpromoted source on the prepared branch.
+    ReviewIntegrationSource {},
+    ReviewSlice {
+        scatter: String,
+        max_paths_per_slice: u32,
+        max_fanout: u32,
+    },
+    ReviewScatter {
+        slot: String,
+        max_fanout: u32,
+    },
+    ReviewReduceShards {
+        #[serde(deserialize_with = "super::unique_set")]
+        reviewers: BTreeSet<String>,
+        closeout: String,
+    },
     /// One atomic gather/reducer barrier over the captured set of required reviewers.
     ReviewReduce {},
     /// Accept implementation only from the embedded current-Snapshot Review and its checks.
@@ -367,7 +394,7 @@ pub struct PipelineApplicabilityV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PipelineDefinitionV1 {
+pub struct PipelineDefinition {
     pub schema: PipelineSchema,
     pub name: String,
     pub version: String,
@@ -381,9 +408,8 @@ pub struct PipelineDefinitionV1 {
     pub max_parallel: u32,
 }
 
-impl PipelineDefinitionV1 {
-    /// Whether the contract declares a Project Brief port: what makes a pipeline
-    /// `af.pipeline/2`.
+impl PipelineDefinition {
+    /// Whether the contract declares a Project Brief port.
     pub fn declares_brief(&self) -> bool {
         self.contract
             .inputs
@@ -392,78 +418,12 @@ impl PipelineDefinitionV1 {
             .any(PipelinePortV1::declares_brief)
     }
 
-    /// The first slot that declares `recovery_attempts`: what makes a pipeline
-    /// `af.pipeline/3`.
+    /// The first slot that declares `recovery_attempts`.
     pub fn declares_recovery(&self) -> Option<&str> {
         self.slots
             .iter()
             .find(|(_, slot)| slot.recovery_attempts.is_some())
             .map(|(name, _)| name.as_str())
-    }
-
-    /// The version rule of ADR-0145 applied to the Brief port (ADR-0160) and the recovery
-    /// allowance (ADR-0209): a slot's `recovery_attempts` is `af.pipeline/3`'s alone, the Brief
-    /// port is `af.pipeline/2`'s and `af.pipeline/3`'s, and each version is the shape of a
-    /// pipeline that declares what it adds.
-    fn validate_version(&self) -> Result<(), String> {
-        let structured = self
-            .nodes
-            .iter()
-            .any(|n| matches!(n.operator, TaskOperatorV1::StructuredAccept {}));
-        if structured || self.schema == PipelineSchema::V4 {
-            return require(
-                structured
-                    && self.schema == PipelineSchema::V4
-                    && self.nodes.iter().all(|n| {
-                        matches!(
-                            n.operator,
-                            TaskOperatorV1::Worker { .. } | TaskOperatorV1::StructuredAccept {}
-                        )
-                    }),
-                "Structured acceptance requires af.pipeline/4; af.pipeline/4 requires structured acceptance",
-            );
-        }
-        let briefed = self
-            .contract
-            .inputs
-            .iter()
-            .chain(&self.contract.outputs)
-            .find(|(_, port)| port.declares_brief())
-            .map(|(name, _)| name);
-        let recovering = self.declares_recovery();
-        match (self.schema, briefed, recovering) {
-            (PipelineSchema::V1 | PipelineSchema::V2, _, Some(slot)) => Err(format!(
-                "Pipeline {} declares recovery_attempts on slot {slot} under {}, which has no \
-                 recovery allowance: a pipeline whose slot declares recovery_attempts declares \
-                 schema = \"af.pipeline/3\"",
-                self.name,
-                if self.schema == PipelineSchema::V1 {
-                    "af.pipeline/1"
-                } else {
-                    "af.pipeline/2"
-                }
-            )),
-            (PipelineSchema::V1, Some(port), None) => Err(format!(
-                "Pipeline {} declares the Project Brief port {port} under af.pipeline/1, which \
-                 has no Brief port: a pipeline with a `project_brief` port declares schema = \
-                 \"af.pipeline/2\"",
-                self.name
-            )),
-            (PipelineSchema::V2, None, None) => Err(format!(
-                "Pipeline {} is af.pipeline/2 but declares no `project_brief` port: \
-                 af.pipeline/2 is the shape of a pipeline with a Project Brief port, and every \
-                 other pipeline declares schema = \"af.pipeline/1\"",
-                self.name
-            )),
-            (PipelineSchema::V3, _, None) => Err(format!(
-                "Pipeline {} is af.pipeline/3 but no slot declares recovery_attempts: \
-                 af.pipeline/3 is the shape of a pipeline with a slot recovery allowance; \
-                 declare schema = \"af.pipeline/2\" for a pipeline with only a Project Brief \
-                 port and \"af.pipeline/1\" for every other",
-                self.name
-            )),
-            _ => Ok(()),
-        }
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -472,7 +432,21 @@ impl PipelineDefinitionV1 {
             "Invalid Pipeline name/version",
         )?;
         self.contract.validate()?;
-        self.validate_version()?;
+        if self
+            .nodes
+            .iter()
+            .any(|n| matches!(n.operator, TaskOperatorV1::StructuredAccept {}))
+        {
+            require(
+                self.nodes.iter().all(|n| {
+                    matches!(
+                        n.operator,
+                        TaskOperatorV1::Worker { .. } | TaskOperatorV1::StructuredAccept {}
+                    )
+                }),
+                "Structured acceptance permits only Worker and structured acceptance operators",
+            )?;
+        }
         require(
             !self.nodes.is_empty() && self.nodes.len() <= 64,
             "Pipeline must contain one to 64 static nodes",
@@ -512,6 +486,41 @@ impl PipelineDefinitionV1 {
                         "Operator refers to an unknown Worker slot",
                     )?;
                 }
+                TaskOperatorV1::ReviewScatter { slot, max_fanout } => require(
+                    self.slots.contains_key(slot) && (1..=64).contains(max_fanout),
+                    "Review Scatter requires a captured slot and a bounded fanout",
+                )?,
+                TaskOperatorV1::ReviewSlice {
+                    scatter,
+                    max_paths_per_slice,
+                    max_fanout,
+                } => require(
+                    is_name(scatter) && *max_paths_per_slice > 0 && (1..=64).contains(max_fanout),
+                    "Review Slicer requires a named Scatter and positive bounds",
+                )?,
+                TaskOperatorV1::ReviewIntegrate {
+                    reviewers,
+                    protected_paths,
+                } => require(
+                    !reviewers.is_empty()
+                        && reviewers.len() <= 64
+                        && reviewers.iter().all(|n| is_name(n))
+                        && protected_paths.len() <= 4096
+                        && protected_paths.iter().all(|p| crate::is_valid_repo_path(p))
+                        && protected_paths.windows(2).all(|p| p[0] < p[1]),
+                    "Review Integration requires bounded named reviewers and sorted protected paths",
+                )?,
+                TaskOperatorV1::ReviewReduceShards {
+                    reviewers,
+                    closeout,
+                } => require(
+                    !reviewers.is_empty()
+                        && reviewers.len() <= 63
+                        && reviewers.iter().all(|n| is_name(n))
+                        && is_name(closeout)
+                        && !reviewers.contains(closeout),
+                    "Sharded reduction requires bounded reviewers and a separate whole-Subject closeout",
+                )?,
                 TaskOperatorV1::OptimizationExperiment {
                     baseline_slot,
                     candidate_slot,

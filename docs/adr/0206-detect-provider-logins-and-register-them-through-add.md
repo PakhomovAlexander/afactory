@@ -164,7 +164,7 @@ read), and `af provider status` print `af/provider-status@3`.
 ## Amendment, 2026-10-24: typed next actions, and one default Claude context
 
 The final fix round of the release-polish campaign makes `af provider detect --json` print
-`af/provider-detect@3` (`schemas/provider-detect-v3.json`). It is the one version printed:
+`af/provider-detect@3` (the then-current version-3 schema, now retired). It is the one version printed:
 versions 1 and 2 are neither printed nor read, and each has no schema file any more
 ([ADR-0145](0145-read-only-what-this-release-writes-and-version-every-changed-shape.md)). Where
 this record says `af/provider-detect@1` or `@2` above, the current document is version 3.

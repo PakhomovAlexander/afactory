@@ -11,12 +11,12 @@ with open('report.json', encoding='utf-8') as task:
 body = 'README.md has %d lines and report.json names the Task %s.' % (len(lines), task_id)
 notes = [sources[name]['text'] for name in sorted(sources)]
 print(json.dumps({'schema': 'af.worker-reply/1', 'outputs': {'draft': [{
-    'schema': 'af.document-draft/2', 'title': 'Starter layout',
+    'schema': 'af.document-draft/3', 'title': 'Starter layout',
     'sections': [{'heading': 'Findings', 'body': '\n\n'.join([body] + notes)}],
-    'citations': sorted(sources),
+    'citations': [{'kind': 'source', 'name': name} for name in sorted(sources)] +
     # A draft lists its citations sorted by path, then line.
-    'repository_citations': sorted([
+    [{'kind': 'repository', 'location': c} for c in sorted([
         {'path': 'README.md'},
         {'path': 'README.md', 'line': len(lines)},
         {'path': 'report.json'},
-    ], key=lambda c: (c['path'], c.get('line', 0)))}]}}))
+    ], key=lambda c: (c['path'], c.get('line', 0)))]}]}}))

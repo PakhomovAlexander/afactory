@@ -128,6 +128,63 @@ class ExecutorFixture(TempDir):
         return path, plan
 
 
+class PreflightCli(ExecutorFixture):
+    def invoke(self, *options):
+        import cli
+        output, errors = io.BytesIO(), io.StringIO()
+        stdout = io.TextIOWrapper(output, encoding="utf-8")
+        with mock.patch.object(executor, "load_config", return_value=self.c), \
+                mock.patch.object(executor.Journal, "submit",
+                                  side_effect=AssertionError("preflight reserved an original")), \
+                mock.patch.object(executor, "execute_local",
+                                  side_effect=AssertionError("preflight executed work")), \
+                mock.patch.object(sys, "stdout", stdout), mock.patch.object(sys, "stderr", errors):
+            code = cli.main(["executor", "--config", "operator.toml", "preflight", "--work", "core",
+                             "--base", self.base, "--head", self.head, "--key", "readiness"]
+                            + list(options))
+            stdout.flush()
+        with executor.Journal(self.c) as journal:
+            self.assertEqual(journal.names(), [], "preflight reserves no original")
+        return code, output.getvalue(), errors.getvalue()
+
+    def configure(self, status):
+        if status == "refused":
+            self.c["core"]["shards"] = 4
+
+    def test_output_writes_validated_ready_and_refused_receipts(self):
+        for status, expected_code in (("ready", 0), ("refused", 4)):
+            with self.subTest(status=status):
+                self.configure(status)
+                path = self.path(status + ".json")
+                code, output, errors = self.invoke("--output", path)
+                self.assertEqual((code, output, errors), (expected_code, b"", ""))
+                doc = contracts.read_json(read(path), "executor-preflight")
+                self.assertEqual(doc["status"], status)
+                self.assertEqual(doc["request"] is None, status == "refused")
+                if status == "refused":
+                    self.assertIn("never more shards than instances", doc["detail"])
+
+    def test_no_output_keeps_ready_and_refused_receipts_on_stdout(self):
+        for status, expected_code in (("ready", 0), ("refused", 4)):
+            with self.subTest(status=status):
+                self.configure(status)
+                code, output, errors = self.invoke()
+                self.assertEqual((code, errors), (expected_code, ""))
+                self.assertEqual(contracts.read_json(output, "executor-preflight")["status"], status)
+
+    def test_output_write_errors_refuse_without_claim_or_execution(self):
+        for status in ("ready", "refused"):
+            self.configure(status)
+            for path in (self.tmp, self.path("missing-parent/receipt.json")):
+                with self.subTest(status=status, path=path):
+                    code, output, errors = self.invoke("--output", path)
+                    self.assertEqual(code, 4)
+                    doc = contracts.read_json(output, "plan-refusal")
+                    self.assertEqual(doc["reason"], "executor_refused")
+                    self.assertIn(path, doc["detail"])
+                    self.assertIn("refused (executor_refused)", errors)
+
+
 class Journal(ExecutorFixture):
     def assert_required_anchor_bound(self, cycle):
         with executor.Journal(self.c) as j:
@@ -1709,40 +1766,80 @@ class WorkloadAdmission(ExecutorFixture):
         self.base = self.repo.commit("baseline " + base, {"Cargo.lock": lock % base})
         self.head = self.repo.commit("candidate " + candidate, {"Cargo.lock": lock % candidate})
 
-    def test_unsupported_selected_releases_refuse_before_any_claim_or_build(self):
-        self.c["core"]["cases"] = ["cli_discovery__command_version"]
-        self.release("0.13.0", "0.11.9")
-        for work, why in (("telemetry", "the candidate source %s is af 0.11.9: af 0.11.9 is "
-                                        "named by no fixture contract"),
-                          ("core", "the candidate source is af 0.11.9: no declared CLI "
-                                   "adapter covers AF 0.11.9")):
-            with self.subTest(work=work), executor.Journal(self.c) as j:
-                why = why % self.head[:12] if "%s" in why else why
-                refused = j.preflight(work, self.base, self.head, "old_" + work)
-                contracts.write_bytes(refused, "executor-preflight")
-                self.assertEqual(refused["status"], "refused")
-                self.assertIn("refused before any claim or build", refused["detail"])
-                self.assertIn(why, refused["detail"])
-                with self.assertRaisesRegex(ContractError, "refused before any claim or build"):
-                    self.submit(j, work, "old_" + work)
-                self.assertEqual(j.names(), [], "a refusal reserves nothing")
+    def test_same_release_changed_or_missing_schema_refuses_before_any_claim_or_build(self):
+        self.release("0.15.1-rc.1", "0.15.1-rc.1")
+        name = 'schemas/' + telemetry_lab.script_module('scripts/telemetry-overhead.py').CONTRACT_SCHEMAS[0]
+        for side in ('baseline', 'candidate'):
+            for mutation in ('changed', 'missing'):
+                with self.subTest(side=side, mutation=mutation):
+                    files = {name: b'{"schema":"retired"}'} if mutation == 'changed' else {}
+                    if mutation == 'missing':
+                        os.unlink(os.path.join(self.repo.path, name))
+                    changed = self.repo.commit(mutation, files)
+                    sources = {'baseline_sha':self.base, 'candidate_sha':self.head}
+                    sources[side + '_sha'] = changed
+                    with self.assertRaisesRegex(ContractError, 'the ' + side + ' source.*requires exact'):
+                        executor.telemetry_workload(git_refs.Git(self.repo.path), sources,
+                                                    ['overhead', 'invocation_cost'])
+                    # Return the worktree to current bytes for the independent mutation.
+                    self.repo.commit('restore current schema', {name:read(os.path.join(ROOT, name))})
+        self.head = self.repo.commit('candidate without declared schema', {name:b'{}'})
+        self.assert_refused('telemetry', 'bad_wire', 'requires exact ' + name)
 
-    def test_the_supported_release_pair_is_admitted_with_each_sides_contract(self):
-        self.c["core"]["cases"] = ["cli_discovery__command_version"]
-        self.release("0.13.0", "0.14.0-rc.1")
+    def test_numeric_to_boolean_schema_mutation_refuses_either_source_before_claim_or_build(self):
+        name = 'schemas/pipeline-definition-v6.json'
+        schema = json.loads(read(os.path.join(ROOT, name)))
+        self.assertIs(type(schema['properties']['nodes']['minItems']), int)
+        self.assertEqual(schema['properties']['nodes']['minItems'], 1)
+        schema['properties']['nodes']['minItems'] = True
+        changed = self.repo.commit('invalid boolean numeric constraint', {name:json.dumps(schema)})
+        current = self.repo.commit('restore current constraint', {name:read(os.path.join(ROOT, name))})
+        for side in ('baseline', 'candidate'):
+            with self.subTest(side=side):
+                self.base, self.head = (changed, current) if side == 'baseline' else (current, changed)
+                self.assert_refused('telemetry', 'bool_' + side,
+                                    'the ' + side + ' source')
+
+    def test_unsupported_cli_release_refuses_either_source_before_claim_or_build(self):
+        self.c['core']['cases'] = ['cli_discovery__command_version']
+        for side in ('baseline', 'candidate'):
+            with self.subTest(side=side):
+                self.release(*(('0.11.9', '0.14.0-rc.1') if side == 'baseline'
+                               else ('0.13.0', '0.11.9')))
+                self.assert_refused('core', 'old_cli_' + side,
+                                    'the ' + side + ' source is af 0.11.9: no declared CLI adapter')
+
+    def test_descriptive_annotations_are_not_capability_but_resource_identity_and_constraints_are(self):
+        name = 'schemas/compiled-task-v6.json'
+        schema = json.loads(read(os.path.join(ROOT, name)))
+        annotated = dict(schema, title='A descriptive title', description='Different prose')
+        self.head = self.repo.commit('same wire constraints, different annotation',
+                                     {name:json.dumps(annotated)})
+        sources = {'baseline_sha':self.base, 'candidate_sha':self.head}
+        self.assertIn('native-task-review@1', executor.telemetry_workload(
+            git_refs.Git(self.repo.path), sources, ['overhead']))
+        for key, value in (('$id', 'urn:af:schema:compiled-task:retired'),
+                           ('additionalProperties', True), ('description', [])):
+            changed = dict(annotated, **{key:value})
+            sources['candidate_sha'] = self.repo.commit('different ' + key, {name:json.dumps(changed)})
+            with self.assertRaisesRegex(ContractError, 'requires exact ' + name):
+                executor.telemetry_workload(git_refs.Git(self.repo.path), sources, ['overhead'])
+
+    def test_current_wire_sources_are_admitted_independently_of_release_strings(self):
+        self.c['core']['cases'] = ['cli_discovery__command_version']
+        self.release('0.13.0', '0.14.0-rc.1')
         with executor.Journal(self.c) as j:
-            for work, named in (("telemetry", "baseline af 0.13.0 under check-receipt@1, "
-                                              "candidate af 0.14.0-rc.1 under check-receipt@2"),
+            for work, named in (("telemetry", "baseline af 0.13.0 under native-task-review@1, "
+                                              "candidate af 0.14.0-rc.1 under native-task-review@1"),
                                 ("core", "baseline af 0.13.0 with af_cli_v2, candidate af "
                                          "0.14.0-rc.1 with af_cli_v3")):
                 ready = j.preflight(work, self.base, self.head, "pair_" + work)
-                self.assertEqual(ready["status"], "ready", ready["detail"])
-                # The admission's figures, as a comparison's member check records them.
-                checked = {"serial": None, "tools": []}
-                j._submit(work, self.base, self.head, "pair_" + work, checked=checked)
-                self.assertIn(named, checked["admission"])
+                self.assertEqual(ready['status'], 'ready', ready['detail'])
+                checked = {'serial':None, 'tools':[]}
+                j._submit(work, self.base, self.head, 'pair_' + work, checked=checked)
+                self.assertIn(named, checked['admission'])
             self.assertEqual(j.names(), [])
-            self.submit(j, "telemetry", "pair_telemetry")
+            self.submit(j, 'telemetry', 'pair_telemetry')
             self.assertEqual(len(j.names()), 1)
 
     def assert_refused(self, work, key, why):
@@ -2227,9 +2324,10 @@ class AuthorityAndShapes(TempDir):
         with self.assertRaisesRegex(ContractError, "requires zigbuild_bin"):
             contracts.validate_executor(c)
         obsolete = config(self.path("old"), self.tmp, "1" * 40)
-        for schema in ("af.perf-executor/2", "af.perf-executor/3"):
+        for schema in ("af.perf-executor/1", "af.perf-executor/2", "af.perf-executor/3",
+                       "af.perf-executor/4"):
             obsolete["schema"] = schema
-            with self.assertRaisesRegex(ContractError, "expected.*af.perf-executor/4"):
+            with self.assertRaisesRegex(ContractError, "expected.*af.perf-executor/5"):
                 contracts.validate_executor(obsolete)
 
     def test_service_refuses_missing_or_invalid_shipping_configuration_before_reservation(self):

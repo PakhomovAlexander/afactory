@@ -11,12 +11,9 @@ mod renewal_race;
 mod report;
 mod reservation;
 mod retry;
-mod review;
-mod review_handoff;
-mod review_integration;
-mod review_round_publication;
 mod source;
 mod token_scopes;
+mod wake_episode;
 mod wide_usage;
 
 /// Artifact type of the fixture Pipeline definition envelope. Production captures the
@@ -71,7 +68,7 @@ impl TaskAuthority for Authority {
         &self,
         cas: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV3,
+        _: &ExecutionPlan,
         _: &af_contracts::task::execution::TaskInvocationV1,
         previous: &BTreeMap<String, af_contracts::task::execution::TaskAttemptResultV1>,
     ) -> Result<(), String> {
@@ -99,7 +96,7 @@ impl TaskAuthority for Authority {
         _: &Cas,
         previous: &TaskRevisionV1,
         next: &TaskRevisionV1,
-        _: &ExecutionPlanV3,
+        _: &ExecutionPlan,
     ) -> Result<(), String> {
         if previous.inputs != next.inputs {
             return Err("Fixture has no root input constructors".into());
@@ -110,7 +107,7 @@ impl TaskAuthority for Authority {
         &self,
         _: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV3,
+        _: &ExecutionPlan,
         _: &af_contracts::task::execution::TaskInvocationV1,
         _: &crate::store::task::execution::ReservedTaskAttempt,
         _: &str,
@@ -121,7 +118,7 @@ impl TaskAuthority for Authority {
         &self,
         _: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV3,
+        _: &ExecutionPlan,
     ) -> Result<Vec<GeneratedOriginV1>, String> {
         Ok(self.generated.clone())
     }
@@ -154,7 +151,7 @@ impl TaskAuthority for Authority {
         &self,
         _: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV3,
+        _: &ExecutionPlan,
         _: &af_contracts::task::execution::TaskInvocationV1,
         _: &af_contracts::task::execution::TaskOutputV1,
         _: &af_graph::task::CompiledNode,
@@ -185,7 +182,7 @@ struct Fixture {
     store: EventStore,
     revision: TaskRevisionV1,
     revision_id: String,
-    plan: ExecutionPlanV3,
+    plan: ExecutionPlan,
     plan_id: String,
     authority: Authority,
 }
@@ -249,8 +246,7 @@ impl Fixture {
                 read("pipeline-definition.json"),
             )
             .unwrap();
-        let mut plan: ExecutionPlanV3 =
-            serde_json::from_value(read("execution-plan.json")).unwrap();
+        let mut plan: ExecutionPlan = serde_json::from_value(read("execution-plan.json")).unwrap();
         plan.task_revision_id = revision_id.clone();
         plan.authority = revision.authority.clone();
         plan.limits = revision.limits.clone();
@@ -350,7 +346,7 @@ impl Fixture {
         use af_graph::task::{
             CompileContext, OperatorAttemptCost, OperatorSignature, compile_task,
         };
-        let pipeline: PipelineDefinitionV1 =
+        let pipeline: PipelineDefinition =
             payload(&self.cas, &self.plan.pipeline_id, PIPELINE_V1).unwrap();
         let mut output = pipeline.contract.outputs["document"].clone();
         output.covers.clear();
@@ -399,7 +395,7 @@ impl Fixture {
         self.plan.compiled_graph_id = self
             .cas
             .put_artifact(
-                "af/CompiledTask@1",
+                "af/CompiledTask@4",
                 producer(),
                 vec![],
                 None,
@@ -583,7 +579,7 @@ fn worker_output_and_generic_event_append_cannot_supply_developer_authority() {
             .is_err()
     );
     let fake = NewEvent::new(
-        EventType::TaskTransitionV5,
+        EventType::TaskTransitionV6,
         serde_json::to_value(TaskTransitionV1 {
             writer: "writer-1".into(),
             epoch: 1,
@@ -600,7 +596,7 @@ fn worker_output_and_generic_event_append_cannot_supply_developer_authority() {
             .is_err()
     );
     let campaign = NewEvent::new(
-        EventType::CampaignOpenedV1,
+        EventType::SourceCapturedV1,
         json!({
             "campaign_manifest_id":f.authority.authorization_id, "authority_snapshot_id":f.authority.authorization_id,
         }),
@@ -792,15 +788,14 @@ fn lease_takeover_fences_old_writer_and_sequence_comparison_is_atomic() {
         },
     };
     let value = serde_json::to_value(&transition).unwrap();
-    let event = NewEvent::new(EventType::TaskTransitionV5, value.clone())
+    let event = NewEvent::new(EventType::TaskTransitionV6, value.clone())
         .referencing(references(&f.cas, &transition.change, Some(&f.state())).unwrap());
     let permit = WritePermit {
         run_id: task_run_id("task-1").unwrap(),
         first,
         payloads: vec![value],
-        event_type: EventType::TaskTransitionV5,
+        event_type: EventType::TaskTransitionV6,
         valid_until: None,
-        review_round: None,
         review_prefix: None,
         bound_tasks: vec![],
     };
@@ -815,7 +810,6 @@ fn lease_takeover_fences_old_writer_and_sequence_comparison_is_atomic() {
                 &f.cas,
                 &[event],
                 Some(&permit),
-                None
             )
             .is_err()
     );
@@ -1548,6 +1542,11 @@ fn warm_and_cold_replay_reject_missing_or_corrupt_execution_evidence() {
             }
             let healthy = f.state(); // Warm the exact prefix, including all settled evidence.
             let sequence = healthy.next_sequence;
+            assert!(
+                f.store
+                    .task_observation_unchanged(&f.cas, &healthy)
+                    .unwrap()
+            );
             assert_eq!(
                 healthy
                     .execution
@@ -1572,6 +1571,12 @@ fn warm_and_cold_replay_reject_missing_or_corrupt_execution_evidence() {
                     } else {
                         std::fs::write(&path, b"corrupt evidence").unwrap();
                     }
+                    assert!(
+                        f.store
+                            .task_observation_unchanged(&f.cas, &healthy)
+                            .is_err(),
+                        "unchanged observation accepted {id}, missing={missing}"
+                    );
                     assert!(
                         f.store.task_projection(&f.cas, "task-1").is_err(),
                         "warm accepted {id}, missing={missing}"
@@ -1599,6 +1604,185 @@ fn warm_and_cold_replay_reject_missing_or_corrupt_execution_evidence() {
             }
         }
     });
+}
+
+#[test]
+fn unchanged_observation_checks_bytes_without_projecting_and_sees_concurrent_renewal_and_release() {
+    test_clock::with_time(1_000_000, |time| {
+        let mut f = Fixture::new(false).with_execution_graph();
+        let lease = f.open();
+        f.propose(&lease);
+        f.store
+            .admit_task_plan(&f.cas, &lease, &f.authority)
+            .unwrap();
+        let healthy = f.state();
+        PROJECTION_CALLS.with(|calls| calls.set(0));
+        for _ in 0..8 {
+            assert!(
+                f.store
+                    .task_observation_unchanged(&f.cas, &healthy)
+                    .unwrap()
+            );
+        }
+        assert_eq!(PROJECTION_CALLS.with(|calls| calls.get()), 0);
+        assert!(healthy.lease_held_at(time.get()));
+        // Clock expiry is independent of whether the log changed. A waiter must use it,
+        // rather than treating an unchanged observation as evidence of a live lease.
+        assert!(!healthy.lease_held_at(healthy.lease_until_unix_ms()));
+        assert!(
+            f.store
+                .task_observation_unchanged(&f.cas, &healthy)
+                .unwrap()
+        );
+        time.set(time.get() + 1);
+        let path = f.path.clone();
+        let cas_root = f._dir.path().join("cas");
+        let observed_time = time.get();
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let mut writer = EventStore::open(path).unwrap();
+                    let cas = Cas::open_existing(cas_root).unwrap();
+                    test_clock::with_time(observed_time, |_| {
+                        writer.renew_task_lease(&cas, &lease, 1_000_000).unwrap();
+                    });
+                })
+                .join()
+                .unwrap();
+        });
+        assert!(
+            !f.store
+                .task_observation_unchanged(&f.cas, &healthy)
+                .unwrap()
+        );
+        let renewed = f.state();
+        assert!(renewed.lease_until_unix_ms() > healthy.lease_until_unix_ms());
+        assert!(
+            f.store
+                .task_observation_unchanged(&f.cas, &renewed)
+                .unwrap()
+        );
+        f.store.release_task_lease(&f.cas, &lease).unwrap();
+        assert!(
+            !f.store
+                .task_observation_unchanged(&f.cas, &renewed)
+                .unwrap()
+        );
+        assert!(!f.state().lease_held_at(time.get()));
+    });
+}
+
+#[test]
+fn execution_history_index_omits_lease_only_tasks_and_checks_selected_rows() {
+    let mut f = Fixture::new(false).with_execution_graph();
+    let lease = f.open();
+    f.propose(&lease);
+    f.store
+        .admit_task_plan(&f.cas, &lease, &f.authority)
+        .unwrap();
+    let mut visited = Vec::new();
+    f.store
+        .visit_task_execution_history(&f.cas, |run, record| visited.push((run.to_owned(), record)))
+        .unwrap();
+    assert!(visited.is_empty());
+    let invocation = f.record_execution_inputs(&lease);
+    f.store
+        .visit_task_execution_history(&f.cas, |run, record| visited.push((run.to_owned(), record)))
+        .unwrap();
+    assert!(!visited.is_empty());
+    assert!(
+        visited
+            .iter()
+            .all(|(run, _)| run == &task_run_id("task-1").unwrap())
+    );
+    assert!(
+        visited
+            .iter()
+            .any(|(_, record)| record.artifact_refs().contains(&invocation.as_str()))
+    );
+    let run = task_run_id("task-1").unwrap();
+    assert_eq!(f.store.task_label_for_run(&f.cas, &run).unwrap(), "task-1");
+    let query_plan: String = f
+        .store
+        .conn
+        .query_row(
+            "EXPLAIN QUERY PLAN SELECT run_id,sequence FROM events WHERE type='TaskTransition@6'
+         AND json_extract(payload,'$.change.kind')='execution_recorded' ORDER BY run_id,sequence",
+            [],
+            |row| row.get(3),
+        )
+        .unwrap();
+    assert!(
+        query_plan.contains("task_execution_history"),
+        "{query_plan}"
+    );
+    let mut record_id = None;
+    for event in f.store.replay(&run).unwrap() {
+        if let TaskChangeV1::ExecutionRecorded { record_id: id } =
+            read_task_transition(&event).unwrap().change
+        {
+            record_id = Some(id);
+            break;
+        }
+    }
+    let id = record_id.unwrap();
+    let path = f
+        ._dir
+        .path()
+        .join("cas/objects")
+        .join(&id[7..9])
+        .join(&id[9..]);
+    std::fs::write(path, b"corrupt indexed record").unwrap();
+    assert!(
+        f.store
+            .visit_task_execution_history(&f.cas, |_, _| {})
+            .is_err()
+    );
+}
+
+#[test]
+fn display_stream_changes_are_checked_after_the_complete_display_read_closure() {
+    let mut f = Fixture::new(false);
+    f.open();
+    let mut writer = EventStore::open(&f.path).unwrap();
+    writer
+        .append(
+            "display-source",
+            &f.cas,
+            NewEvent::new(EventType::SourceCapturedV1, json!({"fixture": 1})),
+        )
+        .unwrap();
+    let task = f.state();
+    let (_, display_runs) = f
+        .store
+        .track_replays(|| f.store.replay("display-source").unwrap());
+    let display = f.cas.put(b"display bytes").unwrap();
+    assert!(
+        f.store
+            .task_observation_unchanged_with(&f.cas, &task, &display_runs, || {
+                f.cas.verify(&display).unwrap();
+                Ok(())
+            })
+            .unwrap()
+    );
+    assert!(
+        !f.store
+            .task_observation_unchanged_with(&f.cas, &task, &display_runs, || {
+                f.cas.verify(&display).unwrap();
+                writer.append(
+                    "display-source",
+                    &f.cas,
+                    NewEvent::new(EventType::SourceCapturedV1, json!({"fixture": 2})),
+                )?;
+                Ok(())
+            })
+            .unwrap()
+    );
+    assert_eq!(
+        f.state().next_sequence,
+        task.next_sequence,
+        "only the display stream changed"
+    );
 }
 
 #[test]
@@ -1716,24 +1900,6 @@ fn context_binding_checks_before_and_after_callback_without_a_third_projection()
         let state = f.state();
         assert_eq!(state.execution.unwrap().budget.begun_attempts(), 1);
     });
-}
-
-#[test]
-fn review_replay_reuses_only_one_operation_and_refreshes_an_appended_prefix() {
-    let mut f = Fixture::new(false);
-    let lease = f.open();
-    let run = task_run_id(lease.task_id()).unwrap();
-    let mut replays = ReviewReplays::default();
-    let original = replays.read(&f.store, &run).unwrap();
-    let repeated = replays.read(&f.store, &run).unwrap();
-    assert!(std::sync::Arc::ptr_eq(&original, &repeated));
-    f.propose(&lease);
-    let appended = replays.read(&f.store, &run).unwrap();
-    assert!(!std::sync::Arc::ptr_eq(&original, &appended));
-    assert_eq!(appended.len(), original.len() + 1);
-    let next_operation = ReviewReplays::default().read(&f.store, &run).unwrap();
-    assert!(!std::sync::Arc::ptr_eq(&appended, &next_operation));
-    assert_eq!(next_operation.len(), appended.len());
 }
 
 #[test]
@@ -1914,7 +2080,7 @@ fn short_attempt_fixture_paths_refuse_expired_dispatch_without_spend() {
 fn pi_authority_version_bump_refuses_old_execution_plan_artifact_types() {
     let fixture = Fixture::new(false);
     let value = serde_json::to_value(&fixture.plan).unwrap();
-    let current: ExecutionPlanV3 =
+    let current: ExecutionPlan =
         payload(&fixture.cas, &fixture.plan_id, task::EXECUTION_PLAN_V4).unwrap();
     assert_eq!(serde_json::to_value(current).unwrap(), value);
     for old_type in ["af/ExecutionPlan@1", "af/ExecutionPlan@2"] {
@@ -1924,11 +2090,138 @@ fn pi_authority_version_bump_refuses_old_execution_plan_artifact_types() {
             .unwrap()
             .0;
         let error =
-            payload::<ExecutionPlanV3>(&fixture.cas, &old, task::EXECUTION_PLAN_V4).unwrap_err();
+            payload::<ExecutionPlan>(&fixture.cas, &old, task::EXECUTION_PLAN_V4).unwrap_err();
         assert!(
             error
                 .to_string()
                 .contains("Expected exact af/ExecutionPlan@4")
         );
     }
+}
+
+#[test]
+fn archived_plan_prefix_replays_current_records_without_changing_the_live_projection() {
+    let mut f = Fixture::new(false);
+    let lease = f.open();
+    let opened = f.state();
+    f.propose(&lease);
+    let planned = f.state();
+    assert_eq!(planned.plan_id.as_deref(), Some(f.plan_id.as_str()));
+    let prefix = f
+        .store
+        .task_projection_at_sequence(&f.cas, "task-1", opened.next_sequence - 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(prefix.plan_id, None);
+    assert_eq!(prefix.next_sequence, opened.next_sequence);
+    assert_eq!(
+        f.state().plan_id,
+        planned.plan_id,
+        "prefix inspection must not replace the live parse cache"
+    );
+    let checked = f
+        .store
+        .task_projection_at_sequence(&f.cas, "task-1", planned.next_sequence - 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(checked.plan_id, planned.plan_id);
+    assert_eq!(checked.revision_id, planned.revision_id);
+    drop(f.store);
+    let store = EventStore::open_read_only(&f.path).unwrap();
+    let reopened = store
+        .task_projection_at_sequence(&f.cas, "task-1", planned.next_sequence - 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(reopened.plan_id, planned.plan_id);
+    assert_eq!(reopened.next_sequence, planned.next_sequence);
+    assert_eq!(
+        store.len(&task_run_id("task-1").unwrap()).unwrap(),
+        planned.next_sequence
+    );
+}
+
+/// Current-source corruption is refused without reopening on fresh accounting or altering
+/// evidence. These are disposable Stores; no historical Store reader or migration is added.
+#[test]
+fn contract_gate_corrupt_truncated_and_unknown_documents_never_reset_task_budget() {
+    test_clock::with_time(1_000_000, |_| {
+        let mut f = Fixture::new(false).with_execution_graph();
+        let lease = f.open();
+        f.propose(&lease);
+        f.store
+            .admit_task_plan(&f.cas, &lease, &f.authority)
+            .unwrap();
+        f.record_execution_inputs(&lease);
+        let context = f.cas.put_json(&json!({"context":"exact"})).unwrap();
+        let _attempt = f
+            .store
+            .reserve_and_bind_task_attempt(
+                &f.cas,
+                &lease,
+                "root.nodes.write",
+                &context,
+                &f.authority,
+            )
+            .unwrap();
+        let budget = f.state().execution.unwrap().budget;
+        assert_eq!(budget.reserved_tokens(), 10);
+        let run = task_run_id("task-1").unwrap();
+        let prefix = f.store.replay(&run).unwrap();
+        let original = f.cas.get(&f.plan_id).unwrap();
+        let hex = f.plan_id.strip_prefix("sha256:").unwrap();
+        let path = f
+            ._dir
+            .path()
+            .join("cas/objects")
+            .join(&hex[..2])
+            .join(&hex[2..]);
+        for bytes in [
+            b"not JSON".to_vec(),
+            original[..original.len() / 2].to_vec(),
+        ] {
+            std::fs::write(&path, &bytes).unwrap();
+            let store = EventStore::open_read_only(&f.path).unwrap();
+            let error = store
+                .task_projection(&f.cas, "task-1")
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("does not match its digest"), "{error}");
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                bytes,
+                "refusal never rewrites corrupt bytes"
+            );
+            assert_eq!(
+                store.replay(&run).unwrap(),
+                prefix,
+                "refusal never appends a reset"
+            );
+            std::fs::write(&path, &original).unwrap();
+            let state = store.task_projection(&f.cas, "task-1").unwrap().unwrap();
+            let replayed = state.execution.unwrap().budget;
+            assert_eq!(replayed.reserved_tokens(), budget.reserved_tokens());
+            assert_eq!(replayed.committed_tokens(), budget.committed_tokens());
+            assert_eq!(replayed.begun_attempts(), budget.begun_attempts());
+        }
+        let unknown = f
+            .cas
+            .put_artifact(
+                "af/ExecutionPlan@999",
+                producer(),
+                vec![],
+                None,
+                serde_json::to_value(&f.plan).unwrap(),
+            )
+            .unwrap()
+            .0;
+        let error = payload::<ExecutionPlan>(&f.cas, &unknown, task::EXECUTION_PLAN_V4)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("Expected exact af/ExecutionPlan@4"),
+            "{error}"
+        );
+        assert_eq!(f.store.replay(&run).unwrap(), prefix);
+        assert_eq!(f.state().execution.unwrap().budget.reserved_tokens(), 10);
+    });
 }

@@ -1,8 +1,8 @@
 # Measure the source, implement, seal, check, then measure the candidate, compare it with the
 # baseline and evaluate it inside kernel/experiment-trial, which runs only after passed checks.
-schema = "af.pipeline/1"
+schema = "af.pipeline/6"
 name = "kernel/experiment"
-version = "1.0.0"
+version = "1.0.1"
 # Two model Workers each admit a Provider before their Attempt: baseline measure, the
 # implementer and its admission, the checks, the candidate measure, the evaluator and its
 # admission, and room for a retry. Six held only with command stand-ins, which admit none.

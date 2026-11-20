@@ -34,6 +34,12 @@ impl Machine {
         let root = directory.path().canonicalize().unwrap();
         for name in ["home", "config", "state", "data", "cache", "work"] {
             std::fs::create_dir_all(root.join(name)).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(root.join(name), std::fs::Permissions::from_mode(0o700))
+                    .unwrap();
+            }
         }
         Self {
             _root: directory,
@@ -48,6 +54,7 @@ impl Machine {
             .args(args)
             .current_dir(&self.root)
             .env("HOME", self.root.join("home"))
+            .env("AF_TEST_WAKE_ACCOUNT_HOME", self.root.join("home"))
             .env("XDG_CONFIG_HOME", self.root.join("config"))
             .env("XDG_STATE_HOME", self.root.join("state"))
             .env("XDG_DATA_HOME", self.root.join("data"))
@@ -122,7 +129,7 @@ fn refuses_unnamed(validator: &jsonschema::Validator, document: &Value, pointers
 /// Design §12 and §15 P5, the one-pair smoke `make check` runs: one pair of every bench fixture
 /// at `--scale smoke` through the real binary. Every run exits as its fixture expects, leaves no
 /// telemetry at `off` and a sealed segment at `spans`; the dense fixture yields its drain
-/// latency; the document validates against `af/telemetry-overhead@2`, is `not_judged` (one pair,
+/// latency; the document validates against `af/telemetry-overhead@3`, is `not_judged` (one pair,
 /// smoke scale), and `--judge` recomputes exactly the figures it printed.
 #[test]
 fn telemetry_overhead_smoke() {
@@ -144,9 +151,9 @@ fn telemetry_overhead_smoke() {
     );
     assert_eq!(output.status.code(), Some(0), "{}", text(&output));
     let measured = document(&output);
-    let validator = schemas::validator("telemetry-overhead-v2.json");
+    let validator = schemas::validator("telemetry-overhead-v3.json");
     schemas::valid(&validator, &measured);
-    every_property_required(&schema_document("telemetry-overhead-v2.json"));
+    every_property_required(&schema_document("telemetry-overhead-v3.json"));
     let names: Vec<&str> = measured["fixtures"]
         .as_array()
         .unwrap()
@@ -185,13 +192,31 @@ fn telemetry_overhead_smoke() {
     assert_eq!(measured["drain"]["clock"], "CLOCK_MONOTONIC");
     // The binary under test is the current tree: its workload is the committed one, every
     // package pinned as committed and computed by its own `af catalog digest`.
-    assert_eq!(measured["fixture_contract"]["name"], "check-receipt@2");
+    assert_eq!(measured["fixture_contract"]["name"], "native-task-review@1");
     assert_eq!(
         measured["fixture_contract"]["fixtures"]
             .as_array()
             .unwrap()
             .len(),
         FIXTURES.len()
+    );
+    let store_catalog: toml::Value = toml::from_str(
+        &std::fs::read_to_string(work.join("telemetry-bench-store/pristine/.af/task-catalog.toml"))
+            .unwrap(),
+    )
+    .unwrap();
+    let produced = measured["fixture_contract"]["fixtures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|fixture| fixture["fixture"] == "telemetry-bench-store")
+        .unwrap();
+    assert_eq!(
+        produced["packages"]["bench/checks"],
+        store_catalog["packages"]["bench/checks"]["digest"]
+            .as_str()
+            .unwrap(),
+        "smoke provenance must name the actual canonically re-pinned package"
     );
     for level in ["off_ms", "spans_ms"] {
         let drain = measured["drain"]["pairs"][0][level].as_f64().unwrap();
@@ -280,7 +305,7 @@ fn telemetry_overhead_copy_is_writable_from_a_read_only_source() {
          overhead.FIXTURES_DIR = pathlib.Path(sys.argv[2])\n\
          work = pathlib.Path(sys.argv[3])\n\
          pristine, _ = overhead.prepare('telemetry-bench-dense', 'smoke', work, sys.argv[4],\n\
-                                        'check-receipt@2')\n\
+                                        'native-task-review@1')\n\
          overhead.copy_writable(pristine, work / 'run' / 'repo')\n\
          (work / 'run' / 'repo' / 'bench.json').write_text('{}')\n\
          print(pristine)\n";
@@ -294,6 +319,7 @@ fn telemetry_overhead_copy_is_writable_from_a_read_only_source() {
         .arg(crate::common::af_binary())
         .current_dir(&machine.root)
         .env("HOME", machine.root.join("home"))
+        .env("AF_TEST_WAKE_ACCOUNT_HOME", machine.root.join("home"))
         .env("XDG_CONFIG_HOME", machine.root.join("config"))
         .env("XDG_STATE_HOME", machine.root.join("state"))
         .env("XDG_DATA_HOME", machine.root.join("data"))
@@ -328,6 +354,89 @@ fn telemetry_overhead_copy_is_writable_from_a_read_only_source() {
     });
 }
 
+/// A refused local command has a canonical NotRun result, not an invented empty runtime
+/// evidence document whose validation error hides the actual storage refusal.
+#[test]
+fn unstarted_check_keeps_its_original_disk_refusal_without_empty_runtime_evidence() {
+    let machine = Machine::new();
+    let work = machine.root.join("work/refused");
+    let program = "import importlib.util, pathlib, sys\n\
+        sys.dont_write_bytecode = True\n\
+        spec = importlib.util.spec_from_file_location('overhead', sys.argv[1])\n\
+        overhead = importlib.util.module_from_spec(spec)\n\
+        spec.loader.exec_module(overhead)\n\
+        repo, _ = overhead.prepare('telemetry-bench-concurrent', 'smoke', pathlib.Path(sys.argv[2]), sys.argv[3], overhead.CURRENT_CONTRACT)\n\
+        print(repo)\n";
+    let prepared = Command::new("python3")
+        .args(["-I", "-B", "-c", program])
+        .arg(workspace().join("scripts/telemetry-overhead.py"))
+        .arg(&work)
+        .arg(crate::common::af_binary())
+        .env("TMPDIR", machine.root.join("work"))
+        .env("HOME", machine.root.join("home"))
+        .env("AF_TEST_WAKE_ACCOUNT_HOME", machine.root.join("home"))
+        .output()
+        .unwrap();
+    assert!(prepared.status.success(), "{}", text(&prepared));
+    let repo = work.join("telemetry-bench-concurrent/pristine");
+    let state = machine.root.join("refused-store");
+    let output = crate::common::af()
+        .current_dir(repo)
+        .env("AF_TEST_FREE_BYTES", "0")
+        .args(["task", "start", "--execute", "--file"])
+        .arg(workspace().join("fixtures/telemetry-bench/telemetry-bench-concurrent/task.json"))
+        .arg("--state")
+        .arg(&state)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(5), "{}", text(&output));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("insufficient_disk:"),
+        "{}",
+        text(&output)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("finished/gate_failed/preflight_failed"),
+        "{}",
+        text(&output)
+    );
+    let shown = document(&output);
+    assert_eq!(shown["result"]["execution"], "incomplete", "{shown}");
+    assert_eq!(shown["result"]["acceptance"], "inconclusive", "{shown}");
+    assert!(shown.get("runtime_observations").is_none(), "{shown}");
+    let node = shown["run_reports"][0]["report"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["node"] == "root.nodes.check")
+        .unwrap();
+    assert_eq!(node["outcome"]["kind"], "completed", "{shown}");
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
+    let output = cas
+        .get_artifact(node["outcome"]["output_id"].as_str().unwrap())
+        .unwrap();
+    let receipt = cas
+        .get_artifact(
+            output.payload["outputs"]["result"]["artifact_ids"][0]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(receipt.artifact_type, "af/TaskCheckReceipt@2");
+    let check = cas
+        .get_json(receipt.payload["checks"]["syntax"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(check["status"], "not_run", "{check}");
+    assert!(
+        check["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("insufficient_disk:"),
+        "{check}"
+    );
+}
+
 /// A fixture repository runs no background git work: `prepare` writes `gc.auto=0`,
 /// `maintenance.auto=false` and `gc.autoDetach=false` into the pristine repository's own config,
 /// a run's copy made by `copy_writable` carries them too, and no `*.lock` (a detached `git
@@ -357,7 +466,7 @@ fn telemetry_overhead_prepare_runs_no_background_git() {
          spec.loader.exec_module(overhead)\n\
          work = pathlib.Path(sys.argv[2])\n\
          pristine, _ = overhead.prepare('telemetry-bench-dense', 'smoke', work, sys.argv[3],\n\
-                                        'check-receipt@2')\n\
+                                        'native-task-review@1')\n\
          overhead.copy_writable(pristine, work / 'run' / 'repo')\n";
     let output = Command::new("python3")
         .arg("-I")
@@ -368,6 +477,7 @@ fn telemetry_overhead_prepare_runs_no_background_git() {
         .arg(crate::common::af_binary())
         .current_dir(&machine.root)
         .env("HOME", machine.root.join("home"))
+        .env("AF_TEST_WAKE_ACCOUNT_HOME", machine.root.join("home"))
         .env("XDG_CONFIG_HOME", machine.root.join("config"))
         .env("XDG_STATE_HOME", machine.root.join("state"))
         .env("XDG_DATA_HOME", machine.root.join("data"))
@@ -389,6 +499,7 @@ fn telemetry_overhead_prepare_runs_no_background_git() {
                 .args(["config", "--local", "--get", key])
                 .current_dir(&repo)
                 .env("HOME", machine.root.join("home"))
+                .env("AF_TEST_WAKE_ACCOUNT_HOME", machine.root.join("home"))
                 .env("XDG_CONFIG_HOME", machine.root.join("config"))
                 .env("GIT_CONFIG_GLOBAL", "/dev/null")
                 .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -532,9 +643,9 @@ fn recorded(fixtures: &[(&str, &[(f64, f64)])], drain: &[(f64, f64)], scale: &st
         })
         .collect();
     json!({
-        "schema": "af/telemetry-overhead@2",
+        "schema": "af/telemetry-overhead@3",
         "af": {"path": "/recorded/af", "version": "af 0.14.0-rc.1"},
-        "fixture_contract": {"name": "check-receipt@2", "release": "0.14.0-rc.1",
+        "fixture_contract": {"name": "native-task-review@1", "release": "0.14.0-rc.1",
                              "check_receipt": "af/TaskCheckReceipt@2", "fixtures": []},
         "machine": {"os": "darwin", "arch": "arm64", "cpus": 14, "load1": 2.5},
         "protocol": {"pairs": 20, "scale": scale, "seed": 20261021, "resamples": 10000,
@@ -594,7 +705,7 @@ fn round3(value: f64) -> f64 {
 #[test]
 fn telemetry_overhead_gate_rule() {
     let machine = Machine::new();
-    let validator = schemas::validator("telemetry-overhead-v2.json");
+    let validator = schemas::validator("telemetry-overhead-v3.json");
     let all = |concurrent: &[(f64, f64)], dense: &[(f64, f64)], store: &[(f64, f64)]| {
         vec![
             ("telemetry-bench-concurrent", concurrent.to_vec()),
@@ -1034,7 +1145,7 @@ fn invocation_run(wall_ms: f64, peak_rss_bytes: u64, stdout_bytes: u64) -> Value
            "drain_ms": null, "stdout_bytes": stdout_bytes})
 }
 
-/// An `af/telemetry-invocation-cost@2` document over every case at full scale, 20 pairs each,
+/// An `af/telemetry-invocation-cost@3` document over every case at full scale, 20 pairs each,
 /// whose `stream-json` runs at `off` cost `wall` more than `json` and `rss` more bytes.
 fn invocation_document(wall: f64, rss: u64) -> Value {
     let mut cases = Vec::new();
@@ -1062,9 +1173,9 @@ fn invocation_document(wall: f64, rss: u64) -> Value {
                                              "attempts": 3, "usage": []}}));
         }
     }
-    json!({"schema": "af/telemetry-invocation-cost@2",
+    json!({"schema": "af/telemetry-invocation-cost@3",
            "af": {"path": "af", "version": "af 0.14.0-rc.1"},
-           "fixture_contract": {"name": "check-receipt@2", "release": "0.14.0-rc.1",
+           "fixture_contract": {"name": "native-task-review@1", "release": "0.14.0-rc.1",
                                 "check_receipt": "af/TaskCheckReceipt@2", "fixtures": []},
            "drain": {"boundary": "harness_last_write_to_command_exit",
                      "clock": "CLOCK_MONOTONIC"},
@@ -1077,7 +1188,7 @@ fn invocation_document(wall: f64, rss: u64) -> Value {
 /// Design §12 and §15 P6, the invocation-cost gate: the measurement runs on the invocation
 /// fixtures (a one-pair smoke through the real binary, every case at smoke scale, the
 /// accounting the same under both shapes and at both levels, `not_judged`), its document matches
-/// `af/telemetry-invocation-cost@2`, `--judge` recomputes exactly what it printed, and the rule —
+/// `af/telemetry-invocation-cost@3`, `--judge` recomputes exactly what it printed, and the rule —
 /// at `off`, median wall within 2% of `json` and median peak RSS at most the stream's bytes plus
 /// 16 MiB above it — passes a cheap stream (one invocation shape) and fails a costly one (the
 /// fallback's two shapes), on recorded distributions.
@@ -1101,9 +1212,9 @@ fn telemetry_stream_json_cost_gate() {
     );
     assert_eq!(output.status.code(), Some(0), "{}", text(&output));
     let measured = document(&output);
-    let validator = schemas::validator("telemetry-invocation-cost-v2.json");
+    let validator = schemas::validator("telemetry-invocation-cost-v3.json");
     schemas::valid(&validator, &measured);
-    every_property_required(&schema_document("telemetry-invocation-cost-v2.json"));
+    every_property_required(&schema_document("telemetry-invocation-cost-v3.json"));
     let cases = measured["cases"].as_array().unwrap();
     assert_eq!(
         cases.len(),
@@ -1126,7 +1237,7 @@ fn telemetry_stream_json_cost_gate() {
     }
     // The one-Attempt runs' drains are ordered readings of CLOCK_MONOTONIC: never negative.
     assert_eq!(measured["drain"]["clock"], "CLOCK_MONOTONIC");
-    assert_eq!(measured["fixture_contract"]["name"], "check-receipt@2");
+    assert_eq!(measured["fixture_contract"]["name"], "native-task-review@1");
     for level in ["off", "spans"] {
         let pair = &cases[0]["levels"][level]["pairs"][0];
         for shape in ["json", "stream-json"] {
@@ -1197,5 +1308,183 @@ fn telemetry_stream_json_cost_gate() {
     assert_eq!(
         judged["gate"]["reasons"][0],
         "drain latency: 1 negative physical duration, kept as measured and not judged"
+    );
+}
+
+/// Exercise the final AF process, including SQLite sidecars, rather than merely checking
+/// an intermediate Python environment dictionary. The libc tripwire's OS account is private
+/// external test state; opening anything there kills the actual final child with exit 94.
+#[test]
+#[cfg(target_os = "linux")]
+fn telemetry_final_child_cannot_open_external_account_authority() {
+    use af_store::{Cas, EventStore};
+    use std::os::unix::fs::PermissionsExt;
+    let machine = Machine::new();
+    let resolver = crate::common::account_resolver(&machine.root);
+    let external = machine.root.join("external-account");
+    let identity =
+        af_store::content_id(&json!({"domain":"af/wake-machine-session-store/1"})).unwrap();
+    let authority = external
+        .join(".local/state/af/task/local")
+        .join(identity.strip_prefix("sha256:").unwrap());
+    af_store::local_fs::create_private_dir_all(&authority).unwrap();
+    std::fs::set_permissions(&external, std::fs::Permissions::from_mode(0o700)).unwrap();
+    Cas::open(authority.join("cas")).unwrap();
+    EventStore::open(authority.join("events.sqlite"))
+        .unwrap()
+        .admit_wake_incarnation()
+        .unwrap();
+    let snapshot = || {
+        let mut files: Vec<_> = std::fs::read_dir(&authority)
+            .unwrap()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                (
+                    path.file_name().unwrap().to_owned(),
+                    if path.is_file() {
+                        std::fs::read(path).unwrap()
+                    } else {
+                        Vec::new()
+                    },
+                )
+            })
+            .collect();
+        files.sort();
+        files
+    };
+    let before = snapshot();
+    // Calibrate the final-child tripwire against the actual production OS-account lookup.
+    let refused = crate::common::af()
+        .env_remove("AF_TEST_WAKE_ACCOUNT_HOME")
+        .env("LD_PRELOAD", &resolver)
+        .env("WAKE_FIXTURE_ACCOUNT_MODE", "home")
+        .env("WAKE_FIXTURE_ACCOUNT_HOME", &external)
+        .env("WAKE_FIXTURE_FORBID_OPEN", &external)
+        .args(["storage", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(refused.status.code(), Some(94), "{}", text(&refused));
+    let program = r#"
+import importlib.util, pathlib, subprocess, sys
+sys.dont_write_bytecode = True
+root, af, work = pathlib.Path(sys.argv[1]), sys.argv[2], pathlib.Path(sys.argv[3])
+for name in ('telemetry-overhead.py', 'telemetry-invocation-cost.py', 'telemetry-corpus.py'):
+    spec = importlib.util.spec_from_file_location('measurement', root / 'scripts' / name)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    if name == 'telemetry-invocation-cost.py':
+        module = module.overhead
+    env = module.private_env(work) if name == 'telemetry-corpus.py' else module.private_env(work, 'off')
+    child = subprocess.run([af, 'storage', '--json'], env=env, capture_output=True)
+    assert child.returncode == 0, (name, child.returncode, child.stderr)
+    assert b'"schema"' in child.stdout, child.stdout
+"#;
+    let output = Command::new("python3")
+        .args(["-I", "-c", program])
+        .arg(workspace())
+        .arg(crate::common::af_binary())
+        .arg(machine.root.join("work"))
+        .env("HOME", machine.root.join("home"))
+        .env("AF_TEST_WAKE_ACCOUNT_HOME", machine.root.join("home"))
+        .env("LD_PRELOAD", &resolver)
+        .env("WAKE_FIXTURE_ACCOUNT_MODE", "home")
+        .env("WAKE_FIXTURE_ACCOUNT_HOME", &external)
+        .env("WAKE_FIXTURE_FORBID_OPEN", &external)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", text(&output));
+    // Release-shaped execution: remove the debug override, use the real libc NSS
+    // resolver inside the namespace and retain the external-account open tripwire.
+    let private_os_home = machine.root.join("os-account");
+    af_store::local_fs::create_private_dir_all(&private_os_home).unwrap();
+    let private_authority = private_os_home
+        .join(".local/state/af/task/local")
+        .join(identity.strip_prefix("sha256:").unwrap());
+    af_store::local_fs::create_private_dir_all(&private_authority).unwrap();
+    Cas::open(private_authority.join("cas")).unwrap();
+    EventStore::open(private_authority.join("events.sqlite"))
+        .unwrap()
+        .admit_wake_incarnation()
+        .unwrap();
+    let isolated = Command::new("python3")
+        .args(["-I", "-B"])
+        .arg(workspace().join("scripts/performance/perflab/account_isolation.py"))
+        .arg(&private_os_home)
+        .arg(crate::common::af_binary())
+        .args(["storage", "--json"])
+        .env_remove("AF_TEST_WAKE_ACCOUNT_HOME")
+        .env("HOME", machine.root.join("home"))
+        .env("XDG_STATE_HOME", machine.root.join("state"))
+        .env("XDG_CONFIG_HOME", machine.root.join("config"))
+        .env("XDG_DATA_HOME", machine.root.join("data"))
+        .env("XDG_CACHE_HOME", machine.root.join("cache"))
+        .env("LD_PRELOAD", &resolver)
+        .env("WAKE_FIXTURE_ACCOUNT_MODE", "passthrough")
+        .env("WAKE_FIXTURE_FORBID_OPEN", &external)
+        .output()
+        .unwrap();
+    assert!(isolated.status.success(), "{}", text(&isolated));
+    assert!(
+        String::from_utf8_lossy(&isolated.stdout).contains(private_authority.to_str().unwrap()),
+        "the actual private OS-account authority must remain inventoried: {}",
+        text(&isolated)
+    );
+    // Required e2e coverage, rather than author-only release-smoke commands. Exercise
+    // actual AF inventory, provider selection and Task planning under both path families,
+    // including search-only foreign ancestry and enough siblings to overflow old argv.
+    for family in ["tmp", "home", "var", "usr-local", "split-tmp"] {
+        for case in ["ordinary", "search-only", "populated"] {
+            let home = machine.root.join(family).join(case).join("os-account");
+            let authority = home
+                .join(".local/state/af/task/local")
+                .join(identity.strip_prefix("sha256:").unwrap());
+            af_store::local_fs::create_private_dir_all(&authority).unwrap();
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+            Cas::open(authority.join("cas")).unwrap();
+            EventStore::open(authority.join("events.sqlite"))
+                .unwrap()
+                .admit_wake_incarnation()
+                .unwrap();
+        }
+    }
+    // Writable measurement work belongs to Cargo's runtime volume, independently of
+    // the sealed source and of a potentially small /tmp filesystem.
+    let work_home = crate::common::private_home_env()
+        .into_iter()
+        .find(|(name, _)| *name == "HOME")
+        .unwrap()
+        .1;
+    let work = tempfile::Builder::new()
+        .prefix("namespace-work-")
+        .tempdir_in(work_home)
+        .unwrap();
+    // The helper prepares each launch outside its one user namespace. It composes
+    // aliases/split filesystems there and maps even a root caller to non-root AF.
+    for family in ["tmp", "home", "var", "usr-local", "split-tmp"] {
+        let native = Command::new("python3")
+            .args(["-I", "-B"])
+            .arg(workspace().join("scripts/performance/tests/account_namespace_smoke.py"))
+            .arg(&machine.root)
+            .arg(crate::common::af_binary())
+            .arg(&resolver)
+            .arg(family)
+            .arg(work.path())
+            .env_remove("AF_TEST_WAKE_ACCOUNT_HOME")
+            .output()
+            .unwrap();
+        assert!(native.status.success(), "{}", text(&native));
+        assert_eq!(
+            String::from_utf8_lossy(&native.stdout)
+                .matches("non-root namespace: inventory, native Provider refusal and ready Task:")
+                .count(),
+            3,
+            "{}",
+            text(&native)
+        );
+    }
+    assert_eq!(
+        snapshot(),
+        before,
+        "external database/key/WAL/SHM must be unchanged"
     );
 }

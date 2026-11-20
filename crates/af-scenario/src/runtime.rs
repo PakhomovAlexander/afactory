@@ -17,32 +17,46 @@ pub fn now() -> Result<u64> {
     .map_err(|e| e.to_string())
 }
 pub fn resume(store: &Store, id: &str, clock: Option<u64>) -> Result<Run> {
-    reconcile_native_charges(store, id, clock.map_or_else(now, Ok)?)?;
+    resume_admitted(store, id, clock, true)
+}
+
+pub(crate) fn resume_admitted(
+    store: &Store,
+    id: &str,
+    clock: Option<u64>,
+    preflight: bool,
+) -> Result<Run> {
     let existing = store
         .read()?
         .runs
         .get(id)
         .cloned()
         .ok_or("Scenario Run not found")?;
+    let scoped = existing.pin.policy.implementation_startup.is_some();
+    let execution_time = || {
+        if scoped {
+            store.host.authorization_time()
+        } else {
+            clock.map_or_else(now, Ok)
+        }
+    };
+    reconcile_native_charges(store, id, execution_time()?)?;
     if let Some(cancellation) = existing.cancellation {
         // Cancellation handoff has its own lock: the original driver may still hold the Run
         // while a process that recorded cancellation died before contacting its active Task.
-        return cancel(store, id, cancellation.reason, clock.map_or_else(now, Ok)?);
+        return cancel(store, id, cancellation.reason, execution_time()?);
     }
     let _lock = store.lock_run(id)?;
+    // Admit the complete immutable pool once per drive. Per-dispatch native binding,
+    // expiry and cancellation checks and final adapter authorization remain live.
+    let admitted = store.read()?;
+    let admitted = admitted.runs.get(id).ok_or("Scenario Run not found")?;
+    if preflight && admitted.status.active() {
+        super::implementation::preflight(store.host.as_ref(), &admitted.pin)?;
+    }
     loop {
-        let at = clock.map_or_else(now, Ok)?;
-        let prepared = store.update(|world| {
-            let run = world.runs.get_mut(id).ok_or("Scenario Run not found")?;
-            require(at >= run.updated_unix_ms, "Run clock moved backwards")?;
-            match run.prepare(at) {
-                Ok(dispatch) => Ok(dispatch),
-                Err(why) => {
-                    run.fail(why);
-                    Ok(None)
-                }
-            }
-        })?;
+        let at = execution_time()?;
+        let prepared = store.update(|world| crate::retention::prepare_run(world, id, at))?;
         let run = store
             .read()?
             .runs
@@ -114,9 +128,17 @@ pub fn resume(store: &Store, id: &str, clock: Option<u64>) -> Result<Run> {
                         .ok_or("Missing cancellation")?
                         .reason
                         .clone(),
-                    clock.map_or_else(now, Ok)?,
+                    execution_time()?,
                 );
             }
+        }
+        if let Some(scope) = &run.pin.policy.implementation_startup {
+            let remaining = scope
+                .expires_unix_ms
+                .checked_sub(store.host.authorization_time()?)
+                .filter(|n| *n > 0)
+                .ok_or("Implementation startup scope expired")?;
+            dispatch.timeout_ms = dispatch.timeout_ms.min(remaining);
         }
         let cancellation = std::sync::atomic::AtomicBool::new(false);
         let task_dispatch = matches!(
@@ -127,23 +149,29 @@ pub fn resume(store: &Store, id: &str, clock: Option<u64>) -> Result<Run> {
         let result = std::thread::scope(|scope| {
             let (finished, wait) = std::sync::mpsc::channel();
             let cancellation_ref = &cancellation;
+            let startup = run.pin.policy.implementation_startup.as_ref();
             let watcher = scope.spawn(move || {
                 loop {
                     match wait.recv_timeout(std::time::Duration::from_millis(100)) {
                         Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                            if store.read().map_or(true, |world| {
-                                world.runs.get(id).is_none_or(|r| {
-                                    r.status == Status::Cancelled
-                                        && (!task_dispatch
-                                            || r.cancellation
-                                                .as_ref()
-                                                .and_then(|c| c.child_requests.get(&full_step))
-                                                .is_some_and(|s| {
-                                                    s.state != CancellationState::Requested
-                                                }))
+                            let expired = startup.is_some_and(|authority| {
+                                authority.live(store.host.as_ref()).is_err()
+                            });
+                            if expired
+                                || store.read().map_or(true, |world| {
+                                    world.runs.get(id).is_none_or(|r| {
+                                        r.status == Status::Cancelled
+                                            && (!task_dispatch
+                                                || r.cancellation
+                                                    .as_ref()
+                                                    .and_then(|c| c.child_requests.get(&full_step))
+                                                    .is_some_and(|s| {
+                                                        s.state != CancellationState::Requested
+                                                    }))
+                                    })
                                 })
-                            }) {
+                            {
                                 cancellation_ref.store(true, std::sync::atomic::Ordering::Release);
                                 break;
                             }
@@ -151,17 +179,40 @@ pub fn resume(store: &Store, id: &str, clock: Option<u64>) -> Result<Run> {
                     }
                 }
             });
-            let result = adapter::dispatch(
-                store.host.as_ref(),
-                &run.pin.policy,
-                &dispatch,
-                &cancellation,
-            );
+            let result = adapter::dispatch(store.host.as_ref(), &run, &dispatch, &cancellation);
             let _ = finished.send(());
             let _ = watcher.join();
             result
         });
-        let settled_at = clock.map_or_else(now, Ok)?;
+        let result = result.and_then(|settlement| match settlement {
+            Settlement::TaskTerminal(outcome) => {
+                let outcome = *outcome;
+                outcome.validate()?;
+                let unknown_usage = outcome.unknown_usage;
+                if dispatch.definition.outputs.get("result") == Some(&Port::TaskOutcome) {
+                    Ok(Settlement::TaskDone {
+                        outputs: BTreeMap::from([("result".into(), Datum::TaskOutcome(outcome))]),
+                        unknown_usage,
+                    })
+                } else if outcome.accepted() {
+                    Ok(Settlement::TaskDone {
+                        outputs: BTreeMap::from([("result".into(), Datum::Task(outcome.receipt))]),
+                        unknown_usage,
+                    })
+                } else {
+                    Ok(Settlement::TaskFailed {
+                        diagnostic: format!(
+                            "Native Task ended: {:?} ({:?})",
+                            outcome.outcome, outcome.cause
+                        ),
+                        charged_tokens: outcome.receipt.charged_tokens,
+                        unknown_usage,
+                    })
+                }
+            }
+            other => Ok(other),
+        });
+        let settled_at = execution_time()?;
         let stop = store.update(|world| {
             let run = world.runs.get_mut(id).ok_or("Scenario Run disappeared")?;
             require(
@@ -194,6 +245,7 @@ pub fn resume(store: &Store, id: &str, clock: Option<u64>) -> Result<Run> {
                     unknown_usage,
                 }) => outputs.values().find_map(|v| match v {
                     Datum::Task(t) => Some((t.charged_tokens, *unknown_usage)),
+                    Datum::TaskOutcome(t) => Some((t.receipt.charged_tokens, *unknown_usage)),
                     _ => None,
                 }),
                 _ => None,
@@ -207,9 +259,13 @@ pub fn resume(store: &Store, id: &str, clock: Option<u64>) -> Result<Run> {
                     .ok_or("Task was not reserved")?;
                 charge.charged = Some(actual);
                 charge.unknown_usage = unknown_usage;
-                charge_breached = actual > charge.maximum || run.tokens()? > run.token_allowance();
+                charge_breached =
+                    actual > charge.maximum || run.tokens()? > u128::from(run.token_allowance());
             }
             match result {
+                Ok(Settlement::TaskTerminal(_)) => {
+                    unreachable!("terminal outcomes normalized above")
+                }
                 Ok(Settlement::Done(ref outputs))
                 | Ok(Settlement::TaskDone { ref outputs, .. }) => {
                     for datum in outputs.values() {
@@ -228,7 +284,16 @@ pub fn resume(store: &Store, id: &str, clock: Option<u64>) -> Result<Run> {
                     }
                     Ok(cancelled || charge_breached)
                 }
-                Ok(Settlement::Waiting(ref evidence)) | Ok(Settlement::Uncertain(ref evidence)) => {
+                Ok(Settlement::Progress { ref evidence, .. })
+                | Ok(Settlement::Waiting(ref evidence))
+                | Ok(Settlement::Uncertain(ref evidence)) => {
+                    if let Ok(Settlement::Progress { checkpoint, .. }) = &result {
+                        world
+                            .drivers
+                            .get_mut(id)
+                            .ok_or("Native driver receipt missing")?
+                            .progress(&dispatch, *checkpoint)?;
+                    }
                     text(evidence)?;
                     let progress = run
                         .frames
@@ -387,7 +452,7 @@ pub fn cancel(store: &Store, id: &str, reason: String, at: u64) -> Result<Run> {
 
 /// Recover a native result whose response was lost, including after cancellation or deadline.
 /// Missing, running or unreadable Tasks retain the full reservation; no caller supplies usage.
-fn reconcile_native_charges(store: &Store, id: &str, at: u64) -> Result<()> {
+pub(crate) fn reconcile_native_charges(store: &Store, id: &str, at: u64) -> Result<()> {
     let world = store.read()?;
     let run = world.runs.get(id).ok_or("Scenario Run not found")?;
     require(at >= run.updated_unix_ms, "Run clock moved backwards")?;
@@ -455,7 +520,9 @@ fn reconcile_native_charges(store: &Store, id: &str, at: u64) -> Result<()> {
             breached |= actual > charge.maximum;
         }
         run.updated_unix_ms = run.updated_unix_ms.max(at);
-        if (breached || run.tokens()? > run.token_allowance()) && run.status != Status::Cancelled {
+        if (breached || run.tokens()? > u128::from(run.token_allowance()))
+            && run.status != Status::Cancelled
+        {
             run.fail(
                 "Task exceeded its Scenario token reservation; exact recovered charge retained"
                     .into(),
@@ -494,11 +561,12 @@ pub struct Tick {
 pub fn tick(store: &Store, now: u64, clock: Option<u64>) -> Result<Tick> {
     reconcile_pending(store, now)?;
     let (started, refused) = store.update(|world| {
-        Ok(crate::schedule::tick_all_with_roadmaps(
+        Ok(crate::schedule::tick_all_with_capacity(
             store.host.as_ref(),
             &mut world.ants,
             &mut world.runs,
             &mut world.roadmaps,
+            Some(&world.run_capacity),
             now,
         ))
     })?;
@@ -514,7 +582,17 @@ pub fn tick(store: &Store, now: u64, clock: Option<u64>) -> Result<Tick> {
     let mut results = BTreeMap::new();
     let mut busy = Vec::new();
     for id in &active {
-        match resume(store, id, clock) {
+        let scoped = store.read()?.runs[id]
+            .pin
+            .policy
+            .implementation_startup
+            .is_some();
+        let result = if scoped {
+            crate::driver::once_until_idle(store, id)
+        } else {
+            resume(store, id, clock)
+        };
+        match result {
             Ok(run) => {
                 results.insert(id.clone(), run);
             }

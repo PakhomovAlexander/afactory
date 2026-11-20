@@ -3,6 +3,9 @@
 Status: accepted for the authorized Task correction, 2026-09-14. Superseded in part by
 [ADR-0113](0113-ga-reads-only-what-ga-writes.md): Review catalog and policy generation one as
 compatibility formats.
+Review Subject generation superseded by
+[the current-contract consolidation](2026-11-08-consolidate-current-contracts-and-task-review.md);
+current contracts and bounds are documented in the [capability plan](../design/current-contracts-and-task-review.md).
 
 The generic Task Review adapter omitted required prior-Finding dispositions and used logical
 reviewer labels as canonical artifact producers. Its Subject context also copied a base64 patch

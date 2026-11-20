@@ -10,6 +10,7 @@
 //! stacks as `9007199254740992`. Either one turns "same content, same ID" into a coin flip.
 
 use serde_json::Value;
+use std::fmt::Write as _;
 
 pub const SAFE_INTEGER_MAX: i64 = 9_007_199_254_740_991;
 pub const SAFE_INTEGER_MIN: i64 = -9_007_199_254_740_991;
@@ -69,7 +70,8 @@ fn walk(value: &Value, pointer: &mut String) -> Result<(), NumericDomainError> {
             for (index, item) in items.iter().enumerate() {
                 let mark = pointer.len();
                 pointer.push('/');
-                pointer.push_str(&index.to_string());
+                write!(pointer, "{index}")
+                    .expect("formatting a JSON pointer into String cannot fail");
                 walk(item, pointer)?;
                 pointer.truncate(mark);
             }
@@ -79,7 +81,7 @@ fn walk(value: &Value, pointer: &mut String) -> Result<(), NumericDomainError> {
             for (key, field) in fields {
                 let mark = pointer.len();
                 pointer.push('/');
-                pointer.push_str(&escape_token(key));
+                append_token(key, pointer);
                 walk(field, pointer)?;
                 pointer.truncate(mark);
             }
@@ -117,14 +119,43 @@ fn check_number(n: &serde_json::Number, pointer: &str) -> Result<(), NumericDoma
 }
 
 /// RFC 6901 token escaping, so a key containing `/` or `~` still points somewhere real.
-fn escape_token(key: &str) -> String {
-    key.replace('~', "~0").replace('/', "~1")
+fn append_token(key: &str, pointer: &mut String) {
+    let mut start = 0;
+    for (index, byte) in key.bytes().enumerate() {
+        let escaped = match byte {
+            b'~' => "~0",
+            b'/' => "~1",
+            _ => continue,
+        };
+        pointer.push_str(&key[start..index]);
+        pointer.push_str(escaped);
+        start = index + 1;
+    }
+    pointer.push_str(&key[start..]);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn reused_pointer_preserves_escaped_unicode_keys_indices_and_first_error_order() {
+        let mut array = vec![Value::from(0); 13];
+        array[12] = Value::from(9_007_199_254_740_992i64);
+        let value = json!({"a/~é𐀀": array, "z": -0.0});
+        let error = admit(&value).unwrap_err();
+        assert_eq!(error.reason, Reason::IntegerOutOfSafeRange);
+        assert_eq!(error.pointer, "/a~1~0é𐀀/12");
+        assert_eq!(
+            error.to_string(),
+            "/a~1~0é𐀀/12: integer outside the interoperable safe range; use a canonical string"
+        );
+        let value = json!({"first": [0, {"safe": 1}], "second/~": -0.0});
+        let error = admit(&value).unwrap_err();
+        assert_eq!(error.reason, Reason::NegativeZero);
+        assert_eq!(error.pointer, "/second~1~0");
+    }
 
     #[test]
     fn accepts_the_safe_integer_boundaries() {

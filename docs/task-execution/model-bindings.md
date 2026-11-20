@@ -212,6 +212,13 @@ set, because it also disables the model substitution compaction may need. Three 
   it rejected, names the Provider, the nearest exact IDs af knows and `af provider models <id>`,
   and names `af provider status` (token-free) and `af provider doctor` (charged).
 
+A failed native admission or Worker Attempt also keeps its adapter's final closed failure
+category in [`af/NativeFailureEvidence@1`](../../schemas/native-failure-v1.json), produced by the
+Attempt and bound to its context. Task cause selection uses that evidence before diagnostic
+words, independently of complete or incomplete usage. The safe diagnostic stays available for
+display; a conflicting word inside it cannot replace the recorded category. The Attempt wall
+and an explicit Provider environment refusal keep their existing precedence.
+
 For each such failed admission or Worker Attempt, `af task run` and `af review run` print one
 stderr line naming the node, the Provider ID and kind, the bound model and effort, the
 classification and the next step; `af task show` keeps the full diagnostic. See

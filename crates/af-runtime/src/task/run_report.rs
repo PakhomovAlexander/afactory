@@ -5,14 +5,10 @@ use super::*;
 
 impl TaskRuntime<'_, '_> {
     pub(super) fn record_run_report(&self, report: &RunReport) -> Result<(), String> {
-        self.capture_run_report(report, None).map(|_| ())
+        self.capture_run_report(report).map(|_| ())
     }
 
-    pub(super) fn capture_run_report(
-        &self,
-        report: &RunReport,
-        phase_id: Option<&str>,
-    ) -> Result<String, String> {
+    pub(super) fn capture_run_report(&self, report: &RunReport) -> Result<String, String> {
         let state = self.projection()?;
         let execution = state
             .execution
@@ -81,7 +77,6 @@ impl TaskRuntime<'_, '_> {
             task_revision_id: state.revision_id,
             plan_id: self.plan_id.clone(),
             through_sequence: state.next_sequence,
-            phase_id: phase_id.map(str::to_owned),
             nodes,
         };
         value.validate()?;
@@ -93,7 +88,7 @@ impl TaskRuntime<'_, '_> {
         let id = self
             .cas
             .put_artifact(
-                TASK_RUN_REPORT_V2,
+                TASK_RUN_REPORT_V3,
                 producer,
                 refs.into_iter().collect(),
                 None,

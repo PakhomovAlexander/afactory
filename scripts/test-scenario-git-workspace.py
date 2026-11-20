@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -22,6 +23,40 @@ def module(name, path):
     result = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(result)
     return result
+
+
+def fixture_launcher(body):
+    """Use current canonical Python on Darwin, system Python elsewhere, always isolated.
+
+    Kernels split a shebang at whitespace, so refuse unrepresentable Darwin paths
+    rather than silently selecting another Python. -IS is one kernel argument for -I -S.
+    This test-only policy never changes the installed adapter policy.
+    """
+    if sys.platform != "darwin":
+        return "#!/usr/bin/python3 -IS\n" + body
+    python = Path(sys.executable).resolve(strict=True)
+    if not python.is_absolute() or any(c.isspace() for c in str(python)):
+        raise ValueError("workspace fixture Python path must be absolute and contain no whitespace: " + str(python))
+    line = "#!" + str(python) + " -IS\n"
+    if len(line.encode()) > 127:
+        raise ValueError("workspace fixture Python shebang exceeds the portable 127-byte limit: " + str(python))
+    return line + body
+
+
+def performance_git_launcher(git, body):
+    """Intercept only the performance fixture's lost responses and remote transport.
+
+    The publish step's 30 s deadline includes every reconciliation. Starting Python for
+    dozens of ordinary Git reads consumed that budget on macOS, even in isolation. Keep
+    the entire interceptor in the pinned executable, but exec ordinary Git directly.
+    The three intercepted commands still run the same isolated Python and real Git.
+    Any use of the fixture's remote URL also enters Python's fail-closed route check.
+    """
+    python = fixture_launcher("").splitlines()[0][2:].split()
+    return ("#!/bin/sh\nfor argument do\n case \"$argument\" in\n"
+            " commit-tree|push|ls-remote|ssh://git@github.com/octo/project.git)\n  exec "
+            + shlex.join([*python, "-c", body])
+            + ' "$@"\n ;;\n esac\ndone\nexec ' + shlex.quote(str(git)) + ' "$@"\n')
 
 
 I = module("workspace_installer", ROOT / "scripts/install-scenario-git-workspace.py")
@@ -40,7 +75,10 @@ class Service:
         self.green = True
         self.source = None
 
-    def request(self, method, path, body=None):
+    def request(self, method, path, body=None, *, before_send=None):
+        if method == "POST":
+            assert callable(before_send)
+            before_send()
         if method == "GET" and path == "/user":
             return dict(id=7, login="owner")
         if method == "GET" and path == "/repos/octo/project":
@@ -84,6 +122,8 @@ class LocalAdapter(A.WorkspaceAdapter):
 
     def git(self, *args, **kwargs):
         if args[0] == "push":
+            if kwargs.get("before_spawn") is not None:
+                kwargs["before_spawn"]()
             self.service.pushes += 1
             target = args[-1]
             commit, ref = target.split(":", 1)
@@ -106,6 +146,80 @@ class LocalAdapter(A.WorkspaceAdapter):
 
 
 class LifecycleTests(unittest.TestCase):
+    def test_startup_preflight_checks_complete_machine_scope_without_publication(self):
+        adapter = LocalAdapter(self.config, self.config_digest, self.service)
+        scope = dict(schema="af/implementation-startup-scope@2", task_state=self.config["task_store"],
+            **{k: self.config[k] for k in ("repo", "repository", "source_commit", "source_content_digest", "base")},
+            branch_prefix=self.config["branch_prefix"] + "/", destination_repository_id=17,
+            actor_id=7, actor_login="owner", grants=[dict(operation=op) for op in self.config["operations"]])
+        def request(value):
+            return dict(schema="af/implementation-startup-preflight@2", scope_id=A.digest(A.canonical(value)), scope=value)
+        with patch.object(adapter, "git", side_effect=[self.config["source_commit"].encode(),
+                (self.config["source_commit"] + "\trefs/heads/main").encode()]):
+            ready = adapter.startup_preflight(request(scope))
+        self.assertEqual(ready, dict(schema="af/implementation-startup-ready@2", scope_id=A.digest(A.canonical(scope))))
+        for field, value in (("actor_id", 99), ("destination_repository_id", 99), ("branch_prefix", "other/"),
+                ("source_commit", "b" * 40), ("task_state", "/other")):
+            bad = dict(scope, **{field: value})
+            with self.assertRaises(A.Refused):
+                adapter.startup_preflight(request(bad))
+        self.assertEqual(self.service.posts, 0)
+        self.assertEqual(self.service.pushes, 0)
+        self.assertEqual(adapter.journal.state["records"], {})
+
+    def test_startup_classifies_only_positive_transport_and_credential_failures(self):
+        adapter = LocalAdapter(self.config, self.config_digest, self.service)
+        scope = dict(schema="af/implementation-startup-scope@2", task_state=self.config["task_store"],
+            **{k: self.config[k] for k in ("repo", "repository", "source_commit", "source_content_digest", "base")},
+            branch_prefix=self.config["branch_prefix"] + "/", destination_repository_id=17,
+            actor_id=7, actor_login="owner", grants=[dict(operation=op) for op in self.config["operations"]])
+        request = dict(schema="af/implementation-startup-preflight@2", scope_id=A.digest(A.canonical(scope)), scope=scope)
+        for error, kind in ((A.TransportUnavailable("outage"), "transport"),
+                            (A.CredentialsRefused("rejected"), "credentials")):
+            for location in ("actor", "remote-base"):
+                with self.subTest(kind=kind, location=location):
+                    effects = [self.config["source_commit"].encode(), error] if location == "remote-base" else [self.config["source_commit"].encode()]
+                    with patch.object(adapter, "git", side_effect=effects), \
+                            patch.object(A.Adapter, "actor", side_effect=error if location == "actor" else None):
+                        result = adapter.startup_preflight(request)
+                    self.assertEqual(result, dict(schema="af/implementation-startup-failure@1", scope_id=request["scope_id"], kind=kind))
+        for error in (A.Refused("unknown or corrupt"), ValueError("malformed evidence")):
+            with patch.object(adapter, "git", side_effect=error), self.assertRaises(type(error)):
+                adapter.startup_preflight(request)
+        self.assertEqual(self.service.posts, 0)
+        self.assertEqual(self.service.pushes, 0)
+
+    def test_remote_base_command_classifies_closed_transport_allowlist(self):
+        for diagnostic, error in ((b"ssh: Could not resolve hostname github.com", A.TransportUnavailable),
+                (b"ssh: Connection timed out", A.TransportUnavailable),
+                (b"Permission denied (publickey).", A.CredentialsRefused),
+                (b"Host key verification failed.", A.Refused),
+                (b"Connection timed out; Host key verification failed.", A.Refused),
+                (b"Connection timed out; Permission denied (publickey).", A.CredentialsRefused),
+                (b"unknown failure", A.Refused)):
+            def fail(argv, **kwargs):
+                kwargs["stderr"].write(diagnostic)
+                return subprocess.CompletedProcess(argv, 128)
+            with patch.object(A.subprocess, "run", side_effect=fail), self.assertRaises(error) as raised:
+                A.bounded_command(["git", "ls-remote", "ssh://git@github.com/octo/project.git"],
+                    self.repo, self.env, None, 5, self.root)
+            self.assertIs(type(raised.exception), error)
+        def oversized(argv, **kwargs):
+            kwargs["stdout"].write(b"x" * 9)
+            kwargs["stderr"].write(b"Connection timed out")
+            return subprocess.CompletedProcess(argv, 128)
+        with patch.object(A.subprocess, "run", side_effect=oversized), self.assertRaises(A.Refused) as raised:
+            A.bounded_command(["git", "ls-remote"], self.repo, self.env, None, 5, self.root, maximum=8)
+        self.assertIs(type(raised.exception), A.Refused)
+        def oversized_timeout(argv, **kwargs):
+            kwargs["stdout"].write(b"x" * 9)
+            raise subprocess.TimeoutExpired("git", 5)
+        with patch.object(A.subprocess, "run", side_effect=oversized_timeout), self.assertRaises(subprocess.TimeoutExpired):
+            A.bounded_command(["git", "ls-remote"], self.repo, self.env, None, 5, self.root, maximum=8)
+        for command, error in (("ls-remote", A.TransportUnavailable), ("rev-parse", subprocess.TimeoutExpired)):
+            with patch.object(A.subprocess, "run", side_effect=subprocess.TimeoutExpired("git", 5)), self.assertRaises(error):
+                A.bounded_command(["git", command], self.repo, self.env, None, 5, self.root)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -151,11 +265,10 @@ class LifecycleTests(unittest.TestCase):
         ssh.write_text("Host github.com\n  BatchMode yes\n")
         ssh.chmod(0o600)
         af = self.root / "fake-af"
-        native = dict(schema="af/git-candidate-source@1", repository_id="fixture", source_snapshot=S,
+        native = dict(schema="af/git-candidate-source@2", repository_id="fixture", source_snapshot=S, task_source_snapshot=S,
                       candidate_snapshot=R, predecessor_snapshot=None, source_content_digest=D, source_commit=source_commit,
                       candidate_tree=tree, transport_commit=transport)
-        af.write_text('''#!/usr/bin/python3 -IS
-import hashlib, json, pathlib, sys, subprocess, os
+        af.write_text(fixture_launcher('''import hashlib, json, pathlib, sys, subprocess, os
 args=sys.argv[1:]
 if args[:2] == ["task", "materialize"]:
  dest=pathlib.Path(args[args.index("--into")+1])
@@ -178,7 +291,7 @@ assert args[:2] == ["scenario", "candidate-source"]
 values=dict(zip(args[2:-1:2],args[3:-1:2]))
 assert args[-1] == "--json"
 request=json.loads(pathlib.Path(values["--file"]).read_text())
-assert request["schema"] == "af/git-candidate-source-request@1"
+assert request["schema"] == "af/git-candidate-source-request@2"
 source=''' + repr(native) + '''
 source["request_digest"]="sha256:"+hashlib.sha256(json.dumps(request,sort_keys=True,separators=(",", ":"),ensure_ascii=False).encode()).hexdigest()
 # Reuse the fixture repository's already pinned af-candidate ref; no real af is spawned.
@@ -187,7 +300,7 @@ p=pathlib.Path(values["--into"])
 p.mkdir(exist_ok=True)
 (p/"repository.git").symlink_to(pathlib.Path(values["--repo"])/".git") if not (p/"repository.git").exists() else None
 print(json.dumps(source))
-''')
+'''))
         af.chmod(0o700)
         git_path = self.git_path
         self.config = dict(schema=A.WORKSPACE_CONFIG, repository="octo/project", repository_id=17,
@@ -224,7 +337,7 @@ print(json.dumps(source))
         return dict(type="text", value=value)
 
     def request(self, op, key, inputs, method="execute"):
-        return dict(schema="af/scenario-adapter-request@4", operation=op, intent_id="sha256:" + key * 64,
+        return dict(schema="af/scenario-adapter-request@8", operation=op, intent_id="sha256:" + key * 64,
                     input_digest=D, destination="github:octo/project", method=method, inputs=inputs)
 
     def adapter(self):
@@ -659,7 +772,7 @@ print(json.dumps(source))
         transport = self.git("rev-parse", "HEAD")
         self.git("checkout", "-q", self.config["source_commit"])
         def native(adapter, task, owner, previous=None):
-            return dict(schema="af/git-candidate-source@1", source_snapshot=S, predecessor_snapshot=None,
+            return dict(schema="af/git-candidate-source@2", task_source_snapshot=S, source_snapshot=S, predecessor_snapshot=None,
                         source_commit=self.config["source_commit"], candidate_tree=tree, transport_commit=transport,
                         repository=str(self.repo), candidate_snapshot=R)
         with patch.object(LocalAdapter, "native_source", native):
@@ -757,7 +870,7 @@ print(json.dumps(source))
         transport = self.git("rev-parse", "HEAD")
         self.git("checkout", "-q", self.config["source_commit"])
         def native(adapter, task, owner, previous=None):
-            return dict(schema="af/git-candidate-source@1", source_snapshot=S, predecessor_snapshot=None,
+            return dict(schema="af/git-candidate-source@2", task_source_snapshot=S, source_snapshot=S, predecessor_snapshot=None,
                         source_commit=self.config["source_commit"], candidate_tree=tree, transport_commit=transport,
                         repository=str(self.repo), candidate_snapshot=R)
         with patch.object(LocalAdapter, "native_source", native):
@@ -771,8 +884,8 @@ print(json.dumps(source))
     def test_exclusive_writer_violation_during_post_never_settles_or_reposts(self):
         p = self.prepare()
         original = self.service.request
-        def changed(method, path, body=None):
-            response = original(method, path, body)
+        def changed(method, path, body=None, *, before_send=None):
+            response = original(method, path, body, before_send=before_send)
             if method == "POST":
                 self.service.refs[p["branch"]] = "f" * 40
                 self.service.prs[0]["head"]["sha"] = "f" * 40
@@ -858,7 +971,7 @@ print(json.dumps(source))
         transport = self.git("rev-parse", "HEAD")
         self.git("checkout", "-q", self.config["source_commit"])
         def native(adapter, task, owner, previous=None):
-            return dict(schema="af/git-candidate-source@1", source_snapshot=S, predecessor_snapshot=None,
+            return dict(schema="af/git-candidate-source@2", task_source_snapshot=S, source_snapshot=S, predecessor_snapshot=None,
                         source_commit=self.config["source_commit"], candidate_tree=tree, transport_commit=transport,
                         repository=str(self.repo), candidate_snapshot=R)
         with patch.object(LocalAdapter, "native_source", native):
@@ -878,11 +991,12 @@ print(json.dumps(source))
     def test_independent_schemas_match_the_installed_writer(self):
         for name, value in A.workspace_schema_documents().items():
             self.assertEqual(json.loads((ROOT / "schemas" / name).read_text()), value)
-        old = copy.deepcopy(self.prepare_req)
-        old["schema"] = "af/scenario-adapter-request@3"
-        with self.assertRaises(A.Refused):
-            self.call(old)
-        old_config = dict(self.config, schema="af/git-workspace-config@1")
+        for version in range(8):
+            old = copy.deepcopy(self.prepare_req)
+            old["schema"] = "af/scenario-adapter-request@%d" % version
+            with self.assertRaises(A.Refused):
+                self.call(old)
+        old_config = dict(self.config, schema="af/git-workspace-config@2")
         with self.assertRaises(A.Refused):
             A.workspace_validate_config(old_config)
         state = Path(self.config["state_dir"]) / "state.json"
@@ -919,7 +1033,7 @@ print(json.dumps(source))
         # verifies the parent and raw candidate tree, then prepares an exact signed commit.
         def native(adapter, task, owner, parent):
             self.assertEqual(parent, previous)
-            return dict(schema="af/git-candidate-source@1", source_snapshot=A.digest(("rerooted-" + task["task_id"]).encode()), predecessor_snapshot=parent["snapshot_id"],
+            return dict(schema="af/git-candidate-source@2", task_source_snapshot=S, source_snapshot=A.digest(("rerooted-" + task["task_id"]).encode()), predecessor_snapshot=parent["snapshot_id"],
                         source_commit=parent["commit"], candidate_tree=parent["tree"],
                         transport_commit=parent["commit"], repository=str(self.repo),
                         candidate_snapshot=task["result"]["outputs"]["snapshot"]["snapshot_id"])
@@ -1138,7 +1252,7 @@ def performance_integration(native=None):
             binary.write_text(source)
             c["af_digest"] = A.file_digest(binary)
             lab = test.root / "lab"
-            lab.write_text("#!/usr/bin/python3 -IS\nimport json,sys\nr=json.load(sys.stdin)\nprint(json.dumps(dict(schema='af/scenario-adapter-response@1',intent_id=r['intent_id'],input_digest=r['input_digest'],outcome='done',evidence='native fixture',observation=" + repr(observation) + ")))\n")
+            lab.write_text(fixture_launcher("import json,sys\nr=json.load(sys.stdin)\nprint(json.dumps(dict(schema='af/scenario-adapter-response@3',intent_id=r['intent_id'],input_digest=r['input_digest'],outcome='done',evidence='native fixture',observation=" + repr(observation) + ")))\n"))
             lab.chmod(0o700)
             c["performance"] = dict(executable=str(lab), digest=A.file_digest(lab), destination="native:claw")
         if native is None:
@@ -1149,8 +1263,7 @@ def performance_integration(native=None):
         git = c["git"]
         calls = test.root / "pushes"
         wrapper = test.root / "performance-git"
-        wrapper.write_text('''#!/usr/bin/python3 -IS
-import os,pathlib,subprocess,sys
+        wrapper.write_text(performance_git_launcher(git, '''import os,pathlib,subprocess,sys
 args=sys.argv[1:]
 url='ssh://git@github.com/octo/project.git'
 if url in args:
@@ -1173,7 +1286,7 @@ if 'push' in args:
  if pathlib.Path(''' + repr(str(calls)) + ''').read_text().count('push')==1: sys.exit(2) # response lost after real push
  sys.exit(0)
 os.execve(''' + repr(git) + ''',[''' + repr(git) + ''']+args,os.environ)
-''')
+'''))
         wrapper.chmod(0o700)
         c.update(git=str(wrapper), git_digest=A.file_digest(wrapper))
         absent_scope = dict(c)
@@ -1258,9 +1371,14 @@ os.execve(''' + repr(git) + ''',[''' + repr(git) + ''']+args,os.environ)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         class HTTP:
-            def request(self, method, path, body=None):
+            def request(self, method, path, body=None, *, before_send=None):
                 connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
                 try:
+                    connection.auto_open = 0
+                    connection.connect()
+                    if method == "POST":
+                        assert callable(before_send)
+                        before_send()
                     connection.request(method, path, body=None if body is None else A.canonical(body), headers={"Content-Type": "application/json"})
                     response = connection.getresponse()
                     assert response.status in (200, 201)
@@ -1326,7 +1444,7 @@ os.execve(''' + repr(git) + ''',[''' + repr(git) + ''']+args,os.environ)
                 # Pin the installed application with only its HTTPS connection mapped to the
                 # controlled HTTP server. Production has no configurable endpoint or proxy.
                 controlled = test.root / "controlled-installed-adapter"
-                controlled.write_text("#!/usr/bin/python3 -IS\nimport http.client\ndef _fixture_connection(host, timeout, context):\n assert host == 'api.github.com'\n return http.client.HTTPConnection('127.0.0.1', " + str(server.server_port) + ", timeout=timeout)\nhttp.client.HTTPSConnection = _fixture_connection\n" + installed_path.read_text())
+                controlled.write_text(fixture_launcher("import http.client\ndef _fixture_connection(host, timeout, context):\n assert host == 'api.github.com'\n return http.client.HTTPConnection('127.0.0.1', " + str(server.server_port) + ", timeout=timeout)\nhttp.client.HTTPSConnection = _fixture_connection\n" + installed_path.read_text()))
                 controlled.chmod(0o700)
                 def literal(value):
                     return dict(source="literal", value=dict(type="text", value=value))
@@ -1346,11 +1464,11 @@ os.execve(''' + repr(git) + ''',[''' + repr(git) + ''']+args,os.environ)
                         candidate=ref("candidate"),verification=ref("verification"),report=ref("report"),measurement=ref("measurement")),
                     outputs=dict(result="action"),when=None,max_attempts=1,timeout_ms=30000,on_timeout="fail"))
                 limits = dict(max_tokens=32000000,max_wall_ms=691200000,max_dispatches=16)
-                definition = dict(schema="af/scenario@5",inputs={},outputs=dict(publication="action"),admission=None,steps=stages,
+                definition = dict(schema="af/scenario@10",inputs={},outputs=dict(publication="action"),admission=None,steps=stages,
                     result=dict(publication=ref("publish")),completion=[dict(source="literal",value=dict(type="boolean",value=True))],
                     authority=dict(task_plans=sorted({t["plan_id"] for t in (candidate,verification,report)}),task_templates=[],grants=[grant,observed],decision_owners=[]),limits=limits)
-                bundle = dict(schema="af/scenario-bundle@5",root="publish",definitions=dict(publish=definition))
-                policy = dict(schema="af/scenario-policy@5",adapters=dict(publication=dict(executable=str(controlled),digest=A.file_digest(controlled),
+                bundle = dict(schema="af/scenario-bundle@10",root="publish",definitions=dict(publish=definition))
+                policy = dict(schema="af/scenario-policy@8",adapters=dict(publication=dict(executable=str(controlled),digest=A.file_digest(controlled),
                     operations=[A.PERFORMANCE_OP],destinations=[req["destination"]],max_wall_ms=30000,max_output_bytes=65536),lab=native["lab"]),
                     task_plans=definition["authority"]["task_plans"],task_templates=[],decision_keys={},file_roots=[],performance_publications=dict(publication=scope))
                 for name, doc in (("bundle",bundle),("policy",policy),("inputs",{})):

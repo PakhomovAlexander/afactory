@@ -41,6 +41,7 @@ the comparator reports them missing and the run incomplete. A signal a shard con
 controller owned it cancels that controller too (`Cancelled`), after the terminal record.
 """
 from fractions import Fraction
+import json
 import os
 import platform
 import shutil
@@ -48,7 +49,7 @@ import signal
 import tempfile
 import time
 
-from . import budget, builds, bundle, capability, cli_cases, contracts, git_refs, host, host_lock
+from . import budget, builds, bundle, capability, cli_cases, contracts, dev_flow, git_refs, host, host_lock
 from . import limits
 from . import oracle, planning, schedule, seeds, supervise
 from .values import ContractError, canonical_bytes, document_bytes, format_decimal, require
@@ -441,6 +442,22 @@ def contained_host(docker, image, scratch_fs, environment, run_budget, clock, be
         info["identity"], image, ",".join(str(cpu) for cpu in cpus),
         " sharing a physical core" if shared else "")
     return record["path"], cpus, runtime
+
+
+def record_process_primary(record, case, result):
+    """Record the declared process metric from its actual OS source, or a missing reason.
+
+    The child's wall clock is never a substitute for a named CPU or RSS metric.
+    """
+    primary = case["primary_metric"]["key"]
+    measured, unavailable = supervise.optional_metrics(result, [primary])
+    if primary not in measured:
+        return "primary metric %s unavailable: %s" % (
+            primary, unavailable.get(primary, "no measurement source"))
+    record["metrics"][primary] = measured[primary]
+    record["metric_scopes"][primary] = (
+        "child_process_lifetime" if primary == "wall_ms" else "reaped_child_rusage")
+    return None
 
 
 class Shard(object):
@@ -996,6 +1013,7 @@ class Shard(object):
         for key, metric in metrics.items():
             record["metrics"][key] = metric
             record["metric_scopes"][key] = ("sample_cgroup" if key == "cgroup_peak_memory_bytes"
+                                            else "child_process_lifetime" if key == "wall_ms"
                                             else "reaped_child_rusage")
         for key, (metric, scope) in (extra or {}).items():
             if key in wanted:
@@ -1224,7 +1242,9 @@ class Shard(object):
                 cli_cases.stdout_bytes(log_cap), log_cap, containment=containment,
                 scratch=None if self.mode == TRUSTED_LOCAL else supervise.SCRATCH,
                 grace_ms=GRACE_MS, setup=setup, patterns=cli_cases.patterns(entry),
-                selectors=cli_cases.selectors(entry))
+                selectors=cli_cases.selectors(entry),
+                evidence_paths=(dev_flow.transfer_paths() if self.mode == LINUX_CONTAINER
+                                and case.get("family") == "af_dev_e2e" else ()))
             binaries = {"af": af_path}
             if probe_path is not None:
                 binaries["perf-probe"] = probe_path
@@ -1264,9 +1284,24 @@ class Shard(object):
                     reported = cli_cases.tui_report(supervised.stdout)
                 except ContractError as error:
                     passed, why = False, str(error)
+            if passed and case.get("family") == "af_dev_e2e":
+                try:
+                    if self.mode == LINUX_CONTAINER:
+                        transfer = result["evidence"]
+                        require(transfer is not None and transfer["status"] == "complete",
+                                "development-flow evidence transfer unconfirmed: "
+                                + (transfer["detail"] if transfer else "no capture reported"))
+                        dev_flow.validate_transferred(
+                            supervised.evidence, treatment=case["parameters"]["initial_cache"])
+                    else:
+                        dev_flow.validate(dev_flow.read_document(scratch + "/flow.json"),
+                                          treatment=case["parameters"]["initial_cache"])
+                except (ContractError, ValueError, OSError, json.JSONDecodeError) as error:
+                    passed, why = False, str(error)
             record["oracle"].update(status="passed" if passed else "failed",
                                     observed_digest=observed, detail=why[:1024])
             extra = {}
+            metric_missing = False
             if case["timing"]["boundary"] == "reported_interval":
                 if passed:
                     # The driver's browser_ms is the primary interval; its splash_ms, first
@@ -1278,11 +1313,9 @@ class Shard(object):
                     extra["splash_ms"] = ({"value": format_decimal(splash), "unit": "ms"},
                                           "probe_reported")
             else:
-                wall = result["timing"]["child_wall_ns"]
-                record["metrics"][case["primary_metric"]["key"]] = {
-                    "value": format_decimal(Fraction(int(wall), 1000000)), "unit": "ms"}
-                record["metric_scopes"][case["primary_metric"]["key"]] = \
-                    "child_process_lifetime"
+                missing = record_process_primary(record, case, result)
+                if missing is not None:
+                    metric_missing, passed, why = True, False, missing
             self.record_injection(slot, record, supervised, extra)
             for key, (metric, scope) in extra.items():
                 record["metrics"][key] = metric
@@ -1292,7 +1325,8 @@ class Shard(object):
             else:
                 expected = [rule["value"] for rule in entry["rules"]
                             if rule["kind"] == "exit_code"][0]
-                failure = "nonzero_exit" if returncode != expected else "oracle_mismatch"
+                failure = ("missing_required_metric" if metric_missing else
+                           "nonzero_exit" if returncode != expected else "oracle_mismatch")
                 if failure == "nonzero_exit":
                     record["oracle"]["status"] = "failed"
                 self.fail(record, failure, why, supervised)

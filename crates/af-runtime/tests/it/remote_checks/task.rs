@@ -6,7 +6,7 @@ use super::*;
 use af_check::{CheckDefinition, CheckResult, CheckStatus};
 use af_contracts::PortCardinality;
 use af_contracts::task::pipeline::*;
-use af_contracts::task::plan::ExecutionPlanV3;
+use af_contracts::task::plan::ExecutionPlan;
 use af_contracts::task::plan::IndependencePolicyV1;
 use af_contracts::task::remote_check::{
     PUBLISH_GATE_EFFECT, REMOTE_CHECK_EVIDENCE_V1, RemoteCheckEvidenceV1,
@@ -110,7 +110,7 @@ fn contract() -> PipelineContractV1 {
 
 /// A Pipeline of one Check node over the Task's source — `checks` run here, `remote` by their
 /// declared executor — and the accept node that reads it.
-pub fn pipeline(checks: &[&str], remote: &[&str]) -> PipelineDefinitionV1 {
+pub fn pipeline(checks: &[&str], remote: &[&str]) -> PipelineDefinition {
     let node = |id: &str, operator, inputs| TaskNodeV1 {
         id: id.into(),
         operator,
@@ -120,8 +120,8 @@ pub fn pipeline(checks: &[&str], remote: &[&str]) -> PipelineDefinitionV1 {
     let source = ValueRefV1::Input {
         port: "source".into(),
     };
-    PipelineDefinitionV1 {
-        schema: PipelineSchema::V1,
+    PipelineDefinition {
+        schema: PipelineSchema::V6,
         name: PIPELINE.into(),
         version: "1.0.0".into(),
         contract: contract(),
@@ -159,9 +159,9 @@ pub fn pipeline(checks: &[&str], remote: &[&str]) -> PipelineDefinitionV1 {
 }
 
 /// A parent Pipeline whose only node calls `PIPELINE`, so its check node is a child's.
-pub fn parent() -> PipelineDefinitionV1 {
-    PipelineDefinitionV1 {
-        schema: PipelineSchema::V1,
+pub fn parent() -> PipelineDefinition {
+    PipelineDefinition {
+        schema: PipelineSchema::V6,
         name: PARENT.into(),
         version: "1.0.0".into(),
         contract: contract(),
@@ -215,7 +215,7 @@ impl Planned {
     /// graph has no remote check.
     pub fn new(
         policy: &CodeTaskPolicy,
-        pipelines: &[PipelineDefinitionV1],
+        pipelines: &[PipelineDefinition],
         destination: Option<&str>,
     ) -> Result<Planned, String> {
         let directory = tempfile::tempdir().unwrap();
@@ -325,7 +325,7 @@ impl Planned {
     }
 
     /// The plan of the root pipeline, as the catalog compiler captures it.
-    pub fn compile(&self) -> Result<(ExecutionPlanV3, CompiledTask), String> {
+    pub fn compile(&self) -> Result<(ExecutionPlan, CompiledTask), String> {
         self.compiler.compile(
             &self.cas,
             &self.revision,
@@ -340,7 +340,7 @@ pub struct Recorded {
     pub cas: Cas,
     pub domain: CodeTaskDomain,
     pub policy_id: String,
-    pub plan: ExecutionPlanV3,
+    pub plan: ExecutionPlan,
     pub receipt: Option<TaskCheckReceiptV2>,
     pub candidate: String,
 }

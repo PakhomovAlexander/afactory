@@ -7,12 +7,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use af_contracts::task::event::{TaskChangeV1, TaskTransitionV1};
 use af_contracts::task::input_bindings::TASK_INPUT_BINDINGS_V1;
 use af_contracts::task::plan::{
-    ExecutionPlanV3, GeneratedOriginV1, PlanDecisionKindV1, PlanDecisionV1,
+    ExecutionPlan, GeneratedOriginV1, PlanDecisionKindV1, PlanDecisionV1,
 };
 use af_contracts::task::{
     self, TaskAcceptanceV1, TaskPhaseV1, TaskResultV1, TaskRevisionV1, TaskWaitingReasonV1,
 };
 use af_contracts::{ArtifactEnvelope, EventType, PortCardinality, RunEvent};
+use rusqlite::OptionalExtension;
 use serde::de::DeserializeOwned;
 use serde_json::json;
 
@@ -34,11 +35,9 @@ pub mod planning;
 mod recording;
 mod report;
 pub use report::read_task_run_report;
-pub mod review_handoff;
+pub mod journal;
 pub mod review_integration;
-mod review_round;
-pub mod review_round_publication;
-pub use review_handoff::{
+pub use journal::{
     is_beside_transitions, is_execution_started, is_provider_event, is_transition,
     read_execution_started, read_provider_event, read_task_transition,
 };
@@ -104,7 +103,7 @@ pub fn revision_provenance_inputs(cas: &Cas, revision: &TaskRevisionV1) -> Vec<S
         if ids.contains(id) {
             continue;
         }
-        let found = cas.get_optional_artifact(id).ok().flatten();
+        let found = cas.get_optional_artifact_shared(id).ok().flatten();
         let record = found.is_some_and(|e| {
             [
                 TASK_INPUT_BINDINGS_V1,
@@ -156,6 +155,12 @@ impl TaskLease {
 }
 
 impl TaskProjection {
+    /// Ordinary resume, recording recovery and a later execution each establish an episode.
+    /// Lease maintenance and late accounting do not.
+    pub fn lifecycle_episode(&self) -> u64 {
+        self.lifecycle_episode
+    }
+
     pub fn lease_until_unix_ms(&self) -> u64 {
         self.lease_until
     }
@@ -257,7 +262,7 @@ pub trait TaskAuthority: Sync {
         &self,
         _cas: &Cas,
         _task: &TaskRevisionV1,
-        _plan: &ExecutionPlanV3,
+        _plan: &ExecutionPlan,
         _prepared: &task::optimization_experiment::ExperimentPreparedV1,
     ) -> Result<(), String> {
         Err("Experimental preparation is not configured".into())
@@ -271,49 +276,11 @@ pub trait TaskAuthority: Sync {
         Err("Experimental developer authority is not configured".into())
     }
 
-    fn validate_review_integration_selection(
-        &self,
-        _cas: &Cas,
-        _task: &TaskRevisionV1,
-        _plan: &ExecutionPlanV3,
-        _phase: &task::review_integration::TaskReviewIntegrationPhaseV1,
-        _evidence: &review_integration::TaskReviewIntegrationEvidence,
-    ) -> Result<(), String> {
-        Err("Captured Review Integration is not configured".into())
-    }
-    #[allow(clippy::too_many_arguments)]
-    fn validate_review_integration_completion(
-        &self,
-        _cas: &Cas,
-        _task: &TaskRevisionV1,
-        _plan: &ExecutionPlanV3,
-        _phase: &task::review_integration::TaskReviewIntegrationPhaseV1,
-        _report: &task::run_report::TaskRunReportV1,
-        _events: &[NewEvent],
-        _evidence: &review_integration::TaskReviewIntegrationEvidence,
-    ) -> Result<(), String> {
-        Err("Captured Review Integration completion is not configured".into())
-    }
-
-    /// Recompile both captured Review plans and the successor roots. Runs under the caller's
-    /// Store mutex; implementations must be pure and must not re-lock SharedEventStore.
-    #[allow(clippy::too_many_arguments)]
-    fn validate_review_continuation(
-        &self,
-        _cas: &Cas,
-        _previous: &TaskRevisionV1,
-        _next: &TaskRevisionV1,
-        _previous_plan: &ExecutionPlanV3,
-        _next_plan: &ExecutionPlanV3,
-        _handoff: &task::review_handoff::TaskReviewHandoffV1,
-    ) -> Result<(), String> {
-        Err("Captured Review continuation is not configured".into())
-    }
     fn validate_owned_children(
         &self,
         _cas: &Cas,
         _task: &TaskRevisionV1,
-        _plan: &ExecutionPlanV3,
+        _plan: &ExecutionPlan,
         _parent: &task::execution::TaskInvocationV1,
         _children: &task::owned_children::TaskOwnedChildSetV1,
     ) -> Result<(), String> {
@@ -325,7 +292,7 @@ pub trait TaskAuthority: Sync {
         &self,
         _cas: &Cas,
         _task: &TaskRevisionV1,
-        _plan: &ExecutionPlanV3,
+        _plan: &ExecutionPlan,
         _parent: &task::execution::TaskInvocationV1,
         _children: &task::owned_children::TaskOwnedChildSetV1,
         _facts: &[execution::owned::TaskOwnedChildEvidence],
@@ -339,7 +306,7 @@ pub trait TaskAuthority: Sync {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
     ) -> Result<Vec<GeneratedOriginV1>, String>;
     /// Trusted retry eligibility over durable failures of this exact invocation. Attempt
     /// count and token capacity alone do not authorize retrying every failure class.
@@ -347,7 +314,7 @@ pub trait TaskAuthority: Sync {
         &self,
         _cas: &Cas,
         _task: &TaskRevisionV1,
-        _plan: &ExecutionPlanV3,
+        _plan: &ExecutionPlan,
         _invocation: &af_contracts::task::execution::TaskInvocationV1,
         _previous: &BTreeMap<String, af_contracts::task::execution::TaskAttemptResultV1>,
     ) -> Result<(), String> {
@@ -366,7 +333,7 @@ pub trait TaskAuthority: Sync {
         _cas: &Cas,
         _previous: &TaskRevisionV1,
         _next: &TaskRevisionV1,
-        _plan: &ExecutionPlanV3,
+        _plan: &ExecutionPlan,
     ) -> Result<(), String> {
         Err("Planning input normalization is not configured".into())
     }
@@ -376,7 +343,7 @@ pub trait TaskAuthority: Sync {
         &self,
         _cas: &Cas,
         _task: &TaskRevisionV1,
-        _plan: &ExecutionPlanV3,
+        _plan: &ExecutionPlan,
         _invocation: &af_contracts::task::execution::TaskInvocationV1,
         _attempt: &execution::ReservedTaskAttempt,
         _context_id: &str,
@@ -398,7 +365,7 @@ pub trait TaskAuthority: Sync {
         &self,
         _cas: &Cas,
         _task: &TaskRevisionV1,
-        _plan: &ExecutionPlanV3,
+        _plan: &ExecutionPlan,
         _invocation: &af_contracts::task::execution::TaskInvocationV1,
         _output: &af_contracts::task::execution::TaskOutputV1,
         _definition: &af_graph::task::CompiledNode,
@@ -419,6 +386,8 @@ struct Decision {
 #[derive(Debug, Clone)]
 pub struct TaskProjection {
     pub task_id: String,
+    /// Derived only from checked authorized restart boundaries; never persisted separately.
+    lifecycle_episode: u64,
     pub revision_id: String,
     pub revision: TaskRevisionV1,
     pub plan_id: Option<String>,
@@ -439,6 +408,11 @@ pub struct TaskProjection {
     // Exact reference closure of the parsed prefix, including superseded execution evidence.
     // This memo saves parsing only: every object is verified again on the next access.
     artifact_refs: BTreeSet<String>,
+    /// Complete successful CAS read closure of this validated projection, including reads
+    /// reached through domain validation rather than directly spelled event references.
+    observed_artifacts: BTreeSet<String>,
+    /// Exact prefixes replayed while validating this projection, including nested reads.
+    observed_runs: BTreeMap<String, u64>,
     pub execution: Option<execution::TaskExecutionProjection>,
     pub planning: Option<planning::TaskPlanningProof>,
     pub deliveries: Vec<(String, task::delivery::TaskDeliveryRecordV1)>,
@@ -447,7 +421,6 @@ pub struct TaskProjection {
         task::optimization_light::OptimizationAdoptionObservationV1,
     )>,
     pub run_reports: Vec<String>,
-    pub review_handoffs: Vec<(String, task::review_handoff::TaskReviewHandoffV1)>,
     /// Every attempt to remove the Task's gate pull requests and branches, in log order
     /// (ADR-0144).
     pub gate_cleanups: Vec<task::remote_check::TaskGateCleanupV1>,
@@ -526,30 +499,6 @@ fn valid_exact_optimization_result_refinement(
 #[cfg(test)]
 thread_local! {
     static PROJECTION_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-    static REVIEW_REPLAY_LOADS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-/// A single projection's canonical event reads. Never survives a public Store operation.
-/// A changed append prefix forces a new replay even within this operation.
-#[derive(Default)]
-struct ReviewReplays(BTreeMap<String, std::sync::Arc<Vec<RunEvent>>>);
-impl ReviewReplays {
-    fn read(
-        &mut self,
-        store: &EventStore,
-        run: &str,
-    ) -> Result<std::sync::Arc<Vec<RunEvent>>, StoreError> {
-        if let Some(events) = self.0.get(run)
-            && events.len() as u64 == store.len(run)?
-        {
-            return Ok(events.clone());
-        }
-        #[cfg(test)]
-        REVIEW_REPLAY_LOADS.with(|loads| loads.set(loads.get() + 1));
-        let events = std::sync::Arc::new(store.replay(run)?);
-        self.0.insert(run.into(), events.clone());
-        Ok(events)
-    }
 }
 
 /// Created after replay/transition validation; the shared transaction then compares sequence
@@ -560,7 +509,6 @@ pub(super) struct WritePermit {
     payloads: Vec<serde_json::Value>,
     event_type: EventType,
     valid_until: Option<u64>,
-    review_round: Option<review_round::ReviewRoundFence>,
     review_prefix: Option<(String, u64)>,
     /// The Tasks an opening Task's bindings name: none may have been collected by the time the
     /// opening is written, and the check runs under the writer lock collection uses (ADR-0135).
@@ -600,9 +548,6 @@ impl WritePermit {
                 ));
             }
         }
-        if let Some(round) = &self.review_round {
-            round.validate(connection)?;
-        }
         for task_id in &self.bound_tasks {
             let run_id = task_run_id(task_id)?;
             if collection::tombstone_in(connection, &run_id)?.is_some() {
@@ -616,9 +561,13 @@ impl WritePermit {
     }
 }
 
-fn envelope(cas: &Cas, id: &str, expected: &str) -> Result<ArtifactEnvelope, StoreError> {
+fn envelope_shared(
+    cas: &Cas,
+    id: &str,
+    expected: &str,
+) -> Result<std::sync::Arc<ArtifactEnvelope>, StoreError> {
     let envelope = cas
-        .get_artifact(id)
+        .get_artifact_shared(id)
         .map_err(|e| StoreError::Artifact(e.to_string()))?;
     if envelope.artifact_id != id || envelope.artifact_type != expected {
         return Err(conflict(format!("Expected exact {expected} artifact {id}")));
@@ -626,9 +575,13 @@ fn envelope(cas: &Cas, id: &str, expected: &str) -> Result<ArtifactEnvelope, Sto
     Ok(envelope)
 }
 
+fn envelope(cas: &Cas, id: &str, expected: &str) -> Result<ArtifactEnvelope, StoreError> {
+    envelope_shared(cas, id, expected).map(|envelope| (*envelope).clone())
+}
+
 fn payload<T: DeserializeOwned>(cas: &Cas, id: &str, expected: &str) -> Result<T, StoreError> {
-    Ok(serde_json::from_value(
-        envelope(cas, id, expected)?.payload,
+    Ok(T::deserialize(
+        &envelope_shared(cas, id, expected)?.payload,
     )?)
 }
 
@@ -638,8 +591,8 @@ fn revision(cas: &Cas, id: &str) -> Result<TaskRevisionV1, StoreError> {
     Ok(revision)
 }
 
-fn plan(cas: &Cas, id: &str, state: &TaskProjection) -> Result<ExecutionPlanV3, StoreError> {
-    let plan: ExecutionPlanV3 = payload(cas, id, task::EXECUTION_PLAN_V4)?;
+fn plan(cas: &Cas, id: &str, state: &TaskProjection) -> Result<ExecutionPlan, StoreError> {
+    let plan: ExecutionPlan = payload(cas, id, task::EXECUTION_PLAN_V4)?;
     plan.validate().map_err(conflict)?;
     if plan.task_revision_id != state.revision_id
         || plan.authority != state.revision.authority
@@ -686,14 +639,14 @@ fn validate_port_refs(
 ) -> Result<(), StoreError> {
     input.validate().map_err(conflict)?;
     for id in &input.artifact_ids {
-        let value = envelope(cas, id, &input.artifact_type)?;
+        let value = envelope_shared(cas, id, &input.artifact_type)?;
         if !unclaimed && value.subject_snapshot_id != input.snapshot_id {
             return Err(conflict(
                 "Task port Snapshot identity contradicts its artifact envelope",
             ));
         }
         refs.insert(id.clone());
-        refs.extend(value.input_artifacts);
+        refs.extend(value.input_artifacts.iter().cloned());
     }
     refs.extend(input.snapshot_id.iter().cloned());
     Ok(())
@@ -752,33 +705,6 @@ fn references(
                 envelope(cas, id, task::execution::TASK_OUTPUT_V1)?;
                 refs.insert(id.clone());
             }
-        }
-        TaskChangeV1::ReviewIntegrationSelected { phase_id }
-        | TaskChangeV1::ReviewIntegrationFinished { phase_id, .. } => {
-            let phase = review_integration::read_task_review_integration(cas, phase_id)?;
-            refs.insert(phase_id.clone());
-            refs.extend(phase.artifact_refs());
-            if let TaskChangeV1::ReviewIntegrationFinished { report_id, .. } = change {
-                refs.extend(report::references(cas, report_id)?);
-            }
-        }
-        TaskChangeV1::ReviewContinued { handoff_id } => {
-            let handoff = review_handoff::read_task_review_handoff(cas, handoff_id)?;
-            refs.insert(handoff_id.clone());
-            refs.extend(handoff.artifact_refs().into_iter().map(str::to_owned));
-            let mut next = state
-                .ok_or_else(|| conflict("Review handoff precedes Task"))?
-                .clone();
-            next.revision = revision(cas, &handoff.successor_revision_id)?;
-            next.revision_id = handoff.successor_revision_id.clone();
-            revision_references(cas, &handoff.successor_revision_id, &mut refs)?;
-            refs.extend(references(
-                cas,
-                &TaskChangeV1::PlanProposed {
-                    plan_id: handoff.successor_plan_id.clone(),
-                },
-                Some(&next),
-            )?);
         }
         TaskChangeV1::SourceRefreshed {
             revision_id,
@@ -899,7 +825,7 @@ fn references(
                 value.authority.policy_id,
             ]);
             for dep in value.dependencies.values() {
-                let dep_envelope = match cas.get_artifact(&dep.artifact_id) {
+                let dep_envelope = match cas.get_artifact_shared(&dep.artifact_id) {
                     Ok(envelope) => envelope,
                     Err(_) => {
                         // Preserve the original errors for raw content-addressed JSON,
@@ -909,7 +835,7 @@ fn references(
                             .map_err(|e| StoreError::Artifact(e.to_string()))?;
                         let envelope: ArtifactEnvelope = serde_json::from_value(raw)?;
                         validate_envelope(&envelope).map_err(conflict)?;
-                        envelope
+                        std::sync::Arc::new(envelope)
                     }
                 };
                 if dep_envelope.artifact_id != dep.artifact_id
@@ -918,7 +844,7 @@ fn references(
                     return Err(conflict("Plan dependency content disagrees with its lock"));
                 }
                 refs.insert(dep.artifact_id.clone());
-                refs.extend(dep_envelope.input_artifacts);
+                refs.extend(dep_envelope.input_artifacts.iter().cloned());
             }
             for binding in value.bindings.values() {
                 refs.extend([
@@ -1039,8 +965,12 @@ impl TaskProjection {
             ));
         }
         self.check_lease_of(&marker.writer, marker.epoch, marker.now_unix_ms)?;
+        let later_execution = !self.execution_epochs.is_empty();
         if !self.execution_epochs.insert(marker.epoch) {
             return Err(conflict("A lease begins its execution once"));
+        }
+        if later_execution {
+            self.lifecycle_episode += 1;
         }
         self.last_time = time;
         self.next_sequence = event.sequence + 1;
@@ -1148,13 +1078,6 @@ impl TaskProjection {
         } else {
             self.check_lease(transition)?;
             match &transition.change {
-                TaskChangeV1::ReviewIntegrationSelected { .. }
-                | TaskChangeV1::ReviewIntegrationFinished { .. } => {
-                    self.apply_review_integration(cas, &transition.change, time)?;
-                }
-                TaskChangeV1::ReviewContinued { handoff_id } => {
-                    self.apply_review_handoff(cas, handoff_id, time)?;
-                }
                 TaskChangeV1::SourceRefreshed {
                     revision_id,
                     plan_id,
@@ -1371,6 +1294,7 @@ impl TaskProjection {
                         self.check_approval(cas, time)?;
                     }
                     self.phase = prior;
+                    self.lifecycle_episode += 1;
                 }
                 TaskChangeV1::RecordingResumed {
                     task_revision_id,
@@ -1385,6 +1309,7 @@ impl TaskProjection {
                         time,
                     )?;
                     self.check_plan_decision(cas, time)?;
+                    self.lifecycle_episode += 1;
                     self.recording_recovery = Some(recovery);
                     self.resume_phase = None;
                     self.phase = TaskPhaseV1::Running {};
@@ -1446,26 +1371,11 @@ impl TaskProjection {
                             })
                             .flat_map(|port| port.artifact_ids.iter().cloned())
                             .collect();
-                        if let Some(integration) = execution.active_review_integration() {
-                            if !integration.finished() {
-                                return Err(conflict(
-                                    "Task must seal its activated Integration before finishing",
-                                ));
-                            }
-                            expected_evidence.insert(integration.phase_id().to_string());
-                            if let Some(report_id) = integration.report_id() {
-                                expected_evidence.insert(report_id.to_string());
-                            }
-                            if let Some((output_id, _)) = execution.outputs.get(integration.node())
-                            {
-                                expected_evidence.insert(output_id.clone());
-                            }
-                        } else if execution.graph.review_integration.is_some()
-                            && result.acceptance == TaskAcceptanceV1::Satisfied
+                        review_integration::require_native_successors(cas, self, &result)?;
+                        if let Some(id) =
+                            review_integration::native_review_conclusion(cas, self, &result)?
                         {
-                            return Err(conflict(
-                                "Task acceptance requires the captured Integration disposition",
-                            ));
+                            expected_evidence.insert(id);
                         }
                         let outputs_match = result.outputs == expected_outputs
                             || valid_exact_optimization_result_refinement(
@@ -1534,7 +1444,7 @@ impl TaskProjection {
 
     // Recording a conclusion still requires a current developer decision, but cannot grant
     // another execution effect by extending the plan deadline.
-    fn check_plan_decision(&self, cas: &Cas, time: u64) -> Result<ExecutionPlanV3, StoreError> {
+    fn check_plan_decision(&self, cas: &Cas, time: u64) -> Result<ExecutionPlan, StoreError> {
         let id = self
             .plan_id
             .as_ref()
@@ -1556,10 +1466,219 @@ impl TaskProjection {
     }
 }
 
+/// The canonical fold shared by archived-prefix and bounded wake replay. A caller may
+/// continue only a previously checked projection; no serialized TaskProjection is admitted.
+fn fold_task_event(
+    cas: &Cas,
+    task_id: &str,
+    state: &mut Option<TaskProjection>,
+    event: &RunEvent,
+    verified: &mut BTreeSet<String>,
+) -> Result<(), StoreError> {
+    if event.run_id != task_run_id(task_id)? {
+        return Err(conflict("Foreign Task event"));
+    }
+    // A lease's execution marker, the log's one event kind beside its transitions.
+    if event.event_type == EventType::TaskExecutionStartedV1 {
+        let marker = read_execution_started(event)?;
+        state
+            .as_mut()
+            .ok_or_else(|| conflict("Task execution marker precedes genesis"))?
+            .apply_execution_started(event, &marker)?;
+        return Ok(());
+    }
+    // A gate retry reopens a finished Task at its failed gates (`TaskGateRetried@1`).
+    if gate_retry::is_gate_retried(event) {
+        let retry = gate_retry::read_gate_retried(event)?;
+        for id in retry.artifact_refs() {
+            if verified.insert(id.clone()) {
+                cas.verify(&id)
+                    .map_err(|e| StoreError::Artifact(e.to_string()))?;
+            }
+        }
+        state
+            .as_mut()
+            .ok_or_else(|| conflict("Task gate retry precedes genesis"))?
+            .apply_gate_retried(cas, event, &retry)?;
+        return Ok(());
+    }
+    if event.event_type == EventType::TaskProviderEventV1 {
+        let value = read_provider_event(event)?;
+        state
+            .as_mut()
+            .ok_or_else(|| conflict("Task Provider event precedes genesis"))?
+            .apply_provider_event(event, &value)?;
+        return Ok(());
+    }
+    if !matches!(event.event_type, EventType::TaskTransitionV6) {
+        return Err(conflict("Task log contains a foreign event"));
+    }
+    let transition = read_task_transition(event)?;
+    let expected = references(cas, &transition.change, state.as_ref())?;
+    if expected != event.artifact_refs {
+        return Err(conflict(
+            "Task event references disagree with its typed payload",
+        ));
+    }
+    for id in &expected {
+        if verified.insert(id.clone()) {
+            cas.verify(id)
+                .map_err(|e| StoreError::Artifact(e.to_string()))?;
+        }
+    }
+    if let Some(state) = state {
+        state.apply(cas, event, &transition)?;
+    } else if let TaskChangeV1::Opened {
+        revision_id,
+        lease_until_unix_ms,
+    } = &transition.change
+    {
+        let revision = revision(cas, revision_id)?;
+        if revision.task_id != task_id
+            || revision.revision != 1
+            || event.sequence != 0
+            || transition.epoch != 1
+        {
+            return Err(conflict("Invalid Task genesis"));
+        }
+        *state = Some(TaskProjection {
+            task_id: task_id.into(),
+            lifecycle_episode: 1,
+            revision_id: revision_id.clone(),
+            revision,
+            plan_id: None,
+            phase: TaskPhaseV1::Submitted {},
+            admitted: false,
+            next_sequence: 1,
+            writer: transition.writer,
+            epoch: 1,
+            lease_until: *lease_until_unix_ms,
+            last_time: transition.now_unix_ms,
+            previous_writer: (transition.now_unix_ms, *lease_until_unix_ms),
+            resume_phase: None,
+            recording_recovery: None,
+            recording_report: None,
+            decisions: BTreeMap::new(),
+            artifact_refs: BTreeSet::new(),
+            observed_artifacts: BTreeSet::new(),
+            observed_runs: BTreeMap::new(),
+            execution: None,
+            planning: None,
+            deliveries: Vec::new(),
+            adoption_observations: Vec::new(),
+            run_reports: Vec::new(),
+            gate_cleanups: Vec::new(),
+            storage_sweeps: Vec::new(),
+            execution_epochs: BTreeSet::new(),
+            gate_retries: Vec::new(),
+            opened_unix_ms: transition.now_unix_ms,
+            clock_started_unix_ms: None,
+            provider_events: Vec::new(),
+        });
+    } else {
+        return Err(conflict("Task transition precedes genesis"));
+    }
+    Ok(())
+}
+
 impl EventStore {
     /// Enumerate only validated common Task streams; Review run IDs are not Task labels.
     pub fn task_ids(&self, cas: &Cas) -> Result<Vec<String>, StoreError> {
         self.map_tasks(cas, |task| task.task_id)
+    }
+
+    /// Visit only recorded execution transitions, through SQLite's partial event index.
+    /// This is a discovery path, not a projection or admission: consumers must validate the
+    /// selected Task before using a record. Lease-only history is never replayed here.
+    /// A checked display must capture `database_observation` before calling this method and
+    /// compare after all dependent reads: returned rows alone cannot fence new matching rows.
+    /// The statement and its read snapshot are dropped before this method returns.
+    pub fn visit_task_execution_history(
+        &self,
+        cas: &Cas,
+        mut visit: impl FnMut(&str, af_contracts::task::execution::TaskExecutionRecordV1),
+    ) -> Result<(), StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT run_id, event_id, sequence, type, occurred_at, node_id, attempt_id,
+                    causation_id, correlation_id, artifact_refs, payload
+             FROM events WHERE type = 'TaskTransition@6'
+               AND json_extract(payload, '$.change.kind') = 'execution_recorded'
+             ORDER BY run_id, sequence",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                super::StoredEventRow {
+                    event_id: row.get(1)?,
+                    sequence: row.get(2)?,
+                    event_type: row.get(3)?,
+                    occurred_at: row.get(4)?,
+                    node_id: row.get(5)?,
+                    attempt_id: row.get(6)?,
+                    causation_id: row.get(7)?,
+                    correlation_id: row.get(8)?,
+                    artifact_refs: row.get(9)?,
+                    payload: row.get(10)?,
+                },
+            ))
+        })?;
+        for row in rows {
+            let (run_id, row) = row?;
+            if !run_id.starts_with("task:") || self.run_tombstone(&run_id)?.is_some() {
+                continue;
+            }
+            let event = super::decode_stored_event(&run_id, row)?;
+            let transition = read_task_transition(&event)?;
+            let TaskChangeV1::ExecutionRecorded { record_id } = transition.change else {
+                return Err(conflict("Execution history index returned another change"));
+            };
+            let record: af_contracts::task::execution::TaskExecutionRecordV1 = payload(
+                cas,
+                &record_id,
+                af_contracts::task::execution::TASK_EXECUTION_RECORD_V5,
+            )?;
+            record.validate().map_err(conflict)?;
+            visit(&run_id, record);
+        }
+        Ok(())
+    }
+
+    /// A Task label from its immutable opening, with exact run/revision identity checks.
+    /// It does not claim the rest of the Task is validated.
+    pub fn task_label_for_run(&self, cas: &Cas, run_id: &str) -> Result<String, StoreError> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT event_id,sequence,type,occurred_at,node_id,attempt_id,
+                    causation_id,correlation_id,artifact_refs,payload
+             FROM events WHERE run_id=?1 AND sequence=0",
+                [run_id],
+                |row| {
+                    Ok(super::StoredEventRow {
+                        event_id: row.get(0)?,
+                        sequence: row.get(1)?,
+                        event_type: row.get(2)?,
+                        occurred_at: row.get(3)?,
+                        node_id: row.get(4)?,
+                        attempt_id: row.get(5)?,
+                        causation_id: row.get(6)?,
+                        correlation_id: row.get(7)?,
+                        artifact_refs: row.get(8)?,
+                        payload: row.get(9)?,
+                    })
+                },
+            )
+            .optional()?
+            .ok_or_else(|| conflict("Empty Task stream"))?;
+        let event = super::decode_stored_event(run_id, row)?;
+        let TaskChangeV1::Opened { revision_id, .. } = read_task_transition(&event)?.change else {
+            return Err(conflict("Task stream does not begin with Opened"));
+        };
+        let task = revision(cas, &revision_id)?;
+        if event.sequence != 0 || task_run_id(&task.task_id)? != run_id {
+            return Err(conflict("Task stream identity differs from its revision"));
+        }
+        Ok(task.task_id)
     }
 
     /// Project each Task once, in label order, and retain only the caller's mapped value.
@@ -1619,7 +1738,20 @@ impl EventStore {
         task_id: &str,
     ) -> Result<Option<TaskProjection>, StoreError> {
         let _span = af_contracts::perf_trace::span(af_contracts::perf_trace::Phase::TaskProjection);
-        match self.task_projection_uncollected(cas, task_id) {
+        let ((projected, runs), reads) = cas
+            .track_reads(|| self.track_replays(|| self.task_projection_uncollected(cas, task_id)));
+        let projected = projected.map(|state| {
+            state.map(|mut state| {
+                state.observed_artifacts.extend(reads);
+                state.observed_runs.extend(
+                    runs.into_iter()
+                        .filter(|(run, _)| task_run_id(task_id).ok().as_ref() != Some(run)),
+                );
+                *self.task_cache.borrow_mut() = Some(state.clone());
+                state
+            })
+        });
+        match projected {
             // A sweep may have removed this Task's artifacts between the tombstone check and
             // the reads: a Task collected meanwhile is reported as collected, never as corrupt
             // (ADR-0135). Any other missing artifact stays the error it is.
@@ -1634,10 +1766,111 @@ impl EventStore {
         }
     }
 
+    /// Whether a previously validated projection still observes the same Task prefix.
+    /// Every observed artifact is read and verified anew, even with no SQLite notification.
+    /// The second watermark read catches a writer committing while those checks ran. This
+    /// is an observation only: it grants no lease, admission or publication capability.
+    pub fn task_observation_unchanged(
+        &self,
+        cas: &Cas,
+        task: &TaskProjection,
+    ) -> Result<bool, StoreError> {
+        self.task_observation_unchanged_with(cas, task, &BTreeMap::new(), || Ok(()))
+    }
+
+    /// Verify additional display reads inside the same watermark bracket as the projection.
+    /// The callback must verify every artifact contributing to the reused display. The
+    /// additional display stream prefixes are checked on both sides. The final check runs
+    /// after all of those reads, so a concurrent completion cannot preserve stale status.
+    pub fn task_observation_unchanged_with(
+        &self,
+        cas: &Cas,
+        task: &TaskProjection,
+        display_runs: &BTreeMap<String, u64>,
+        verify_display: impl FnOnce() -> Result<(), StoreError>,
+    ) -> Result<bool, StoreError> {
+        let run_id = task_run_id(&task.task_id)?;
+        let expected = task.next_sequence.checked_sub(1);
+        if self.latest_run_sequence(&run_id)? != expected
+            || !self.observed_runs_unchanged(task)?
+            || !self.replayed_prefixes_unchanged(display_runs)?
+            || self.task_tombstone(&task.task_id)?.is_some()
+        {
+            return Ok(false);
+        }
+        for id in task.observed_artifacts.union(&task.artifact_refs) {
+            if let Err(error) = cas.verify(id) {
+                if self.task_tombstone(&task.task_id)?.is_some() {
+                    return Ok(false);
+                }
+                return Err(StoreError::Artifact(error.to_string()));
+            }
+        }
+        verify_display()?;
+        Ok(self.latest_run_sequence(&run_id)? == expected
+            && self.observed_runs_unchanged(task)?
+            && self.replayed_prefixes_unchanged(display_runs)?)
+    }
+
+    fn observed_runs_unchanged(&self, task: &TaskProjection) -> Result<bool, StoreError> {
+        self.replayed_prefixes_unchanged(&task.observed_runs)
+    }
+
+    fn replayed_prefixes_unchanged(
+        &self,
+        runs: &BTreeMap<String, u64>,
+    ) -> Result<bool, StoreError> {
+        for (run, count) in runs {
+            if self.latest_run_sequence(run)? != count.checked_sub(1) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     fn task_projection_uncollected(
         &self,
         cas: &Cas,
         task_id: &str,
+    ) -> Result<Option<TaskProjection>, StoreError> {
+        self.task_projection_through(cas, task_id, None)
+    }
+
+    /// Rebuild a checked current-format log prefix for read-only archived-plan inspection.
+    /// The inclusive sequence is evidence selection, never execution or lease authority.
+    /// Continue a checked prefix by exactly one checked event, using the canonical fold.
+    /// This grants no mutation authority. The caller must revalidate source/CAS before commit.
+    pub fn advance_task_projection(
+        &self,
+        cas: &Cas,
+        task_id: &str,
+        mut previous: Option<TaskProjection>,
+        event: &RunEvent,
+    ) -> Result<TaskProjection, StoreError> {
+        if previous.as_ref().is_some_and(|s| s.task_id != task_id) {
+            return Err(conflict("Foreign Task prefix"));
+        }
+        let mut verified = BTreeSet::new();
+        fold_task_event(cas, task_id, &mut previous, event, &mut verified)?;
+        let mut state = previous.ok_or_else(|| conflict("Missing Task genesis"))?;
+        state.artifact_refs.extend(verified);
+        Ok(state)
+    }
+
+    pub fn task_projection_at_sequence(
+        &self,
+        cas: &Cas,
+        task_id: &str,
+        sequence: u64,
+    ) -> Result<Option<TaskProjection>, StoreError> {
+        self.task_projection_through(cas, task_id, Some(sequence))
+    }
+
+    fn task_projection_through(
+        &self,
+        cas: &Cas,
+        task_id: &str,
+        through: Option<u64>,
     ) -> Result<Option<TaskProjection>, StoreError> {
         #[cfg(test)]
         PROJECTION_CALLS.with(|calls| calls.set(calls.get() + 1));
@@ -1653,8 +1886,13 @@ impl EventStore {
             .task_cache
             .borrow()
             .as_ref()
-            .filter(|state| state.task_id == task_id)
+            .filter(|state| through.is_none() && state.task_id == task_id)
             .cloned();
+        if let Some(cached) = &state
+            && !self.observed_runs_unchanged(cached)?
+        {
+            state = None;
+        }
         let mut verified = BTreeSet::new();
         // Cached prefix is only a parse memo. Revalidate current revision/plan bytes on every
         // access; a removed or corrupted active artifact must never inherit cached authority.
@@ -1735,130 +1973,24 @@ impl EventStore {
             }
             active_refs.extend(state.recording_recovery_refs(cas)?);
             active_refs.extend(state.artifact_refs.iter().cloned());
+            active_refs.extend(state.observed_artifacts.iter().cloned());
             for id in active_refs {
                 cas.verify(&id)
                     .map_err(|e| StoreError::Artifact(e.to_string()))?;
                 verified.insert(id);
             }
         }
-        let mut replays = ReviewReplays::default();
         let first = state.as_ref().map_or(0, |state| state.next_sequence);
-        for event in self.replay_from(&task_run_id(task_id)?, first)? {
-            // A lease's execution marker, the log's one event kind beside its transitions.
-            if event.event_type == EventType::TaskExecutionStartedV1 {
-                let marker = read_execution_started(&event)?;
-                state
-                    .as_mut()
-                    .ok_or_else(|| conflict("Task execution marker precedes genesis"))?
-                    .apply_execution_started(&event, &marker)?;
-                continue;
-            }
-            // A gate retry reopens a finished Task at its failed gates (`TaskGateRetried@1`).
-            if gate_retry::is_gate_retried(&event) {
-                let retry = gate_retry::read_gate_retried(&event)?;
-                for id in retry.artifact_refs() {
-                    if verified.insert(id.clone()) {
-                        cas.verify(&id)
-                            .map_err(|e| StoreError::Artifact(e.to_string()))?;
-                    }
-                }
-                state
-                    .as_mut()
-                    .ok_or_else(|| conflict("Task gate retry precedes genesis"))?
-                    .apply_gate_retried(cas, &event, &retry)?;
-                continue;
-            }
-            if event.event_type == EventType::TaskProviderEventV1 {
-                let value = read_provider_event(&event)?;
-                state
-                    .as_mut()
-                    .ok_or_else(|| conflict("Task Provider event precedes genesis"))?
-                    .apply_provider_event(&event, &value)?;
-                continue;
-            }
-            if !matches!(event.event_type, EventType::TaskTransitionV5) {
-                return Err(conflict("Task log contains a foreign event"));
-            }
-            let transition = read_task_transition(&event)?;
-            if let TaskChangeV1::ReviewContinued { handoff_id } = &transition.change {
-                review_handoff::validate_evidence_with_replays(
-                    self,
-                    cas,
-                    &review_handoff::read_task_review_handoff(cas, handoff_id)?,
-                    &mut replays,
-                )?;
-            }
-            let expected = references(cas, &transition.change, state.as_ref())?;
-            if expected != event.artifact_refs {
-                return Err(conflict(
-                    "Task event references disagree with its typed payload",
-                ));
-            }
-            for id in &expected {
-                if verified.insert(id.clone()) {
-                    cas.verify(id)
-                        .map_err(|e| StoreError::Artifact(e.to_string()))?;
-                }
-            }
-            if let Some(state) = &mut state {
-                state.apply(cas, &event, &transition)?;
-            } else if let TaskChangeV1::Opened {
-                revision_id,
-                lease_until_unix_ms,
-            } = &transition.change
-            {
-                let revision = revision(cas, revision_id)?;
-                if revision.task_id != task_id
-                    || revision.revision != 1
-                    || event.sequence != 0
-                    || transition.epoch != 1
-                {
-                    return Err(conflict("Invalid Task genesis"));
-                }
-                state = Some(TaskProjection {
-                    task_id: task_id.into(),
-                    revision_id: revision_id.clone(),
-                    revision,
-                    plan_id: None,
-                    phase: TaskPhaseV1::Submitted {},
-                    admitted: false,
-                    next_sequence: 1,
-                    writer: transition.writer,
-                    epoch: 1,
-                    lease_until: *lease_until_unix_ms,
-                    last_time: transition.now_unix_ms,
-                    previous_writer: (transition.now_unix_ms, *lease_until_unix_ms),
-                    resume_phase: None,
-                    recording_recovery: None,
-                    recording_report: None,
-                    decisions: BTreeMap::new(),
-                    artifact_refs: BTreeSet::new(),
-                    execution: None,
-                    planning: None,
-                    deliveries: Vec::new(),
-                    adoption_observations: Vec::new(),
-                    run_reports: Vec::new(),
-                    review_handoffs: Vec::new(),
-                    gate_cleanups: Vec::new(),
-                    storage_sweeps: Vec::new(),
-                    execution_epochs: BTreeSet::new(),
-                    gate_retries: Vec::new(),
-                    opened_unix_ms: transition.now_unix_ms,
-                    clock_started_unix_ms: None,
-                    provider_events: Vec::new(),
-                });
-            } else {
-                return Err(conflict("Task transition precedes genesis"));
-            }
-        }
-        if let Some(state) = &state {
-            review_handoff::validate_cached(self, cas, state, &mut replays)?;
-            review_integration::validate_cached(self, cas, state, &mut replays)?;
+        for event in self
+            .replay_from(&task_run_id(task_id)?, first)?
+            .into_iter()
+            .take_while(|event| through.is_none_or(|last| event.sequence <= last))
+        {
+            fold_task_event(cas, task_id, &mut state, &event, &mut verified)?;
         }
         if let Some(state) = &mut state {
             state.artifact_refs = verified;
         }
-        *self.task_cache.borrow_mut() = state.clone();
         Ok(state)
     }
 
@@ -1921,7 +2053,7 @@ impl EventStore {
             // Stamped before it is persisted, so the log stays monotonic and replays unchanged.
             transition.now_unix_ms = state.writer_time(&transition);
         }
-        let (event_type, value) = review_handoff::encode_transition(&transition)?;
+        let (event_type, value) = journal::encode_transition(&transition)?;
         let first = state.as_ref().map_or(0, |s| s.next_sequence);
         if owned_prefix
             .as_ref()
@@ -1941,11 +2073,7 @@ impl EventStore {
             // Recheck expiry inside the write transaction: a renewal that waited for the
             // database's write lock must not extend a lease that expired meanwhile (ADR-0128).
             state.as_ref().map(|state| state.lease_until)
-        } else if owned_record
-            || matches!(
-                transition.change,
-                TaskChangeV1::ReviewContinued { .. } | TaskChangeV1::RecordingResumed { .. }
-            )
+        } else if owned_record || matches!(transition.change, TaskChangeV1::RecordingResumed { .. })
         {
             state.as_ref().map(|state| {
                 state.lease_until.min(
@@ -1962,7 +2090,6 @@ impl EventStore {
         let refs = references(cas, &transition.change, state.as_ref())?;
         let run_id = task_run_id(task_id)?;
         let event = NewEvent::new(event_type, value.clone()).referencing(refs);
-        let review_round = review_round::fence_for_transition(cas, &transition, state.as_ref())?;
         // The projection this transition leaves: what the commit observer is told beside it.
         let mut applied = None;
         if let Some(mut state) = state {
@@ -2009,18 +2136,11 @@ impl EventStore {
             payloads: vec![value],
             event_type,
             valid_until,
-            review_round,
             review_prefix: owned_prefix.clone().and_then(|(_, prefix)| prefix),
             bound_tasks,
         };
-        let appended = self.append_batch_observed(
-            &run_id,
-            cas,
-            &[event],
-            Some(&permit),
-            None,
-            applied.as_ref(),
-        );
+        let appended =
+            self.append_batch_observed(&run_id, cas, &[event], Some(&permit), applied.as_ref());
         if matches!(&appended, Err(StoreError::Conflict(message))
             if message == "Task write lost its sequence/lease comparison")
             && !owned_record
@@ -2039,6 +2159,7 @@ impl EventStore {
                     .replay_bounded(
                         &run_id,
                         first,
+                        None,
                         Some(&mut super::ReplayBudget::new(64, 65_536, 1_048_576)),
                         &mut 0,
                     )
@@ -2145,7 +2266,7 @@ impl EventStore {
         );
         // Stamped before it is persisted, so the log stays monotonic and replays unchanged.
         marker.now_unix_ms = state.lease_time(&marker.writer, marker.epoch, marker.now_unix_ms);
-        let (event_type, value) = review_handoff::encode_execution_started(&marker)?;
+        let (event_type, value) = journal::encode_execution_started(&marker)?;
         let run_id = task_run_id(&lease.task_id)?;
         let first = state.next_sequence;
         let event = NewEvent::new(event_type, value.clone());
@@ -2171,11 +2292,10 @@ impl EventStore {
             payloads: vec![value],
             event_type,
             valid_until: None,
-            review_round: None,
             review_prefix: None,
             bound_tasks: Vec::new(),
         };
-        self.append_batch_observed(&run_id, cas, &[event], Some(&permit), None, Some(&state))?
+        self.append_batch_observed(&run_id, cas, &[event], Some(&permit), Some(&state))?
             .pop()
             .ok_or_else(|| conflict("Task execution marker appended no event"))
             .map(Some)
@@ -2205,7 +2325,7 @@ impl EventStore {
             node,
             event,
         );
-        let (event_type, payload) = review_handoff::encode_provider_event(&value)?;
+        let (event_type, payload) = journal::encode_provider_event(&value)?;
         let run_id = task_run_id(&lease.task_id)?;
         let first = state.next_sequence;
         let event = NewEvent::new(event_type, payload.clone());
@@ -2231,11 +2351,10 @@ impl EventStore {
             payloads: vec![payload],
             event_type,
             valid_until: None,
-            review_round: None,
             review_prefix: None,
             bound_tasks: Vec::new(),
         };
-        self.append_batch_observed(&run_id, cas, &[event], Some(&permit), None, Some(&state))?
+        self.append_batch_observed(&run_id, cas, &[event], Some(&permit), Some(&state))?
             .pop()
             .ok_or_else(|| conflict("Task Provider event appended no event"))
     }
@@ -2328,7 +2447,7 @@ impl EventStore {
         state: &TaskProjection,
         id: &str,
         authority: &dyn TaskAuthority,
-    ) -> Result<ExecutionPlanV3, StoreError> {
+    ) -> Result<ExecutionPlan, StoreError> {
         let value = plan(cas, id, state)?;
         let expected = authority
             .validate_plan(cas, &state.revision, &value)
@@ -2601,7 +2720,7 @@ impl EventStore {
         state: &TaskProjection,
         authority: &dyn TaskAuthority,
         time: u64,
-    ) -> Result<ExecutionPlanV3, StoreError> {
+    ) -> Result<ExecutionPlan, StoreError> {
         let id = state
             .plan_id
             .as_ref()
@@ -2624,7 +2743,7 @@ impl EventStore {
         cas: &Cas,
         lease: &TaskLease,
         authority: &dyn TaskAuthority,
-    ) -> Result<ExecutionPlanV3, StoreError> {
+    ) -> Result<ExecutionPlan, StoreError> {
         self.checked_task_dispatch(cas, lease, authority)
             .map(|(_, plan)| plan)
     }
@@ -2637,7 +2756,7 @@ impl EventStore {
         cas: &Cas,
         lease: &TaskLease,
         authority: &dyn TaskAuthority,
-    ) -> Result<(TaskProjection, ExecutionPlanV3), StoreError> {
+    ) -> Result<(TaskProjection, ExecutionPlan), StoreError> {
         self.checked_task_current(cas, lease, authority, true)
     }
 
@@ -2648,7 +2767,7 @@ impl EventStore {
         cas: &Cas,
         lease: &TaskLease,
         authority: &dyn TaskAuthority,
-    ) -> Result<ExecutionPlanV3, StoreError> {
+    ) -> Result<ExecutionPlan, StoreError> {
         let _span =
             af_contracts::perf_trace::span(af_contracts::perf_trace::Phase::AuthorityPlanCheck);
         self.checked_task_recording(cas, lease, authority)
@@ -2660,7 +2779,7 @@ impl EventStore {
         cas: &Cas,
         lease: &TaskLease,
         authority: &dyn TaskAuthority,
-    ) -> Result<(TaskProjection, ExecutionPlanV3), StoreError> {
+    ) -> Result<(TaskProjection, ExecutionPlan), StoreError> {
         self.checked_task_current(cas, lease, authority, false)
     }
 
@@ -2670,7 +2789,7 @@ impl EventStore {
         lease: &TaskLease,
         authority: &dyn TaskAuthority,
         dispatching: bool,
-    ) -> Result<(TaskProjection, ExecutionPlanV3), StoreError> {
+    ) -> Result<(TaskProjection, ExecutionPlan), StoreError> {
         let state = self
             .task_projection(cas, &lease.task_id)?
             .ok_or_else(|| conflict("Unknown Task"))?;
@@ -2700,9 +2819,6 @@ impl EventStore {
             }
             plan
         };
-        if let Some(round) = review_round::ReviewRoundFence::for_state(cas, &state)? {
-            round.validate(&self.conn)?;
-        }
         Ok((state, plan))
     }
 }

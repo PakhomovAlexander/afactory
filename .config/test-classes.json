@@ -6,7 +6,9 @@
     "test-af-pin.py",
     "test-changelog-notes.py",
     "test-gate-owner.py",
-    "test-test-quarantine.py"
+    "test-test-quarantine.py",
+    "test-dev-release.py",
+    "test-contract-inventory.py"
   ],
   "binaries": {
     "af::bin/af": "functional",
@@ -62,7 +64,8 @@
     "af-source-issue::sources": "e2e",
     "af-source-issue::transport": "e2e",
     "af-store": "functional",
-    "af-telemetry": "functional"
+    "af-telemetry": "functional",
+    "af-runner::contract_inventory": "functional"
   },
   "exact": {
     "af::bin/af self_optimizer::optimization_adapters::tests::codex_continued_range_adopts_its_first_named_session_as_unverified": "functional",
@@ -100,7 +103,9 @@
     "af-sandbox::seal many_distinct_repeated_blobs_have_bounded_resident_memory": "perf",
     "af-sandbox::seal unchanged_large_tree_sandbox_measurement": "perf",
     "af-source-git::it capture::dirty_capture_large_tree_measurement": "perf",
-    "af-store cas::tests::bench_put_throughput": "perf"
+    "af-store cas::tests::bench_put_throughput": "perf",
+    "af::it telemetry_bench::telemetry_final_child_cannot_open_external_account_authority": "e2e",
+    "af::it telemetry_bench::unstarted_check_keeps_its_original_disk_refusal_without_empty_runtime_evidence": "e2e"
   },
   "hosted_checks": {
     "container-probes": "e2e",
@@ -108,12 +113,11 @@
     "telemetry-runtime-smoke": "perf"
   },
   "ignored": {
-    "af::it perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample": "manual-measurement",
-    "af-runtime task::optimization_configuration::tests::one_of_many_cache_materializing_processes": "subprocess-helper",
-    "af-runtime::it task_campaign_review::host::domain::a_container_gate_executes_on_the_task_host": "live-container",
     "af-process sample::tests::a_failed_exit_observation_in_a_namespace_keeps_the_deadline": "namespace-child",
     "af-process sample::tests::a_failed_namespace_enumeration_is_never_clean": "namespace-child",
     "af-process sample::tests::a_namespace_init_kills_and_verifies_a_new_session_escape": "namespace-child",
+    "af-runtime task::optimization_configuration::tests::one_of_many_cache_materializing_processes": "subprocess-helper",
+    "af-runtime::it task_review_execute_checks::a_container_check_executes_on_the_native_task_host": "live-container",
     "af-sandbox container::tests::a_timed_out_container_is_removed_before_execution_returns": "live-container",
     "af-sandbox::cache one_of_many_materializing_processes": "subprocess-helper",
     "af-sandbox::container_probes a_check_command_runs_contained_and_its_work_lands_in_the_sandbox": "live-container",
@@ -127,18 +131,17 @@
     "af-sandbox::seal unchanged_large_tree_sandbox_measurement": "manual-measurement",
     "af-source-git::it capture::dirty_capture_large_tree_measurement": "manual-measurement",
     "af-store cas::tests::bench_put_throughput": "manual-measurement",
-    "af-store cas::tests::one_of_two_racing_cas_writers": "subprocess-helper"
+    "af-store cas::tests::one_of_two_racing_cas_writers": "subprocess-helper",
+    "af::it perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample": "manual-measurement"
   },
   "modules": {
     "af::it": {
       "af_layout": "functional",
       "aliases": "uix",
       "build_metadata": "functional",
-      "campaign_loop": "e2e",
       "catalog_digest": "functional",
       "cli_surface": "uix",
       "common": "e2e",
-      "common_review_summaries": "e2e",
       "doctor": "e2e",
       "fake_models": "e2e",
       "help_examples": "uix",
@@ -162,10 +165,7 @@
       "provider_models": "e2e",
       "provider_onboarding": "e2e",
       "provider_registry": "e2e",
-      "render": "e2e",
       "review_memo": "e2e",
-      "review_plan_refusals": "e2e",
-      "routing": "e2e",
       "scenario": "e2e",
       "schemas": "e2e",
       "self_channel": "e2e",
@@ -213,6 +213,7 @@
       "task_starters": "e2e",
       "task_structured_acceptance": "e2e",
       "task_triage": "e2e",
+      "issue_workflows": "e2e",
       "task_warm_checks": "e2e",
       "telemetry": "e2e",
       "telemetry_bench": "perf",
@@ -224,27 +225,21 @@
       "telemetry_streams": "e2e",
       "troubleshooting": "e2e",
       "tui": "uix",
-      "undeclared_af_paths": "e2e"
+      "undeclared_af_paths": "e2e",
+      "task_review": "e2e",
+      "review_decisions": "e2e"
     },
     "af-pipeline-config::it": {
-      "captured_registry": "functional",
-      "captured_review": "functional",
-      "definition": "functional",
       "lock_af_version": "functional",
-      "lockfile": "functional",
-      "node_budget": "functional",
       "optimization_package": "functional",
       "task_selection_schema": "functional"
     },
     "af-runtime::it": {
       "code_policy_schema": "e2e",
       "optimization_producers": "perf",
-      "receipt_authority": "e2e",
       "remote_checks": "e2e",
       "support": "e2e",
-      "task_campaign_review": "e2e",
       "task_implementation": "e2e",
-      "task_review": "e2e",
       "task_review_execute_checks": "e2e",
       "task_runtime": "e2e",
       "telemetry_processes": "e2e"
@@ -274,18 +269,14 @@
       "telemetry_levels": "e2e"
     },
     "af-runner::it": {
-      "change_wide_prior": "e2e",
-      "command_inputs": "e2e",
       "load_safe_wall": "e2e",
       "model_supervision": "e2e",
       "prior_bound": "e2e",
-      "render_support": "e2e",
       "task_command_process_group": "e2e",
       "task_contexts": "e2e",
       "task_model_transport": "e2e",
       "task_reply_reask": "e2e",
-      "task_usage": "e2e",
-      "warm_render": "e2e"
+      "task_usage": "e2e"
     },
     "af-source-git::it": {
       "capture": "e2e",
@@ -298,9 +289,7 @@
     },
     "af-store::it": {
       "attempt_wall": "e2e",
-      "campaign_authority": "e2e",
       "canonical_identity": "e2e",
-      "crash_replay": "e2e",
       "ledger_convergence": "e2e",
       "optimization_economics": "e2e",
       "report_scope": "e2e",
@@ -356,6 +345,7 @@
     "test-release-contract.py": "functional",
     "test-backlog-check-triage.py": "functional",
     "test-backlog-labels.py": "functional",
+    "test-issue-workflows.py": "functional",
     "test-backlog-triage.py": "functional",
     "test-changelog-notes.py": "functional",
     "test-check-pr-report.py": "functional",
@@ -377,7 +367,12 @@
     "test-test-quarantine.py": "functional",
     "test-test-time-report.py": "functional",
     "test-worker-development.py": "e2e",
-    "test-scenario-merge-watch.py": "e2e"
+    "test-workspace-fixtures.py": "functional",
+    "test-workspace-fixture-benchmark.py": "perf",
+    "test-scenario-merge-watch.py": "e2e",
+    "test-task-wake-probe.py": "functional",
+    "test-dev-release.py": "e2e",
+    "test-contract-inventory.py": "functional"
   },
   "utilities": [
     "test-classes.py",

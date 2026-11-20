@@ -2,7 +2,8 @@
 
 A Scenario orchestrates pinned existing Tasks or authorized fresh Task templates, child Scenarios,
 bounded actions, signed human decisions,
-and observations. An Ant binds a pinned Scenario to a daily schedule. Neither command installs a
+and observations. An Ant binds a pinned Scenario to a daily or integral-second interval
+schedule. Neither command installs a
 cron job, starts a daemon, or creates an instance until explicitly requested. Models run only
 inside Tasks. [ADR-0274](adr/0274-orchestrate-pinned-scenarios-and-admit-ant-occurrences.md)
 defines the authority boundary.
@@ -10,12 +11,13 @@ defines the authority boundary.
 ## Review, record, drive
 
 Definitions use TOML for authoring and JSON for their versioned wire documents, with schema
-`af/scenario@5`. A bundle (`af/scenario-bundle@5`) names its
+`af/scenario@10`. A bundle (`af/scenario-bundle@10`) names its
 `root` and maps names to definitions. See the inert examples in `fixtures/scenarios/` and the
 schemas from `af schema show`. Definitions have explicit `inputs`, `outputs`, ordered `steps`,
 `result` bindings, boolean `completion` conditions, `authority`, and `limits`.
 
-The port types are `text`, `boolean`, `integer`, `task`, `action`, `decision`, `observation`, and
+The port types are `text`, `boolean`, `integer`, `task`, `task_outcome`, `action`,
+`decision`, `observation`, and
 `owned_file`. A value is `{"type":"text","value":"example"}`. Bindings have `source` set to
 `literal` (with `value`), `input` (with `port`), or `step` (with `step` and `port`). Forward
 references and type mismatches fail admission. A `project` binding selects a typed receipt field:
@@ -28,6 +30,17 @@ A `select` binding has boolean `condition` and equal-type `when_true`/`when_fals
 it resolves only the chosen arm, so optional skipped outputs remain unread. Decision branches
 are refused to keep signed approval consumers static. Root inputs and literals are scalar data; they
 cannot manufacture receipts. Child inputs may carry receipts produced by preceding steps.
+
+A native Task step may explicitly declare its result as `task_outcome` instead of `task`.
+This retains the exact terminal Task/plan/revision/result, native cause, available candidate
+Snapshot, checks and reviewed continuation, known charges and unknown-usage flag. It grants no
+acceptance. The `task_accepted` and `task_repairable` projections return booleans;
+`accepted_task` requires the existing completed, satisfied Task contract. Preflight failure,
+exhaustion, cancellation, unknown usage and missing continuation cannot acquire repair authority.
+An explicit fresh implementation step may bind `repair` to eligible terminal evidence; the
+native host rechecks its exact Store evidence and plans a new Task with source-bound findings.
+See [bounded implementation repairs](scenario-impl.md) for the required whole-change verifier
+and the shared allowance across native, verifier and CI paths.
 
 Each step declares `id`, `operation`, `inputs`, `outputs`, `when` (null or boolean binding),
 `max_attempts` (1–8), `timeout_ms`, and `on_timeout` (`fail` or `skip`). Only Wait and Decision
@@ -138,7 +151,7 @@ pausing its Ant are separate operations.
 
 ## Machine policy and bounded adapters
 
-`af/scenario-policy@5` is an explicit, owner-only machine file outside every Git checkout.
+`af/scenario-policy@8` is an explicit, owner-only machine file outside every Git checkout.
 Author it as TOML; its captured JSON wire form is also accepted. The filename selects the format
 (`.toml` or JSON); a parse failure never selects a fallback format or an earlier version.
 It contains
@@ -153,11 +166,15 @@ environment plus sanitized PATH, HOME and XDG_CONFIG_HOME,
 and supervised process-tree termination. It must own its credential access and enforce its
 operation/destination scope. This is a trusted machine extension, not isolation of hostile code.
 
-Requests (`af/scenario-adapter-request@4`) carry `method` (`reconcile`, `execute`, `observe`),
+Requests (`af/scenario-adapter-request@8`) carry `method` (`reconcile`, `execute`, `observe`),
 `intent_id`, `input_digest`, `operation`, `destination`, and typed `inputs`. Observations also
-carry an injected text `condition` input. Responses (`af/scenario-adapter-response@1`) must echo
+carry an injected text `condition` input. Responses (`af/scenario-adapter-response@3`) must echo
 both identities and supply `outcome`, bounded `evidence`, and `observation` (null for actions).
 An observation carries exact `subject`, `revision`, `condition`, `satisfied`, and `evidence`.
+For scoped implementation publication only, `native_proof_ready` and `publication_prepared` are
+closed retained progress outcomes. They earn a single immediate driver resume each; ordinary
+pending observations or uncertain responses earn none.
+See [the driver](scenario-impl.md#retained-foreground-driver).
 
 The installed adapter MUST implement durable idempotency by intent ID and exact input digest.
 Before returning `done`, it must retain a service receipt that reconciliation can recover. A
@@ -197,10 +214,11 @@ and writes the caller's durable `DONE` notification only after every cleanup tar
 It uses read-only GitHub inspection, retains Task Stores, and installs no scheduler. This separate
 script does not change native Wait behavior or complete a native Scenario Run.
 
-## Daily Ant scheduling
+## Ant scheduling
 
-An `af/ant@5` definition has `id`, `scenario` (bundle), typed `inputs`, `owner`, `notification`,
-`schedule` (`timezone`, `hour`, `minute`, `start_unix_ms`), and `execution`. The notification is
+An `af/ant@11` definition has `id`, `scenario` (bundle), typed `inputs`, `owner`, `notification`,
+`schedule` (`kind: daily`, `timezone`, `hour`, `minute`, `start_unix_ms`), and `execution`. The
+notification is
 an accountable routing label retained in inspection; sending a notification is an explicit
 `notify` action with its own authorized adapter.
 
@@ -213,7 +231,8 @@ through a rolling window after settlement, conservatively covering all dispatch 
 Validate with `af ant validate --file ANT --authority POLICY --json`, review the exact pin, then
 `af ant add --file ANT --authority POLICY --confirm-pin REVISION`. Add registers it disabled.
 `af ant enable ID`, `pause ID`, `disable ID`, `show ID`, and `list` manage or inspect it. An
-external scheduler calls `af ant tick`: due occurrences are recorded in one immediate database
+explicit foreground driver (`af ant scheduler run`) or one-shot caller invokes `af ant tick`:
+due occurrences are recorded in one immediate database
 transaction before newly admitted Runs are driven. Restart or concurrent ticks cannot launch
 the same occurrence twice. Ticks also recover and drive existing active Ant Runs, polling bounded
 waits; `scenario resume RUN` can drive one explicitly. A concurrent driver is reported as busy.
@@ -237,6 +256,192 @@ on restart; later eligible days may launch normally. Historical due-time modes a
 occurrences keep their original skipped outcomes.
 Pausing does not cancel or release an active Run.
 No real definitions, schedules, credentials or publication grants ship enabled in Afactory.
+
+### Native integral-second intervals and foreground scheduler
+
+The alternative schedule is `{"kind":"interval","seconds":1,"start_unix_ms":1700000000000}`.
+Use `seconds: 5`, `60` or `900` for five seconds, one minute or fifteen minutes; positive integral
+seconds through 9007199254740991 are supported. Zero, negatives, fractions, strings and unsafe
+integers fail. The explicit Unix-millisecond anchor is index zero; index n is anchor plus n
+intervals. Cadence is fixed-rate and independent of completion, timezone and DST. The existing
+calendar horizon applies; a next due beyond it is null.
+
+```sh
+# needs: a separately reviewed, registered private Ant and its Store
+ af ant scheduler run --state /private/scenarios
+ af ant scheduler status --state /private/scenarios --json
+ af ant scheduler stop --state /private/scenarios
+```
+
+Run stays in the foreground. An outer process supervisor may own it; AF installs no launchd job,
+service, cron entry or autostart. One OS lease excludes a second scheduler for the same Store.
+Status checks that lease, so a crash does not leave a false running flag. `stop` requests graceful
+exit after current bounded dispatch; Ctrl-C/SIGTERM uses existing process supervision. Runs keep
+their own durable lifecycle and can be resumed after stopping the scheduler. `--for-seconds N`
+bounds a private fixture's driver lifetime. Inspection/validation never start a scheduler.
+Startup serializes lease acquisition and scheduler-row initialization with stop requests in one
+immediate transaction. A stop acknowledged after that lease is acquired survives initialization,
+including the first startup and restart with an old row. A later explicit restart clears the old
+stop request; a stop issued before a new generation acquires its lease does not disable that
+future generation.
+
+When an interval tick is late, all older unprocessed indexes become one `skipped_missed` range
+(`local_day` is its first ordinal, `through_index` its inclusive last); only the latest index is
+considered for admission. Waiting/uncertain Runs cause `skipped_busy`, with no queue or overlap.
+Each occurrence records intended `due_unix_ms` and actual `admitted_unix_ms`. The generation-1
+Ant inspection adds `scheduler`, `next_due_unix_ms`, `active_run` and `last_lateness_ms` to the
+native state fields. Run `created_unix_ms` records admission; individual dispatch intents retain
+actual dispatch timing. An unavailable scheduler or old heartbeat must not be mistaken for an
+on-time execution guarantee. One-second resolution is best effort: sleep/wake, contention and
+bounded sequential dispatch may delay admission. Clock rollback refuses until the retained
+high-water time is reached; forward jumps follow the same compact missed policy.
+
+A separately authorized recovery Scenario can bind an interval of `900` seconds and use this
+foreground driver instead of a bespoke sleep/tick loop, lock and occurrence cursor. Inspect/recover
+host adapters, their credential policy and machine destinations still need their own authorization.
+This change does not activate or change the existing recovery monitor or its state.
+
+The private Store and machine Storage Budget count journal, result index and lock bytes. The
+existing 16 MiB journal bound refuses further transitions when exhausted; histories/accounting are
+never silently truncated. High-frequency sustained use must account for retained Run growth and
+native Store retention. See the [private executable examples and measurement
+recipe](../fixtures/scenarios/results/README.md)
+for measured idle, one-second operation and read-only polling, including their limits.
+The [tracked execution record](implementation-evidence/796-797.md) states exact commands, failures
+and sample timing/overhead without claiming independent acceptance.
+
+### Generic named Markdown results
+
+A Scenario author can publish any named native `text` result, or an `observation`/`action`
+receipt whose recorded `evidence` contains a validated
+`af/result-document@1` JSON document. It specifies `observed_unix_ms`, `stale_after_ms` and an
+ordered `blocks` array. A `table` block defines `title`, ordered `columns` and equally wide ordered
+`rows`; cells may be strings, numbers, booleans, null or nested JSON. A `markdown` block explicitly
+preserves intentional Markdown in `content`. There are no universal Task/issue columns.
+
+```json
+{
+  "schema": "af/result-document@1",
+  "observed_unix_ms": 1700000000000,
+  "stale_after_ms": 60000,
+  "blocks": [
+    {"kind":"markdown","content":"## Authored observation"},
+    {"kind":"table","title":"Inventory","columns":["Material","Quantity"],
+     "rows":[["Steel",12],["Wood",0]]}
+  ]
+}
+```
+
+```sh
+# needs: a recorded Scenario Run or registered Ant exposing this text output
+ af scenario output RUN --name report --state /private/scenarios
+ af ant output ANT --name report --watch --interval-seconds 1 --state /private/scenarios
+ af ant output ANT --name report --watch --interval-seconds 5 \
+   --output latest.md --state /private/scenarios
+```
+
+Already-authored Markdown can also be a native `text` output without a JSON document wrapper.
+Select it explicitly with `--raw-markdown`, together with `--name`, `--observed-output` (a separate
+recorded integer result port containing source observation Unix milliseconds) and
+`--stale-after-ms`.
+For example, a Scenario with `report: text` and `observed: integer` uses:
+
+```sh
+ af scenario output RUN --name report --raw-markdown --observed-output observed \
+   --stale-after-ms 60000 --watch --interval-seconds 1 --output latest.md --state /private/scenarios
+```
+
+The producer retains the Markdown bytes directly in its named result. The renderer constructs a
+validated Markdown-block projection with the selected recorded observation time, preserving the
+same snapshot identity, freshness and lifecycle semantics as structured documents. Observation
+time is never inferred from a Run update, refresh or file timestamp. Missing/non-integer metadata,
+future/invalid observation times, unsupported output types, terminal controls and an oversized
+projection are errors. Without `--raw-markdown`, JSON-document validation remains mandatory; there
+is no content sniffing or fallback. The
+[authored example](../fixtures/scenarios/results/authored-markdown.json) and its
+[original document](../fixtures/scenarios/results/authored.md) demonstrate this path.
+
+`--name` is mandatory when there are several outputs; it selects a native Scenario result port.
+`show --json` continues exposing complete native results and provenance. Ant operational status
+and result content remain separate. An Ant view selects its latest admitted Run, including an
+unavailable new result, rather than silently showing an older success.
+
+Every snapshot states Ant/occurrence/Run, output name, content revision, producer status,
+observation
+and render times. Available root result bindings can be partial while other steps run. Completed
+bindings are final after settlement; empty tables are `partial_empty`/`final_empty`. Missing output
+is `unavailable`, and failed/cancelled producers are errors. `fresh`/`stale` is independent of these
+states and compares render time against the author's original observation time and freshness
+window. A future observation time is refused. Refresh errors show unavailable/error, without
+old data presented as current. Formatting and watching invoke no model and invent no values.
+
+Watch cadence is independent of both producer updates and scheduling. The watcher never ticks,
+launches, retries, cancels or clears a human hold. The transactionally derived keyed read index
+avoids scanning historical Runs on each poll. Streams and terminals append complete timestamped
+Markdown snapshots, with no ANSI controls; pipes may close cleanly. Files use synced temporary
+files in the destination directory and atomic replacement. Ctrl-C leaves Runs/Ants intact.
+
+Structured labels and cells escape HTML and Markdown/table metacharacters. Newlines render as
+`<br>`, other control characters as numeric entities, and nested values as canonical JSON.
+Native numeric admission and canonical formatting apply to nested cells: unsafe integers, negative
+zero and unsupported numeric magnitudes require explicit strings. Large cells are not silently
+truncated: 32 blocks, 32 columns, 512 rows per table and 64 KiB for
+the entire native document are explicit bounds. Duplicate columns, mismatched row widths,
+unsupported envelopes and terminal controls in intentional Markdown are errors. The explicit
+Markdown path intentionally trusts author formatting; use structured cells for literal values.
+
+For a fleet-specific view, an authorized producer must retain environment and Store/Task identity,
+captured purpose/issue provenance, meaningful native terminal outcomes, the native elapsed-clock
+basis (not summed overlapping Attempts) and recorded charged tokens, including unknown usage.
+Those values belong to that producer's view and must cite the original receipts. Refresh cannot
+infer them from labels or substitute reserved tokens for charged usage. The generic renderer imposes
+none of those columns on weather, library, inventory or other results.
+
+The [dated decision](adr/2026-11-11-native-intervals-and-recorded-result-markdown.md) specifies the
+version boundary: Ant family 6, inspection/scheduler/result documents 1, Scenario Store 7
+(subsequently replaced by the retention contract below);
+unsupported earlier generations are refused without migration. Daily scheduling stays current.
+
+## Native retention and capacity
+
+Native Ant history is compacted transactionally at each Store update. `af ant show ID --json`
+and `af ant list --json` expose `retention`: retired counts by disposition, completed Run count,
+exact cumulative charged tokens (decimal text), highest retired index, mode-change count, provenance
+hash and conservative rolling-charge buckets. The cursor and pinned identity never reset.
+
+The most recent 32 receipts, the latest admitted Run, and all active/waiting/held/uncertain work
+remain. Unknown usage and unconfirmed effects/cancellation retain their native authority and
+reservations indefinitely. Goal-claim Runs remain for roadmap replay; manual Runs are not pruned.
+Older eligible completed bodies and outputs expire, including their output-index rows. An old
+`af scenario output RUN --name NAME` can explicitly report pruned/unavailable content. A provenance
+hash does not make its original body available. Latest Ant output still selects the latest
+admitted producer, including an unavailable or failed producer, rather than an older success.
+
+Exact cumulative charges survive expiry. At most 64 settled charge buckets conservatively combine
+older entries at a later settlement time, so a rolling budget may defer longer but never admits by
+forgetting a still-relevant charge. Unknown usage never ages out of the reservation.
+Computed Run totals use exact u128 sums across individual Task charges, including recovered
+overruns. Only the rolling admission comparison saturates; validation, settlement and retired
+buckets preserve the full total. See the
+[within-Run accounting clarification](adr/2026-11-12-keep-within-run-accounting-wide.md).
+
+The existing 16 MiB journal limit and machine Storage Budget remain. Persisted Run byte leases
+protect lifecycle updates and bounded external responses before dispatch. New admissions can be
+refused with `skipped_capacity`; another admission cannot consume an existing Run's lease. If a
+just-completed body's full projection is too large, native capacity expiry retains its Done intent,
+exact charge, native targets and body digest, makes the body explicitly unavailable, and stops
+further Scenario dispatch with an inspectable failure (cancellation remains cancellation). It never
+turns missing presentation into successful Scenario/goal completion or retries an already settled
+effect. Many protected Runs or manual/goal history may exhaust admission capacity even though old
+eligible Ant bodies were pruned. No operator deletion of a live Store is required for settlement.
+
+Current Store/state/inspection/list generations are 8/7/2/7; earlier shapes are refused without
+migration. Definitions/pins stay at Ant generation 6, and unchanged Scenario contracts at generation
+5. See the
+[retention decision](adr/2026-11-11-bound-native-ant-retention-and-settlement-capacity.md) and
+[fresh implementer evidence](implementation-evidence/796-native-retention.md). The raw-Markdown
+selection, scheduler controls, daily schedules and separately authorized recovery adapters remain
+unchanged.
 
 ## Goal roadmaps: planning and complete-loop admission
 
@@ -304,7 +509,7 @@ journal operations. They launch no model, Task, benchmark, adapter, Scenario Run
 install no schedule and grant no publication authority. They accept TOML or JSON by filename,
 using the same strict format selection as Scenario definitions. `--state` selects the existing
 private Scenario Store outside checkouts. `--json` emits `af/scenario-roadmap-revision@2` for
-validate, `af/scenario-roadmap@2` for create/show/revise, or `af/scenario-roadmap-list@2` for list;
+validate, `af/scenario-roadmap@3` for create/show/revise, or `af/scenario-roadmap-list@3` for list;
 text validation prints the revision. `af schema show ID` provides the shipped contracts.
 
 Creation allocates an opaque roadmap identity separate from its local label; a goal's stable
@@ -319,7 +524,11 @@ acceptance authority; a roadmap does not introduce another Task acceptance engin
 charge records keep unresolved work reserved and retain failed work separately from
 accepted Task receipts; totals are derived from those records and a Task charge appears in only
 one goal. Actual tokens are native recorded charges, not inferred provider spending; absent
-estimates stay unknown.
+estimates stay unknown. Roadmap `actual_tokens` is canonical decimal u128 text, including
+`"0"`; individual native charge counters remain exact JSON u64 integers. Inspection consumers
+must preserve those integers without floating-point conversion. Recovered overruns remain
+readable and retain unrelated unknown reservations while blocking over-budget admission.
+See the [accounting decision](adr/2026-11-12-preserve-exact-roadmap-overruns.md).
 
 Each revision retains its exact proposal, parent and content identity. Revision confirmation
 binds the proposed content and current parent; a concurrent writer makes a stale confirmation
@@ -332,8 +541,9 @@ Creation refuses an existing label. Replay checks the revision chain and account
 missing ownership and corrupt journals fail closed.
 
 Roadmaps share `runs/scenarios.sqlite`, its immediate transactions, private ownership and checksum
-with Runs and Ants. The journal is now `af/scenario-store@6`; the previous Store shape is refused
-without migration. The unchanged 16 MiB document bound includes all roadmap history. The ordinary
+with Runs and Ants. The journal is now `af/scenario-store@17`; the previous Store shape is refused
+without migration. The unchanged 16 MiB document bound includes all roadmap history; the Ant
+retention policy above does not erase goal provenance or roadmap revisions. The ordinary
 machine Storage Budget counts these bytes as retained Store remainder; pruning never silently
 collects revisions or resets a ledger. No second registry or storage budget exists.
 
@@ -343,21 +553,31 @@ handoff and native verified completion. Research receives immutable bounded evid
 typed `scenario_evidence` observations enter fresh Task Requirements. See the executable inert
 bundles and [manual-first deployment runbook](performance-scenarios.md). The operator must perform
 one complete manual loop on Claw before separately authorizing its pinned Ant schedule there.
-Installation, real benchmarks and VM changes remain operator work; no Mac scheduler is supplied.
+Installation, real benchmarks and VM changes remain operator work; no Mac service is installed;
+the native foreground scheduler requires explicit invocation.
 
 ## Fresh Task templates
 
-`af scenario template-pin` captures an `af/scenario-task-template@1` and its digest in an
-`af/scenario-template-pin@1` envelope. It is token-free and writes only native Task Store capture
+`af scenario template-pin` captures an `af/scenario-task-template@2` and its digest in an
+`af/scenario-template-pin@2` envelope. It is token-free and writes only native Task Store capture
 artifacts; it creates no Task or Scenario Run. Supply a native Task file with explicit pipeline,
 strategy and all limits, an exact 40-character authority commit and an external Task Store.
 Implementation files also declare verification; other kinds retain their captured native acceptance.
 Pipeline fallback must be `refuse`; generated/default plan selection is unauthorized.
-An optional native bindings file may pin slots and Providers, but may not supply local package
-paths. Source files, catalog packages, pipelines, policies and Worker settings come from the exact
-committed authority; the template retains their native authority identity, repository identity
-and source content digest. A base, if supplied, must also be an exact commit. Templates cannot
-prefill native inputs, continuations or issue authority.
+An optional `--bindings FILE` captures slots, Provider aliases and exactly pinned local Worker
+packages relative to the original bindings file directory. Pipelines and policies remain committed
+customer authority. Local packages cannot add Pipelines, shadow catalog names, escape that directory
+or bypass replacement contracts, default constraints, closure bounds or Provider independence.
+The template retains the sealed native authority identity, repository identity and source content
+digest. Fresh planning and restart restore the captured artifacts through the native compiler,
+without reopening bindings or package paths; moving or deleting them cannot change a pinned
+template. Missing or corrupt captured artifacts fail closed. Pinning retains the complete closure in
+the Task Store through a durable `ScenarioTemplatePinned@1` reference, including before any Task
+exists and after Task collection. This reference lives for the Store lifetime and counts against the
+machine storage budget. Discarding the Store discards its pins; there is no path recapture or
+migration of version 1 templates. Changed packages or bindings require a new template pin and
+Scenario/policy confirmation, with no repeated per-run bindings override. A base, if supplied, must
+also be an exact commit. Templates cannot prefill native inputs, continuations or issue authority.
 
 ```text
 # needs: a reviewed native Task file, committed authority and external Task Store
@@ -436,3 +656,18 @@ extends ADR-0274 with complete-goal admission, fresh Tasks and the asynchronous 
 `af scenario evidence-source TASK_ID --artifact-id ID --repo REPO --task-state STORE --json`
 retrieves one native findings, History Capture or adoption artifact after checking its recorded
 Task/source receipts. It reads no owner-supplied JSON artifact file and launches no Worker.
+
+Fresh Task planning requires the exact durable native template-pin record in the selected Task
+Store before creating a Task. An authorized template digest alone cannot substitute authority from
+another committed source. The combined current contracts are Scenario/Bundle 10, Policy 8,
+Pin/Run/List 11, Ant 11, Ant Pin/Tick 12, State/List 13, inspection 8 and Store 17 with driver 2.
+Earlier shapes are refused. The
+[composition decision](adr/2026-11-17-compose-scoped-implementation-and-native-nightly-contracts.md)
+records both parents and the separately scoped implementation and nightly capabilities.
+
+Nightly releases use a validated `nightly_tag` scalar and `nightly_tag_text` projection. Daily
+Ant `occurrence_inputs` may bind `scheduled_nightly_tag` from the pinned scheduled local date;
+it cannot overlap fixed inputs or be used on interval schedules. The separately installed
+`nightly_releases` machine scope binds repository and exact configuration digest for the four
+nightly Actions. Generic publication still requires its exact signed Decision. See
+[nightly deployment and recovery](nightly.md#native-release-scenario).

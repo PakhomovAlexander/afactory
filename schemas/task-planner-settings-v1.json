@@ -9,7 +9,7 @@
   ],
   "properties": {
     "worker": {
-      "$ref": "urn:af:schema:task-contracts:3#/$defs/package"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/package"
     },
     "max_attempts": {
       "type": "integer",

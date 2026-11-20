@@ -46,83 +46,235 @@ def write(repo, path, text):
 
 
 class Figures(unittest.TestCase):
-    def test_a_count_is_exact_then_rounded(self):
-        for n, shown in [(0, '0'), (7, '7'), (999, '999'), (1000, '1k'), (1049, '1k'),
-                         (1050, '1.1k'), (4980, '5k'), (7887, '7.9k'), (9949, '9.9k'),
-                         (9950, '10k'), (10_000, '10k'), (10_499, '10k'), (10_500, '11k'),
-                         (23_286, '23k'), (123_456, '123k'), (2_500_000, '2500k')]:
-            self.assertEqual(lines.figure(n), shown, n)
+    def test_rounding_and_zero_denominators(self):
+        for n, shown in [(0, '0'), (999, '999'), (1049, '1k'), (1050, '1.1k'),
+                         (9950, '10k'), (10500, '11k'), (2500000, '2500k')]:
+            self.assertEqual(lines.figure(n), shown)
+        for n, total, shown in [(0, 0, '—'), (0, 1, '0%'), (1, 3, '33%'),
+                                (2, 3, '67%'), (1, 200, '1%'), (1, 201, '<1%')]:
+            self.assertEqual(lines.share(n, total), shown)
 
-    def test_a_path_counts_under_its_first_directory_tests_or_its_own_name(self):
-        for path, name in [('crates/af/src/lib.rs', 'crates'), ('docs/telemetry.md', 'docs'),
-                           ('crates/af/tests/it/x.rs', 'tests'), ('tests/smoke.rs', 'tests'),
-                           ('scripts/performance/tests/test_x.py', 'tests'),
-                           ('crates/tests-helper/src/a.rs', 'crates'), ('Cargo.lock', 'Cargo.lock'),
-                           ('.github/workflows/ci.yml', '.github'), ('docs/tests', 'docs')]:
-            self.assertEqual(lines.group(path), name, path)
+    def test_bar_integer_half_up_eighth_boundaries_sliver_and_full_width(self):
+        for n, maximum, expected in [
+                (0, 0, ''), (0, 10, ''), (1, 10**50, '▏'),
+                (3, 193, '▏'), (3, 192, '▎'), (3, 191, '▎'),
+                (15, 193, '▉'), (15, 192, '█'), (15, 191, '█'),
+                (96, 96, '████████████'), (10**50, 10**50, '████████████')]:
+            self.assertEqual(lines.bar(n, maximum), expected, (n, maximum))
+        for n, glyph in enumerate('▏▎▍▌▋▊▉█', 1):
+            self.assertEqual(lines.bar(n, 96), glyph)
 
-    def test_a_bar_is_the_count_against_the_largest_in_eighths_and_a_share_a_percent(self):
-        self.assertEqual(lines.bar(12_345, 12_345), '████████████')
-        self.assertEqual(lines.bar(6172, 12_345), '██████')
-        self.assertEqual(lines.bar(1, 12_345), '▏', 'a sliver at least')
-        self.assertEqual(lines.bar(10_000, 12_345), '█████████▊')
-        for n, total, shown in [(1, 3, '33%'), (2, 3, '67%'), (1, 200, '1%'), (1, 201, '<1%'),
-                                (12_345, 12_345, '100%')]:
-            self.assertEqual(lines.share(n, total), shown, (n, total))
 
-    def test_the_block_is_a_title_and_a_table_largest_first_or_none(self):
-        self.assertEqual(lines.render({}), '**Lines added: none**')
-        self.assertEqual(lines.render({'docs': 10_000, 'tests': 5000, 'crates': 12_345, 'b': 3,
-                                       'a': 3}), '\n'.join([
-            '**Lines added: 27k**',
-            '',
-            '| Directory | Added | Share |',
-            '|:--|--:|:--|',
-            '| crates | 12k | ████████████ 45% |',
-            '| docs | 10k | █████████▊ 37% |',
-            '| tests | 5k | ████▉ 18% |',
-            '| a | 3 | ▏ <1% |',
-            '| b | 3 | ▏ <1% |']))
-        self.assertEqual(lines.block({'docs': 12}), '\n'.join([
-            '<!-- af-pr-lines:v1 -->', '**Lines added: 12**', '', '| Directory | Added | Share |',
-            '|:--|--:|:--|', '| docs | 12 | ████████████ 100% |', '<!-- /af-pr-lines -->', '']))
-        self.assertEqual(lines.render({'a|b': 1}).splitlines()[-1], '| a\\|b | 1 | ████████████ 100% |')
+class Hierarchy(unittest.TestCase):
+    def test_minimal_root_and_crate_collisions_label_only_the_file(self):
+        for path in ['crates', 'crates/a']:
+            body = lines.render_entries([(3, 0, 'crates/a/src/lib.rs'), (0, 2, path)])
+            label = lines.escape(path.split('/')[-1] + ' (file)')
+            self.assertIn(label, body)
+            self.assertIsNone(lines.parse(body.splitlines())[1])
+            self.assertEqual(body.count('| Area |'), 1)
 
-    def test_the_block_parses_back_in_any_row_order_and_refuses_other_shapes(self):
-        body = lines.render({'docs': 10_000, 'tests': 5000, 'crates': 12_345, 'a|b': 3})
-        parsed, problem = lines.parse(body.splitlines())
-        self.assertIsNone(problem)
-        self.assertEqual(parsed, {'total': '27k', 'rows': frozenset([
-            ('crates', '12k', '████████████', '45%'), ('docs', '10k', '█████████▊', '37%'),
-            ('tests', '5k', '████▉', '18%'), ('a|b', '3', '▏', '<1%')])})
-        rows = body.splitlines()
-        shuffled = rows[:4] + rows[4:][::-1]
-        self.assertEqual(lines.parse(shuffled)[0], parsed, 'rows in any order')
-        self.assertEqual(lines.parse(['  ' + line + '  ' for line in rows] + ['', ' '])[0], parsed)
-        self.assertEqual(lines.parse(['**Lines added: none**']), ({'total': 'none', 'rows': frozenset()}, None))
-        head = rows[:4]
-        for bad, why in [
-                ([], 'the block is empty'),
-                (['Lines added: docs/10k tests/5k'], 'the first line is not the title'),
-                (['**Lines added: 27k** (additions)'], 'the first line is not the title'),
-                (['**Lines added: 27000**'], 'the first line is not the title'),
-                (['**Lines added: none**', '| docs | 3 | ▏ 100% |'], 'is the whole block, but more follows'),
-                (['**Lines added: 27k**'], 'the title is not followed by the table'),
-                (['**Lines added: 27k**', '| Directory | Added |', '|:--|--:|', '| docs | 3 | ▏ 100% |'],
-                 'is not the table header'),
-                (['**Lines added: 27k**', '| Directory | Added | Share |', '| docs | 3 | ▏ 100% |',
-                  '| tests | 3 | ▏ 100% |'], 'is not followed by its separator'),
-                (head + ['| docs | 3 |'], 'not a row of three cells'),
-                (head + ['docs | 3 | ▏ 100%'], 'not a row of three cells'),
-                (head + ['| docs | 5000 | ▏ 100% |'], 'not a row `| directory | figure | bar share |`'),
-                (head + ['| docs | 1.25k | ▏ 100% |'], 'not a row `| directory | figure | bar share |`'),
-                (head + ['| docs | 3 | 100% |'], 'not a row `| directory | figure | bar share |`'),
-                (head + ['| docs | 3 | ▏ |'], 'not a row `| directory | figure | bar share |`'),
-                (head + ['| docs | 3 | ▏ 0% |', '| docs | 4 | ▏ 0% |'], '`docs` has two rows'),
-                (head + ['|  | 3 | ▏ 100% |'], 'not a row `| directory | figure | bar share |`')]:
-            parsed, problem = lines.parse(bad)
-            self.assertIsNone(parsed, bad)
-            self.assertIn(why, problem, bad)
+    def test_collision_only_aliases_reserve_literals_and_escape_after_projection(self):
+        for name in ['a', ' &nbsp;**雪|\t\u00a0', 'a (file)']:
+            entries = [(3, 0, f'crates/{name}/src/lib.rs'), (0, 2, f'crates/{name}'),
+                       (1, 1, f'crates/{name} (file)'),
+                       (1, 0, f'crates/{name} (file2)/src/lib.rs')]
+            data = lines.report(entries)
+            rows = data['rows'][0]['children']
+            projected = lines.display_names(rows)
+            self.assertEqual(projected[name], name + ' (file3)')
+            self.assertEqual(projected[name + '/'], name)
+            self.assertEqual(projected[name + ' (file)'], name + ' (file)')
+            self.assertEqual(len(set(projected.values())), len(rows))
+            self.assertEqual(projected, lines.display_names(rows[::-1]))
+            body = lines.render(data)
+            self.assertIn(lines.escape(name + ' (file3)'), body)
+            self.assertIsNone(lines.parse(body.splitlines())[1])
+            self.assertEqual(body, lines.render_entries(entries[::-1]))
+        self.assertEqual(lines.display_names([{'name': 'a (file)'}]),
+                         {'a (file)': 'a (file)'})
+
+    def test_path_classification_including_inline_and_common_source(self):
+        for path, kind in {
+            'src/lib.rs': 'main/', 'src/common/helpers.rs': 'main/',
+            'src/shared.rs': 'main/', 'src/inline.rs': 'main/',
+            'src/tests/unit.rs': 'tests/', 'src/tests.rs': 'tests/',
+            'src/test_parser.rs': 'tests/', 'src/parser_test.rs': 'tests/',
+            'tests/it/a.rs': 'tests/', 'examples/test_demo.rs': 'tests/',
+            'tests/data.txt': 'other/', 'examples/demo.rs': 'other/',
+            'src/schema.json': 'other/', 'build.rs': 'other/', 'Cargo.toml': 'other/',
+            'not-src/a.rs': 'other/'}.items():
+            self.assertEqual(lines.code_kind(path.split('/')), kind, path)
+
+    def test_independent_exact_partition_order_and_human_table(self):
+        entries = [(3, 2, 'crates/a/src/lib.rs'), (0, 4, 'crates/a/tests/t.rs'),
+                   (0, 2, 'crates/b/src/lib.rs'), (1, 1, 'crates/direct'),
+                   (0, 8, 'gone/a'), (1, 0, 'README.md')]
+        data = lines.report(entries)
+        self.assertEqual((data['added'], data['deleted']), (5, 17))
+        def reconcile(rows, added, deleted):
+            self.assertEqual(sum(r['added'] for r in rows), added)
+            self.assertEqual(sum(r['deleted'] for r in rows), deleted)
+            for r in rows:
+                self.assertTrue(r['added'] or r['deleted'])
+                if r['children']:
+                    reconcile(r['children'], r['added'], r['deleted'])
+        reconcile(data['rows'], 5, 17)
+        self.assertEqual(data, lines.report(entries[::-1]))
+        body = lines.render(data)
+        self.assertEqual(body, '\n'.join([
+            '**Lines added: 5**', '', '| Area | Changes | + | − | Share of additions |', '|:--|--:|:--|:--|:--|',
+            '| **crates** | **+4/−9** | **█████▍** | **████████████** | **80%** |',
+            '| &nbsp;&nbsp;&nbsp;&nbsp;**a** | **+3/−6** | **██████** | **████████████** | **75%** |',
+            '| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;main | +3/−2 | █████████ | ██████ | 100% |',
+            '| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;tests | +0/−4 |  | ████████████ | 0% |',
+            '| &nbsp;&nbsp;&nbsp;&nbsp;direct | +1/−1 | ██ | ██ | 25% |',
+            '| &nbsp;&nbsp;&nbsp;&nbsp;**b** | **+0/−2** |  | **████** | **0%** |',
+            '| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;main | +0/−2 |  | ████████████ | — |',
+            '| **README.md** | **+1/−0** | **█▍** |  | **20%** |',
+            '| **gone** | **+0/−8** |  | **██████████▋** | **0%** |']))
+        self.assertIsNone(lines.parse(body.splitlines())[1])
+        self.assertEqual(body.count('| Area |'), 1)
+        self.assertNotIn('↳', body)
+        self.assertNotIn('shared', body)
+        self.assertNotIn('| **tests**', body)
+        self.assertIn('| **gone** | **+0/−8** |  | **████████████** | **—** |',
+                      lines.render_entries([(0, 8, 'gone/a')]))
+        zero = lines.render_entries([(0, 8, 'crates/a/tests/t.rs')])
+        self.assertIn('**Lines added: 0**', zero)
+        self.assertEqual(zero.count('—'), 3)
+        self.assertIsNone(lines.parse(zero.splitlines())[1])
+
+    def test_common_sibling_scale_zero_cells_child_scale_and_exact_json(self):
+        entries = [(2, 0, 'crates/a/src/lib.rs'), (0, 4, 'crates/a/tests/t.rs'),
+                   (0, 8, 'gone/a'), (1, 0, 'tiny/a')]
+        data = lines.report(entries)
+        self.assertEqual(data, {
+            'schema': 'af/PrLines@4', 'added': 3, 'deleted': 12, 'rows': [
+                {'name': 'crates/', 'added': 2, 'deleted': 4, 'children': [
+                    {'name': 'a/', 'added': 2, 'deleted': 4, 'children': [
+                        {'name': 'main/', 'added': 2, 'deleted': 0, 'children': []},
+                        {'name': 'tests/', 'added': 0, 'deleted': 4, 'children': []}]}]},
+                {'name': 'tiny/', 'added': 1, 'deleted': 0, 'children': []},
+                {'name': 'gone/', 'added': 0, 'deleted': 8, 'children': []}]})
+        before = json.dumps(data, sort_keys=True)
+        body = lines.render(data)
+        self.assertEqual(before, json.dumps(data, sort_keys=True))
+        self.assertEqual(body, lines.render_entries(entries[::-1]))
+        # The root deletion count of eight dominates all additions. Children instead use four.
+        self.assertIn('| **crates** | **+2/−4** | **███** | **██████** | **67%** |', body)
+        self.assertIn('| ' + lines.INDENT + '**a** | **+2/−4** | **██████** | **████████████** | **100%** |', body)
+        self.assertIn('| **gone** | **+0/−8** |  | **████████████** | **0%** |', body)
+        self.assertIn('| **tiny** | **+1/−0** | **█▌** |  | **33%** |', body)
+        self.assertNotIn('** **', body)
+        for entries in [[(0, 1, 'crates/a/src/lib.rs')], [(1, 0, 'crates/a/src/lib.rs')]]:
+            body = lines.render_entries(entries)
+            for row in body.splitlines()[4:]:
+                cells = lines.row_cells(row)
+                self.assertEqual(len(cells), 5)
+                self.assertEqual(cells[2 if entries[0][0] == 0 else 3], '')
+            self.assertIsNone(lines.parse(body.splitlines())[1])
+
+    def test_bar_shape_blank_bold_and_prior_three_column_format_rejected(self):
+        body = lines.render_entries([(3, 2, 'crates/a/src/lib.rs')])
+        # Grammar accepts plausible lengths; regeneration, not rounded counts, owns exact lengths.
+        self.assertIsNone(lines.parse(body.replace('████████████', '▏').splitlines())[1])
+        for bad in ['', '—', '-', 'x', '█' * 13, '█' * 12 + '▏', '▏█', '▏▎', '█ █', '** **']:
+            with self.subTest(bar=bad):
+                self.assertIsNone(lines.parse(body.replace('████████████', bad).splitlines())[0])
+        zero = lines.render_entries([(0, 2, 'crates/a/src/lib.rs')])
+        for bad in ['** **', '**▏**', '**—**', '****']:
+            self.assertIsNone(lines.parse(zero.replace(' |  | ', ' | ' + bad + ' | ').splitlines())[0])
+        for zero in [lines.render_entries([(0, 2, 'gone/a')]),
+                     lines.render_entries([(2, 0, 'added/a')])]:
+            self.assertIsNone(lines.parse(zero.replace(' |  | ', ' | **** | ').splitlines())[0])
+        old = ['**Lines added: 3**', '| Area | Changes | Share of additions |',
+               '|:--|--:|:--|', '| **docs** | **+3/−0** | **100%** |']
+        self.assertIsNone(lines.parse(old)[0])
+
+    def test_empty_bold_zero_bars_rejected_on_root_and_crate_rows(self):
+        for added, deleted, column in [(0, 2, 2), (2, 0, 3)]:
+            body = lines.render_entries([(added, deleted, 'crates/a/src/lib.rs')])
+            self.assertIsNone(lines.parse(body.splitlines())[1])
+            for index in [4, 5]:
+                for bad in ['**', '***', '****']:
+                    with self.subTest(column=column, row=index, bar=bad):
+                        rows = body.splitlines()
+                        cells = lines.row_cells(rows[index])
+                        self.assertEqual(cells[column], '')
+                        cells[column] = bad
+                        rows[index] = '| ' + ' | '.join(cells) + ' |'
+                        self.assertNotEqual(rows, body.splitlines())
+                        parsed, problem = lines.parse(rows)
+                        self.assertIsNone(parsed)
+                        self.assertEqual(problem, 'inconsistent bold bar')
+
+    def test_deletion_siblings_sort_by_deleted_then_raw_identity(self):
+        entries = [(0, 2, 'z/a'), (0, 3, 'b/a'), (0, 3, 'a/a'), (1, 0, 'last/a')]
+        self.assertEqual([r['name'] for r in lines.report(entries)['rows']],
+                         ['last/', 'a/', 'b/', 'z/'])
+        self.assertEqual(lines.report(entries), lines.report(entries[::-1]))
+
+    def test_empty_binary_noop_and_pure_rename_have_no_numeric_rows(self):
+        for entries in [[], [(None, None, 'binary')], [(0, 0, 'crates/a/src/new.rs')]]:
+            self.assertEqual(lines.report(entries),
+                             {'schema': 'af/PrLines@4', 'added': 0, 'deleted': 0, 'rows': []})
+            self.assertEqual(lines.render_entries(entries), '**Lines added: none**')
+        # A crate literally named tests is still ordinary source.
+        self.assertEqual(lines.report([(1, 0, 'crates/tests/src/lib.rs')])['rows'][0]
+                         ['children'][0]['children'][0]['name'], 'main/')
+        self.assertIsNone(lines.parse(lines.render_entries([(1, 0, 'crates')]).splitlines())[1])
+
+    def test_names_cannot_spoof_structure_and_parser_rejects_malformed_rows(self):
+        entries = [(1, 0, 'crates/ &nbsp;**↳雪|\t/src/lib.rs'),
+                   (1, 1, 'crates/direct'), (0, 2, 'gone/a')]
+        body = lines.render_entries(entries)
+        self.assertIn('&#32;&#38;nbsp;&#42;&#42;&#8627;雪&#124;&#9;', body)
+        self.assertNotIn('\t', body)
+        self.assertIsNone(lines.parse(body.splitlines())[1])
+        nbsp = lines.render_entries([(1, 0, 'crates/\u00a0\u00a0\u00a0\u00a0/src/lib.rs'),
+                                     (1, 0, 'crates/&nbsp;&nbsp;&nbsp;&nbsp;/src/lib.rs')])
+        self.assertIn('**&#34;&#160;&#160;&#160;&#160;&#34;**', nbsp)
+        self.assertIn('**&#38;nbsp;&#38;nbsp;&#38;nbsp;&#38;nbsp;**', nbsp)
+        self.assertIsNone(lines.parse(nbsp.splitlines())[1])
+        valid = lines.render_entries([(1, 1, 'crates/a/src/lib.rs'), (0, 1, 'crates/a/tests/t.rs')])
+        for before, after in [('Area', 'Directory'), ('+1/−2', '+0/−0'),
+                              ('**crates**', 'crates'), ('**+1/−2**', '+1/−2'),
+                              ('**a**', 'a'), ('main', '**main**'), ('tests', 'shared'),
+                              ('&nbsp;&nbsp;&nbsp;&nbsp;**a**', '&nbsp;**a**'),
+                              ('100%', '101%'), ('100%', '—'), ('0%', '<1%'),
+                              ('**a**', '**a/**'), ('+1/−1', '+01/−1')]:
+            self.assertIn(before, valid)
+            self.assertIsNone(lines.parse(valid.replace(before, after).splitlines())[0], after)
+        rows = valid.splitlines()
+        for bad in [rows[:4]+rows[5:], rows[:6], rows+rows[4:5], rows[:5]+rows[6:]]:
+            self.assertIsNone(lines.parse(bad)[0], bad)
+        for bad in [[], ['**Lines added: 1**'], ['**Lines added: none**', 'x']]:
+            self.assertIsNone(lines.parse(bad)[0])
+
+    def test_json_schema_exact_current_counts_and_old_shapes_fail_closed(self):
+        schema_path = SCRIPTS.parent / 'schemas/pr-lines-v4.json'
+        spec = importlib.util.spec_from_file_location('schema_check', SCRIPTS / 'backlog-check-triage.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        validator = module.Validator(schema_path)
+        schema_id = json.loads(schema_path.read_text())['$id']
+        for entries in [[], [(0, 3, 'crates/a/tests/t.rs')], [(1, 0, 'crates/direct')],
+                        [(1, 2, 'crates/a/src/lib.rs'), (0, 5, 'gone/a')]]:
+            data = lines.report(entries)
+            self.assertEqual(validator.errors(data, schema_id), [])
+        for bad in [{**data, 'schema': 'af/PrLines@3'}, {**data, 'total': 1},
+                    {**data, 'deleted': -1}, {**data, 'rows': [
+                        {'name': 'docs/', 'added': 0, 'deleted': 0, 'children': []}]}]:
+            self.assertTrue(validator.errors(bad, schema_id), bad)
+        self.assertFalse((SCRIPTS.parent / 'schemas/pr-lines-v3.json').exists())
+        tree = lines.report([(1, 2, 'crates/a/src/lib.rs')])
+        for field, value in [('name', 'shared/'), ('deleted', -1), ('unknown', True),
+                             ('children', [{'name': 'main/', 'added': 1,
+                                            'deleted': 0, 'children': []}])]:
+            bad = json.loads(json.dumps(tree))
+            bad['rows'][0]['children'][0]['children'][0][field] = value
+            self.assertTrue(validator.errors(bad, schema_id), bad)
 
 
 class Repository(unittest.TestCase):
@@ -133,6 +285,7 @@ class Repository(unittest.TestCase):
         self.repo = Path(self.tmp.name) / 'repo'
         self.repo.mkdir()
         git(self.repo, 'init', '-q', '-b', 'main')
+        write(self.repo, 'unchanged/old.txt', 'pure rename\n')
         write(self.repo, 'README.md', 'one\n')
         write(self.repo, 'crates/af/src/lib.rs', ''.join(f'line {n}\n' for n in range(50)))
         write(self.repo, 'crates/af/src/old.rs', ''.join(f'old {n}\n' for n in range(40)))
@@ -143,6 +296,7 @@ class Repository(unittest.TestCase):
         git(self.repo, 'commit', '-qm', 'base')
         self.base = git(self.repo, 'rev-parse', 'HEAD').strip()
         git(self.repo, 'checkout', '-qb', 'feature')
+        git(self.repo, 'mv', 'unchanged/old.txt', 'unchanged/new.txt')
         write(self.repo, 'README.md', 'one\ntwo\nthree\n')
         write(self.repo, 'crates/af/src/lib.rs',
               ''.join(f'line {n}\n' for n in range(50)) + ''.join(f'new {n}\n' for n in range(120)))
@@ -173,27 +327,95 @@ class Repository(unittest.TestCase):
                               capture_output=True, text=True, env=GIT_ENV)
 
     def test_the_counts_follow_the_rules(self):
-        self.assertEqual(lines.counts(lines.numstat(self.repo, 'main', 'feature')), {
-            'README.md': 2, 'crates': 121, 'tests': 31, 'docs': 3})
-        self.assertEqual(lines.counts(lines.numstat(self.repo, self.base, self.head)), {
-            'README.md': 2, 'crates': 121, 'tests': 31, 'docs': 3})
+        self.assertEqual({row['name']: row['added'] for row in lines.report(lines.numstat(self.repo, 'main', 'feature'))['rows']}, {
+            'README.md': 2, 'crates/': 151, 'scripts/': 1, 'docs/': 3})
+        self.assertEqual({row['name']: row['added'] for row in lines.report(lines.numstat(self.repo, self.base, self.head))['rows']}, {
+            'README.md': 2, 'crates/': 151, 'scripts/': 1, 'docs/': 3})
         entries = {path: (added, deleted) for added, deleted, path
                    in lines.numstat(self.repo, 'main', 'feature')}
         self.assertEqual(entries['fixtures/image.png'], (None, None), 'binary')
         self.assertEqual(entries['crates/af/src/moved.rs'], (1, 1), 'the rename, under its new path')
         self.assertNotIn('crates/af/src/old.rs', entries)
         self.assertEqual(entries['docs/gone.md'], (0, 3))
+        self.assertEqual(entries['unchanged/new.txt'], (0, 0))
+
+    def test_real_git_file_directory_transitions_keep_identities_and_exact_sums(self):
+        # Reuse this repository; each range covers just the conversion's two commits.
+        for path, nested in [('crates', 'crates/a/src/lib.rs'),
+                             ('crates/a', 'crates/a/src/lib.rs')]:
+            git(self.repo, 'rm', '-qr', 'crates')
+            write(self.repo, path, 'old one\nold two\n')
+            write(self.repo, path + ' (file)', 'literal\n')
+            git(self.repo, 'add', '-A')
+            git(self.repo, 'commit', '-qm', 'file baseline')
+            for reverse in [False, True]:
+                base = git(self.repo, 'rev-parse', 'HEAD').strip()
+                git(self.repo, 'rm', '-qr', path)
+                write(self.repo, path if reverse else nested,
+                      'old one\nold two\n' if reverse else 'new one\nnew two\nnew three\n')
+                # A changed literal alias must reserve its name in the displayed sibling set.
+                write(self.repo, path + ' (file)', 'literal\nextra\n' if not reverse else 'literal\n')
+                git(self.repo, 'add', '-A')
+                git(self.repo, 'commit', '-qm', 'type transition')
+                data = json.loads(self.run_tool('--base', base, '--json').stdout)
+                self.assertEqual((data['added'], data['deleted']),
+                                 (2, 4) if reverse else (4, 2))
+
+                def reconcile(rows, added, deleted):
+                    self.assertEqual(sum(r['added'] for r in rows), added)
+                    self.assertEqual(sum(r['deleted'] for r in rows), deleted)
+                    for row in rows:
+                        if row['children']:
+                            reconcile(row['children'], row['added'], row['deleted'])
+                reconcile(data['rows'], data['added'], data['deleted'])
+                siblings = data['rows'] if path == 'crates' else data['rows'][0]['children']
+                identities = {r['name']: (r['added'], r['deleted']) for r in siblings}
+                name = path.split('/')[-1]
+                self.assertEqual(identities[name], (2, 0) if reverse else (0, 2))
+                self.assertEqual(identities[name + '/'], (0, 3) if reverse else (3, 0))
+                self.assertEqual(identities[name + ' (file)'], (0, 1) if reverse else (1, 0))
+                body = self.run_tool('--base', base).stdout
+                self.assertIn(lines.escape(name + ' (file2)'), body)
+                self.assertIsNone(lines.parse(body.splitlines()[1:-1])[1])
+                code, said = self.check(REPORT + '\n' + body, '--diff', base, 'HEAD')
+                self.assertEqual(code, 0, said)
+
+    def test_crate_rename_binary_inline_tests_and_escaped_names_through_git(self):
+        name = '↳ 雪a|b&<x>`*_[q]\\\t\n'
+        moved = f'crates/{name}/tests/moved.rs'
+        git(self.repo, 'mv', 'crates/af/src/moved.rs', 'crates/af/tests/moved.rs')
+        write(self.repo, moved, 'test line\n')
+        write(self.repo, f'crates/{name}/src/lib.rs',
+              '#[cfg(test)]\nmod tests {}\n')
+        write(self.repo, f'crates/{name}/tests/image.bin', b'\x00binary')
+        git(self.repo, 'add', '-A')
+        git(self.repo, 'commit', '-qm', 'crate edge cases')
+        data = json.loads(self.run_tool('--base', 'main', '--json').stdout)
+        crates = {row['name']: row for row in data['rows']}['crates/']['children']
+        splits = {row['name']: {leaf['name']: leaf['added'] for leaf in row['children']}
+                  for row in crates}
+        self.assertEqual(splits[name + '/'], {'main/': 2, 'tests/': 1})
+        self.assertEqual(splits['af/'], {'main/': 120, 'tests/': 31})
+        rendered = self.run_tool('--base', 'main').stdout
+        self.assertIn('&#8627;&#32;雪a&#124;b&#38;&#60;x&#62;&#96;&#42;&#95;&#91;q&#93;&#92;&#9;&#10;', rendered)
+        self.assertIsNone(lines.parse(rendered.splitlines()[1:-1])[1])
+        code, said = self.check(REPORT + '\n' + rendered, '--diff', 'main', 'HEAD')
+        self.assertEqual(code, 0, said)
 
     def test_the_tool_prints_the_block_and_json(self):
         done = self.run_tool('--base', 'main', '--head', 'feature')
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(done.stdout, '\n'.join([
-            '<!-- af-pr-lines:v1 -->', '**Lines added: 157**', '', '| Directory | Added | Share |',
-            '|:--|--:|:--|', '| crates | 121 | ████████████ 77% |', '| tests | 31 | ███▏ 20% |',
-            '| docs | 3 | ▎ 2% |', '| README.md | 2 | ▎ 1% |', '<!-- /af-pr-lines -->', '']))
+            '<!-- af-pr-lines:v1 -->', '**Lines added: 157**', '', '| Area | Changes | + | − | Share of additions |',
+            '|:--|--:|:--|:--|:--|', '| **crates** | **+151/−1** | **████████████** | **▏** | **96%** |',
+            '| &nbsp;&nbsp;&nbsp;&nbsp;**af** | **+151/−1** | **████████████** | **▏** | **100%** |',
+            '| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;main | +121/−1 | ████████████ | ▏ | 80% |',
+            '| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;tests | +30/−0 | ███ |  | 20% |',
+            '| **docs** | **+3/−3** | **▎** | **▎** | **2%** |', '| **README.md** | **+2/−0** | **▏** |  | **1%** |', '| **scripts** | **+1/−0** | **▏** |  | **1%** |',
+            '<!-- /af-pr-lines -->', '']))
         done = self.run_tool('--base', 'main', '--json')
-        self.assertEqual(json.loads(done.stdout), {'README.md': 2, 'crates': 121, 'tests': 31,
-                                                   'docs': 3})
+        self.assertEqual(json.loads(done.stdout),
+                         lines.report(lines.numstat(self.repo, 'main', 'HEAD')))
         done = self.run_tool('--base', 'main', '--head', 'main')
         self.assertEqual(done.stdout, '<!-- af-pr-lines:v1 -->\n**Lines added: none**\n'
                          '<!-- /af-pr-lines -->\n')
@@ -217,11 +439,12 @@ class Repository(unittest.TestCase):
             return done.returncode, done.stdout + done.stderr
 
     def test_the_check_compares_the_figures_with_the_commits(self):
-        right = lines.block({'README.md': 2, 'crates': 121, 'tests': 31, 'docs': 3})
+        right = lines.block(lines.report(lines.numstat(self.repo, 'main', 'feature')))
         rows = right.splitlines()
-        reordered = '\n'.join(rows[:5] + rows[5:9][::-1] + rows[9:]) + '\n'
+        # Reorder only siblings, keeping each complete subtree contiguous.
+        reordered = '\n'.join(rows[:9] + rows[9:12][::-1] + rows[12:]) + '\n'
         self.assertNotEqual(reordered, right)
-        stale = right.replace('| crates | 121 |', '| crates | 120 |')
+        stale = right.replace('main | +121/−1', 'main | +120/−1')
         body = lambda block: ('## What\n\nX.\n\n## af task report\n\n' + REPORT
                               + '\n## Lines added\n\n' + block + '\n')
         code, said = self.check(body(right), '--diff', 'main', 'feature')
@@ -232,7 +455,7 @@ class Repository(unittest.TestCase):
         code, said = self.check(body(stale), '--diff', 'main', 'feature')
         self.assertEqual(code, 1, said)
         self.assertIn('replace it with:\n**Lines added: 157**', said)
-        self.assertIn('| crates | 121 | ████████████ 77% |', said)
+        self.assertIn('| **crates** | **+151/−1** | **████████████** | **▏** | **96%** |', said)
         code, said = self.check(body(stale))
         self.assertEqual(code, 0, 'without --diff the shape alone is checked:\n' + said)
         self.assertIn('not compared', said)

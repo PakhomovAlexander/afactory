@@ -61,7 +61,7 @@ impl TaskPlanCompiler {
         cas: &Cas,
         previous: &TaskRevisionV1,
         next: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
     ) -> Result<(), String> {
         let root = plan
             .dependencies
@@ -95,10 +95,12 @@ impl TaskPlanCompiler {
             .map(|(name, worker)| (name, serde_json::json!({"version":worker.version, "digest":self.packages[name].bytes.digest, "signature":worker.signature})))
             .collect();
         let pipelines: BTreeMap<_, _> = self.pipelines.iter()
-            // `af.planning-request/1` lists `af.pipeline/1` contracts and slots, so a pipeline
-            // with a Project Brief port (`af.pipeline/2`, ADR-0160) or a slot recovery allowance
-            // (`af.pipeline/3`, ADR-0209) is not offered for composition.
-            .filter(|(name, pipeline)| !self.preparation_roots.contains(*name) && !self.generated.contains_key(*name) && pipeline.schema == PipelineSchema::V1)
+            // PlanningRequest@1 exposes ordinary contracts and slots only. Preserve this
+            // authority boundary explicitly rather than selecting it by a retired format.
+            .filter(|(name, pipeline)| !self.preparation_roots.contains(*name)
+                && !self.generated.contains_key(*name)
+                && !pipeline.declares_brief() && pipeline.declares_recovery().is_none()
+                && !pipeline.nodes.iter().any(|n| matches!(n.operator, TaskOperatorV1::StructuredAccept {})))
             .map(|(name, pipeline)| (name, serde_json::json!({"version":pipeline.version, "digest":self.packages[name].bytes.digest, "contract":pipeline.contract, "accepts":pipeline.accepts, "slots":pipeline.slots, "max_attempts":pipeline.max_attempts, "max_parallel":pipeline.max_parallel})))
             .collect();
         let request = serde_json::json!({
@@ -142,7 +144,7 @@ impl TaskPlanCompiler {
             proof.bootstrap_plan_id(),
             af_contracts::task::EXECUTION_PLAN_V4,
         )?;
-        let bootstrap: ExecutionPlanV3 =
+        let bootstrap: ExecutionPlan =
             serde_json::from_value(bootstrap.payload).map_err(|e| e.to_string())?;
         self.validate_plan(cas, &task, &bootstrap)?;
         if bootstrap.preparation.is_none() {
@@ -334,8 +336,8 @@ impl TaskPlanCompiler {
             );
         }
         let provider_attempt = u32::from(matches!(worker.runner, TaskWorkerRunner::Model { .. }));
-        let definition = PipelineDefinitionV1 {
-            schema: PipelineSchema::V1,
+        let definition = PipelineDefinition {
+            schema: PipelineSchema::V6,
             name: PLANNER_PIPELINE.into(),
             version: "1.0.0".into(),
             contract: PipelineContractV1 {

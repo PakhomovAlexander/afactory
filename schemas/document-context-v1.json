@@ -17,7 +17,7 @@
       "maxItems": 16,
       "uniqueItems": true,
       "items": {
-        "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
+        "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
       }
     }
   },

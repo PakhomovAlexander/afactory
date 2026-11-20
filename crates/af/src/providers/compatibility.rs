@@ -469,7 +469,7 @@ mod tests {
 
     fn program(directory: &Path, name: &str, body: &str) -> PathBuf {
         let program = directory.join(name);
-        std::fs::write(&program, format!("#!/bin/sh\n{body}\n")).unwrap();
+        crate::providers::fixture_fs::write(&program, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
         program
     }
@@ -502,7 +502,7 @@ mod tests {
 
     #[test]
     fn a_cli_declaring_every_option_passes_and_one_missing_isolation_flags_is_refused() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::providers::fixture_fs::tempdir().unwrap();
         let help = help_of(ProviderKind::Claude);
         let body = format!(
             "[ \"$1\" = --version ] && {{ echo '2.1.299 (Claude Code)'; exit 0; }}\n[ \"$1\" = --help ] && {{ printf '%s' '{help}'; exit 0; }}\nexit 64"
@@ -557,7 +557,7 @@ mod tests {
                 "codex-cli 0.121.0",
             ),
         ] {
-            let directory = tempfile::tempdir().unwrap();
+            let directory = crate::providers::fixture_fs::tempdir().unwrap();
             let page = invocation(kind).help_args.join(" ");
             let help: String = help_of(kind)
                 .lines()
@@ -581,7 +581,7 @@ mod tests {
 
     #[test]
     fn codex_is_judged_on_its_exec_help_and_a_failed_help_is_reported_with_its_line() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::providers::fixture_fs::tempdir().unwrap();
         let help = help_of(ProviderKind::Codex);
         let body = format!(
             "[ \"$1 $2\" = 'exec --help' ] && {{ printf '%s' '{help}'; exit 0; }}\n{INITIALIZES}\nexit 64"
@@ -619,7 +619,7 @@ mod tests {
     /// capability with the exit and the CLI's own line, as it is by every surface that runs it.
     #[test]
     fn a_codex_whose_app_server_exits_before_initialize_lacks_the_protocol_capability() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::providers::fixture_fs::tempdir().unwrap();
         let body = codex_with_app_server(
             "printf '%s\\n' \"error: unrecognized subcommand 'app-server'\" '' 'Usage: codex [OPTIONS] [PROMPT]' >&2\nexit 2",
         );
@@ -679,7 +679,7 @@ mod tests {
     /// the missing protocol capability, reported with the exit and the line it answered with.
     #[test]
     fn only_an_initialize_result_object_proves_the_protocol() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::providers::fixture_fs::tempdir().unwrap();
         for (answer, how, line) in [
             (r#"{"id":1}"#, "without a result object", r#"{"id":1}"#),
             (
@@ -699,7 +699,11 @@ mod tests {
             ),
             ("[1]", "with a line that is not a JSON-RPC message", "[1]"),
         ] {
-            std::fs::write(directory.path().join("answer"), format!("{answer}\n")).unwrap();
+            crate::providers::fixture_fs::write(
+                directory.path().join("answer"),
+                format!("{answer}\n"),
+            )
+            .unwrap();
             let body = codex_with_app_server(&format!(
                 "IFS= read -r _\ncat '{}'\nexit 0",
                 directory.path().join("answer").display()
@@ -729,7 +733,7 @@ mod tests {
     /// app-server leaves the CLI unchecked, never incompatible and never logged in.
     #[test]
     fn a_silent_app_server_is_unchecked_within_the_deadline() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::providers::fixture_fs::tempdir().unwrap();
         let program = program(
             directory.path(),
             "codex",
@@ -755,14 +759,14 @@ mod tests {
     #[test]
     fn an_app_server_error_line_carrying_credential_material_is_withheld() {
         use af_runner::cli::WITHHELD_LINE;
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         // The trusted path may contain the credential prefix (as in task-sk-parent). It is
         // not leaked stderr: check complete synthetic secrets, independently of that path.
         for directory in [
             root.path().to_path_buf(),
             root.path().join("task-sk-parent"),
         ] {
-            std::fs::create_dir_all(&directory).unwrap();
+            crate::providers::fixture_fs::create_dir_all(&directory).unwrap();
             for line in [
                 "error: unknown option '--safe-mode'; API_KEY=sk-secret",
                 "Authorization: Bearer abcFIXTUREdefFIXTUREghi",
@@ -770,7 +774,8 @@ mod tests {
                 "error: OPENAI_API_KEY=\"sk-proj-FIXTURE\"",
                 "error: unexpected argument '--stdio' found",
             ] {
-                std::fs::write(directory.join("said"), format!("{line}\n")).unwrap();
+                crate::providers::fixture_fs::write(directory.join("said"), format!("{line}\n"))
+                    .unwrap();
                 let body = codex_with_app_server(&format!(
                     "cat '{}' >&2\nexit 2",
                     directory.join("said").display()
@@ -810,7 +815,7 @@ mod tests {
 
     #[test]
     fn a_cli_that_cannot_start_stays_an_installation_failure_and_a_slow_one_is_unchecked() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::providers::fixture_fs::tempdir().unwrap();
         let broken = "echo 'Error: Cannot find module ../cli.js' >&2\nexit 1";
         assert!(matches!(
             check(directory.path(), ProviderKind::Claude, broken),
@@ -834,7 +839,7 @@ mod tests {
 
     #[test]
     fn a_claude_help_probe_denied_by_the_host_is_not_incompatible() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::providers::fixture_fs::tempdir().unwrap();
         let body = "[ \"$1\" = --version ] && { echo '2.1.299 (Claude Code)'; exit 0; }\n\
                     echo 'Error: Permission denied (os error 13)' >&2\nexit 1";
         let Err(CliRefusal::Denied(denied)) = check(directory.path(), ProviderKind::Claude, body)
@@ -851,7 +856,7 @@ mod tests {
 
     #[test]
     fn an_app_server_spawn_denied_by_the_host_is_not_missing_protocol() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::providers::fixture_fs::tempdir().unwrap();
         let help = help_of(ProviderKind::Codex);
         let body = format!(
             "[ \"$1 $2\" = 'exec --help' ] && {{ chmod 600 \"$0\"; printf '%s' '{help}'; exit 0; }}\nexit 64"
@@ -910,7 +915,7 @@ mod tests {
 
     #[test]
     fn a_help_probe_the_host_refused_to_spawn_is_denied() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::providers::fixture_fs::tempdir().unwrap();
         let program = program(directory.path(), "claude", "exit 0");
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o600)).unwrap();
         let Err(CliRefusal::Denied(denied)) = check_invocation(
@@ -931,7 +936,7 @@ mod tests {
 
     #[test]
     fn a_help_probe_failing_with_connection_refused_is_not_denied() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::providers::fixture_fs::tempdir().unwrap();
         let body = "echo 'Error: Connection refused (os error 111)' >&2\nexit 1";
         assert!(matches!(
             check(directory.path(), ProviderKind::Claude, body),

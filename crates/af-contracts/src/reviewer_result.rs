@@ -63,27 +63,6 @@ pub struct ReviewerStageOutput {
     pub dispositions: Vec<ReviewerDisposition>,
 }
 
-/// The result wire contract a reviewer node declares. The runner keeps one tolerant internal
-/// stage shape, while the durable wire type stays explicitly versioned.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ReviewerResultContract {
-    #[serde(rename = "review.kernel/ReviewerResult@2")]
-    #[default]
-    V2,
-}
-
-impl ReviewerResultContract {
-    pub const fn artifact_type(self) -> &'static str {
-        match self {
-            Self::V2 => crate::contract::REVIEWER_RESULT_V2,
-        }
-    }
-
-    pub fn parse_artifact_type(value: &str) -> Option<Self> {
-        (value == crate::contract::REVIEWER_RESULT_V2).then_some(Self::V2)
-    }
-}
-
 /// Closed, kernel-owned reasons a `ReviewerResult@2` can be refused at admission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviewerResultRejection {

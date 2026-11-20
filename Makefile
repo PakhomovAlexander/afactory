@@ -26,6 +26,7 @@ BASE_EVIDENCE = $(if $(AF_GATE_NEXTEST_RUN),$(AF_GATE_NEXTEST_RUN)/base-evidence
 # Run unprivileged: preflight proves a chmod-sealed source rejects writes.
 # Root/CAP_DAC_OVERRIDE bypass that seal and intentionally fail the precondition.
 check: preflight-check fmt lint test scenario-python-tests perf-python-tests perf-feature-tests release-check
+	$(MAKE) review-kernel-container-probes
 
 fmt:
 	$(CI_STEP) --stage lint fmt cargo fmt --all -- --check
@@ -51,10 +52,10 @@ else
 	$(error TEST_RUNNER must be nextest or cargo)
 endif
 
-# Open the release PR for VERSION (bump + CHANGELOG section). Merging it is the release: the
-# workflow tags, checks, builds, signs, and publishes. COMPAT states authority compatibility.
+# Reserve the next RC and run the repository developer release controller. The
+# workflow tags, checks, builds, signs, and publishes; reviewed metadata states compatibility.
 release:
-	scripts/release.sh "$(VERSION)" --compat "$(COMPAT)" --profile "$(or $(PROFILE),fast)"
+	./dev release rc --repo PakhomovAlexander/afactory --profile "$(or $(PROFILE),fast)" $(if $(VERSION),--version "$(VERSION)")
 
 # Run the tests NEXTEST_FILTER selects NEXTEST_REPEAT times in a row under the gate's scheduling,
 # stopping at the first run that fails and never rerunning anything: the proof that a flake is
@@ -74,12 +75,15 @@ STRESS_SPAWN ?= 2
 stress-proof:
 	python3 -I scripts/stress-proof.py --runs $(STRESS_RUNS) --load-workers $(STRESS_LOAD) --spawn-workers $(STRESS_SPAWN) --test-threads $(TEST_THREADS)
 
-# Live containment and the v3 Gate route. The test-classes executor invokes this target when
-# e2e is selected, including the local fast gate and `make check`; a missing daemon fails.
+# Live containment and native Task check/Review dispatch. Full `check` invokes this target
+# after its prerequisites (including the Rust build/test); the selective executor invokes it
+# when e2e is selected, including the local fast gate. Standalone `test` stays Rust-only.
+# A missing daemon fails.
+# The existing --repeat 1 mode preserves the live proof's single run, without isolation reruns.
 review-kernel-container-probes:
 	cargo test --locked -p af-sandbox --test container_probes -- --ignored
 	cargo test --locked -p af-sandbox container::tests::a_timed_out_container_is_removed_before_execution_returns -- --ignored --exact
-	cargo test --locked -p af-runtime --test it task_campaign_review::host::domain::a_container_gate_executes_on_the_task_host -- --ignored --exact
+	python3 scripts/nextest-gate.py --repeat 1 --workspace --locked --profile ci --run-ignored only --no-tests fail -E 'binary_id(=af-runtime::it) & test(=task_review_execute_checks::a_container_check_executes_on_the_native_task_host)'
 
 # Telemetry's overhead gate (design §12, docs/telemetry.md "Performance"): `off` against `spans`
 # on the three pinned bench fixtures with a release build, 20 randomized pairs each; the script
@@ -99,14 +103,19 @@ telemetry-gate:
 # exercise the test quarantine scan on test-local task lists (ADR-0268),
 # and keep this repository's own .af/af.lock on the newest release (ADR-0138).
 release-check:
+	$(CI_STEP) --stage release contract-inventory python3 -I scripts/contract-inventory.py
+	$(CI_STEP) --stage release contract-inventory-tests python3 scripts/test-class-python.py test-contract-inventory.py "$(BASE_EVIDENCE)/test-contract-inventory.py.xml"
+	$(CI_STEP) --stage release release-harness python3 scripts/performance/cli.py harness-digest --check
 	$(CI_STEP) --stage release release-contract python3 scripts/release-contract.py
 	$(CI_STEP) --stage release release-contract-tests python3 scripts/test-class-python.py test-release-contract.py "$(BASE_EVIDENCE)/test-release-contract.py.xml"
+	$(CI_STEP) --stage release dev-release-tests python3 scripts/test-class-python.py test-dev-release.py "$(BASE_EVIDENCE)/test-dev-release.py.xml"
 	$(CI_STEP) --stage release release-resolution python3 scripts/test-class-python.py test-release-resolve.py "$(BASE_EVIDENCE)/test-release-resolve.py.xml"
 	$(CI_STEP) --stage release changelog-notes-tests python3 scripts/test-class-python.py test-changelog-notes.py "$(BASE_EVIDENCE)/test-changelog-notes.py.xml"
 	$(CI_STEP) --stage release changelog-notes python3 scripts/changelog-notes.py --check
 	$(CI_STEP) --stage release quarantine-scan-tests python3 scripts/test-class-python.py test-test-quarantine.py "$(BASE_EVIDENCE)/test-test-quarantine.py.xml"
 	$(CI_STEP) --stage release af-pin-tests python3 scripts/test-class-python.py test-af-pin.py "$(BASE_EVIDENCE)/test-af-pin.py.xml"
 	$(CI_STEP) --stage release af-pin python3 scripts/af-pin.py --check
+	$(CI_STEP) --stage release telemetry-contract python3 -I scripts/test-performance.py --module test_telemetry_bench_contracts
 
 # Offline advisory orchestration checks against the native inspection fixture, the pull
 # request description check against the `af task report` renderer's fixture (ADR-0142),
@@ -123,10 +132,12 @@ preflight-check:
 	$(CI_STEP) --stage preflight test-time-report python3 scripts/test-test-time-report.py
 	$(CI_STEP) --stage preflight provider-auth-host python3 scripts/test-provider-auth-host.py
 	$(CI_STEP) --stage preflight pi-host python3 scripts/test-pi-host.py
+	$(CI_STEP) --stage preflight task-wake-probes python3 scripts/test-task-wake-probe.py
 	$(CI_STEP) --stage preflight pr-report python3 scripts/test-check-pr-report.py
 	$(CI_STEP) --stage preflight pr-lines python3 scripts/test-pr-lines.py
 	$(CI_STEP) --stage preflight test-classes python3 scripts/test-class-python.py test-test-classes.py "$(BASE_EVIDENCE)/test-test-classes.py.xml"
 	$(CI_STEP) --stage preflight test-catalog python3 scripts/test-classes.py audit
+	$(CI_STEP) --stage preflight workspace-fixtures python3 scripts/test-workspace-fixtures.py
 	$(CI_STEP) --stage preflight performance-schemas python3 scripts/performance/schemas.py
 	$(CI_STEP) --stage preflight --fix 'python3 -I scripts/performance/cli.py harness-digest --write' performance-kernel-harness python3 scripts/performance/cli.py harness-digest --check
 
@@ -144,6 +155,7 @@ scenario-python-tests: test
 .PHONY: perf-python-tests
 perf-python-tests: test
 	$(CI_STEP) --stage tests performance-lab python3 scripts/test-performance.py
+	$(CI_STEP) --stage tests workspace-fixture-benchmark python3 scripts/test-workspace-fixture-benchmark.py
 
 # Shared selective entry points. Full `check` above is what main validation, unbound releases
 # and `make check` run; the Task gate runs `scripts/verify.sh --profile fast` (ADR-0251) and
@@ -184,3 +196,16 @@ check-classes: base-check fmt lint
 .PHONY: test-labels
 test-labels:
 	python3 scripts/test-labels.py $(if $(filter 1,$(APPLY)),--apply,)
+
+# Fixture-only namespace probe; the production sample container keeps all capabilities dropped.
+perf-dev-flow-probe:
+	cargo build --locked --example perf-supervisor
+	python3 -I scripts/performance/tests/contained_flow_probe.py --supervisor target/debug/examples/perf-supervisor
+
+# Cheap hermetic contracts only; normal fast/full validation also runs this coverage through
+# the audited functional test catalog. Build time and the warm nextest receipt stay separate.
+.PHONY: contract-check
+contract-check:
+	python3 -I scripts/contract-inventory.py
+	python3 -I scripts/test-contract-inventory.py
+	cargo nextest run --workspace --locked --profile ci -E 'binary_id(=af-runner::contract_inventory) | binary_id(=af-contracts::schema_parity) | binary_id(=af-check::schema_parity) | (binary_id(=af-runner) & (test(task::reply_schema::) | test(native_failure::))) | (binary_id(=af-runner-codex::it) & test(task_worker::)) | (binary_id(=af-store) & test(contract_gate_)) | (binary_id(=af-pipeline-config) & test(provider_schema_preflight_))'

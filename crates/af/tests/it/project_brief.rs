@@ -156,9 +156,8 @@ impl Fixture {
     }
 
     fn write_policy(&self, policy: &str) {
-        let text = format!(
-            "version = 1\n\n[project]\nname = \"fixture\"\nmin_af = \"0.2\"\n\n[defaults]\npipeline = \"p1-review\"\n\n{policy}"
-        );
+        let text =
+            format!("version = 2\n\n[project]\nname = \"fixture\"\nmin_af = \"0.2\"\n\n{policy}");
         std::fs::write(self.repo.join(".af/af.toml"), text).unwrap();
         git(&self.repo, &["add", "-A"]);
         git(&self.repo, &["commit", "-qm", "brief policy"]);
@@ -956,14 +955,14 @@ fn collecting_earlier_tasks_releases_their_pins_and_a_later_task_stays_replayabl
 /// capture. Every installed Pipeline requires a fact the Task file denies, so selection asks for
 /// generation.
 fn planning_fixture() -> (Fixture, minisign::KeyPair) {
-    use af_contracts::task::pipeline::PipelineDefinitionV1;
+    use af_contracts::task::pipeline::PipelineDefinition;
     let key = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
     let public = key.pk.to_box().unwrap().into_string();
     let f = Fixture::with(|repo| {
         let read = |name: &str| {
             let path = repo.join(format!(".af/task-packages/fixture/{name}/pipeline.toml"));
             let text = std::fs::read_to_string(&path).unwrap();
-            (path, toml::from_str::<PipelineDefinitionV1>(&text).unwrap())
+            (path, toml::from_str::<PipelineDefinition>(&text).unwrap())
         };
         let mut generated = read("oriented").1;
         generated.name = "generated/oriented".into();

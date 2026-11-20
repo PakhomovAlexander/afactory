@@ -1,8 +1,8 @@
 # The performance laboratory's CLI Task fixture (ADR-0168): the captured RootInputs, one
 # check that runs `/bin/true`, a command evaluator that passes when it passed, and acceptance.
-schema = "af.pipeline/1"
+schema = "af.pipeline/6"
 name = "perf/check-true"
-version = "1.0.0"
+version = "1.0.1"
 max_attempts = 3
 max_parallel = 2
 

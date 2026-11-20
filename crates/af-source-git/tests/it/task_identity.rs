@@ -16,7 +16,6 @@ fn producer() -> Producer {
 fn derived_source_keeps_exact_identity_and_revalidates_both_trees_on_every_call() {
     let dir = tempfile::tempdir().unwrap();
     let cas = Cas::open(dir.path()).unwrap();
-    let origin = cas.put_json(&json!({"origin":"trusted capture"})).unwrap();
     let original = cas.put(b"original source\n").unwrap();
     let changed = cas.put(b"changed source\n").unwrap();
     let entry = |content: String, size| Entry {
@@ -27,6 +26,12 @@ fn derived_source_keeps_exact_identity_and_revalidates_both_trees_on_every_call(
     };
     let base = Manifest::new(vec![entry(original.clone(), 16)]).unwrap();
     let candidate = Manifest::new(vec![entry(changed.clone(), 15)]).unwrap();
+    let origin = cas
+        .put_json(
+            &json!({"schema":"af.task-source-origin/3","kind":"captured",
+        "repository_id":"fixture","source_revision":null,"content_digest":base.content_digest()}),
+        )
+        .unwrap();
     let parent = capture_snapshot(&cas, &base, &origin, None).unwrap();
     let candidate_manifest = cas
         .put_json(&serde_json::to_value(&candidate).unwrap())

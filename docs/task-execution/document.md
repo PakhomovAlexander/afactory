@@ -66,7 +66,11 @@ a bounded map of source entries with `title`, `uri`, `revision` and `text`. Sour
 they cannot change tools, permissions, checks or Pipeline selection authority. Resume reads the
 captured bytes even if the live file or catalog changes.
 
-`af/DocumentDraft@1` contains a title, plain-text sections and named source citations. The renderer
+`af/DocumentDraft@3` (`af.document-draft/3`) contains a title, plain-text sections and a typed
+`citations` set. Document citations are `{ "kind": "source", "name": "<captured source>" }`;
+repository variants are refused because a Document Task has no repository Snapshot. Report Tasks
+share this representation and additionally resolve repository variants against their exact source.
+Retired draft formats are refused. The renderer
 creates `af/Document@1`, which records the exact draft and sources artifact IDs and the canonical
 Markdown they render to (payload `af.document/2`). It escapes only what is Markdown markup where it
 stands: `*`, a backtick, `[`, `]`, `<`, `|`, `~`, `$`, `\`, `_` outside a word, `&` before an

@@ -46,6 +46,13 @@ class Ranks(unittest.TestCase):
 
 
 class Losses(unittest.TestCase):
+    def test_paired_losses_refuse_unequal_counts_in_both_directions(self):
+        for baseline, candidate in (([1], [1, 2]), ([1, 2], [1]), ([], [1]), ([1], [])):
+            with self.subTest(baseline=baseline, candidate=candidate):
+                with self.assertRaisesRegex(ContractError, "equal baseline and candidate counts"):
+                    stats.paired_losses(baseline, candidate, Fraction(5, 100), Fraction(1),
+                                        "lower_is_better")
+
     def test_tolerance_uses_the_absolute_floor_and_handles_zero_baseline(self):
         r, a = Fraction(5, 100), Fraction(1)
         self.assertEqual(stats.tolerance(Fraction(0), r, a), 1)

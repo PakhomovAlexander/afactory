@@ -22,12 +22,12 @@ impl EventStore {
         // an earlier lease row.
         let mut query = self.conn.prepare(
             "WITH lease AS (
-                SELECT sequence FROM events WHERE run_id=?1 AND type='TaskTransition@5'
+                SELECT sequence FROM events WHERE run_id=?1 AND type='TaskTransition@6'
                 AND json_extract(payload,'$.change.kind') IN
                     ('opened','lease_taken','lease_renewed','lease_released')
                 ORDER BY sequence DESC LIMIT 1
              ), transition AS (
-                SELECT sequence FROM events WHERE run_id=?1 AND type='TaskTransition@5'
+                SELECT sequence FROM events WHERE run_id=?1 AND type='TaskTransition@6'
                 ORDER BY sequence DESC LIMIT 1
              ), tail AS (
                 SELECT sequence FROM events WHERE run_id=?1 ORDER BY sequence DESC LIMIT 1

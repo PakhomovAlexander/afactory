@@ -7,8 +7,10 @@ framed fake supervisor of `tests.support`, whose `overrides.json` replays outcom
 supervisor can report (a timeout, a leaked descendant, an uncertain cleanup, no reply, an
 artifact changed mid-shard). No number here describes the AF product.
 """
+import io
 import json
 import os
+import runpy
 import shutil
 import signal
 import subprocess
@@ -98,7 +100,7 @@ elif args[:2] == ["review", "run"]:
     sys.stdout.write('{"schema":"af/review-outcome@3"}\n')
 elif args[:2] == ["task", "show"]:
     read_private_copy(os.path.join(state(), "events.sqlite"))
-    kinds = ["opened", "plan_proposed", "admitted"] + ["lease_renewed"] * 9997
+    kinds = ["opened", "plan_proposed", "plan_admitted"] + ["lease_renewed"] * 9997
     sys.stdout.write('{"task_id":"perf-probe-task","history":[' + ",".join(
         '{"sequence":%%d,"transition":{"change":{"kind":"%%s"}}}' %% (index, kind)
         for index, kind in enumerate(kinds)) + "]}\n")
@@ -1008,7 +1010,8 @@ class NativeSeeds(SeedHarness):
         for (side, seed_id), seed in seeds.items():
             self.assertEqual((seed["kind"], seed["status"], seed["af_sha256"]),
                              ("native", "ready", None), seed)
-            self.assertTrue(seed["writer"].endswith("_seed_v1"))
+            self.assertEqual(seed["writer"], next(case["seed"]["contract_id"]
+                             for case in plan["cases"] if case["seed"]["seed_id"] == seed_id))
             self.assertTrue(seed["unchanged"])
             # The seed's writing cost is recorded once, on the seed.
             self.assertIsNotNone(seed["writer_wall_ns"])
@@ -1836,6 +1839,96 @@ def plan_minutes():
 
 
 class CliRegistry(TempDir):
+    def test_waiter_measures_the_real_cli_and_requires_a_running_timeout(self):
+        doc = cli_cases.load(os.path.join(ROOT, "fixtures/performance/cli.toml"))
+        entry = next(e for e in doc["adapters"]["af_cli_v4"]["commands"]
+                     if e["case_id"] == "cli_task_wait")
+        self.assertEqual(entry["setup"], "waiter_state")
+        self.assertEqual(entry["cwd"], "{scratch}/repo")
+        self.assertEqual(entry["argv"][:4], ["{af}", "task", "wait", "perf-probe-task"])
+        self.assertEqual(entry["argv"][-3:], ["--timeout", "2", "--json"])
+        self.assertIn({"kind": "exit_code", "value": 124}, entry["rules"])
+        self.assertIn({"kind": "json_equals", "path": "state.phase", "value": "running"},
+                      entry["rules"])
+        case = suite_module.load(SUITE).doc["cases"]["cli_task_wait"]
+        self.assertEqual(case["primary_metric"], "total_cpu_ms")
+        self.assertTrue({"wall_ms", "user_cpu_ms", "system_cpu_ms", "wait4_maxrss_bytes"}
+                        <= set(case["optional_metrics"]))
+        self.assertEqual(len([e for e in doc["adapters"]["af_cli_v4"]["commands"]
+                              if e["case_id"] == "cli_task_wait"]), 6)
+        for entry in (e for e in doc["adapters"]["af_cli_v4"]["commands"]
+                      if e["case_id"] == "cli_task_wait"):
+            self.assertIn({"kind": "exit_code", "value": 124}, entry["rules"])
+            self.assertIn({"kind": "json_equals", "path": "state.phase", "value": "running"},
+                          entry["rules"])
+            self.assertEqual(cli_cases.setup_argument(entry, {}, "baseline", "-"),
+                             entry["parameters"]["state"])
+
+    def test_renewal_cli_seed_is_distinct_from_the_original_shaped_waiter(self):
+        doc = cli_cases.load(os.path.join(ROOT, "fixtures/performance/cli.toml"))
+        self.assertEqual(doc["seeds"]["task_state"]["contract_id"], "cli_state_fixture_v1")
+        writer = runpy.run_path(os.path.join(ROOT, "fixtures/performance/cli/waiter-state.py"))
+        self.assertEqual(writer["STATES"]["cli_state_10000"],
+                         ("cli_wait_original_fixture", "cli_wait_original_fixture_v1", 10000))
+        for adapter in doc["adapters"].values():
+            shows = [e for e in adapter["commands"]
+                     if e["parameters"].get("command") == "task_show"]
+            self.assertEqual(len(shows), 1)
+            self.assertIn({"kind": "json_stream_count", "path": "history.*.transition.change.kind",
+                           "value": "lease_renewed", "count": 9997}, shows[0]["rules"])
+
+    def test_waiter_setup_driver_selects_the_public_writer_and_refuses_false_receipts(self):
+        writer = runpy.run_path(os.path.join(ROOT, "fixtures/performance/cli/waiter-state.py"))
+        declared = suite_module.load(SUITE).doc["cases"]["cli_task_wait"]["parameters"]["state"]["values"]
+        self.assertEqual(set(writer["STATES"]), set(declared))
+        for state in declared:
+            case, contract, count = writer["STATES"][state]
+            reply = {"schema": "af.perf-probe/1", "case_id": case, "contract_id": contract,
+                     "instance_id": "%s__state_%s" % (case, state),
+                     "correctness": {"status": "passed", "count": count}}
+            completed = mock.Mock(stdout=json.dumps(reply).encode())
+            output = io.BytesIO()
+            with mock.patch.object(subprocess, "run", return_value=completed) as launched, \
+                    mock.patch.object(sys, "stdout", mock.Mock(buffer=output)):
+                writer["main"]([self.tmp, "/verified/probe", state])
+            call = launched.call_args
+            self.assertEqual(call.args[0], ["/verified/probe"])
+            request = json.loads(call.kwargs["input"])
+            self.assertEqual(request["scratch"], self.tmp)
+            self.assertEqual(request["parameters"], {"state": state})
+            self.assertEqual(request["contract_id"], contract)
+            self.assertIsNone(request["seed"])
+            self.assertEqual(json.loads(output.getvalue()), reply)
+            for field, bad in (("count", count + 1), ("status", "failed")):
+                broken = dict(reply, correctness=dict(reply["correctness"], **{field: bad}))
+                with mock.patch.object(subprocess, "run", return_value=mock.Mock(
+                        stdout=json.dumps(broken).encode())), self.assertRaises(ValueError):
+                    writer["main"]([self.tmp, "/verified/probe", state])
+
+    def test_waiter_primary_cpu_uses_rusage_and_comparator_rejects_wall_scope(self):
+        result = json.loads(read(os.path.join(ROOT, "fixtures/performance/schema/"
+                                            "supervisor-result/valid-namespace.json")))
+        result["timing"]["child_wall_ns"] = "2000000000"
+        metric = {"key": "total_cpu_ms", "unit": "ms"}
+        instance = "cli_task_wait__state_cli_state_10000"
+        case = {"case_id": "cli_task_wait", "parameters": {"state": "cli_state_10000"},
+                "primary_metric": metric, "optional_metrics": [],
+                "timing": {"boundary": "child_process_lifetime"}}
+        record = {"instance_id": instance, "identity": {"case_id": case["case_id"],
+                  "parameters": case["parameters"]}, "metrics": {}, "metric_scopes": {},
+                  "unavailable_metrics": {}, "status": "ok"}
+        self.assertIsNone(runner.record_process_primary(record, case, result))
+        self.assertEqual(record["metrics"]["total_cpu_ms"], {"value": "6.521", "unit": "ms"})
+        plan = {"health": {"workload": "sentinel_canonical"}, "cohort": None}
+        self.assertIsNone(evaluate_results._metric_shape(plan, {instance: case}, record))
+        record["metric_scopes"]["total_cpu_ms"] = "child_process_lifetime"
+        self.assertIn("scope", evaluate_results._metric_shape(plan, {instance: case}, record))
+        result["rusage"] = None
+        result["rusage_unavailable"] = "not reaped"
+        missing = {"metrics": {}, "metric_scopes": {}}
+        self.assertIn("not reaped", runner.record_process_primary(missing, case, result))
+        self.assertEqual(missing["metrics"], {}, "wall time must not impersonate missing CPU")
+
     def test_the_committed_registry_covers_every_process_instance(self):
         doc = cli_cases.load(os.path.join(ROOT, "fixtures/performance/cli.toml"))
         loaded = suite_module.load(SUITE)
@@ -1846,7 +1939,8 @@ class CliRegistry(TempDir):
                           for entry in adapter["commands"] if "pending" not in entry)
         self.assertEqual(len(runnable), 9)
         self.assertEqual([entry["parameters"]["registry"] for entry in adapter["commands"]
-                          if "pending" in entry], ["empty", "stores_20x10000"])
+                          if "pending" in entry and entry["case_id"] == "tui_open"],
+                         ["empty", "stores_20x10000"])
         current = [entry for entry in doc["adapters"]["af_cli_v2"]["commands"]
                    if entry["case_id"] == "tui_open"]
         self.assertEqual([(entry["parameters"]["registry"], entry["setup"])
@@ -1870,7 +1964,7 @@ class CliRegistry(TempDir):
         self.assertEqual(seeds, {"task_show": ("seed_copy", "task_state"),
                                  "review_ledger": ("seed_copy", "campaign_state"),
                                  "review_report": ("seed_copy", "campaign_state")})
-        self.assertEqual(sorted(doc["seeds"]), ["campaign_state", "task_state"])
+        self.assertEqual(sorted(doc["seeds"]), ["campaign_state", "native_review_state", "task_state"])
         for seed in doc["seeds"].values():
             self.assertEqual(seed["events"], 10000)
         self.assertEqual(argv["cli_task_run_check"][:4], ["{af}", "task", "run",
@@ -1880,6 +1974,28 @@ class CliRegistry(TempDir):
         with self.assertRaises(ContractError) as caught:
             cli_cases.check_registry(edited, loaded.doc)
         self.assertIn("no command for cli_discovery__command_version", str(caught.exception))
+
+    def test_current_review_adapter_uses_native_state_and_preserves_every_finding(self):
+        doc = cli_cases.load(os.path.join(ROOT, "fixtures/performance/cli.toml"))
+        name, adapter = cli_cases.choose_adapter(doc, "0.15.1-rc.1")
+        self.assertEqual(name, "af_cli_v4")
+        rows = {entry["parameters"].get("command"): entry for entry in adapter["commands"]}
+        for command in ("review_ledger", "review_report"):
+            self.assertEqual(rows[command]["seed"], "native_review_state")
+            self.assertIn("--json", rows[command]["argv"])
+            self.assertNotIn("--campaign", rows[command]["argv"])
+            self.assertIn("--repo", rows[command]["argv"])
+        self.assertIn({"kind": "json_equals", "path": "schema", "value": "af/review-ledger@3"},
+                      rows["review_ledger"]["rules"])
+        self.assertTrue(all(rule["path"].startswith("inspection.") for rule in
+                            rows["review_ledger"]["rules"] if "path" in rule and rule["path"] != "schema"))
+        enumeration = [rule for rule in rows["review_ledger"]["rules"]
+                       if rule["kind"] == "json_enumerates"]
+        self.assertEqual(len(enumeration), 1)
+        self.assertEqual((enumeration[0]["first"], enumeration[0]["last"]), (1, 100))
+        self.assertEqual(enumeration[0]["distinct"], ["finding_id"])
+        native = os.path.join(ROOT, "fixtures/performance/cli/native-review-roots/repo")
+        self.assertEqual(cli_cases.catalog_problems(native), [])
 
     def test_both_browser_commands_expand_to_requests_the_supervisor_admits(self):
         # The supervisor runs only an absolute program: each mode binds {python} to one.
@@ -2141,9 +2257,9 @@ class CliOracle(TempDir):
     RETAINED = 196608
 
     def events(self, numbers, kinds=None):
+        expected = ["opened", "plan_proposed", "plan_admitted"] + ["lease_renewed"] * 9997
         return [{"sequence": number, "transition": {"change": {
-            "kind": (kinds or {}).get(index, ("opened", "plan_proposed", "plan_admitted")[index]
-                                      if index < 3 else "lease_renewed")}}}
+            "kind": (kinds or {}).get(index, expected[index] if index < len(expected) else "extra")}}}
                 for index, number in enumerate(numbers)]
 
     def task_show(self, events, **fields):
@@ -2234,8 +2350,8 @@ class CliOracle(TempDir):
         passed, detail, _ = self.judge_show(repeated)
         self.assertFalse(passed)
         self.assertIn("task_id is named 1 more times", detail)
-        renewals = self.task_show(self.events(range(10000), kinds={5000: "lease_lost"}))
-        passed, detail, _ = self.judge_show(renewals)
+        transitions = self.task_show(self.events(range(10000), kinds={5000: "lease_lost"}))
+        passed, detail, _ = self.judge_show(transitions)
         self.assertFalse(passed)
         self.assertIn('history.*.transition.change.kind is "lease_renewed" 9996 times, not '
                       '9997', detail)

@@ -10,7 +10,7 @@ v hub  (project)            |
       review                |
       fixture/implementation|
   v tasks/                  |
-  v campaigns/              |
+                            |
                             |
                             |
                             |

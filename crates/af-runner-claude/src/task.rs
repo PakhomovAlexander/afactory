@@ -7,7 +7,7 @@ use af_runner::cli::{
 };
 use af_runner::models::{self, diagnostic};
 use af_runner::native_failure::{
-    NativeFailureKind, classify_native_failure, says_safeguards_flagged,
+    NativeFailureKind, classify_native_failure, native_auth_seen, says_safeguards_flagged,
 };
 use af_runner::task::reply_schema::ReplyContract;
 use af_runner::task::{ModelWorkerReturn, Unstarted, WorkerAccess, WorkerModelAdapter};
@@ -31,8 +31,7 @@ pub fn task_tools(access: WorkerAccess) -> &'static str {
 }
 
 /// The whole command one Task Attempt runs: [`claude_command`] with the access's tool grant in
-/// place of the read-only one, then `--json-schema` when the Worker declares a structured reply
-/// or is a review-Campaign reviewer (ADR-0103, ADR-0246).
+/// place of the read-only one, then `--json-schema` for the captured typed reply (ADR-0103).
 /// The same restricted root and customization isolation as review; only the tool list widens,
 /// and only as far as the kernel-derived access.
 fn task_command(
@@ -385,6 +384,7 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
                         String::from_utf8_lossy(&read)
                     );
                     let stderr_kind = classify_native_failure(&String::from_utf8_lossy(stderr));
+                    let stderr_auth = native_auth_seen(&String::from_utf8_lossy(stderr));
                     let (kind, auth_seen) = match envelope {
                         // No parsable result, whatever the exit status or transport outcome: the
                         // one place its classification is decided. Stdout is native output here.
@@ -392,24 +392,36 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
                             let native_stdout = String::from_utf8_lossy(&read);
                             let candidates = [classify_native_failure(&native_stdout), stderr_kind];
                             (
-                                classify_without_result(stderr, &native_stdout, &candidates),
-                                strongest_native_failure(&candidates).is_auth(),
+                                if candidates.contains(&NativeFailureKind::UnsupportedInvocation) {
+                                    NativeFailureKind::UnsupportedInvocation
+                                } else {
+                                    classify_without_result(stderr, &native_stdout, &candidates)
+                                },
+                                stderr_auth || native_auth_seen(&native_stdout),
                             )
                         }
                         // A parsed envelope speaks only through its native fields, so model text
                         // cannot choose the category. A reported refusal is one whatever else
                         // the streams say.
-                        Some(_) if refused => (NativeFailureKind::ModelRefused, false),
+                        Some(value) if refused => (
+                            NativeFailureKind::ModelRefused,
+                            stderr_auth || native_failure(value, native_failed).1,
+                        ),
                         Some(value) if failed || native_failed => {
-                            let kind = strongest_native_failure(&[
-                                native_failure(value, native_failed),
-                                stderr_kind,
-                            ]);
-                            (kind, kind.is_auth())
+                            let (native_kind, native_auth) = native_failure(value, native_failed);
+                            let candidates = [native_kind, stderr_kind];
+                            let kind =
+                                if candidates.contains(&NativeFailureKind::UnsupportedInvocation) {
+                                    NativeFailureKind::UnsupportedInvocation
+                                } else {
+                                    strongest_native_failure(&candidates)
+                                };
+                            (kind, stderr_auth || native_auth)
                         }
                         Some(_) => break 'classify,
                     };
                     failure = (kind != NativeFailureKind::Unknown).then_some(kind);
+                    said.redact_auth(auth_seen);
                     kind.redact_capture(auth_seen, &mut read, stderr);
                 }
                 // The adapter's whole-capture replacement is what the Store keeps when it took
@@ -514,6 +526,7 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
             usage: accounting.usage,
             raw_artifact_ids: capture.raw_artifact_ids,
             notes: af_runner::task::CallNotes {
+                native_failure,
                 transient,
                 events: Vec::new(),
                 refusal_category,
@@ -629,7 +642,7 @@ fn refusal_reported(value: &serde_json::Value) -> bool {
                 .get("result")
                 .and_then(serde_json::Value::as_str)
                 .is_some_and(says_safeguards_flagged)
-        || is_error && native_failure(value, true) == NativeFailureKind::ModelRefused
+        || is_error && native_failure(value, true).0 == NativeFailureKind::ModelRefused
 }
 
 /// The policy category a refusal result names, when it names one: `stop_details.category` as
@@ -679,7 +692,7 @@ fn is_envelope(value: &serde_json::Value, typed: bool) -> bool {
 /// In an `is_error` envelope, `result` is the CLI's own error text whenever `errors` and `error`
 /// yield no string (absent, `null`, `[]`, an array without strings, an object without a string
 /// `message`); anywhere else it is the model's reply and is never classified.
-fn native_failure(value: &serde_json::Value, is_error: bool) -> NativeFailureKind {
+fn native_failure(value: &serde_json::Value, is_error: bool) -> (NativeFailureKind, bool) {
     let strings = |key: &str| -> Vec<&str> {
         let Some(value) = value.get(key) else {
             return Vec::new();
@@ -705,8 +718,17 @@ fn native_failure(value: &serde_json::Value, is_error: bool) -> NativeFailureKin
         messages.extend(strings("result"));
     }
     messages.extend(strings("message"));
+    // Retry precedence must never erase sensitivity from another message or from a
+    // combined authentication/schema diagnostic. Only these native fields count, not
+    // successful model prose in `result`.
+    let auth_seen = messages.iter().any(|message| native_auth_seen(message));
     let kinds: Vec<_> = messages.into_iter().map(classify_native_failure).collect();
-    strongest_native_failure(&kinds)
+    let kind = if kinds.contains(&NativeFailureKind::UnsupportedInvocation) {
+        NativeFailureKind::UnsupportedInvocation
+    } else {
+        strongest_native_failure(&kinds)
+    };
+    (kind, auth_seen)
 }
 
 fn parse_usage(

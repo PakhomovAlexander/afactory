@@ -32,7 +32,9 @@ component/unit binaries explicitly assign new internal modules to their default 
 name UIX, performance or lifecycle submodules. This is a documented component rule, not a duration
 heuristic. Whole workflow modules remain e2e even when they assert rendered output: for example,
 `project` creates and removes worktrees and `task_report_command` runs real Tasks. `render` verifies
-the Worker input contract. Neither is UIX merely because it invokes a CLI.
+the Worker input contract. Neither is UIX merely because it invokes a CLI. The unstarted-check disk-refusal regression in
+`telemetry_bench` is explicitly e2e: it verifies canonical runtime refusal, without measuring
+performance; the benchmark measurements remain perf.
 
 Every top-level Python test script is registered, with utility entrypoints separately enumerated.
 The performance laboratory's unittest discovery assigns its entire subordinate suite to perf;
@@ -175,7 +177,7 @@ python3 scripts/test-quarantine.py scan --state STORE_DIR             # or --lis
 python3 scripts/test-quarantine.py scan --list tasks.json --write    # add them
 ```
 
-It reads one or more `af task list --json` documents (`af/task-list@3` or `af/task-list@4`):
+It reads one or more `af task list --json` documents (`af/task-list@3` or `af/task-list@5`):
 `--list FILE` reads one, `--state DIR` runs `af task list --json --state DIR` (the `af` on `PATH`,
 or `--af PATH`); both repeat, and a Task listed twice counts once. Each row's `task_id`,
 `updated_unix_ms` and `gate.flaky` are read; a row without `gate` adds nothing. A flaky name is

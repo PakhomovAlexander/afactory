@@ -14,6 +14,8 @@ import re
 import subprocess
 import sys
 import urllib.parse
+from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from perflab import contracts
@@ -232,7 +234,7 @@ class Night(TempDir):
                "builds_root": self.builds, "build_image": "sha256:" + "1" * 64,
                "qemu_aarch64": self.path("qemu"), "sign_key": self.path("nightly.key"),
                "public_key": self.path("nightly.pub"), "required_checks": ["check / lint"]}
-        lines = ['schema = "af.nightly-config/1"']
+        lines = ['schema = "af.nightly-config/2"']
         lines += ["%s = %s" % item for item in ((k, json.dumps(v)) for k, v in top.items())]
         lines.append("[publish]")
         lines += ["%s = %s" % (k, json.dumps(v)) for k, v in values.items()]
@@ -382,15 +384,38 @@ class FirstPublish(Night):
             github_rest.GitHub(REPO, None, send=self.github.send).release_by_tag(TAG)
 
     def test_authenticated_writes_never_use_environment_proxies(self):
-        with mock.patch.dict(os.environ, {"HTTPS_PROXY": "http://proxy.invalid:8080",
-                                          "https_proxy": "http://proxy.invalid:8080"}):
-            proxies = [handler for handler in github_rest._OPENER.handlers
+        transport_path = os.path.join(ROOT, "scripts", "nightly", "github_rest.py")
+        with open(transport_path, encoding="utf-8") as stream:
+            source = stream.read()
+        explicit_handler = "urllib.request.ProxyHandler({}), "
+        self.assertEqual(source.count(explicit_handler), 1)
+
+        def check_transport(transport_source):
+            spec = importlib.util.spec_from_file_location("isolated_github_rest", transport_path)
+            transport = importlib.util.module_from_spec(spec)
+            exec(compile(transport_source, transport_path, "exec"), transport.__dict__)
+            proxies = [handler for handler in transport._OPENER.handlers
                        if isinstance(handler, urllib.request.ProxyHandler)]
-            # Some Python versions omit a default ProxyHandler whose map is empty; others
-            # retain it. Either shape proves no environment-derived proxy is installed.
-            self.assertTrue(all(handler.proxies == {} for handler in proxies))
-            self.assertIs(publish.https_send, github_rest.https_send)
-            self.assertIs(publish.Telegram(BOT_TOKEN, "1").send, github_rest.https_send)
+            # An empty proxy handler may be omitted by build_opener on some Python versions.
+            self.assertTrue(all(handler.proxies == {} for handler in proxies),
+                            "environment proxy installed in writer opener")
+            with mock.patch.dict(sys.modules, {"github_rest": transport}):
+                spec = importlib.util.spec_from_file_location("isolated_publish", PUBLISH)
+                publisher = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(publisher)
+            self.assertIs(publisher.https_send, transport.https_send)
+            self.assertIs(publisher.GitHub(REPO, WRITE_TOKEN).send, transport.https_send)
+            self.assertIs(publisher.Telegram(BOT_TOKEN, "1").send, transport.https_send)
+            self.assertIs(transport.https_send.__globals__["_OPENER"], transport._OPENER)
+
+        # Construct both transports under the same hostile environment, without opening URLs.
+        with mock.patch.dict(os.environ, {"HTTPS_PROXY": "http://proxy.invalid:8080",
+                                          "https_proxy": "http://proxy.invalid:8080"}, clear=True), \
+                mock.patch.object(sys, "path", list(sys.path)):
+            check_transport(source)
+            # Removing the explicit handler must make this exact regression fail.
+            with self.assertRaisesRegex(AssertionError, "environment proxy installed"):
+                check_transport(source.replace(explicit_handler, "", 1))
 
     def test_a_tag_already_naming_another_commit_refuses_before_any_write(self):
         self.build()
@@ -959,9 +984,218 @@ class Receipt(Night):
         for change, error in ((dict(assets=doc["assets"][::-1]), "in order"),
                               (dict(telegram=None), "the reason there is none"),
                               (dict(status="skipped"), "a skipped night publishes"),
-                              (dict(schema="af.nightly-publish/2"),
-                               "expected af.nightly-publish/1"),
+                              (dict(schema="af.nightly-publish/1"),
+                               "expected af.nightly-publish/2"),
                               (dict(token="x"), "unknown field token")):
             with self.assertRaises(ContractError, msg=error) as caught:
                 contracts.read_json(json.dumps(dict(doc, **change)).encode(), "nightly-publish")
             self.assertIn(error, str(caught.exception))
+
+
+class NativeRecovery(Night):
+    """Real native publication phase over sealed fixture files and fake REST."""
+
+    def setUp(self):
+        super().setUp()
+        import native_release
+        self.native = native_release
+        self.record = self.build()
+        self.output = self.report(name='report-' + TAG)
+        self.backend = object.__new__(native_release.Native)
+        self.backend.config = publish.load_config(self.config)
+        self.backend.service = SimpleNamespace(root=Path(self.output).parent)
+        self.backend.record = lambda tag: self.record
+        self.backend.verified = lambda record: ({'manifest': 'fixture'}, {'comparison': 'fixture'})
+        # Predecessor family/report certificates are independently exercised by NativeGuards.
+        self.backend.certificate = lambda *args: None
+
+    def phase(self, resumed=True):
+        with mock.patch.object(self.native.runtime, 'trusted_key'), \
+                mock.patch.object(self.native.publish, 'GitHub', return_value=self.github.client()), \
+                mock.patch.object(self.native.publish, 'run_command', self.runner), \
+                mock.patch.object(self.native.publish, 'https_send', self.telegram.send):
+            return self.backend.run({'nightly_tag': TAG}, self.native.OPS[3], resumed)
+
+    def first_publish(self):
+        result = self.phase(False)
+        self.assertIn('publication', result[0])
+        return self.receipt()
+
+    def assert_read_only_refusal(self, reason):
+        writes = list(self.github.writes())
+        messages = list(self.telegram.sent)
+        before = read(os.path.join(self.night, 'publish.json')) if os.path.exists(
+            os.path.join(self.night, 'publish.json')) else None
+        with self.assertRaisesRegex(ContractError, reason):
+            self.phase()
+        self.assertEqual(self.github.writes(), writes)
+        self.assertEqual(self.telegram.sent, messages)
+        if before is not None:
+            self.assertEqual(read(os.path.join(self.night, 'publish.json')), before)
+
+    def test_clean_recovery_reads_release_and_tag_without_repeated_mutations(self):
+        receipt = self.first_publish()
+        writes = list(self.github.writes())
+        self.github.requests.clear()
+        result = self.phase()
+        self.assertIn('publication', result[0])
+        self.assertEqual(self.github.writes(), [])
+        paths = [path for method, path in self.github.requests]
+        self.assertIn('/repos/owner/af/git/ref/tags/' + TAG, paths)
+        self.assertIn('/repos/owner/af/releases/tags/' + TAG, paths)
+        self.assertEqual(self.receipt(), receipt)
+        self.assertEqual(len(self.telegram.sent), 1)
+        self.assertTrue(writes)
+
+    def test_remote_deletion_and_changed_identity_fail_closed(self):
+        import copy
+        self.first_publish()
+        original = copy.deepcopy(self.github.releases)
+        tags = dict(self.github.tags)
+        cases = ('release absent', 'tag absent', 'tag changed', 'head', 'release id',
+                 'tag name', 'draft', 'prerelease', 'url', 'upload url', 'notes',
+                 'missing asset', 'duplicate asset', 'extra asset')
+        for case in cases:
+            with self.subTest(case=case):
+                self.github.releases = copy.deepcopy(original)
+                self.github.tags = dict(tags)
+                release = self.github.by_tag(TAG)
+                if case == 'release absent':
+                    self.github.releases.clear()
+                elif case == 'tag absent':
+                    self.github.tags.clear()
+                elif case == 'tag changed':
+                    self.github.tags[TAG] = 'c' * 40
+                elif case == 'head':
+                    release['target_commitish'] = 'c' * 40
+                elif case == 'release id':
+                    release['id'] += 1
+                elif case == 'tag name':
+                    release['tag_name'] = 'nightly-2026.10.28'
+                elif case == 'draft':
+                    release['draft'] = True
+                elif case == 'prerelease':
+                    release['prerelease'] = False
+                elif case == 'url':
+                    # render derives html_url from tag; corrupt the checked response instead.
+                    client = self.github.client()
+                    answer = client.release_by_tag(TAG)
+                    answer['html_url'] = 'https://github.com/other/repo/releases/tag/' + TAG
+                    with mock.patch.object(self.github, 'client', return_value=client), \
+                            mock.patch.object(client, 'release_by_tag', return_value=answer):
+                        self.assert_read_only_refusal('identity')
+                    continue
+                elif case == 'upload url':
+                    release['upload_url'] = 'https://uploads.github.com/repos/other/repo/releases/1/assets{?name,label}'
+                elif case == 'notes':
+                    release['body'] = 'another report'
+                elif case == 'missing asset':
+                    release['assets'].pop()
+                elif case == 'duplicate asset':
+                    release['assets'].append(dict(release['assets'][0]))
+                elif case == 'extra asset':
+                    release['assets'].append(self.github.asset('unexpected.txt', b'extra'))
+                self.assert_read_only_refusal('.')
+
+    def test_every_remote_asset_is_bound_to_build_and_certified_report(self):
+        self.first_publish()
+        for asset in self.github.by_tag(TAG)['assets']:
+            for field, bad in (('digest', sha256(b'wrong bytes')), ('size', 123),
+                               ('state', 'new'), ('digest', None)):
+                with self.subTest(asset=asset['name'], field=field, bad=bad):
+                    original = asset[field]
+                    asset[field] = bad
+                    self.assert_read_only_refusal('.')
+                    asset[field] = original
+
+    def test_receipt_of_same_build_with_different_report_cannot_certify_completion(self):
+        self.first_publish()
+        path = Path(self.output, 'report.html')
+        path.write_bytes(b'<html>different certified report</html>')
+        self.assert_read_only_refusal('not the night')
+
+    def test_receipt_report_digest_cannot_differ_even_if_remote_is_correct(self):
+        self.first_publish()
+        receipt = self.receipt()
+        receipt['assets'][-1]['digest'] = sha256(b'earlier report')
+        publish.write_receipt(os.path.join(self.night, 'publish.json'), receipt)
+        self.assert_read_only_refusal('receipt assets differ')
+
+    def test_recovery_reverifies_signature_and_receipt_identity(self):
+        self.first_publish()
+        self.runner.verifies = False
+        self.assert_read_only_refusal('does not verify')
+        self.runner.verifies = True
+        original = self.receipt()
+        for change in ({'head_sha': 'c' * 40}, {'repository': 'other/repo',
+                'release': {'id': original['release']['id'],
+                    'url': 'https://github.com/other/repo/releases/tag/' + TAG}}):
+            publish.write_receipt(os.path.join(self.night, 'publish.json'), dict(original, **change))
+            self.assert_read_only_refusal('receipt identity differs')
+        publish.write_receipt(os.path.join(self.night, 'publish.json'), original)
+
+    def test_clean_recovery_without_optional_notification(self):
+        self.write_config(telegram=False)
+        self.backend.config = publish.load_config(self.config)
+        self.first_publish()
+        writes = list(self.github.writes())
+        self.phase()
+        self.assertEqual(self.github.writes(), writes)
+        self.assertEqual(self.telegram.sent, [])
+
+    def test_uncertain_publication_without_receipt_never_repeats_mutations(self):
+        self.first_publish()
+        os.unlink(os.path.join(self.night, 'publish.json'))
+        self.assert_read_only_refusal('uncertain without receipt')
+        self.github.releases.clear()
+        self.github.tags.clear()
+        self.assert_read_only_refusal('uncertain without receipt')
+
+    def test_failure_survives_crash_immediately_after_receipt_persistence(self):
+        class Crash(BaseException):
+            pass
+        for failure in ('list', 'release delete', 'tag delete', 'notification', 'foreign'):
+            with self.subTest(failure=failure):
+                # Each case needs its own first publication and original retention set.
+                path = os.path.join(self.night, 'publish.json')
+                if os.path.exists(path):
+                    os.unlink(path)
+                self.github = FakeGitHub(self)
+                self.telegram = FakeTelegram(self)
+                for day in range(10, 14):
+                    self.github.add('nightly-2026.10.%02d' % day)
+                self.write_config(keep_nights=3)
+                self.backend.config = publish.load_config(self.config)
+                if failure == 'foreign':
+                    self.github.add('nightly-2026.10.01', draft=True)
+                self.github.fail = lambda method, endpoint: (
+                    failure == 'list' and method == 'GET' and '/releases?per_page=' in endpoint
+                    or failure == 'release delete' and method == 'DELETE' and '/releases/' in endpoint
+                    or failure == 'tag delete' and method == 'DELETE' and '/git/refs/' in endpoint)
+                if failure == 'notification':
+                    self.telegram.answer = (502, b'{"ok":false}')
+                real_write = self.native.publish.write_receipt
+                def crash_after_write(path, receipt):
+                    real_write(path, receipt)
+                    raise Crash()
+                with mock.patch.object(self.native.publish, 'write_receipt', side_effect=crash_after_write):
+                    with self.assertRaises(Crash):
+                        self.phase(False)
+                receipt = self.receipt()
+                stage = 'notification' if failure == 'notification' else 'foreign' if failure == 'foreign' else 'pruning'
+                self.assertIn(stage, [item['stage'] for item in receipt['failures']])
+                self.github.fail = None
+                self.telegram.answer = None
+                self.assert_read_only_refusal('publication incomplete')
+
+    def test_current_tag_pruned_cannot_complete_fresh_or_resumed_phase(self):
+        for day in range(1, 5):
+            self.github.add('nightly-2026.11.%02d' % day)
+        self.write_config(keep_nights=3)
+        self.backend.config = publish.load_config(self.config)
+        with self.assertRaisesRegex(ContractError, 'pruned receipt'):
+            self.phase(False)
+        self.assertIn(TAG, self.receipt()['pruned'])
+        self.assertNotIn(TAG, self.github.tags)
+        self.assertIsNone(self.github.by_tag(TAG))
+        self.assert_read_only_refusal('pruned receipt')

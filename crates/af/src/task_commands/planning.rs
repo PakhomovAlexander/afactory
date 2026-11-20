@@ -10,7 +10,7 @@ pub(super) fn restore(
     authority: &RunAuthority,
 ) -> Result<TaskPlanCompiler, String> {
     let mut compiler = restore_compiler(cas, &state.revision.authority.policy_id, authority)?;
-    let plan: Option<ExecutionPlanV3> = state
+    let plan: Option<ExecutionPlan> = state
         .plan_id
         .as_deref()
         .map(|id| artifact(cas, id, EXECUTION_PLAN_V4))
@@ -154,7 +154,7 @@ pub(super) fn resume(
     authority: RunAuthority,
     mut compiler: TaskPlanCompiler,
     state: TaskProjection,
-    plan: ExecutionPlanV3,
+    plan: ExecutionPlan,
     graph: CompiledTask,
     json: bool,
 ) -> Result<i32, String> {
@@ -212,7 +212,7 @@ pub(super) fn resume(
     present_noting(&cas, &store, &state.task_id, json, true)
 }
 
-pub(super) fn persist_plan(cas: &Cas, plan: &ExecutionPlanV3) -> Result<String, String> {
+pub(super) fn persist_plan(cas: &Cas, plan: &ExecutionPlan) -> Result<String, String> {
     cas.put_artifact(
         EXECUTION_PLAN_V4,
         producer(),
@@ -278,7 +278,7 @@ fn run_planner(
     authority: &RunAuthority,
     compiler: &TaskPlanCompiler,
     task: &TaskRevisionV1,
-    plan: &ExecutionPlanV3,
+    plan: &ExecutionPlan,
     graph: &CompiledTask,
     adapters: &BTreeMap<String, Box<dyn af_runner::task::WorkerModelAdapter>>,
 ) -> Result<(), String> {

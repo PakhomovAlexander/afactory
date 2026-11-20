@@ -127,8 +127,7 @@ fn repository(root: &Path) -> PathBuf {
     git(&repo, &["init", "-q", "-b", "main"]);
     std::fs::write(
         repo.join(".af/af.toml"),
-        "version = 1\n[project]\nname = \"fixture\"\nmin_af = \"0.1\"\n[defaults]\npipeline = \
-         \"review\"\n",
+        "version = 2\n[project]\nname = \"fixture\"\nmin_af = \"0.1\"\n",
     )
     .unwrap();
     std::fs::write(repo.join("README.md"), "one\n").unwrap();

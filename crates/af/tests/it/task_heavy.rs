@@ -33,7 +33,7 @@ fn configure(repo: &Path, case: &str) {
     task_cli::load_safe_walls(repo);
     let packages = repo.join(".af/task-packages/fixture");
     let path = packages.join("review/pipeline.toml");
-    let mut review: PipelineDefinitionV1 = read(&path);
+    let mut review: PipelineDefinition = read(&path);
     let mut continuation = review.contract.inputs["source"].clone();
     continuation.artifact_type = "af/TaskReviewContinuation@1".into();
     continuation.affinity = PortAffinityV1::SameAs {
@@ -58,7 +58,7 @@ fn configure(repo: &Path, case: &str) {
         );
     write(&path, &review);
     let path = packages.join("repair/pipeline.toml");
-    let mut repair: PipelineDefinitionV1 = read(&path);
+    let mut repair: PipelineDefinition = read(&path);
     repair
         .nodes
         .iter_mut()
@@ -87,7 +87,7 @@ fn configure(repo: &Path, case: &str) {
     repair.coverage.clear();
     write(&path, &repair);
     let path = packages.join("implementation/pipeline.toml");
-    let mut root: PipelineDefinitionV1 = read(&path);
+    let mut root: PipelineDefinition = read(&path);
     root.max_attempts = 11;
     root.contract
         .outputs

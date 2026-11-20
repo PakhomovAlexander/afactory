@@ -24,9 +24,6 @@ impl TaskRuntime<'_, '_> {
     /// The selected admission outputs remain in the same Task for a later ordinary execute.
     /// No TaskRunReport or TaskResult is fabricated for the unexecuted business graph.
     pub fn execute_provider_admissions(&self) -> Result<TaskProviderAdmissionReport, String> {
-        if self.integration.is_some() {
-            return Err("Integration phase cannot execute Provider admission".into());
-        }
         self.store
             .lock()
             .expect("Task Store")

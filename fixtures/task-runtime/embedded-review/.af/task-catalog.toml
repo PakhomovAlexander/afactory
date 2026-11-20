@@ -5,17 +5,17 @@
 
 ["packages"."fixture/bugs"]
 "version" = "1.0.0"
-"digest" = "sha256:2c2276341583e9219a6c87120061b5987b83c8b8cf581092539c11285d7b265e"
+"digest" = "sha256:28d80afd6a1f75ce3914cef92d862f83db6a501094ba78e5f1782e0c4437cf4d"
 "path" = ".af/task-packages/fixture/bugs"
 
 ["packages"."fixture/correctness"]
 "version" = "1.0.0"
-"digest" = "sha256:08d6d35e046f749f23e70622b48634edcade149af57aacebbc1595ca548909cc"
+"digest" = "sha256:6ddf4bd743ae9044ce126394aa228f6f51cad31373c29f1e2e9d0fff741e380a"
 "path" = ".af/task-packages/fixture/correctness"
 
 ["packages"."fixture/implementation"]
-"version" = "1.0.0"
-"digest" = "sha256:4beb724f8242a2f18bf9e41ad23aa0dcc0db37416edd74fb288cf00be0e81224"
+version = "1.0.1"
+digest = "sha256:c10d1ec5bb1851745b7a55c7dee150d8b9bb379efd2cda69fba8ab03308f0a1f"
 "path" = ".af/task-packages/fixture/implementation"
 
 ["packages"."fixture/implementer"]
@@ -24,8 +24,8 @@
 "path" = ".af/task-packages/fixture/implementer"
 
 ["packages"."fixture/review"]
-"version" = "1.0.0"
-"digest" = "sha256:5fe658aefba7e1f9aeb19336a1c7eaca88cabd2ba35e0f082e73010267b60f46"
+version = "1.0.1"
+digest = "sha256:8bc48249a23e09f89cecf5156e9cfc102cfc919d970d0a48fb3e439562421b6b"
 "path" = ".af/task-packages/fixture/review"
 
 ["packages"."fixture/evaluator"]

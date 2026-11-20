@@ -41,7 +41,7 @@ fn start_previews_then_exact_confirmation_runs_and_finished_replay_spends_nothin
     );
     let display = String::from_utf8(initial.stdout).unwrap();
     assert!(display.contains("TASK  pagination-cli"));
-    assert!(display.contains("PIPE  fixture/implementation@1.0.0"));
+    assert!(display.contains("PIPE  fixture/implementation@1.0.1"));
     assert!(display.contains("confirmation required"));
     assert!(display.contains("--confirm-plan sha256:"));
     assert!(display.is_ascii() && prose(&display).all(|line| line.len() <= 96));
@@ -139,7 +139,7 @@ fn tree_preserves_embedded_calls_conditions_and_captured_authority() {
         String::from_utf8_lossy(&output.stderr)
     );
     let tree = String::from_utf8(output.stdout).unwrap();
-    assert!(tree.contains("review: call fixture/review@1.0.0"), "{tree}");
+    assert!(tree.contains("review: call fixture/review@1.0.1"), "{tree}");
     assert!(tree.contains("correctness  command Worker"), "{tree}");
     assert!(tree.contains("bugs  command Worker"), "{tree}");
     assert!(tree.contains("[if ") && tree.contains("=passed]"), "{tree}");

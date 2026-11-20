@@ -15,6 +15,8 @@ protocols the laboratory relies on, so the driver's own logic is what the tests 
   enabled during setup would show `setup_work`. Its recording is a little-endian perf.data
   holding declared LOST and LOST_SAMPLES records; `script` and `buildid-list` print their text
   formats from it, `buildid-list` each recording's configured listing.
+  Whole-command tests may instead declare `whole_samples`, an exact synthetic sample count
+  per completed command independent of the host's scheduling and elapsed capture time.
 - inferno's three tools collapse, diff and render; the renderer writes the `onload` handler and
   `<script>` element the real `--no-javascript` output still carries.
 - `af` answers `--version` and `task show ... --json`, the latter with a document of 10,000
@@ -56,7 +58,9 @@ if request["contract_id"] == "cli_state_fixture_v1":
     sys.stdout.write('{"schema":"af.perf-probe/1","correctness":{"status":"passed",'
                      '"count":10000,"detail":"fake cli seed"}}\n')
     sys.exit(0)
-if request["contract_id"].endswith("_seed_v1"):
+is_seed = request["contract_id"] in (
+    "source_capture_seed_v1", "state_projection_seed_v1", "authority_seed_v1")
+if is_seed:
     # A seed writer writes below its own work directory, as the real probe does.
     os.mkdir(os.path.join(request["scratch"], "probe-work"))
     open(os.path.join(request["scratch"], "probe-work", "written-seed"), "w").close()
@@ -73,7 +77,7 @@ with open(os.path.join(here, "executions"), "a") as stream:
 mark("setup")
 # Fresh declared state: the scratch is new and empty for every repetition.
 used = os.path.join(request["scratch"], "used-by-a-repetition")
-if os.listdir(request["scratch"]) and not request["contract_id"].endswith("_seed_v1"):
+if os.listdir(request["scratch"]) and not is_seed:
     sys.stderr.write("stale scratch\n"); sys.exit(4)
 if request["seed"] is not None:
     # Reads the private copy of what its side's seed writer wrote.
@@ -211,6 +215,11 @@ if args[0] == "record":
     child = subprocess.Popen(command)
     enabled, samples, buffer = not controls, [], b""
     phase_file = config.get("phase_file")
+    if not controls and "whole_samples" in config:
+        # Cache-cleanup tests need decoded evidence, not a scheduling-dependent sample loop.
+        # Still execute and reap the real stand-in command, and retain its exit status.
+        child.wait()
+        samples = [config.get("whole_phase", "af")] * config["whole_samples"]
     while child.poll() is None:
         ready, _, _ = select.select([ctl], [], [], 0.001)
         if ready:
@@ -446,10 +455,11 @@ if args[:2] == ["task", "show"]:
     out = sys.stdout
     out.write('{"task_id":"perf-probe-task","history":[')
     first = True
+    kinds = ["opened", "plan_proposed", "plan_admitted"] + ["lease_renewed"] * 9997
     for number in range(10000):
         if number == skip:
             continue
-        kind = "lease_renewed" if 2 <= number <= 9998 else "phase_changed"
+        kind = kinds[number]
         out.write(("" if first else ",") + '{"sequence":%d,"transition":{"change":{"kind":'
                   '"%s"}},"note":"%s"}' % (number, kind, "x" * 140))
         first = False

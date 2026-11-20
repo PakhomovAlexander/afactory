@@ -45,7 +45,7 @@ A green run. The check passes, the review converges, and the only evidence of th
 a host nobody inspects. This is the case that decides whether project-supplied check commands
 can be treated as data.
 
-## Status — provider boundary and live Gate routing discharged
+## Status — provider boundary and native Task routing exercised
 
 Two test files carry this case. `crates/af-sandbox/tests/malicious_check.rs` runs against
 the `trusted_local` provider — a materialized copy of a snapshot in a temporary directory,
@@ -53,10 +53,12 @@ the `trusted_local` provider — a materialized copy of a snapshot in a temporar
 `crates/af-sandbox/tests/container_probes.rs` runs the probes that need real isolation
 against `ContainerProvider` with a live daemon: one bind (the sandbox), `--network=none`, no
 inherited environment, image pinned by manifest digest. The
-`make review-kernel-container-probes` target and dedicated CI job run them and the live v3 Gate
-route, including a timeout probe that asserts the daemon-owned container is gone before execution
-returns; they are `#[ignore]`d in the ordinary test run. The `container-probes` job is green on
-`main`: Release run `39396278192` at `c79f03c0` reports `check / container-probes: success`. Where
+`make review-kernel-container-probes` target, full `make check` and the selected e2e gate run them
+and the native Task check route, including a timeout probe that asserts the daemon-owned container
+is gone before execution returns; they are `#[ignore]`d in the ordinary test run.
+The `container-probes` job is green on
+the historical baseline: Release run `39396278192` at `c79f03c0` reports
+`check / container-probes: success`. That result does not prove the current native replacement. Where
 the target is invoked, a missing daemon is a hard failure, never a skip — an unrun probe must not
 look like a passed one.
 
@@ -80,58 +82,67 @@ What "discharged (container)" claims is the *provider boundary*, no more. `trust
 still provides none of it, and `admit` still refuses a safe pipeline on that provider — that
 refusal remains tested.
 
-Pipeline format v3 now routes every root Gate through its explicit Execution Binding. Container
-bindings require a project image pinned by digest. Provider usability and isolation admission are
-recorded durably before `RunReport@6`; either failure stops the Gate before a project command
-runs. A recording runtime asserts that Gate dispatch builds the exact container invocation:
-portable declared environment without the host `PATH`, the caller's numeric UID:GID, and a unique
-reaping name. A timed-out runtime client is followed by bounded `rm -f`; if cleanup cannot be
-confirmed, the Gate reports the preserved sandbox path and returns incomplete without sealing a
-possibly live bind. The
-lower-level probes use `CheckRunner::run_with`; the live Gate route is exercised end to end by
-`task_campaign_review::host::domain::a_container_gate_executes_on_the_task_host` in
-`crates/af-runtime/tests/it`, which `make review-kernel-container-probes` runs: a pipeline
-whose root Gate has a container binding is admitted, the Gate's check runs in a real container
-on the Task host, the Task's acceptance is satisfied, and the run report records the binding as
-admitted with `Container` isolation and the pinned image. The green `container-probes` job of
-Release run `39396278192` (`main` at `c79f03c0`) is that live evidence, so:
+Native Task Pipeline `/6` uses `CodeTaskDomain::checks`, also delegated by `ReviewTaskDomain`.
+`require_container = true` selects the existing shared `ContainerProvider`, pins `DEFAULT_IMAGE`,
+probes usability within the Attempt deadline and admits its actual isolation with `Policy::safe()`.
+An absent/unusable runtime refuses before any project command; there is no local fallback.
+`CheckRunner::run_with_observed` keeps typed argument validation, then dispatches through
+`exec_evidenced_controlled`. The shared provider retains no-network, no-credential, capability,
+process and cleanup restrictions. Private container HOME, TMPDIR, scratch and cache are tmpfs
+mounts. `[warm]` and native host-toolchain mappings remain refused with required containment.
+Worker environment authority remains separate from check containment.
 
-- **Live Gate routing — discharged.** Gate dispatch is routed through the container binding in
-  code, and the live probe of that route is green on `main`.
+The live native regression is
+`task_review_execute_checks::a_container_check_executes_on_the_native_task_host` in
+`crates/af-runtime/tests/it`. It requires `Availability::Usable`, runs a real check through the
+native Task host and Review domain, asserts satisfied acceptance, and reads durable
+`af/TaskCheckContainment@1` evidence linked to the exact `af/TaskCheckReceipt@2`, captured policy
+and Snapshot. That evidence states admitted Container isolation, the pinned default image and
+observed execution. Failed-command and source-mutation controls use the same live route and
+cannot produce a passing Review. The command checks private writable runtime paths and an
+unreachable host marker. The captured source remains unchanged. Its reviewer is an in-process
+fixture; this proves contained check dispatch, not contained model execution.
 
-**Do not weaken this case as the wiring changes.** Live Gate routing is discharged on the
-strength of the live Gate probe, not of the provider probes; a change that stops routing a Gate
-through its binding, or a `container-probes` job that stops being green, reopens it here.
-A probe recorded as not applicable stays that way only while GA has no Broker and no allowed
-egress; whichever lands first reopens its half here.
+`make review-kernel-container-probes` explicitly selects the native regression with nextest
+`--no-tests fail` through `scripts/nextest-gate.py --repeat 1`. This existing single-run mode
+preserves the live proof's no-rerun policy. Inside `scripts/verify.sh`, the existing
+runner places reports in the gate-owned writable store outside the read-only source Snapshot;
+in a writable checkout it publishes the normal `target/nextest/ci/junit.xml`. The sealed-source
+fixture in `scripts/test-nextest-gate.py` executes the exact Makefile recipe against a tiny
+ignored test and checks its JUnit and source immutability. That fixture proves report routing,
+not containment. The test catalog audits that exact selector as an ignored `live-container`
+e2e test. The target still runs all existing sandbox-level live probes and the timeout/reap
+control. Full `make check` invokes it after all full prerequisites succeed, including the
+ordinary Rust build/test and Python suites; this ordering holds under parallel Make.
+`scripts/verify.sh --profile full` and bare `verify.sh` both reach that Make graph. Standalone
+`make test` remains Rust-only, while FAST and selective e2e execution retain their existing
+single invocation. A failed prerequisite, unavailable runtime or failed probe fails the gate;
+no second ordinary full Rust run is added.
 
-## Worker aggregate storage
+The shared tiny-fixture regression also executes the actual FULL wrapper/Make graph, with
+controlled sandbox bodies and real ordinary/ignored Rust selections. It proves sequential and
+parallel ordering, exact single execution, missing-runtime/timeout/native failure propagation,
+gate-owned JUnit and unchanged source bytes/modes. The class-runner regression separately checks
+standalone `make test` in both runner modes and failed-build ordering. These routing fixtures
+do not prove containment; the captured FULL gate must execute the real live test.
 
-Development Workers use a separate bounded-volume dispatch path. The live
-`worker_aggregate_disk_bound_stops_writes_across_all_roots_and_protects_a_sibling` probe writes
-across source, state, scratch, build, cache, knowledge, `/tmp`, `/run` and `/dev/shm` under one
-8 MiB limit. It checks a shared filesystem identity, requires the excess write to fail with
-`ENOSPC`, and verifies a concurrent Worker's private state and an unchanged host marker. It also
-checks the non-root UID and inaccessible `/dev`, `/dev/mqueue` and Engine configuration files.
+The ordinary non-container regression
+`a_required_container_check_refuses_a_missing_runtime_before_any_local_command` gives a child
+process a PATH without any runtime and proves hard admission refusal, no local check receipt and
+no reviewer dispatch. It is negative admission evidence, never positive containment proof.
 
-`sparse_worker_output_is_refused_before_any_unbounded_host_export` creates a sparse one-GiB
-file under a one-MiB bound and requires bounded export refusal with unchanged host source and
-confirmed daemon cleanup. The final filesystem remains explicitly unavailable as evidence.
-`a_crashed_storage_owner_is_swept_without_touching_live_or_immutable_state` pauses a subprocess
-with a real seeded tmpfs volume mounted, kills exactly that owner, and runs the production sweep.
-It verifies exact volume cleanup, preservation of a live runtime and unchanged reopened CAS bytes.
-These probes run with the other live container probes, and a missing daemon remains a failure.
-The recording Task toolchain tests establish compilation, dispatch and receipt behavior separately;
-they cannot substitute for these containment probes.
+A successful provider return means observed execution, not a successful check. Check results
+still determine acceptance; source mutation is refused by sealing. Provider execution failure
+records refusal only after confirmed cleanup. Unconfirmed cleanup fails the Attempt and preserves
+its private roots for the operator without sealing or deleting a possibly live bind.
 
-The local Task gate `scripts/verify.sh --profile fast` selects functional, e2e and uix.
-Its `scripts/test-classes.py execute` path checks for `e2e` in the selection and then invokes
-`make review-kernel-container-probes`. That Makefile target runs
-`cargo test --locked -p af-sandbox --test container_probes -- --ignored`, including the
-aggregate-disk probe above, followed by the timeout and live Task Gate routing probes.
-Thus `#[ignore]` excludes these tests from the ordinary nextest selection but does not exclude
-them from the fast gate's explicit live-probe dispatch. `.af/code-policy.toml` declares this
-local gate route. A top-level kernel receipt must be traced through its stdout and this executor
-path; its check name alone does not show which probes executed. The older main-run record above
-covers its recorded revision only. Each new candidate still requires its own passing gate and
-live-probe output; this dispatch description is not an execution receipt.
+The native live test must actually execute with a usable runtime in the host gate. Listing,
+mocking, static inspection and the historical provider receipt above do not discharge that
+obligation. Local repair validation ran `make review-kernel-container-probes` against a usable
+runtime: seven sandbox probes, one timeout-cleanup control and one native Task/Review regression
+passed. The native regression executed three real contained checks; its in-process reviewer
+fixture does not prove model containment. This is actual live execution evidence, separate from
+listing and negative missing-runtime proof. A preceding full attempt passed 3,758 ordinary Rust
+tests but was cancelled with Python interrupted and this live target omitted. It is not a passed
+FULL check. The repaired candidate requires its own complete captured FULL and Markdownlint
+receipts, actual live native execution and independent correctness/evaluation before delivery.

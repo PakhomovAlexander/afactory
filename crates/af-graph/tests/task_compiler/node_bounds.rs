@@ -3,7 +3,7 @@ use super::*;
 fn compile_with_limit(
     task: &TaskRevisionV1,
     root: &str,
-    pipelines: &BTreeMap<String, PipelineDefinitionV1>,
+    pipelines: &BTreeMap<String, PipelineDefinition>,
     signatures: &BTreeMap<String, OperatorSignature>,
     max_nodes: usize,
 ) -> Result<af_graph::task::CompiledTask, String> {

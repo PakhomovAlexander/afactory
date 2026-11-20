@@ -586,7 +586,7 @@ pub(super) fn observe_adoption(
     let plan_envelope = cas
         .get_artifact(plan_id)
         .map_err(|error| error.to_string())?;
-    let plan: af_contracts::task::plan::ExecutionPlanV3 =
+    let plan: af_contracts::task::plan::ExecutionPlan =
         serde_json::from_value(plan_envelope.payload).map_err(|error| error.to_string())?;
     plan.validate()?;
     let observed_unix_ms = SystemTime::now()
@@ -639,7 +639,7 @@ pub(super) fn observe_adoption(
         let observed_plan_envelope = cas
             .get_artifact(&observed_plan_id)
             .map_err(|error| error.to_string())?;
-        let observed_plan: af_contracts::task::plan::ExecutionPlanV3 =
+        let observed_plan: af_contracts::task::plan::ExecutionPlan =
             serde_json::from_value(observed_plan_envelope.payload)
                 .map_err(|error| error.to_string())?;
         observed_plan.validate()?;
@@ -981,7 +981,7 @@ pub(super) fn show(options: InspectOptions, checks: bool) -> Result<(), String> 
     Err(super::task_commands::task_not_found(&state, task_id))
 }
 
-/// `af task report` (ADR-0142): one Markdown block, or one `af/task-report@3` document, over
+/// `af task report` (ADR-0142): one Markdown block, or one `af/task-report@4` document, over
 /// the named Tasks of one Store. Read-only; nothing is printed unless every Task is found.
 /// `af task report --pr-body`: the template it fills, and the base its lines added block counts
 /// from.
@@ -1736,7 +1736,7 @@ fn print_task_list(
 ) -> Result<(), String> {
     if options.json {
         let mut document = serde_json::json!({
-            "schema": TASK_LIST_V4,
+            "schema": TASK_LIST_V5,
             "tasks": tasks,
         });
         if let Some(store) = store {
@@ -1847,7 +1847,7 @@ fn print_task_list(
 }
 
 /// `af task list --attention`: the same entries grouped by what each Task waits for, from its
-/// state alone; `af/task-attention@1` under `--json`.
+/// state alone; `af/task-attention@2` under `--json`.
 fn print_attention(options: &InspectOptions, tasks: Vec<serde_json::Value>) -> Result<(), String> {
     use super::task_commands::attention;
     let groups = attention::groups(tasks)?;
@@ -1887,7 +1887,7 @@ fn list_row(row: &[String; 6], widths: &[usize; 6], wide: bool) -> String {
 }
 
 /// The document `af task list --json` prints.
-pub(crate) const TASK_LIST_V4: &str = "af/task-list@4";
+pub(crate) const TASK_LIST_V5: &str = "af/task-list@5";
 
 /// How long ago, as `af task list` prints it: `45s`, `12m`, `3h`, `2d`.
 pub(crate) fn age(ms: u64) -> String {

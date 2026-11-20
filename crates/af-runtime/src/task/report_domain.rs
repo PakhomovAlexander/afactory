@@ -12,7 +12,7 @@ use af_contracts::task::document::*;
 use af_contracts::task::execution::{TaskInvocationV1, TaskOutputV1};
 use af_contracts::task::measurement::{MEASUREMENT_COMPARISON_V1, MEASUREMENT_V1};
 use af_contracts::task::pipeline::*;
-use af_contracts::task::plan::ExecutionPlanV3;
+use af_contracts::task::plan::ExecutionPlan;
 use af_contracts::task::report_domain::*;
 use af_contracts::task::{
     ArtifactInputV1, TaskAcceptanceV1, TaskExecutionV1, TaskResultV1, TaskRevisionV1,
@@ -111,7 +111,7 @@ fn worker_inputs() -> BTreeMap<&'static str, PipelinePortV1> {
 }
 
 /// Whether `contract` is an admissible report author: it declares `requirements` and `source`,
-/// any of the other root inputs with their exact ports, and one `draft` of either version bound
+/// any of the other root inputs with their exact ports, and one current `draft` bound
 /// to the source Snapshot.
 fn author_contract(contract: &PipelineContractV1) -> bool {
     let inputs = worker_inputs();
@@ -123,15 +123,15 @@ fn author_contract(contract: &PipelineContractV1) -> bool {
             .iter()
             .all(|(name, declared)| inputs.get(name.as_str()) == Some(declared))
         && contract.outputs.len() == 1
-        && contract.outputs.get("draft").is_some_and(|draft| {
-            *draft == same_source(DOCUMENT_DRAFT_V1, false)
-                || *draft == same_source(DOCUMENT_DRAFT_V2, false)
-        })
+        && contract
+            .outputs
+            .get("draft")
+            .is_some_and(|draft| *draft == same_source(DOCUMENT_DRAFT_V3, false))
 }
 
 /// Whether `contract` is an admissible report verifier: it declares `requirements`,
-/// `document`, `checks` and `source`, optionally `sources`, `comparison`, `measurements` and `research_report`, and
-/// one evaluation bound to the source Snapshot.
+/// `document`, `checks` and `source`, optionally the standard Worker inputs,
+/// any required source-bound prior evaluations, and one evaluation output.
 fn verifier_contract(contract: &PipelineContractV1) -> bool {
     let mut inputs = worker_inputs();
     inputs.insert("document", same_source(DOCUMENT_V1, false));
@@ -142,7 +142,10 @@ fn verifier_contract(contract: &PipelineContractV1) -> bool {
         && contract
             .inputs
             .iter()
-            .all(|(name, declared)| inputs.get(name.as_str()) == Some(declared))
+            .all(|(name, declared)| match inputs.get(name.as_str()) {
+                Some(expected) => declared == expected,
+                None => *declared == same_source(REPORT_EVALUATION_V1, false),
+            })
         && contract.outputs
             == BTreeMap::from([("result".into(), same_source(REPORT_EVALUATION_V1, false))])
 }
@@ -168,20 +171,16 @@ pub fn report_signatures(
         outcome_port,
     };
     let names = |names: &[&str]| names.iter().map(|name| (*name).to_owned()).collect();
-    // Either draft version seals; the domain requires exactly one to be bound.
+    // The seal requires the one current draft format.
     let seal = signature(
         BTreeMap::from([
-            ("draft".into(), same_source(DOCUMENT_DRAFT_V2, true)),
-            ("draft_v1".into(), same_source(DOCUMENT_DRAFT_V1, true)),
+            ("draft".into(), same_source(DOCUMENT_DRAFT_V3, false)),
             ("sources".into(), port(REPORT_SOURCES_V1, true)),
             ("source".into(), port(SOURCE_TREE_V1, false)),
         ]),
         BTreeMap::from([("document".into(), same_source(DOCUMENT_V1, false))]),
         BTreeMap::new(),
-        BTreeMap::from([(
-            "document".into(),
-            names(&["draft", "draft_v1", "sources", "source"]),
-        )]),
+        BTreeMap::from([("document".into(), names(&["draft", "sources", "source"]))]),
         None,
         None,
     );
@@ -229,39 +228,6 @@ pub fn report_signatures(
     ]))
 }
 
-/// A report draft of either admitted version.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReportDraft {
-    V1(DocumentDraftV1),
-    V2(DocumentDraftV2),
-}
-impl ReportDraft {
-    fn validate(&self) -> Result<(), String> {
-        match self {
-            Self::V1(draft) => draft.validate(),
-            Self::V2(draft) => draft.validate(),
-        }
-    }
-    pub(crate) fn first_version(&self) -> DocumentDraftV1 {
-        match self {
-            Self::V1(draft) => draft.clone(),
-            Self::V2(draft) => draft.as_first_version(),
-        }
-    }
-    pub fn title(&self) -> &str {
-        match self {
-            Self::V1(draft) => &draft.title,
-            Self::V2(draft) => &draft.title,
-        }
-    }
-    pub(crate) fn repository_citations(&self) -> BTreeSet<RepositoryCitationV1> {
-        match self {
-            Self::V1(_) => BTreeSet::new(),
-            Self::V2(draft) => draft.repository_citations.clone(),
-        }
-    }
-}
-
 /// A Markdown code span holding `text` verbatim: its fence is one backtick longer than the
 /// longest run inside, so no cited spelling can close it or become markup.
 fn code_span(text: &str) -> String {
@@ -282,15 +248,15 @@ fn code_span(text: &str) -> String {
 
 /// The Document renderer's exact bytes for the draft, followed by one line per repository
 /// citation, printed as `path` or `path:line`.
-pub fn render_report(draft: &ReportDraft, sources: &ReportSourcesV1) -> Result<String, String> {
+pub fn render_report(draft: &DocumentDraft, sources: &ReportSourcesV1) -> Result<String, String> {
     draft.validate()?;
     sources.validate()?;
-    let mut rendered = render_validated(&draft.first_version(), |name| sources.sources.get(name))?;
-    let citations = draft.repository_citations();
-    if !citations.is_empty() {
+    let mut rendered = render_validated(draft, |name| sources.sources.get(name))?;
+    let mut citations = draft.repository_citations().peekable();
+    if citations.peek().is_some() {
         rendered.push_str("\n## Repository citations\n");
     }
-    for citation in &citations {
+    for citation in citations {
         rendered.push_str(&format!("\n- {}\n", code_span(&citation.display())));
     }
     Ok(rendered)
@@ -378,20 +344,15 @@ fn read<T: serde::de::DeserializeOwned>(
     }
     serde_json::from_value(value.payload).map_err(|e| e.to_string())
 }
-pub(crate) fn read_draft(cas: &Cas, id: &str, snapshot: &str) -> Result<ReportDraft, String> {
+pub(crate) fn read_draft(cas: &Cas, id: &str, snapshot: &str) -> Result<DocumentDraft, String> {
     let value = envelope(cas, id)?;
     if value.subject_snapshot_id.as_deref() != Some(snapshot) {
         return Err("Report draft was written against another source Snapshot".into());
     }
-    let draft = match value.artifact_type.as_str() {
-        DOCUMENT_DRAFT_V1 => {
-            ReportDraft::V1(serde_json::from_value(value.payload).map_err(|e| e.to_string())?)
-        }
-        DOCUMENT_DRAFT_V2 => {
-            ReportDraft::V2(serde_json::from_value(value.payload).map_err(|e| e.to_string())?)
-        }
-        _ => return Err("Report draft is not a DocumentDraft".into()),
-    };
+    if value.artifact_type != DOCUMENT_DRAFT_V3 {
+        return Err("Report draft is not a current DocumentDraft".into());
+    }
+    let draft: DocumentDraft = serde_json::from_value(value.payload).map_err(|e| e.to_string())?;
     draft.validate()?;
     Ok(draft)
 }
@@ -416,16 +377,12 @@ fn input_id<'a>(
     }
     Ok(&value.artifact_ids[0])
 }
-/// The one bound draft port of a seal invocation: exactly one of `draft` and `draft_v1`.
+/// The current draft port is required; historical draft ports are not admitted.
 fn draft_input<'a>(input: &'a TaskInvocationV1, snapshot: &str) -> Result<&'a str, String> {
-    match (
-        input.inputs.contains_key("draft"),
-        input.inputs.contains_key("draft_v1"),
-    ) {
-        (true, false) => input_id(input, "draft", DOCUMENT_DRAFT_V2, Some(snapshot)),
-        (false, true) => input_id(input, "draft_v1", DOCUMENT_DRAFT_V1, Some(snapshot)),
-        _ => Err("Report seal needs exactly one draft, as draft or draft_v1".into()),
+    if input.inputs.contains_key("draft_v1") {
+        return Err("Report seal refuses retired draft_v1".into());
     }
+    input_id(input, "draft", DOCUMENT_DRAFT_V3, Some(snapshot))
 }
 fn outcome(yes: bool) -> ReceiptOutcomeV1 {
     if yes {
@@ -465,7 +422,7 @@ impl ReportTaskDomain {
                         return Err("Report operator differs from its installed contract".into());
                     }
                     if matches!(operator, TaskOperatorV1::ReportSeal {})
-                        && node.inputs.contains_key("draft") == node.inputs.contains_key("draft_v1")
+                        && !node.inputs.contains_key("draft")
                     {
                         return Err("Report seal binds exactly one draft".into());
                     }
@@ -569,7 +526,7 @@ impl ReportTaskDomain {
         cas: &Cas,
         id: &str,
         snapshot: &str,
-    ) -> Result<(DocumentV1, ReportDraft, ReportSourcesV1), String> {
+    ) -> Result<(DocumentV1, DocumentDraft, ReportSourcesV1), String> {
         let document: DocumentV1 = read(cas, id, DOCUMENT_V1, Some(snapshot))?;
         document.validate()?;
         let draft = read_draft(cas, &document.draft_id, snapshot)?;
@@ -599,13 +556,13 @@ impl ReportTaskDomain {
             }
             document.sources_id.clone()
         };
-        let draft_first = draft.first_version();
-        let cited = draft.repository_citations();
+        let draft_first = &draft;
+        let cited: Vec<_> = draft.repository_citations().collect();
         let mut citation_failures = Vec::new();
         for citation in &cited {
             if let Some(reason) = resolve_citation(cas, &manifest, citation)? {
                 citation_failures.push(ReportCitationFailureV1 {
-                    citation: citation.clone(),
+                    citation: (*citation).clone(),
                     reason,
                 });
             }
@@ -624,7 +581,10 @@ impl ReportTaskDomain {
                 ),
                 (
                     "citations".into(),
-                    outcome(!self.policy.require_citations || !draft_first.citations.is_empty()),
+                    outcome(
+                        !self.policy.require_citations
+                            || draft_first.named_citations().next().is_some(),
+                    ),
                 ),
                 (
                     "source_locations".into(),
@@ -755,6 +715,28 @@ impl ReportTaskDomain {
         }
         Ok(evaluation)
     }
+    fn verifier_output(&self, cas: &Cas, input: &TaskInvocationV1, id: &str) -> Result<(), String> {
+        let evaluation = self.evaluation(cas, input, id)?;
+        if evaluation.requirements_id != input_id(input, "requirements", "af/Requirements@1", None)?
+        {
+            return Err("Report verifier changed its requirements identity".into());
+        }
+        let artifact = envelope(cas, id)?;
+        for (port, declared) in &self.graph.nodes[&input.node].contract.inputs {
+            if declared.artifact_type == REPORT_EVALUATION_V1 {
+                let dependency = input_id(
+                    input,
+                    port,
+                    REPORT_EVALUATION_V1,
+                    Some(&evaluation.source_snapshot_id),
+                )?;
+                if !artifact.input_artifacts.iter().any(|id| id == dependency) {
+                    return Err("Report verifier lost an exact evaluation dependency".into());
+                }
+            }
+        }
+        Ok(())
+    }
     fn verification(
         &self,
         cas: &Cas,
@@ -825,7 +807,54 @@ impl ReportTaskDomain {
             }
             None => {}
         }
-        input_id(input, "requirements", "af/Requirements@1", None)?;
+        let requirements = input_id(input, "requirements", "af/Requirements@1", None)?;
+        // Typed dependencies and their exact producers come from the captured graph.
+        let definition = self
+            .graph
+            .nodes
+            .get(&input.node)
+            .ok_or("Unknown report verifier")?;
+        let mut seen = BTreeSet::new();
+        for (port, declared) in &definition.contract.inputs {
+            if declared.artifact_type != REPORT_EVALUATION_V1 {
+                continue;
+            }
+            if *declared != same_source(REPORT_EVALUATION_V1, false) {
+                return Err(
+                    "Report evaluation dependency must be required, singular and source-bound"
+                        .into(),
+                );
+            }
+            let id = input_id(
+                input,
+                port,
+                REPORT_EVALUATION_V1,
+                Some(&checks.source_snapshot_id),
+            )?;
+            if !seen.insert(id) {
+                return Err("Report dependencies must be distinct evaluations".into());
+            }
+            let expected = definition
+                .inputs
+                .get(port)
+                .ok_or("Report evaluation dependency has no graph producer")?;
+            let artifact = envelope(cas, id)?;
+            if !matches!(&artifact.producer, Producer::Attempt { node_id, .. } if node_id == &expected.node)
+                || expected.port != "result"
+            {
+                return Err(
+                    "Report evaluation dependency differs from its exact graph producer".into(),
+                );
+            }
+            let evaluation = self.evaluation(cas, input, id)?;
+            if evaluation.requirements_id != requirements
+                || evaluation.outcome != ReceiptOutcomeV1::Passed
+            {
+                return Err(
+                    "Report evaluation dependency failed or judged different requirements".into(),
+                );
+            }
+        }
         Ok(checks)
     }
 
@@ -992,11 +1021,11 @@ impl ReportTaskDomain {
             ));
         }
         let parsed = items.first().map(|item| {
-            let draft = match declared.as_str() {
-                DOCUMENT_DRAFT_V1 => serde_json::from_value(item.clone()).map(ReportDraft::V1),
-                _ => serde_json::from_value(item.clone()).map(ReportDraft::V2),
+            if declared != DOCUMENT_DRAFT_V3 {
+                return Err("Report author must declare the current draft".into());
             }
-            .map_err(|error| error.to_string())?;
+            let draft: DocumentDraft =
+                serde_json::from_value(item.clone()).map_err(|error| error.to_string())?;
             draft.validate()?;
             Ok::<_, String>(draft)
         });
@@ -1021,7 +1050,7 @@ impl ReportTaskDomain {
             checks.insert("required_sections".into(), Inconclusive);
             return self.draft_validation(checks, failures);
         };
-        let first = draft.first_version();
+        let first = &draft;
         let headings: Vec<&str> = first.sections.iter().map(|s| s.heading.as_str()).collect();
         let missing: Vec<&String> = self
             .policy
@@ -1215,6 +1244,24 @@ impl TaskOperatorHost for ReportTaskDomain {
     }
 }
 impl TaskDomain for ReportTaskDomain {
+    fn admit_worker_signature(&self, signature: &OperatorSignature) -> Result<(), String> {
+        if verifier_contract(&signature.contract) {
+            for (port, declared) in &signature.contract.inputs {
+                if declared.artifact_type == REPORT_EVALUATION_V1
+                    && !signature
+                        .retains
+                        .get("result")
+                        .is_some_and(|ports| ports.contains(port))
+                {
+                    return Err(format!(
+                        "Report verifier result must retain evaluation dependency {port}"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The report policy, verbatim, after the author's package instructions (ADR-0208): what
     /// its draft is validated against before it is sealed.
     fn worker_instructions(
@@ -1235,8 +1282,9 @@ impl TaskDomain for ReportTaskDomain {
              that text.\n\
              - The rendered report is at most `max_document_bytes` bytes; the report check after \
              sealing judges it.\n\
-             - `citations` names captured sources and `repository_citations` names text files \
-             (and lines) of the source Snapshot; each is a set, so list every entry once.{}{}\n",
+             - `citations` is one set of tagged entries: `source` with `name` for captured sources, \
+             or `repository` with `location` (`path` and optional `line`) for the source Snapshot; \
+             list every entry once.{}{}\n",
             if self.policy.require_citations {
                 "\n- Cite at least one captured source."
             } else {
@@ -1388,7 +1436,7 @@ impl TaskDomain for ReportTaskDomain {
         &self,
         cas: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV3,
+        _: &ExecutionPlan,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         _definition: &af_graph::task::CompiledNode,
@@ -1429,12 +1477,7 @@ impl TaskDomain for ReportTaskDomain {
             }
             TaskOperatorV1::Verify { .. } => {
                 let id = output_id("result", REPORT_EVALUATION_V1)?;
-                let evaluation = self.evaluation(cas, input, &id)?;
-                if evaluation.requirements_id
-                    != input_id(input, "requirements", "af/Requirements@1", None)?
-                {
-                    return Err("Report verifier changed its requirements identity".into());
-                }
+                self.verifier_output(cas, input, &id)?;
             }
             TaskOperatorV1::ReportSeal {} => {
                 let actual: DocumentV1 = read(

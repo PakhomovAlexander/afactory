@@ -20,13 +20,13 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::common::provider_fixture_fs::tempdir().unwrap();
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let bin = root.path().join("bin");
-        std::fs::create_dir(&bin).unwrap();
+        crate::common::provider_fixture_fs::create_dir(&bin).unwrap();
         let executable = bin.join("codex");
         // No model dispatch method exists: any accidental inference call fails the fixture.
-        std::fs::write(&executable, crate::provider_cli::with_help("codex", r#"#!/usr/bin/python3
+        crate::common::provider_fixture_fs::write(&executable, crate::provider_cli::with_help("codex", r#"#!/usr/bin/python3
 import os,sys,time
 from pathlib import Path
 root=Path(os.environ['CODEX_HOME'])
@@ -68,7 +68,7 @@ if not (root/'status-fails').exists(): (root/'ready').touch()
 print('Successfully logged in',file=sys.stderr)
 "#)).unwrap();
         std::fs::set_permissions(executable, std::fs::Permissions::from_mode(0o755)).unwrap();
-        std::fs::write(root.path().join("host.py"), r#"import os,sys,subprocess,threading
+        crate::common::provider_fixture_fs::write(root.path().join("host.py"), r#"import os,sys,subprocess,threading
 from pathlib import Path
 root=Path(os.environ['HOME'])
 a,b=os.pipe()
@@ -187,15 +187,15 @@ sys.exit(p.returncode)
 
     fn mode(&self, mode: &str) {
         let auth = self.root.path().join("auth");
-        std::fs::create_dir_all(&auth).unwrap();
+        crate::common::provider_fixture_fs::create_dir_all(&auth).unwrap();
         std::fs::set_permissions(&auth, std::fs::Permissions::from_mode(0o700)).unwrap();
-        std::fs::write(auth.join(mode), "").unwrap();
+        crate::common::provider_fixture_fs::write(auth.join(mode), "").unwrap();
     }
 
     /// Claude 2.1.289's login frames. A `callback` marker completes without a pasted code.
     fn claude_cli(&self) {
         let path = self.root.path().join("bin/claude");
-        std::fs::write(&path, crate::provider_cli::with_help("claude", r#"#!/usr/bin/python3
+        crate::common::provider_fixture_fs::write(&path, crate::provider_cli::with_help("claude", r#"#!/usr/bin/python3
 import json,os,sys,time
 from pathlib import Path
 root=Path(os.environ['CLAUDE_CONFIG_DIR'])
@@ -224,7 +224,8 @@ print('Login successful.',flush=True)
     }
 
     fn complete(&self) {
-        std::fs::write(self.root.path().join("auth/complete"), "").unwrap();
+        crate::common::provider_fixture_fs::write(self.root.path().join("auth/complete"), "")
+            .unwrap();
     }
 
     fn no_secrets(&self, output: &Output) {
@@ -451,7 +452,7 @@ fn native_failure_categories_are_closed_secret_free_and_never_probe_or_register(
             } else {
                 "nonzero-exit"
             });
-            std::fs::write(
+            crate::common::provider_fixture_fs::write(
                 fixture.root.path().join("auth/stderr-fixture"),
                 format!(
                     "Error logging in with device code: device code exchange failed: {diagnostic}\n"
@@ -509,7 +510,11 @@ fn truncated_and_oversized_native_stderr_remain_generic_without_echo() {
     ] {
         let fixture = Fixture::new();
         fixture.mode("nonzero-exit");
-        std::fs::write(fixture.root.path().join("auth/stderr-fixture"), diagnostic).unwrap();
+        crate::common::provider_fixture_fs::write(
+            fixture.root.path().join("auth/stderr-fixture"),
+            diagnostic,
+        )
+        .unwrap();
         let (child, mut host) = fixture.begin();
         let request = read(&mut host);
         approve(&mut host, &request);
@@ -667,8 +672,8 @@ fn cancellation_is_scoped_to_current_session_and_status_survives_owner_loss() {
 fn explicit_reauthentication_bypasses_stale_authenticated_status() {
     let fixture = Fixture::new();
     let auth = fixture.root.path().join("auth");
-    std::fs::create_dir(&auth).unwrap();
-    std::fs::write(auth.join("ready"), "").unwrap();
+    crate::common::provider_fixture_fs::create_dir(&auth).unwrap();
+    crate::common::provider_fixture_fs::write(auth.join("ready"), "").unwrap();
     let (child, mut host) = fixture.begin();
     let request = read(&mut host);
     approve(&mut host, &request);
@@ -822,8 +827,13 @@ fn claude_private_code_and_callback_paths_complete_without_task_dispatch() {
         let fixture = Fixture::new();
         fixture.claude_cli();
         if callback {
-            std::fs::create_dir(fixture.root.path().join("auth")).unwrap();
-            std::fs::write(fixture.root.path().join("auth/callback"), "").unwrap();
+            crate::common::provider_fixture_fs::create_dir(fixture.root.path().join("auth"))
+                .unwrap();
+            crate::common::provider_fixture_fs::write(
+                fixture.root.path().join("auth/callback"),
+                "",
+            )
+            .unwrap();
         }
         let (child, mut host) = fixture.begin_kind("claude");
         let request = read(&mut host);
@@ -921,12 +931,12 @@ fn cancellation_while_registry_is_busy_cannot_publish_setup_success() {
 fn reauthentication_never_recreates_an_existing_binding_removed_during_login() {
     let fixture = Fixture::new();
     let auth = fixture.root.path().join("auth");
-    std::fs::create_dir(&auth).unwrap();
-    std::fs::write(auth.join("ready"), "").unwrap();
+    crate::common::provider_fixture_fs::create_dir(&auth).unwrap();
+    crate::common::provider_fixture_fs::write(auth.join("ready"), "").unwrap();
     let config = fixture.root.path().join("config/af");
-    std::fs::create_dir_all(&config).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(&config).unwrap();
     let registry = config.join("providers.toml");
-    std::fs::write(
+    crate::common::provider_fixture_fs::write(
         &registry,
         format!(
             "version = 4\n[[providers]]\nid = \"codex-main\"\nkind = \"codex\"\nauth_dir = {}\n",
@@ -947,7 +957,7 @@ fn reauthentication_never_recreates_an_existing_binding_removed_during_login() {
         .open(config.join("providers.toml.lock"))
         .unwrap();
     fs2::FileExt::lock_exclusive(&lock).unwrap();
-    std::fs::write(&registry, "version = 4\nproviders = []\n").unwrap();
+    crate::common::provider_fixture_fs::write(&registry, "version = 4\nproviders = []\n").unwrap();
     drop(lock);
     fixture.complete();
     let output = fixture.result(child);

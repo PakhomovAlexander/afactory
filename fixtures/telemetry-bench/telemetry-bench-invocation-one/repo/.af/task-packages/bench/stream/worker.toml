@@ -47,7 +47,7 @@ covers = []
 kind = "unbound"
 
 [signature.contract.inputs.subject]
-artifact_type = "af/TaskReviewSubject@2"
+artifact_type = "af/TaskReviewSubject@3"
 cardinality = "one"
 optional = false
 covers = []

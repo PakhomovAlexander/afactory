@@ -19,6 +19,9 @@ context), [ADR-0132](0132-measure-and-compare-source-candidates-in-the-kernel.md
 measures), [ADR-0135](0135-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)
 (collection by reachability) and
 [ADR-0145](0145-read-only-what-this-release-writes-and-version-every-changed-shape.md).
+Partially superseded for feature-selected format identities by the
+[current-contract consolidation](2026-11-08-consolidate-current-contracts-and-task-review.md);
+all other authority and bounds remain in force.
 
 ## Context
 

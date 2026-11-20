@@ -282,7 +282,7 @@ pub const CONTRACTS: &[Contract] = &[
     ),
     library(
         "persistence_fs",
-        "persistence_fs_v1",
+        "persistence_fs_v3",
         "persistence_round_trip",
         &[(
             "operation",
@@ -300,13 +300,24 @@ pub const CONTRACTS: &[Contract] = &[
         &[("state", Domain::Fixture(&["cli_state_10000"]))],
         FRESH_STORE,
     ),
-    // Not a timed case either: it tops the Campaign the side's own `af review run` wrote up to
-    // exactly 10,000 events through that side's public Findings Ledger writer, for the side's
-    // `af review ledger` and `af review report` (ADR-0169).
     library(
-        "cli_campaign_fixture",
-        "cli_campaign_fixture_v1",
-        "cli_campaign_fixture",
+        "cli_wait_original_fixture",
+        "cli_wait_original_fixture_v1",
+        "cli_wait_original_fixture",
+        &[("state", Domain::Fixture(&["cli_state_10000"]))],
+        FRESH_STORE,
+    ),
+    library(
+        "cli_wait_fixture",
+        "cli_wait_fixture_v1",
+        "cli_wait_fixture",
+        &[("state", Domain::Fixture(crate::fixtures::WAIT_STATES))],
+        FRESH_STORE,
+    ),
+    library(
+        "cli_native_review_fixture",
+        "cli_native_review_fixture_v1",
+        "cli_native_review_fixture",
         &[("state", Domain::Fixture(&["cli_state_10000"]))],
         cache("existing", "application_cold"),
     ),

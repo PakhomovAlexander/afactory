@@ -2644,8 +2644,11 @@ class PerfCache(ChildRunBase):
     """The recorder fixture models perf's build-ID cache through real namespace cleanup."""
 
     def capture(self, whole=False, legacy=False, hostile=False):
+        # Even one slow command that consumes the 300 ms duration must provide the
+        # unchanged 20-sample minimum. Cache cleanup does not test sampling frequency.
+        sample_config = {"whole_samples": 20} if whole else {}
         perf = fakes.perf(self.path("perf"), phase_file=self.path("probe-bin", "phase"),
-                          cache_links=True, hostile_cache_link=hostile)
+                          cache_links=True, hostile_cache_link=hostile, **sample_config)
         tools = diagnostics.configured_tools(perf=perf, inferno_bin=fakes.inferno(
             self.path("inferno")))
         name = "whole_argv" if whole else "record_argv"
@@ -2681,6 +2684,10 @@ class PerfCache(ChildRunBase):
         for capture in doc["captures"]:
             self.assertIsNone(capture["omission"], capture)
             self.assertTrue(capture["symbols"]["build_ids"])
+            if whole:
+                self.assertEqual(self.profile_object.registry["capture"]["minimum_samples"], 20)
+                self.assertEqual(capture["samples"], 20 * capture["region"]["repetitions"])
+                self.assertGreaterEqual(capture["samples"], 20)
         for line in read(self.path("perf", "record-argv.jsonl")).splitlines():
             argv = json.loads(line)
             self.assertIn("--no-buildid-cache", argv)

@@ -84,6 +84,9 @@ fn fixture() -> Fixture {
     .unwrap();
     let local = repo.join(".af/task-packages/fixture/implementation/pipeline.toml");
     let original = std::fs::read_to_string(&local).unwrap();
+    let original_manifest: af_contracts::task::pipeline::PipelineDefinition =
+        af_pipeline_config::task::parse_task_pipeline(&original).unwrap();
+    let version = original_manifest.version;
     let twin = original
         .replace(
             &format!("name = \"{LOCAL}\""),
@@ -101,7 +104,7 @@ fn fixture() -> Fixture {
     let catalog = repo.join(".af/task-catalog.toml");
     let mut text = std::fs::read_to_string(&catalog).unwrap();
     text.push_str(&format!(
-        "\n[packages.\"{REMOTE}\"]\nversion = \"1.0.0\"\ndigest = \"{digest}\"\n\
+        "\n[packages.\"{REMOTE}\"]\nversion = \"{version}\"\ndigest = \"{digest}\"\n\
          path = \".af/task-packages/{REMOTE}\"\n"
     ));
     std::fs::write(&catalog, text).unwrap();
@@ -451,7 +454,7 @@ fn a_finished_remote_check_task_closes_its_gate_pull_request_and_deletes_its_bra
     fixture.map("");
     let done = run_remote_task(&fixture, TASK);
     crate::schemas::valid(
-        &crate::schemas::validator("task-inspection-v17.json"),
+        &crate::schemas::validator("task-inspection-v21.json"),
         &done,
     );
     let [cleanup] = done["gate_cleanups"].as_array().unwrap().as_slice() else {
@@ -864,12 +867,13 @@ fn tree_bytes(directory: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> 
 #[test]
 fn the_staged_remote_twins_differ_only_where_they_run_kernel_and_plan_on_this_repositorys_policy() {
     let workspace = workspace();
+    let fixture_authority = workspace.join("fixtures/native-catalog-contracts/.af");
     // Each twin is its committed original with its own name and `kernel` moved to
     // `remote_checks`; a parent calls the twin of its child. Nothing else differs.
     for (remote, local) in TWINS {
         let original = std::fs::read_to_string(
-            workspace
-                .join(".af/task-packages")
+            fixture_authority
+                .join("task-packages")
                 .join(local)
                 .join("pipeline.toml"),
         )
@@ -890,9 +894,10 @@ fn the_staged_remote_twins_differ_only_where_they_run_kernel_and_plan_on_this_re
         &std::fs::read_to_string(workspace.join(STAGED).join("catalog-fragment.toml")).unwrap(),
     )
     .unwrap();
-    let committed: toml::Value =
-        toml::from_str(&std::fs::read_to_string(workspace.join(".af/task-catalog.toml")).unwrap())
-            .unwrap();
+    let committed: toml::Value = toml::from_str(
+        &std::fs::read_to_string(fixture_authority.join("task-catalog.toml")).unwrap(),
+    )
+    .unwrap();
     assert_eq!(fragment["packages"].as_table().unwrap().len(), TWINS.len());
     for (remote, local) in TWINS {
         let pin = &fragment["packages"][remote];
@@ -912,9 +917,7 @@ fn the_staged_remote_twins_differ_only_where_they_run_kernel_and_plan_on_this_re
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().canonicalize().unwrap();
     let repo = root.join("kernel");
-    task_cli::copy_tree(&workspace.join(".af"), &repo.join(".af"));
-    // The release pin would dispatch to (and install) another `af`; this test runs this one.
-    std::fs::remove_file(repo.join(".af/af.lock")).unwrap();
+    task_cli::copy_tree(&fixture_authority, &repo.join(".af"));
     install_remote_twins(&repo);
     let once = tree_bytes(&repo.join(".af"));
     install_remote_twins(&repo);
@@ -923,9 +926,6 @@ fn the_staged_remote_twins_differ_only_where_they_run_kernel_and_plan_on_this_re
         once,
         "a second install changes nothing"
     );
-    // The committed packages name the receipt this release no longer reads; the copy takes
-    // ADR-0255's migration.
-    task_cli::migrate_check_receipt(&repo, &[".af"], &[".af/task-catalog.toml"]);
     git(&repo, &["init", "-q", "-b", "main"]);
     git(&repo, &["add", "-A"]);
     git(&repo, &["commit", "-qm", "remote twins"]);
@@ -1279,7 +1279,7 @@ fn a_task_with_gate_leftovers_is_collected_only_after_its_cleanup_is_done() {
     );
     assert_eq!(code, 0, "{stderr}\n{stdout}");
     let collected: Value = serde_json::from_str(stdout.trim()).unwrap();
-    crate::schemas::valid(&crate::schemas::validator("task-gc-v1.json"), &collected);
+    crate::schemas::valid(&crate::schemas::validator("task-gc-v2.json"), &collected);
     assert_eq!(collected["applied"]["tombstoned"], json!([]), "{collected}");
     assert!(
         stderr.contains("is not collected before its gate cleanup is done"),

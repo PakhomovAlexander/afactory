@@ -1,10 +1,9 @@
 //! The Codex adapter: a digest-pinned Worker package driving `codex exec`.
 //!
-//! Everything the model sees comes from the package: `reviewer.md` is the prompt, the
+//! Instructions and typed inputs are captured by the native Task Worker contract. The
 //! manifest's runner args are the model flags, and both sit under the lockfile's content
 //! digest — so "which Worker ran" is a verifiable claim, not a deployment accident.
-//! [`CodexAdapter`] renders a package's input for `af review render`; [`task::CodexTaskAdapter`]
-//! runs it.
+//! [`task::CodexTaskAdapter`] runs that captured input.
 //!
 //! The invocation shape: `codex exec --ephemeral --skip-git-repo-check --json -C <sandbox> -s
 //! <mode> -o <staging>/last-message [--output-schema <staging>/reply-schema.json] <flags> -`, with
@@ -39,55 +38,10 @@ use std::path::Path;
 use std::time::Duration;
 
 use af_contracts::{Arg, Command};
-use af_runner::ResolvedReviewer;
 use af_runner::cli::{CliFlag, CliInvocation};
 use af_runner::models;
-use af_runner::{
-    InputTransport, ModelRunner, NativeReplySchema, RenderedInput, ReviewerAdapter, ReviewerInputs,
-    RunnerError, compose_model_prompt,
-};
+use af_runner::{ModelRunner, RunnerError};
 use af_store::Cas;
-
-pub struct CodexAdapter {
-    prompt: String,
-}
-
-impl CodexAdapter {
-    /// Build from a digest-verified package. The manifest must name `codex` (any path with
-    /// that basename, so tests can point at a stub) and may set only the model flags a Task
-    /// Worker accepts; the prompt is the package's `reviewer.md` plus the result contract.
-    pub fn from_package(package: &ResolvedReviewer) -> Result<CodexAdapter, String> {
-        let basename = Path::new(&package.runner.program)
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        if basename != "codex" {
-            return Err(format!(
-                "package `{}` names runner `{}`; this adapter drives codex",
-                package.name, package.runner.program
-            ));
-        }
-        codex_model_flags(&package.runner)
-            .map_err(|error| format!("package `{}` runner args: {error}", package.name))?;
-        // From the verified bytes, never a fresh disk read: the prompt is the one file that
-        // decides what the reviewer does, so it must be exactly what the digest covered.
-        let prompt = String::from_utf8(
-            package
-                .file("reviewer.md")
-                .ok_or_else(|| format!("package `{}` has no reviewer.md", package.name))?
-                .to_vec(),
-        )
-        .map_err(|_| format!("package `{}`: reviewer.md is not UTF-8", package.name))?;
-        Ok(CodexAdapter { prompt })
-    }
-
-    /// Narrow this invocation's attention. A narrowing only — the package prompt still
-    /// governs; this cannot grant anything the package did not.
-    pub fn with_focus(mut self, focus: impl AsRef<str>) -> Self {
-        af_runner::append_focus(&mut self.prompt, focus.as_ref());
-        self
-    }
-}
 
 fn codex_model_flags(runner: &Command) -> Result<Vec<String>, String> {
     let values = runner.resolve().map_err(|error| error.to_string())?;
@@ -177,7 +131,7 @@ pub const CODEX_INVOCATION: CliInvocation = CliInvocation {
 
 /// The `codex exec` command of one Attempt. `schema` is the file holding the reply's strict
 /// output schema ([`af_runner::task::reply_schema::ReplyContract::strict`]), when the Worker
-/// declares a typed reply with a strict projection or is a review-Campaign reviewer: Codex then
+/// declares a typed reply with a strict projection: Codex then
 /// refuses a structurally wrong final message itself, before it is charged as a reply failure
 /// (ADR-0208, ADR-0246).
 fn codex_command(
@@ -209,29 +163,6 @@ fn codex_command(
     args.extend(model_flags.iter().map(Arg::literal));
     args.push(Arg::literal("-"));
     Command::new(program, args)
-}
-
-impl ReviewerAdapter for CodexAdapter {
-    /// The package prompt, then this Attempt's labelled inputs — data the kernel resolved,
-    /// rendered under an explicit heading rather than woven into the instructions.
-    fn render_input(&self, inputs: &ReviewerInputs) -> Result<RenderedInput, RunnerError> {
-        let (prompt, manifest) =
-            compose_model_prompt(&self.prompt, inputs).map_err(RunnerError::Refused)?;
-        // The schema the Task adapter derives for a Campaign reviewer's dispatch (ADR-0246).
-        let schema = af_runner::task::reply_schema::ReplyContract::ReviewerResult
-            .strict(&[])
-            .map_err(RunnerError::Refused)?
-            .ok_or_else(|| RunnerError::Refused("Reviewer Result has no native schema".into()))?;
-        Ok(RenderedInput {
-            transport: InputTransport::Prompt,
-            bytes: prompt.into_bytes(),
-            manifest,
-            reply_schema: Some(NativeReplySchema {
-                option: "--output-schema",
-                schema,
-            }),
-        })
-    }
 }
 
 #[cfg(test)]

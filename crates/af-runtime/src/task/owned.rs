@@ -211,9 +211,27 @@ impl TaskRuntime<'_, '_> {
                             snapshot_id: item.subject_snapshot_id,
                         },
                     );
+                    let child_node = format!("{}.slice{}", node.id, index + 1);
+                    if template
+                        .contract
+                        .inputs
+                        .contains_key(af_contracts::task::diff_subject::DIFF_SUBJECT_PORT)
+                        && let Some(source) = inputs.get("source")
+                        && let Some(subject) = super::source::kernel_diff_subject(
+                            self.cas,
+                            &self.plan_id,
+                            &child_node,
+                            source,
+                        )?
+                    {
+                        inputs.insert(
+                            af_contracts::task::diff_subject::DIFF_SUBJECT_PORT.into(),
+                            subject,
+                        );
+                    }
                     let child = TaskInvocationV1 {
                         plan_id: self.plan_id.clone(),
-                        node: format!("{}.slice{}", node.id, index + 1),
+                        node: child_node,
                         inputs,
                     };
                     let invocation_id = self.capture_invocation(&child)?;

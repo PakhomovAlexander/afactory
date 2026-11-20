@@ -1,6 +1,6 @@
 //! The Claude adapter: a digest-pinned Worker package driving `claude -p`.
 //!
-//! Same shape as the Codex adapter — the package's `reviewer.md` is the prompt, the manifest
+//! Like the Codex adapter, the captured Worker instructions are the prompt, the manifest
 //! args are the model flags (`--model opus --effort xhigh`), and both sit under the lockfile's
 //! content digest — but a different provider surface: `-p --output-format json` prints one JSON
 //! envelope with `is_error`, the final text in `result`, and cumulative token usage in `usage`;
@@ -14,8 +14,7 @@
 //! model flags, so repository settings, Hooks, plugins, MCP servers, and package arguments cannot
 //! widen Worker authority. A Task Attempt widens that grant only as far as the kernel-derived
 //! [`WorkerAccess`](af_runner::task::WorkerAccess) allows ([`task::task_tools`]).
-//! [`ClaudeAdapter`] renders a package's input for `af review render`; [`task::ClaudeTaskAdapter`]
-//! runs it.
+//! [`task::ClaudeTaskAdapter`] runs the captured native Task input.
 //!
 //! **The invocation is a requirement on the installed CLI.** [`CLAUDE_INVOCATION`] lists every
 //! option the command passes; af reads `claude --help` before any paid dispatch and refuses a CLI
@@ -43,7 +42,7 @@
 //! `CLAUDE_CODE_NO_MODEL_FALLBACK` is not set, since it also disables compaction's model
 //! substitution. The guard is a client mitigation; the identity check over `modelUsage` stays the
 //! authority and refuses, by name, any reply another model took part in. [`hint`] words all of it
-//! for the run's own stderr (ADR-0147). [`ClaudeAdapter`] starts no process, so it sets no guard.
+//! for the run's own stderr (ADR-0147).
 //!
 //! **The package names an exact ID.** The package argument parser applies the static rules of
 //! [`af_runner::models`], the one validation authority for model and effort spellings
@@ -70,58 +69,12 @@ use std::path::Path;
 use std::time::Duration;
 
 use af_contracts::{Arg, Command};
+use af_runner::ModelRunner;
 use af_runner::cli::{CliFlag, CliInvocation};
-use af_runner::{
-    InputTransport, ModelRunner, NativeReplySchema, RenderedInput, ReviewerAdapter, ReviewerInputs,
-    RunnerError, compose_model_prompt,
-};
-use af_runner::{ResolvedReviewer, models};
+use af_runner::models;
 use af_store::Cas;
 
 pub use session::ClaudeSessionStore;
-
-pub struct ClaudeAdapter {
-    prompt: String,
-}
-
-impl ClaudeAdapter {
-    /// Build from a digest-verified package. The manifest must name `claude` (any path with
-    /// that basename, so tests can point at a stub); its args become model flags; the prompt
-    /// is the package's `reviewer.md` plus the shared result contract.
-    pub fn from_package(package: &ResolvedReviewer) -> Result<ClaudeAdapter, String> {
-        let basename = Path::new(&package.runner.program)
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        if basename != "claude" {
-            return Err(format!(
-                "package `{}` names runner `{}`; this adapter drives claude",
-                package.name, package.runner.program
-            ));
-        }
-        // Rendering spawns nothing, but a package whose arguments the Task adapter would refuse
-        // is refused here too, so `af review render` never shows a package that cannot run.
-        claude_model_flags(&package.runner)
-            .map_err(|error| format!("package `{}` runner args: {error}", package.name))?;
-        // From the verified bytes, never a fresh disk read: the prompt is the one file that
-        // decides what the reviewer does, so it must be exactly what the digest covered.
-        let prompt = String::from_utf8(
-            package
-                .file("reviewer.md")
-                .ok_or_else(|| format!("package `{}` has no reviewer.md", package.name))?
-                .to_vec(),
-        )
-        .map_err(|_| format!("package `{}`: reviewer.md is not UTF-8", package.name))?;
-        Ok(ClaudeAdapter { prompt })
-    }
-
-    /// Narrow this invocation's attention. A narrowing only — the package prompt still
-    /// governs; this cannot grant anything the package did not.
-    pub fn with_focus(mut self, focus: impl AsRef<str>) -> Self {
-        af_runner::append_focus(&mut self.prompt, focus.as_ref());
-        self
-    }
-}
 
 fn claude_model_flags(runner: &Command) -> Result<Vec<String>, String> {
     let values = runner.resolve().map_err(|error| error.to_string())?;
@@ -251,29 +204,6 @@ fn claude_command(program: &str, model_flags: &[String], shape: OutputShape) -> 
         Arg::literal("Read,Glob,Grep"),
     ]);
     Command::new(program, args)
-}
-
-impl ReviewerAdapter for ClaudeAdapter {
-    /// The package prompt, then this Attempt's labelled inputs — data the kernel resolved,
-    /// rendered under an explicit heading rather than woven into the instructions.
-    fn render_input(&self, inputs: &ReviewerInputs) -> Result<RenderedInput, RunnerError> {
-        let (prompt, manifest) =
-            compose_model_prompt(&self.prompt, inputs).map_err(RunnerError::Refused)?;
-        // The schema the Task adapter derives for a Campaign reviewer's dispatch (ADR-0246).
-        let schema = af_runner::task::reply_schema::ReplyContract::ReviewerResult
-            .transport(&[])
-            .map_err(RunnerError::Refused)?
-            .ok_or_else(|| RunnerError::Refused("Reviewer Result has no native schema".into()))?;
-        Ok(RenderedInput {
-            transport: InputTransport::Prompt,
-            bytes: prompt.into_bytes(),
-            manifest,
-            reply_schema: Some(NativeReplySchema {
-                option: "--json-schema",
-                schema,
-            }),
-        })
-    }
 }
 
 #[cfg(test)]

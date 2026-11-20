@@ -12,13 +12,13 @@ fn reservation_requires_exact_context_before_start_and_refuses_rebinding() {
         f.plan.task_revision_id = f.revision_id.clone();
         f.plan.limits = f.revision.limits.clone();
         let mut graph: af_graph::task::CompiledTask =
-            payload(&f.cas, &f.plan.compiled_graph_id, "af/CompiledTask@1").unwrap();
+            payload(&f.cas, &f.plan.compiled_graph_id, "af/CompiledTask@4").unwrap();
         graph
             .allowances
             .get_mut("root.nodes.write")
             .unwrap()
             .wall_ms_per_attempt = 60_000;
-        f.plan.compiled_graph_id = put(&f.cas, "af/CompiledTask@1", &graph);
+        f.plan.compiled_graph_id = put(&f.cas, "af/CompiledTask@4", &graph);
         f.plan_id = put(&f.cas, task::EXECUTION_PLAN_V4, &f.plan);
         let lease = f.open();
         f.propose(&lease);
@@ -252,7 +252,7 @@ fn inflight_usage_survives_reopen_revocation_lower_settlement_and_writer_loss() 
             f.plan.task_revision_id = f.revision_id.clone();
             f.plan.limits = f.revision.limits.clone();
             let mut graph: af_graph::task::CompiledTask =
-                payload(&f.cas, &f.plan.compiled_graph_id, "af/CompiledTask@1").unwrap();
+                payload(&f.cas, &f.plan.compiled_graph_id, "af/CompiledTask@4").unwrap();
             let original_allowance = graph.allowances["root.nodes.write"].clone();
             graph
                 .allowances
@@ -265,7 +265,7 @@ fn inflight_usage_survives_reopen_revocation_lower_settlement_and_writer_loss() 
             let mut expected_limits = original_limits;
             expected_limits.verification.wall_ms = ATTEMPT_WALL_MS;
             assert_eq!(f.plan.limits, expected_limits);
-            f.plan.compiled_graph_id = put(&f.cas, "af/CompiledTask@1", &graph);
+            f.plan.compiled_graph_id = put(&f.cas, "af/CompiledTask@4", &graph);
             f.plan_id = put(&f.cas, task::EXECUTION_PLAN_V4, &f.plan);
             let lease = f.open();
             f.propose(&lease);

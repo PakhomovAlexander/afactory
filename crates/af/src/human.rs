@@ -455,6 +455,7 @@ pub(crate) fn local_time(unix_ms: u64) -> String {
 
 /// A moment in UTC to the minute, `2026-10-23 06:12Z`: the browser's times are UTC, so a
 /// screen reads the same on every machine.
+#[cfg(test)]
 pub(crate) fn utc_time(unix_ms: u64) -> String {
     let seconds = i64::try_from(unix_ms / 1_000).unwrap_or(i64::MAX / 2);
     let (year, month, day) = civil(seconds.div_euclid(86_400));

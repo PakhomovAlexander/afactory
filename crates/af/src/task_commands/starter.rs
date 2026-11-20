@@ -17,9 +17,9 @@ r=json.load(sys.stdin)
 assert set(r['inputs']) == {'requirements','sources'}
 s=r['inputs']['sources'][0]['payload']['sources']
 print(json.dumps({'schema':'af.worker-reply/1','outputs':{'draft':[{
- 'schema':'af.document-draft/1','title':'Release notes',
+ 'schema':'af.document-draft/3','title':'Release notes',
  'sections':[{'heading':'Summary','body':'\n\n'.join(s[k]['text'] for k in sorted(s))}],
- 'citations':sorted(s)}]}}))
+ 'citations':[{'kind':'source','name':name} for name in sorted(s)]}]}}))
 "#;
 const VERIFIER: &str = r#"import json, sys, string
 r=json.load(sys.stdin)
@@ -193,7 +193,7 @@ pub(super) fn document_files() -> Result<BTreeMap<String, Vec<u8>>, String> {
             ("sources".into(), port(DOCUMENT_SOURCES_V1)),
         ]),
         "draft",
-        DOCUMENT_DRAFT_V1,
+        DOCUMENT_DRAFT_V3,
         &policy_id,
     );
     let verifier = worker(
@@ -232,8 +232,8 @@ pub(super) fn document_files() -> Result<BTreeMap<String, Vec<u8>>, String> {
     };
     let mut verification = port(DOCUMENT_VERIFICATION_V1);
     verification.covers.insert("verified".into());
-    let pipeline = PipelineDefinitionV1 {
-        schema: PipelineSchema::V1,
+    let pipeline = PipelineDefinition {
+        schema: PipelineSchema::V6,
         name: "builtin/release-notes".into(),
         version: "1.0.0".into(),
         contract: PipelineContractV1 {
@@ -318,7 +318,7 @@ pub(super) fn document_files() -> Result<BTreeMap<String, Vec<u8>>, String> {
     };
     pipeline.validate()?;
     let kind = TaskKindManifest {
-        schema: "af.task-kind/1".into(),
+        schema: "af.task-kind/3".into(),
         name: "builtin/release-note-kind".into(),
         version: "1.0.0".into(),
         kind: "release-note".into(),
@@ -331,7 +331,7 @@ pub(super) fn document_files() -> Result<BTreeMap<String, Vec<u8>>, String> {
             &author,
             AUTHOR,
             "draft",
-            include_bytes!("../../../../schemas/document-draft-v1.json").as_slice(),
+            include_bytes!("../../../../schemas/document-draft-v3.json").as_slice(),
         ),
         (
             &verifier,
@@ -403,7 +403,7 @@ pub(super) fn document_files() -> Result<BTreeMap<String, Vec<u8>>, String> {
         imports: BTreeSet::new(),
     };
     let contracts = CatalogContractFixtures {
-        schema: "af.catalog-contract-fixtures/1".into(),
+        schema: "af.catalog-contract-fixtures/2".into(),
         pipelines: BTreeMap::from([(pipeline.name.clone(), (&pipeline).into())]),
         workers: BTreeMap::from([
             (author.name, author.signature),

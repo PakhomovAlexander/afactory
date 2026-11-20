@@ -1,7 +1,7 @@
 //! The event `af/TaskGateRetried@1`: `af task run ID --retry-gate` reopened a finished Task
 //! whose last round ended at a failed gate, so its check node runs again, in a new check
 //! Attempt of the same round, on the same sealed candidate. It is its own versioned event of the
-//! Task's log, the kind `TaskGateRetried@1` beside `TaskTransition@5`, whose shape it leaves
+//! Task's log, the kind `TaskGateRetried@1` beside `TaskTransition@6`, whose shape it leaves
 //! unchanged (ADR-0145), as `TaskExecutionStarted@1` is (ADR-0153).
 //!
 //! It grants nothing a plan did not: no new plan, revision or Task, no re-admission, no change to

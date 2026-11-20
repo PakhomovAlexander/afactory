@@ -65,10 +65,16 @@ fn commit(repo: &Path) {
 }
 fn package(repo: &Path, catalog: &mut toml::Value, name: &str) {
     let path = format!(".af/task-packages/{name}");
-    let digest = af_pipeline_config::lock::package_digest(name, &repo.join(&path)).unwrap();
+    let package =
+        af_pipeline_config::task::catalog::TaskPlanCompiler::local_package(&repo.join(&path))
+            .unwrap();
+    assert_eq!(package.name, name);
     catalog["packages"].as_table_mut().unwrap().insert(
         name.into(),
-        toml::Value::try_from(json!({"version":"1.0.0","path":path,"digest":digest})).unwrap(),
+        toml::Value::try_from(
+            json!({"version":package.version,"path":path,"digest":package.digest}),
+        )
+        .unwrap(),
     );
 }
 fn setup(root: &Path, repair: bool, nested: bool) -> (PathBuf, PathBuf, minisign::KeyPair) {
@@ -86,7 +92,7 @@ fn setup_variant(
     let mut catalog: toml::Value =
         toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
     let pipeline_path = repo.join(".af/task-packages/fixture/implementation/pipeline.toml");
-    let mut existing: PipelineDefinitionV1 =
+    let mut existing: PipelineDefinition =
         toml::from_str(&std::fs::read_to_string(&pipeline_path).unwrap()).unwrap();
     let mut generated = existing.clone();
     generated.name = "generated/implementation".into();
@@ -157,7 +163,7 @@ fn setup_variant(
     write_json(&worker_dir.join("proposal.json"), &proposal);
     let mut bad = proposal.clone();
     bad["definitions"][generated.name.clone()] =
-        json!("schema = 'af.pipeline/1'\nname = 'generated/implementation'\n");
+        json!("schema = 'af.pipeline/6'\nname = 'generated/implementation'\n");
     write_json(&worker_dir.join("bad.json"), &bad);
     std::fs::write(worker_dir.join("worker.py"), format!(r#"import json, sys
 from pathlib import Path

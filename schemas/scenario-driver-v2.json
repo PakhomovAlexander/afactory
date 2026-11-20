@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:scenario-driver:2",
+  "title": "Scenario driver v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "execution_id",
+    "pin_id",
+    "poll_ms",
+    "resumes",
+    "next_unix_ms",
+    "acknowledged",
+    "blocker",
+    "frontiers",
+    "preflight_wait"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/scenario-driver@2"
+    },
+    "execution_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "pin_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "poll_ms": {
+      "type": "integer",
+      "minimum": 1000,
+      "maximum": 3600000
+    },
+    "resumes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 512
+    },
+    "next_unix_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "acknowledged": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 512,
+      "items": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      }
+    },
+    "blocker": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "exhausted"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "diagnostic"
+          ],
+          "properties": {
+            "kind": {
+              "const": "boundary"
+            },
+            "diagnostic": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 65536
+            }
+          }
+        }
+      ]
+    },
+    "frontiers": {
+      "type": "object",
+      "maxProperties": 512,
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "input_digest",
+          "checkpoint"
+        ],
+        "properties": {
+          "input_digest": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "checkpoint": {
+            "enum": [
+              "native_proof_ready",
+              "publication_prepared"
+            ]
+          }
+        }
+      }
+    },
+    "preflight_wait": {
+      "enum": [
+        null,
+        "transport"
+      ]
+    }
+  }
+}

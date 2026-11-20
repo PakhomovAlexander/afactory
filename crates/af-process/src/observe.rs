@@ -83,6 +83,7 @@ struct Shared {
 pub struct OutputObserver {
     shared: Arc<Shared>,
     sender: mpsc::Sender<ObservedChunk>,
+    also: Vec<OutputObserver>,
 }
 
 /// The consumer's end of the queue. Only the consumer takes from it, so its lock is never
@@ -112,6 +113,7 @@ pub fn observer(
         OutputObserver {
             shared: Arc::clone(&shared),
             sender,
+            also: Vec::new(),
         },
         ObservedOutput {
             shared,
@@ -121,6 +123,13 @@ pub fn observer(
 }
 
 impl OutputObserver {
+    /// Offer independently to another bounded consumer. A full or closed queue cannot affect
+    /// its sibling, and neither consumer runs on the pipe drain.
+    pub fn with_also(mut self, observer: OutputObserver) -> Self {
+        self.also.push(observer);
+        self
+    }
+
     /// Offer one chunk: never blocks. Without room for it, or after [`Self::close`], it is
     /// dropped at once and counted; whether it was queued.
     pub(crate) fn offer(
@@ -131,6 +140,9 @@ impl OutputObserver {
         bytes: &[u8],
         arrival: Instant,
     ) -> bool {
+        for observer in &self.also {
+            observer.offer(process, stream, byte_offset, bytes, arrival);
+        }
         let shared = &*self.shared;
         let size = bytes.len() as u64;
         let reserved = !shared.closed.load(Ordering::Acquire)
@@ -173,6 +185,9 @@ impl OutputObserver {
     /// The supervisor returned: no chunk is offered after this, and the consumer, once it has
     /// taken every queued chunk, has the whole observed stream.
     pub fn close(&self) {
+        for observer in &self.also {
+            observer.close();
+        }
         self.shared.closed.store(true, Ordering::Release);
         if let Some(thread) = &self.shared.wake {
             thread.unpark();
@@ -293,5 +308,23 @@ mod tests {
         assert!(observer.offer(1, ObservedStream::Stdout, 0, b"x", Instant::now()));
         consumer.join().unwrap();
         assert_eq!(output.try_take().unwrap().bytes, b"x");
+    }
+}
+
+#[cfg(test)]
+mod fanout_tests {
+    use super::*;
+    #[test]
+    fn full_and_closed_observers_do_not_starve_their_siblings() {
+        let (first, full) = observer(1, None);
+        let (second, live) = observer(16, None);
+        let combined = first.with_also(second);
+        assert!(!combined.offer(1, ObservedStream::Stdout, 0, b"safe", Instant::now()));
+        assert_eq!(full.dropped_chunks(), 1);
+        assert_eq!(live.try_take().unwrap().bytes, b"safe");
+        combined.close();
+        assert!(full.closed() && live.closed());
+        assert!(!combined.offer(1, ObservedStream::Stdout, 4, b"late", Instant::now()));
+        assert_eq!(live.dropped_chunks(), 1);
     }
 }

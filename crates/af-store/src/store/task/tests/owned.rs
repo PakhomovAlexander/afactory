@@ -1,11 +1,9 @@
 use super::*;
 use crate::store::task::execution::owned::*;
 use af_contracts::task::{execution::*, owned_children::*};
-use af_graph::task::{CompiledOperator, CompiledTask, OwnedChildTemplateV1, ReviewOperation};
+use af_graph::task::{CompiledOperator, CompiledTask, OwnedChildTemplateV1};
 
 const PARENT: &str = "root.nodes.write";
-
-mod shards;
 
 struct OwnedAuthority<'a>(&'a Authority);
 impl TaskAuthority for OwnedAuthority<'_> {
@@ -13,7 +11,7 @@ impl TaskAuthority for OwnedAuthority<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
     ) -> Result<Vec<GeneratedOriginV1>, String> {
         self.0.validate_plan(cas, task, plan)
     }
@@ -40,7 +38,7 @@ impl TaskAuthority for OwnedAuthority<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         definition: &af_graph::task::CompiledNode,
@@ -52,7 +50,7 @@ impl TaskAuthority for OwnedAuthority<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
         input: &TaskInvocationV1,
         attempt: &crate::store::task::execution::ReservedTaskAttempt,
         context: &str,
@@ -64,7 +62,7 @@ impl TaskAuthority for OwnedAuthority<'_> {
         &self,
         cas: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV3,
+        _: &ExecutionPlan,
         parent: &TaskInvocationV1,
         set: &TaskOwnedChildSetV1,
     ) -> Result<(), String> {
@@ -106,34 +104,12 @@ impl TaskAuthority for OwnedAuthority<'_> {
         &self,
         cas: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV3,
+        _: &ExecutionPlan,
         parent: &TaskInvocationV1,
-        set: &TaskOwnedChildSetV1,
+        _set: &TaskOwnedChildSetV1,
         facts: &[TaskOwnedChildEvidence],
         output: &TaskOutputV1,
     ) -> Result<(), String> {
-        if let Some(port) = output.outputs.get("o0") {
-            let slices: af_contracts::SliceSetV1 = serde_json::from_value(
-                cas.get_artifact(&set.source_artifact_id)
-                    .map_err(|e| e.to_string())?
-                    .payload,
-            )
-            .map_err(|e| e.to_string())?;
-            let expected = shards::missing_shards(&slices, &set.source_artifact_id);
-            if parent.node != PARENT
-                || facts
-                    .iter()
-                    .any(|fact| fact.attempts.iter().any(|attempt| attempt.started))
-                || cas
-                    .get_artifact(&port.artifact_ids[0])
-                    .map_err(|e| e.to_string())?
-                    .payload
-                    != serde_json::to_value(expected).map_err(|e| e.to_string())?
-            {
-                return Err("Changed complete Missing Review fold".into());
-            }
-            return Ok(());
-        }
         if parent.node != PARENT
             || cas
                 .get_artifact(&output.outputs["output"].artifact_ids[0])
@@ -174,18 +150,19 @@ fn fixture(generated: bool, deadline: Option<u64>) -> Fixture {
 
 fn with_owned_graph(mut f: Fixture) -> Fixture {
     let mut graph: CompiledTask =
-        payload(&f.cas, &f.plan.compiled_graph_id, "af/CompiledTask@1").unwrap();
+        payload(&f.cas, &f.plan.compiled_graph_id, "af/CompiledTask@4").unwrap();
     let mut child = graph.nodes[PARENT].clone();
     let mut item = child.contract.inputs["input"].clone();
     item.artifact_type = "af/OwnedItem@1".into();
     child.contract.inputs.insert("item".into(), item);
     let mut allowance = graph.allowances.remove(PARENT).unwrap();
     allowance.verification_attempts = 0;
-    graph.nodes.get_mut(PARENT).unwrap().operator = CompiledOperator::ReviewDomain {
-        review_node: "scatter".into(),
-        operation: ReviewOperation::Scatter {
+    graph.nodes.get_mut(PARENT).unwrap().operator = CompiledOperator::Primitive {
+        operator: af_contracts::task::pipeline::TaskOperatorV1::ReviewScatter {
             slot: "author".into(),
+            max_fanout: 2,
         },
+        signature: "operator/review-scatter".into(),
     };
     graph.owned_children.insert(
         PARENT.into(),
@@ -210,7 +187,7 @@ fn with_owned_graph(mut f: Fixture) -> Fixture {
     f.plan.compiled_graph_id = f
         .cas
         .put_artifact(
-            "af/CompiledTask@1",
+            "af/CompiledTask@4",
             producer(),
             vec![],
             None,
@@ -859,12 +836,12 @@ fn owned_registration_handoff_preserves_original_attempt_scopes_and_historical_r
         )
         .unwrap();
     let original: CompiledTask =
-        payload(&f.cas, &f.plan.compiled_graph_id, "af/CompiledTask@1").unwrap();
+        payload(&f.cas, &f.plan.compiled_graph_id, "af/CompiledTask@4").unwrap();
     let next = source::next(&f);
     let (next_id, next_plan) = source::plan_for(&f, &next);
-    let mut plan: ExecutionPlanV3 = payload(&f.cas, &next_plan, task::EXECUTION_PLAN_V4).unwrap();
+    let mut plan: ExecutionPlan = payload(&f.cas, &next_plan, task::EXECUTION_PLAN_V4).unwrap();
     let mut graph: CompiledTask =
-        payload(&f.cas, &plan.compiled_graph_id, "af/CompiledTask@1").unwrap();
+        payload(&f.cas, &plan.compiled_graph_id, "af/CompiledTask@4").unwrap();
     let scope = graph.token_scopes.remove("review.round1.scatter").unwrap();
     graph
         .token_scopes
@@ -872,7 +849,7 @@ fn owned_registration_handoff_preserves_original_attempt_scopes_and_historical_r
     plan.compiled_graph_id = f
         .cas
         .put_artifact(
-            "af/CompiledTask@1",
+            "af/CompiledTask@4",
             producer(),
             vec![],
             None,
@@ -951,288 +928,4 @@ fn owned_registration_handoff_preserves_original_attempt_scopes_and_historical_r
         set.children[0].invocation_id,
         nextset.children[0].invocation_id
     );
-}
-
-#[test]
-fn owned_canonical_receipt_is_fenced_by_parent_seal_but_recorded_selection_replays() {
-    use af_contracts::task::campaign_review::*;
-    for receipt_before_seal in [false, true] {
-        let mut f = fixture(false, None);
-        let mut graph: CompiledTask =
-            payload(&f.cas, &f.plan.compiled_graph_id, "af/CompiledTask@1").unwrap();
-        let contract = &mut graph.owned_children.get_mut(PARENT).unwrap().contract;
-        contract.outputs.get_mut("output").unwrap().artifact_type =
-            af_contracts::contract::REVIEWER_RESULT_V2.into();
-        let mut metadata = contract.outputs["output"].clone();
-        metadata.artifact_type = TASK_REVIEW_RESULT_METADATA_V1.into();
-        contract.outputs.insert("metadata".into(), metadata);
-        f.plan.compiled_graph_id = f
-            .cas
-            .put_artifact(
-                "af/CompiledTask@1",
-                producer(),
-                vec![],
-                None,
-                serde_json::to_value(graph).unwrap(),
-            )
-            .unwrap()
-            .0;
-        f.plan_id = f
-            .cas
-            .put_artifact(
-                task::EXECUTION_PLAN_V4,
-                producer(),
-                vec![f.revision_id.clone()],
-                None,
-                serde_json::to_value(&f.plan).unwrap(),
-            )
-            .unwrap()
-            .0;
-        let (lease, parent) = started(&mut f);
-        let (id, set) = children(&f, &parent);
-        let handle = register(&mut f, &lease, &id);
-        let child = &set.children[0];
-        f.store
-            .record_task_invocation(&f.cas, &lease, &child.invocation_id, &f.authority)
-            .unwrap();
-        let mut context = review::canonical_context(&mut f, &child.invocation_id, &"a".repeat(26));
-        let reserved = f
-            .store
-            .reserve_task_attempt(&f.cas, &lease, &child.node, &f.authority)
-            .unwrap();
-        context.attempt_id = reserved.id().into();
-        let context_id = f
-            .cas
-            .put_artifact(
-                TASK_REVIEW_CONTEXT_V1,
-                producer(),
-                context
-                    .artifact_refs()
-                    .into_iter()
-                    .map(str::to_owned)
-                    .collect(),
-                None,
-                serde_json::to_value(&context).unwrap(),
-            )
-            .unwrap()
-            .0;
-        let attempt = f
-            .store
-            .bind_task_attempt_context(&f.cas, &lease, &reserved, &context_id, &f.authority)
-            .unwrap();
-        f.store
-            .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
-            .unwrap();
-        let output =
-            review::review_output(&f, &child.invocation_id, attempt.id(), false, &context_id);
-        f.store
-            .settle_task_attempt(
-                &f.cas,
-                &lease,
-                TaskExecutionRecordV1::Settled {
-                    attempt_id: attempt.id().into(),
-                    charged_tokens: 7,
-                    result: TaskAttemptResultV1::Succeeded {
-                        output_id: output.clone(),
-                    },
-                    usage_id: None,
-                    raw_artifact_ids: vec![],
-                    unknown_usage: None,
-                },
-                &f.authority,
-            )
-            .unwrap();
-        f.store
-            .publish_task_owned_child(&f.cas, &lease, &handle, &output, attempt.id(), &f.authority)
-            .unwrap();
-        f.store
-            .publish_task_owned_review_result(&f.cas, &lease, &handle, &output, &f.authority)
-            .unwrap();
-        let selected = f.store.replay("review-task").unwrap().pop().unwrap();
-        let selected: TaskReviewResultSelectedV1 =
-            serde_json::from_value(selected.payload).unwrap();
-        let run = task_run_id(&selected.task_id).unwrap();
-        let sql = rusqlite::Connection::open(&f.path).unwrap();
-        let check = || {
-            check_canonical_child_receipt(
-                &sql,
-                &f.cas,
-                "review-task",
-                &context.round_event_id,
-                "reviewer",
-                attempt.id(),
-            )
-        };
-        check().unwrap();
-        let (registered_sequence, registered_refs): (i64, String) = sql.query_row(
-            "SELECT sequence,artifact_refs FROM events WHERE run_id=?1 AND instr(artifact_refs,?2)>0 ORDER BY sequence LIMIT 1",
-            rusqlite::params![run, id], |r| Ok((r.get(0)?,r.get(1)?)),
-        ).unwrap();
-        let records = receipt_records_referencing(&sql, &run, &output).unwrap();
-        let publication = records
-            .iter()
-            .find(|record| {
-                matches!(
-                    execution::read_execution_record(&f.cas, record)
-                        .unwrap()
-                        .record,
-                    TaskExecutionRecordV1::OwnedChildPublished { .. }
-                )
-            })
-            .unwrap();
-        let (published_sequence, published_refs): (i64, String) = sql.query_row(
-            "SELECT sequence,artifact_refs FROM events WHERE run_id=?1 AND json_extract(payload,'$.change.record_id')=?2",
-            rusqlite::params![run, publication], |r| Ok((r.get(0)?,r.get(1)?)),
-        ).unwrap();
-        for (sequence, refs) in [
-            (registered_sequence, &registered_refs),
-            (published_sequence, &published_refs),
-        ] {
-            sql.execute(
-                "UPDATE events SET artifact_refs='[]' WHERE run_id=?1 AND sequence=?2",
-                rusqlite::params![run, sequence],
-            )
-            .unwrap();
-            assert!(
-                check().is_err(),
-                "missing exact registration/publication must refuse"
-            );
-            sql.execute(
-                "UPDATE events SET artifact_refs=?3 WHERE run_id=?1 AND sequence=?2",
-                rusqlite::params![run, sequence, refs],
-            )
-            .unwrap();
-        }
-        // A string containing the digest is not that exact reference.
-        let aliased = serde_json::to_string(&vec![
-            format!("prefix-{output}-suffix"),
-            publication.clone(),
-        ])
-        .unwrap();
-        sql.execute(
-            "UPDATE events SET artifact_refs=?3 WHERE run_id=?1 AND sequence=?2",
-            rusqlite::params![run, published_sequence, aliased],
-        )
-        .unwrap();
-        assert!(check().is_err());
-        sql.execute(
-            "UPDATE events SET artifact_refs=?3 WHERE run_id=?1 AND sequence=?2",
-            rusqlite::params![run, published_sequence, published_refs],
-        )
-        .unwrap();
-        let temporary = i64::try_from(f.store.len(&run).unwrap() + 1).unwrap();
-        let swap = || {
-            sql.execute(
-                "UPDATE events SET sequence=?3 WHERE run_id=?1 AND sequence=?2",
-                rusqlite::params![run, registered_sequence, temporary],
-            )
-            .unwrap();
-            sql.execute(
-                "UPDATE events SET sequence=?3 WHERE run_id=?1 AND sequence=?2",
-                rusqlite::params![run, published_sequence, registered_sequence],
-            )
-            .unwrap();
-            sql.execute(
-                "UPDATE events SET sequence=?3 WHERE run_id=?1 AND sequence=?2",
-                rusqlite::params![run, temporary, published_sequence],
-            )
-            .unwrap();
-        };
-        swap();
-        assert!(check().is_err(), "publication cannot precede registration");
-        swap();
-        check().unwrap();
-        // Narrowing the history query must still freshly verify the selected record and
-        // the complete registered set, including its other child's captured invocation.
-        for id in [publication, &set.children[1].invocation_id] {
-            let hex = id.strip_prefix("sha256:").unwrap();
-            let file = f
-                ._dir
-                .path()
-                .join("cas/objects")
-                .join(&hex[..2])
-                .join(&hex[2..]);
-            let original = std::fs::read(&file).unwrap();
-            std::fs::write(&file, b"corrupt owned receipt evidence").unwrap();
-            assert!(
-                check().is_err(),
-                "matching ownership CAS remains freshly verified"
-            );
-            std::fs::write(&file, original).unwrap();
-        }
-        check().unwrap();
-        for index in 1..=128 {
-            f.store
-                .renew_task_lease(&f.cas, &lease, 1_000_000 + index * 1000)
-                .unwrap();
-        }
-        let rows = f.store.len(&run).unwrap();
-        let matched = receipt_records_referencing(&sql, &run, &output)
-            .unwrap()
-            .len()
-            + receipt_records_referencing(&sql, &run, &id).unwrap().len();
-        assert!(matched < 16, "queries must not decode unrelated renewals");
-        let start = std::time::Instant::now();
-        for _ in 0..32 {
-            check_canonical_child_receipt(
-                &sql,
-                &f.cas,
-                "review-task",
-                &context.round_event_id,
-                "reviewer",
-                attempt.id(),
-            )
-            .unwrap();
-        }
-        eprintln!(
-            "owned receipt benchmark: Task_rows={rows}, matching_rows={matched}, iterations=32, guarded_check_us={}; actual selected child with 128 protected renewals, not multi-Round latency evidence",
-            start.elapsed().as_micros()
-        );
-        let receipt = NewEvent::new(
-            EventType::NodeOutputReceiptV1,
-            serde_json::to_value(af_contracts::NodeOutputReceiptPayloadV1 {
-                node: "reviewer".into(),
-                outputs: vec![af_contracts::PortArtifactsV1 {
-                    port: "out".into(),
-                    artifact_type: af_contracts::contract::REVIEWER_RESULT_V2.into(),
-                    cardinality: af_contracts::PortCardinality::One,
-                    optional: false,
-                    snapshot_affinity: af_contracts::SnapshotAffinity::Any,
-                    artifact_ids: vec![selected.result_artifact_id.clone()],
-                    subject_snapshot_id: None,
-                }],
-            })
-            .unwrap(),
-        )
-        .node("reviewer")
-        .attempt(attempt.id())
-        .caused_by(&context.round_event_id)
-        .referencing(vec![selected.result_artifact_id]);
-        if receipt_before_seal {
-            f.store
-                .append("review-task", &f.cas, receipt.clone())
-                .unwrap();
-        }
-        let completed = parent_out(&f, &handle);
-        f.store
-            .complete_task_owned_children(
-                &f.cas,
-                &lease,
-                &handle,
-                &completed,
-                &OwnedAuthority(&f.authority),
-            )
-            .unwrap();
-        f.store = EventStore::open(&f.path).unwrap();
-        let before = f.store.len("review-task").unwrap();
-        f.store
-            .publish_task_owned_review_result(&f.cas, &lease, &handle, &output, &f.authority)
-            .unwrap();
-        if !receipt_before_seal {
-            let error = f.store.append("review-task", &f.cas, receipt).unwrap_err();
-            assert!(error.to_string().contains("sealed"), "{error}");
-        }
-        assert_eq!(f.store.len("review-task").unwrap(), before);
-        assert_eq!(f.state().execution.unwrap().outputs[PARENT].0, completed);
-    }
 }

@@ -7,7 +7,7 @@ use af_contracts::Producer;
 use af_contracts::task::document::*;
 use af_contracts::task::execution::{TaskInvocationV1, TaskOutputV1};
 use af_contracts::task::pipeline::*;
-use af_contracts::task::plan::ExecutionPlanV3;
+use af_contracts::task::plan::ExecutionPlan;
 use af_contracts::task::{
     ArtifactInputV1, TaskAcceptanceV1, TaskExecutionV1, TaskResultV1, TaskRevisionV1,
 };
@@ -97,7 +97,7 @@ pub fn document_signatures(
     };
     let seal = signature(
         BTreeMap::from([
-            ("draft".into(), port(DOCUMENT_DRAFT_V1, false)),
+            ("draft".into(), port(DOCUMENT_DRAFT_V3, false)),
             ("sources".into(), port(DOCUMENT_SOURCES_V1, false)),
         ]),
         BTreeMap::from([("document".into(), port(DOCUMENT_V1, false))]),
@@ -247,10 +247,10 @@ pub fn safe_source_location(uri: &str) -> bool {
 }
 
 pub fn render_document(
-    draft: &DocumentDraftV1,
+    draft: &DocumentDraft,
     sources: &DocumentSourcesV1,
 ) -> Result<String, String> {
-    draft.validate()?;
+    draft.validate_document()?;
     sources.validate()?;
     render_validated(draft, |name| sources.sources.get(name))
 }
@@ -258,7 +258,7 @@ pub fn render_document(
 /// The Markdown of an already validated draft whose named citations resolve through `source`.
 /// The report renderer appends to exactly these bytes, so both profiles escape alike.
 pub(crate) fn render_validated<'a>(
-    draft: &DocumentDraftV1,
+    draft: &DocumentDraft,
     source: impl Fn(&str) -> Option<&'a DocumentSourceV1>,
 ) -> Result<String, String> {
     let mut rendered = format!("# {}\n", markdown_heading(&draft.title));
@@ -269,10 +269,10 @@ pub(crate) fn render_validated<'a>(
             markdown_text(&section.body)
         ));
     }
-    if !draft.citations.is_empty() {
+    if draft.named_citations().next().is_some() {
         rendered.push_str("\n## Sources\n");
     }
-    for citation in &draft.citations {
+    for citation in draft.named_citations() {
         let source =
             source(citation).ok_or("Document cites a source outside its captured input")?;
         if safe_source_location(&source.uri) && source.uri.starts_with("https://") {
@@ -387,7 +387,7 @@ impl DocumentTaskDomain {
                             ]),
                             outputs: BTreeMap::from([(
                                 "draft".into(),
-                                port(DOCUMENT_DRAFT_V1, false),
+                                port(DOCUMENT_DRAFT_V3, false),
                             )]),
                         };
                         if node.contract != expected {
@@ -443,9 +443,9 @@ impl DocumentTaskDomain {
         }
     }
     fn sealed(&self, cas: &Cas, input: &TaskInvocationV1) -> Result<DocumentV1, String> {
-        let draft_id = input_id(input, "draft", DOCUMENT_DRAFT_V1)?;
+        let draft_id = input_id(input, "draft", DOCUMENT_DRAFT_V3)?;
         let sources_id = input_id(input, "sources", DOCUMENT_SOURCES_V1)?;
-        let draft = read(cas, draft_id, DOCUMENT_DRAFT_V1)?;
+        let draft = read(cas, draft_id, DOCUMENT_DRAFT_V3)?;
         let sources = read(cas, sources_id, DOCUMENT_SOURCES_V1)?;
         Ok(DocumentV1 {
             schema: af_contracts::task::document::DOCUMENT_SCHEMA.into(),
@@ -459,10 +459,10 @@ impl DocumentTaskDomain {
         &self,
         cas: &Cas,
         id: &str,
-    ) -> Result<(DocumentV1, DocumentDraftV1, DocumentSourcesV1), String> {
+    ) -> Result<(DocumentV1, DocumentDraft, DocumentSourcesV1), String> {
         let document: DocumentV1 = read(cas, id, DOCUMENT_V1)?;
         document.validate()?;
-        let draft = read(cas, &document.draft_id, DOCUMENT_DRAFT_V1)?;
+        let draft = read(cas, &document.draft_id, DOCUMENT_DRAFT_V3)?;
         let sources = read(cas, &document.sources_id, DOCUMENT_SOURCES_V1)?;
         if document.text != render_document(&draft, &sources)? {
             return Err("Document differs from its exact rendered draft and sources".into());
@@ -503,7 +503,7 @@ impl DocumentTaskDomain {
             ),
             (
                 "citations".into(),
-                pass(!self.policy.require_citations || !draft.citations.is_empty()),
+                pass(!self.policy.require_citations || draft.named_citations().next().is_some()),
             ),
             (
                 "source_locations".into(),
@@ -930,7 +930,7 @@ impl TaskDomain for DocumentTaskDomain {
         &self,
         cas: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV3,
+        _: &ExecutionPlan,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         _definition: &af_graph::task::CompiledNode,
@@ -951,10 +951,10 @@ impl TaskDomain for DocumentTaskDomain {
         };
         match self.operator(input)? {
             TaskOperatorV1::Worker { .. } => {
-                let draft: DocumentDraftV1 = read(
+                let draft: DocumentDraft = read(
                     cas,
-                    &output_id("draft", DOCUMENT_DRAFT_V1)?,
-                    DOCUMENT_DRAFT_V1,
+                    &output_id("draft", DOCUMENT_DRAFT_V3)?,
+                    DOCUMENT_DRAFT_V3,
                 )?;
                 let sources: DocumentSourcesV1 = read(
                     cas,
@@ -1090,15 +1090,15 @@ mod tests {
         (kind.into(), text.into())
     }
 
-    fn draft(title: &str, heading: &str, body: &str, citations: &[&str]) -> DocumentDraftV1 {
-        DocumentDraftV1 {
-            schema: "af.document-draft/1".into(),
+    fn draft(title: &str, heading: &str, body: &str, citations: &[&str]) -> DocumentDraft {
+        DocumentDraft {
+            schema: "af.document-draft/3".into(),
             title: title.into(),
             sections: vec![DocumentSectionV1 {
                 heading: heading.into(),
                 body: body.into(),
             }],
-            citations: citations.iter().map(|name| name.to_string()).collect(),
+            citations: citations.iter().map(|name| (*name).into()).collect(),
         }
     }
 

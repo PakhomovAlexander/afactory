@@ -547,19 +547,33 @@ fn an_exact_artifact_history_binding_resolves_and_names_no_task() {
 fn a_root_capture_is_verbatim_and_a_derived_tree_is_re_rooted() {
     let mut fixture = fixture();
     let manifest = fixture.manifest();
-    let committed = fixture.origin(json!({"schema":"af.task-source-origin/1",
+    let committed = fixture.origin(json!({"schema":"af.task-source-origin/3","kind":"captured",
         "repository_id":"example/hub","source_revision":"bba24cb",
         "content_digest":manifest.content_digest()}));
     let cas = &fixture.cas;
     let root = capture_snapshot(cas, &manifest, &committed, None).unwrap();
     let refs = vec![committed];
-    let root_port = source_tree(cas, producer(), &root, refs).unwrap();
+    // ReviewAccept may return a parentless captured head under its own node producer.
+    let prior_producer = af_contracts::Producer::KernelOperation {
+        run_id: af_store::store::task::task_run_id("root-capture").unwrap(),
+        node_id: Some("root.nodes.review_accept".into()),
+        operation_id: "task-builtin@1".into(),
+    };
+    let root_port = source_tree(cas, prior_producer.clone(), &root, refs).unwrap();
     let carried = ports("snapshot", root_port.clone());
     fixture.finish("root-capture", carried);
 
     let reference = task_ref("root-capture", "snapshot");
     let bound = fixture.bind(table("source", reference)).unwrap();
     assert_eq!(bound.ports["source"], root_port, "carried verbatim");
+    assert_eq!(
+        fixture
+            .cas
+            .get_artifact(&bound.ports["source"].artifact_ids[0])
+            .unwrap()
+            .producer,
+        prior_producer
+    );
     assert_eq!(bound.source_manifest.as_ref(), Some(&manifest));
     let record = fixture.record(&bound);
     let binding = &record.bindings["source"];
@@ -571,7 +585,12 @@ fn a_root_capture_is_verbatim_and_a_derived_tree_is_re_rooted() {
     let manifest_id = fixture.cas.put_json(&encoded).unwrap();
     let cas = &fixture.cas;
     let empty = Vec::new();
-    let made = derive_source_tree(cas, producer(), &manifest_id, &root, empty);
+    let sealed_producer = af_contracts::Producer::KernelOperation {
+        run_id: af_store::store::task::task_run_id("derived").unwrap(),
+        node_id: Some("root.nodes.seal".into()),
+        operation_id: "task-builtin@1".into(),
+    };
+    let made = derive_source_tree(cas, sealed_producer, &manifest_id, &root, empty);
     let derived = made.unwrap();
     fixture.finish("derived", ports("snapshot", derived.clone()));
     let reference = task_ref("derived", "snapshot");
@@ -579,6 +598,14 @@ fn a_root_capture_is_verbatim_and_a_derived_tree_is_re_rooted() {
     let port = &bound.ports["source"];
     assert_ne!(port.artifact_ids, derived.artifact_ids);
     assert_ne!(port.snapshot_id, derived.snapshot_id);
+    assert!(matches!(
+        fixture
+            .cas
+            .get_artifact(&port.artifact_ids[0])
+            .unwrap()
+            .producer,
+        af_contracts::Producer::KernelOperation { node_id: None, .. }
+    ));
     let record = fixture.record(&bound);
     let binding = &record.bindings["source"];
     assert_eq!(binding.artifact_id, derived.artifact_ids[0]);
@@ -615,7 +642,7 @@ fn a_referenced_output_must_hold_the_bound_snapshot() {
     use af_contracts::task::execution::{TASK_OUTPUT_V1, TaskOutputV1};
     let mut fixture = fixture();
     let manifest = fixture.manifest();
-    let committed = fixture.origin(json!({"schema":"af.task-source-origin/1",
+    let committed = fixture.origin(json!({"schema":"af.task-source-origin/3","kind":"captured",
         "repository_id":"example/hub","source_revision":"bba24cb",
         "content_digest":manifest.content_digest()}));
     let cas = &fixture.cas;
@@ -704,7 +731,7 @@ fn a_port_that_names_one_snapshot_over_another_snapshots_artifact_is_refused() {
     use af_contracts::task::execution::{TASK_OUTPUT_V1, TaskOutputV1};
     let fixture = fixture();
     let manifest = fixture.manifest();
-    let committed = fixture.origin(json!({"schema":"af.task-source-origin/1",
+    let committed = fixture.origin(json!({"schema":"af.task-source-origin/3","kind":"captured",
         "repository_id":"example/hub","source_revision":"bba24cb",
         "content_digest":manifest.content_digest()}));
     let cas = &fixture.cas;
@@ -815,7 +842,7 @@ fn a_parentless_generation_two_source_is_carried_verbatim() {
     let manifest = fixture.manifest();
     let from = json!({"artifact_id":format!("sha256:{}", "a".repeat(64)),
         "snapshot_id":format!("sha256:{}", "b".repeat(64))});
-    let origin = fixture.origin(json!({"schema":"af.task-source-origin/2",
+    let origin = fixture.origin(json!({"schema":"af.task-source-origin/3","kind":"bound",
         "repository_id":"example/hub","content_digest":manifest.content_digest(),
         "bound_from":from}));
     let cas = &fixture.cas;
@@ -839,10 +866,10 @@ fn a_parentless_generation_two_source_is_carried_verbatim() {
 fn an_exact_source_envelope_that_names_two_snapshots_is_refused() {
     let fixture = fixture();
     let manifest = fixture.manifest();
-    let committed = fixture.origin(json!({"schema":"af.task-source-origin/1",
+    let committed = fixture.origin(json!({"schema":"af.task-source-origin/3","kind":"captured",
         "repository_id":"example/hub","source_revision":"bba24cb",
         "content_digest":manifest.content_digest()}));
-    let dirty = fixture.origin(json!({"schema":"af.task-source-origin/1",
+    let dirty = fixture.origin(json!({"schema":"af.task-source-origin/3","kind":"captured",
         "repository_id":"example/hub","source_revision":null,
         "content_digest":manifest.content_digest()}));
     let cas = &fixture.cas;

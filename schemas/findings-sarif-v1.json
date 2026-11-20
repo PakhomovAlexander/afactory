@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:findings-sarif:1",
   "title": "af/findings-sarif@1 SARIF 2.1.0 findings log",
-  "$comment": "What `af task findings ID --format sarif` and `af review report --format sarif` print (ADR-0248): one SARIF 2.1.0 log with one run. This schema states the SARIF 2.1.0 required structure af writes — `version`, `$schema`, `runs[].tool.driver`, each result's `ruleId`, `message`, `locations` and `level`, each invocation's `executionSuccessful` — and af's profile in the run's `properties`, whose `schema` is af/findings-sarif@1. It is not the official OASIS schema, which a later change vendors.",
+  "$comment": "What `af task findings ID --format sarif` and `af review ledger --format sarif` print (ADR-0248): one SARIF 2.1.0 log with one run. This schema states the SARIF 2.1.0 required structure af writes — `version`, `$schema`, `runs[].tool.driver`, each result's `ruleId`, `message`, `locations` and `level`, each invocation's `executionSuccessful` — and af's profile in the run's `properties`, whose `schema` is af/findings-sarif@1. It is not the official OASIS schema, which a later change vendors.",
   "type": "object",
   "required": [
     "$schema",

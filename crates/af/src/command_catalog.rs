@@ -14,7 +14,8 @@ pub(crate) const SCHEMA: &str = "af/command-catalog@1";
 /// Whether a command may spend model tokens.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Tokens {
-    /// It never calls a model.
+    /// It never calls a model through AF. A granted host follow-up uses that host's separate
+    /// inference authority and limits, not an AF Worker or Task budget.
     Free,
     /// It may dispatch model Workers that charge tokens against a budget; when the condition is
     /// given, only then.
@@ -103,13 +104,13 @@ const fn writes(writes: &'static [(State, When)]) -> Effects {
 /// A pipeline whose check node lists `remote_checks` pushes its gate branches (ADR-0140).
 const REMOTE_CHECKS: When = Some("a pipeline with remote checks");
 
-/// `af review run --file` (and bare `af review --file`) executes a Review Task, whose pipeline's
-/// remote checks push gate branches and a draft gate pull request like `af task run`'s.
-const REVIEW_TASK_REMOTE_CHECKS: When = Some("--file, a pipeline with remote checks");
-
 /// `codex app-server` answers `model/list` against the Provider's `CODEX_HOME` and caches the
 /// catalog in `$CODEX_HOME/models_cache.json` (ADR-0146).
 const CODEX_MODELS: When = Some("a Codex Provider");
+
+/// The finite wake driver may queue a follow-up in the granted existing Codex session. Native
+/// queue/session state is machine-local; any host inference uses the separate follow-up grant.
+const CODEX_WAKE: When = Some("an eligible Codex route under its owner follow-up grant");
 
 /// Every runnable command and what it may do, by the command as typed. A runnable command is a
 /// visible one without subcommands, or a namespace that also runs on its own (`af`, `af review`,
@@ -162,37 +163,38 @@ pub(crate) const EFFECTS: &[(&str, Effects)] = &[
         ]),
     ),
     (
-        "af review",
-        Effects {
-            tokens: Tokens::Charges(None),
-            ..writes(&[(Store, None), (Remote, REVIEW_TASK_REMOTE_CHECKS)])
-        },
-    ),
-    (
         "af review run",
         Effects {
             tokens: Tokens::Charges(None),
-            ..writes(&[(Store, None), (Remote, REVIEW_TASK_REMOTE_CHECKS)])
+            ..writes(&[(Store, None), (Remote, REMOTE_CHECKS)])
         },
     ),
-    ("af review plan", writes(&[(Store, Some("--file"))])),
-    ("af review render", READS),
-    ("af review ledger", READS),
+    ("af review plan", writes(&[(Store, None)])),
+    ("af review decide", writes(&[(Store, None)])),
+    ("af review decision-context", READS),
+    ("af review inspect", READS),
     ("af review show", READS),
-    ("af review export", READS),
+    ("af review ledger", READS),
     ("af review report", READS),
-    ("af review campaigns", READS),
-    ("af review gc", writes(&[(Store, Some("--apply"))])),
-    ("af review resolve", writes(&[(Store, None)])),
-    ("af review attest-change", writes(&[(Store, None)])),
-    ("af review verify-fix", writes(&[(Store, None)])),
-    ("af review challenge-resolution", writes(&[(Store, None)])),
-    ("af review policy-time advance", writes(&[(Store, None)])),
-    ("af review group", writes(&[(Store, None)])),
-    ("af review ungroup", writes(&[(Store, None)])),
-    ("af review evidence add", writes(&[(Store, None)])),
-    ("af review evidence satisfy", writes(&[(Store, None)])),
-    ("af review demand waive", writes(&[(Store, None)])),
+    ("af review export", READS),
+    (
+        "af review resume",
+        Effects {
+            tokens: Tokens::Charges(None),
+            human: &[(Approval, Some("without --execute"))],
+            ..writes(&[(Store, None), (Remote, REMOTE_CHECKS)])
+        },
+    ),
+    (
+        "af review continue",
+        Effects {
+            tokens: Tokens::Charges(Some("--execute")),
+            ..writes(&[
+                (Store, None),
+                (Remote, Some("--execute, a pipeline with remote checks")),
+            ])
+        },
+    ),
     (
         "af task start",
         Effects {
@@ -232,6 +234,23 @@ pub(crate) const EFFECTS: &[(&str, Effects)] = &[
     ("af task status", READS),
     ("af task events", READS),
     ("af task cancel", writes(&[(Store, None)])),
+    ("af task wake capabilities", READS),
+    // The grant records a route in the Task Store, creates the private capability file and
+    // binds the original session in the independent machine control Store.
+    (
+        "af task wake grant",
+        writes(&[(Store, None), (Files, None), (Machine, None)]),
+    ),
+    ("af task wake register", writes(&[(Store, None)])),
+    ("af task wake inspect", READS),
+    ("af task wake revoke", writes(&[(Store, None)])),
+    (
+        "af task wake drain",
+        writes(&[(Store, None), (Machine, CODEX_WAKE)]),
+    ),
+    // Pulling also reconciles history, accepts a packet and commits native intent. The Pi
+    // extension, outside this command, invokes the separately granted native follow-up.
+    ("af task wake pi-next", writes(&[(Store, None)])),
     ("af scenario roadmap validate", READS),
     (
         "af scenario roadmap create",
@@ -253,6 +272,7 @@ pub(crate) const EFFECTS: &[(&str, Effects)] = &[
     ("af scenario template-pin", writes(&[(Store, None)])),
     ("af scenario evidence-source", READS),
     ("af scenario performance-proof", READS),
+    ("af scenario implementation-proof", READS),
     ("af scenario experiment-source", writes(&[(Files, None)])),
     ("af scenario candidate-source", writes(&[(Files, None)])),
     (
@@ -268,6 +288,7 @@ pub(crate) const EFFECTS: &[(&str, Effects)] = &[
         },
     ),
     ("af scenario show", READS),
+    ("af scenario output", writes(&[(Files, Some("--output"))])),
     ("af scenario list", READS),
     (
         "af scenario resume",
@@ -281,6 +302,19 @@ pub(crate) const EFFECTS: &[(&str, Effects)] = &[
             human: &[],
         },
     ),
+    (
+        "af scenario drive",
+        Effects {
+            tokens: Tokens::Charges(None),
+            writes: &[
+                (Store, None),
+                (Files, Some("authorized file action")),
+                (Remote, Some("authorized publication adapter")),
+            ],
+            human: &[],
+        },
+    ),
+    ("af scenario driver-status", READS),
     ("af scenario cancel", writes(&[(Store, None)])),
     ("af scenario decision-payload", writes(&[(Files, None)])),
     (
@@ -293,6 +327,21 @@ pub(crate) const EFFECTS: &[(&str, Effects)] = &[
     ("af ant validate", READS),
     ("af ant add", writes(&[(Store, None)])),
     ("af ant show", READS),
+    ("af ant output", writes(&[(Files, Some("--output"))])),
+    ("af ant scheduler status", READS),
+    ("af ant scheduler stop", writes(&[(Store, None)])),
+    (
+        "af ant scheduler run",
+        Effects {
+            tokens: Tokens::Charges(None),
+            writes: &[
+                (Store, None),
+                (Files, Some("authorized file action")),
+                (Remote, Some("authorized publication adapter")),
+            ],
+            human: &[],
+        },
+    ),
     ("af ant list", READS),
     ("af ant enable", writes(&[(Store, None)])),
     ("af ant pause", writes(&[(Store, None)])),
@@ -749,6 +798,22 @@ mod tests {
         }
     }
 
+    #[test]
+    fn scenario_driver_effects_match_resume_and_status_is_read_only() {
+        let effects = |command: &str| {
+            document(&["scenario".into(), command.into()]).unwrap()["commands"][0]["effects"]
+                .clone()
+        };
+        let drive = effects("drive");
+        assert_eq!(drive, effects("resume"));
+        assert_eq!(drive["tokens"], "charges");
+        assert_eq!(drive["human"], json!([]));
+        assert_eq!(
+            effects("driver-status"),
+            json!({"tokens": "free", "charges_when": null, "writes": [], "human": []})
+        );
+    }
+
     /// The `writes` of one command as the catalog prints them: `(state, when)` pairs.
     fn printed_writes(command: &str) -> Vec<(String, Value)> {
         let document = document(&[]).unwrap();
@@ -782,29 +847,25 @@ mod tests {
         );
     }
 
-    /// `af review plan --file` opens a Task and records its proposed plan; without `--file` the
-    /// plan is token-free and stateless.
+    /// `af review plan --file` opens a Task and records its proposed plan without an Attempt.
     #[test]
-    fn review_plan_writes_the_store_only_with_file() {
+    fn review_plan_always_records_its_native_task_plan() {
         assert_eq!(
             printed_writes("af review plan"),
-            [("store".to_owned(), json!("--file"))]
+            [("store".to_owned(), Value::Null)]
         );
     }
 
-    /// `af review run --file`, and bare `af review --file`, executes a Review Task whose pipeline's
+    /// `af review run --file` executes a Review Task whose pipeline's
     /// remote checks may push gate branches and a draft gate pull request (ADR-0140).
     #[test]
     fn review_run_with_file_and_remote_checks_writes_remote_state() {
-        for command in ["af review run", "af review"] {
+        for command in ["af review run", "af review resume"] {
             assert_eq!(
                 printed_writes(command),
                 [
                     ("store".to_owned(), Value::Null),
-                    (
-                        "remote".to_owned(),
-                        json!("--file, a pipeline with remote checks")
-                    ),
+                    ("remote".to_owned(), json!("a pipeline with remote checks")),
                 ],
                 "{command}"
             );
@@ -822,5 +883,45 @@ mod tests {
                 ("store".to_owned(), Value::Null),
             ]
         );
+    }
+
+    #[test]
+    fn wake_effects_distinguish_reads_journal_writes_and_granted_host_queueing() {
+        let document = document(&["task".into(), "wake".into()]).unwrap();
+        let commands = document["commands"].as_array().unwrap();
+        assert_eq!(commands.len(), 8); // namespace plus seven runnable commands
+        for (name, expected_writes) in [
+            ("capabilities", json!([])),
+            (
+                "grant",
+                json!([
+                    {"state": "store", "when": null},
+                    {"state": "files", "when": null},
+                    {"state": "machine", "when": null}
+                ]),
+            ),
+            ("register", json!([{"state": "store", "when": null}])),
+            ("inspect", json!([])),
+            ("revoke", json!([{"state": "store", "when": null}])),
+            (
+                "drain",
+                json!([
+                    {"state": "store", "when": null},
+                    {"state": "machine", "when": "an eligible Codex route under its owner follow-up grant"}
+                ]),
+            ),
+            ("pi-next", json!([{"state": "store", "when": null}])),
+        ] {
+            let command = commands
+                .iter()
+                .find(|entry| entry["command"] == format!("af task wake {name}"))
+                .unwrap();
+            assert_eq!(command["runnable"], true, "{name}");
+            assert_eq!(
+                command["effects"],
+                json!({"tokens": "free", "charges_when": null, "writes": expected_writes, "human": []}),
+                "{name}"
+            );
+        }
     }
 }

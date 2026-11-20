@@ -335,7 +335,7 @@ fn a_failed_gate_is_retried_on_the_same_candidate_and_continues_into_review() {
     );
     let before = fixture.show_json("gate-retry");
     crate::schemas::valid(
-        &crate::schemas::validator("task-inspection-v17.json"),
+        &crate::schemas::validator("task-inspection-v21.json"),
         &before,
     );
     assert_eq!(before["result"]["domain_conclusion"], "changes_requested");
@@ -412,7 +412,7 @@ fn a_failed_gate_is_retried_on_the_same_candidate_and_continues_into_review() {
     assert!(!stdout.contains("--retry-gate"), "{stdout}");
     let after = fixture.show_json("gate-retry");
     crate::schemas::valid(
-        &crate::schemas::validator("task-inspection-v17.json"),
+        &crate::schemas::validator("task-inspection-v21.json"),
         &after,
     );
     assert_eq!(after["result"]["domain_conclusion"], "verified");
@@ -873,7 +873,7 @@ fn a_failed_gate_beside_a_failed_paid_node_is_not_retried() {
 /// receipt (`af/TaskCheckReceipt@2`) records `stopped` with the cause `wall`, the two-second
 /// per-check wall the gate ran under and how long it ran; the Task ends `check_failed`, never
 /// `preflight_failed`; and `af task show` (`why:`), `af task show --checks` (text and
-/// `af/task-checks@3`), `af task report` (the row's detail) and the run's stderr each say `check
+/// `af/task-checks@4`), `af task report` (the row's detail) and the run's stderr each say `check
 /// pagination stopped at its 2 s wall after …` with what to do next, while none says `never
 /// started`.
 #[test]
@@ -962,7 +962,7 @@ fn a_check_killed_at_its_wall_says_so_and_never_reads_as_never_started() {
     assert!(!shown.contains("never started"), "{shown}");
     assert!(!shown.contains("preflight"), "{shown}");
 
-    // `af task show --checks`, in text and as `af/task-checks@3`.
+    // `af task show --checks`, in text and as `af/task-checks@4`.
     let (code, checks, stderr) = fixture.af(&["task", "show", "gate-wall", "--checks"]);
     assert_eq!(code, 0, "{stderr}\n{checks}");
     assert!(
@@ -979,8 +979,8 @@ fn a_check_killed_at_its_wall_says_so_and_never_reads_as_never_started() {
     let (code, document, stderr) = fixture.af(&["task", "show", "gate-wall", "--checks", "--json"]);
     assert_eq!(code, 0, "{stderr}\n{document}");
     let document: Value = serde_json::from_str(document.trim()).unwrap();
-    crate::schemas::valid(&crate::schemas::validator("task-checks-v3.json"), &document);
-    assert_eq!(document["schema"], "af/task-checks@3");
+    crate::schemas::valid(&crate::schemas::validator("task-checks-v4.json"), &document);
+    assert_eq!(document["schema"], "af/task-checks@4");
     assert_eq!(document["state"]["cause"], "check_failed");
     assert_eq!(document["receipt"]["checks"][0]["stop"], *stop);
 
@@ -1255,7 +1255,7 @@ fn a_passed_gate_s_evidence_is_its_report_s_not_its_preflight_fixtures() {
     assert_eq!(code, 0, "{stderr}\n{stdout}");
     let shown = fixture.show_json("nested-pass");
     crate::schemas::valid(
-        &crate::schemas::validator("task-inspection-v17.json"),
+        &crate::schemas::validator("task-inspection-v21.json"),
         &shown,
     );
     let gate = &shown["gate"];
@@ -1322,7 +1322,7 @@ fn a_failed_gate_names_the_tests_its_report_names_not_its_preflight_fixtures() {
     assert_eq!(code, 5, "{stderr}\n{stdout}");
     let shown = fixture.show_json("nested-fail");
     crate::schemas::valid(
-        &crate::schemas::validator("task-inspection-v17.json"),
+        &crate::schemas::validator("task-inspection-v21.json"),
         &shown,
     );
     assert_eq!(shown["state"]["cause"], "check_failed", "{shown:#}");
@@ -1371,7 +1371,7 @@ fn a_failed_gate_names_the_tests_its_report_names_not_its_preflight_fixtures() {
         fixture.af(&["task", "show", "nested-fail", "--checks", "--json"]);
     assert_eq!(code, 0, "{stderr}\n{document}");
     let document: Value = serde_json::from_str(document.trim()).unwrap();
-    crate::schemas::valid(&crate::schemas::validator("task-checks-v3.json"), &document);
+    crate::schemas::valid(&crate::schemas::validator("task-checks-v4.json"), &document);
     assert_eq!(
         document["receipt"]["checks"][0]["stopped_step"],
         json!({"step": "test", "exit_code": 100}),

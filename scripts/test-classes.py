@@ -450,6 +450,20 @@ def audit_source(cat=None):
         if modules != declared:
             raise ValueError(f'{path.relative_to(ROOT)} module catalog drift: '
                              f'new={sorted(modules - declared)}, removed={sorted(declared - modules)}')
+    # The live native Task probe must select an admitted, ignored e2e identity and explicitly
+    # refuse zero matches. Libtest's stale --exact filters can otherwise exit green with none.
+    makefile = (ROOT / 'Makefile').read_text()
+    target = makefile.split('review-kernel-container-probes:\n', 1)[1].split('\n\n', 1)[0]
+    native = [line for line in target.splitlines() if 'af-runtime::it' in line]
+    if len(native) != 1 or '--no-tests fail' not in native[0]:
+        raise ValueError('native container probe must refuse an empty exact selection')
+    selector = re.search(r'binary_id\(=([^()]+)\) & test\(=([^()]+)\)', native[0])
+    if not selector:
+        raise ValueError('native container probe needs an exact binary and test selector')
+    binary, name = selector.groups()
+    if (cat['ignored'].get(binary + ' ' + name) != 'live-container'
+            or classify(binary, name, cat, {}) != 'e2e'):
+        raise ValueError('native container probe must be a catalogued live-container e2e test')
     actual_scripts = {p.name for p in (ROOT / 'scripts').glob('test-*.py')}
     declared_scripts = set(cat['scripts']) | set(cat['utilities'])
     if actual_scripts != declared_scripts:

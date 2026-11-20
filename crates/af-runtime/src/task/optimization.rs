@@ -8,7 +8,7 @@ use af_contracts::task::optimization_experiment::*;
 use af_contracts::task::optimization_light::OptimizationProfileV1 as OptimizationDevelopmentProfileV1;
 use af_contracts::task::optimization_light::*;
 use af_contracts::task::pipeline::*;
-use af_contracts::task::plan::ExecutionPlanV3;
+use af_contracts::task::plan::ExecutionPlan;
 use af_contracts::task::{
     ArtifactInputV1, TaskAcceptanceV1, TaskExecutionV1, TaskResultV1, TaskRevisionV1,
 };
@@ -790,7 +790,7 @@ impl TaskDomain for OptimizationTaskDomain {
         &self,
         cas: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV3,
+        _: &ExecutionPlan,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         _definition: &af_graph::task::CompiledNode,
@@ -822,7 +822,7 @@ impl TaskDomain for OptimizationTaskDomain {
 /// not produce delivery authority: independent finalization remains a separate obligation.
 pub struct OptimizationCandidateTaskDomain {
     graph: CompiledTask,
-    plan: ExecutionPlanV3,
+    plan: ExecutionPlan,
     parent: String,
     baseline_slot: String,
     candidate_slot: String,
@@ -1724,7 +1724,7 @@ impl OptimizationCandidateTaskDomain {
 
     pub fn captured(
         graph: CompiledTask,
-        plan: ExecutionPlanV3,
+        plan: ExecutionPlan,
         compiler: &af_pipeline_config::task::catalog::TaskPlanCompiler,
     ) -> Result<Self, String> {
         let experiments = graph
@@ -2233,14 +2233,14 @@ impl TaskOperatorHost for OptimizationCandidateTaskDomain {
                 }
             }
         }
-        let child_plan = af_graph::task::ExperimentExecutionPlanV1 {
-            schema: "af.experiment-execution-plan/1".into(),
+        let child_plan = af_graph::task::ExperimentExecutionPlanV3 {
+            schema: "af.experiment-execution-plan/3".into(),
             parent_node: self.parent.clone(),
             children: planned,
         };
         let child_plan_id = cas
             .put_artifact(
-                af_graph::task::EXPERIMENT_EXECUTION_PLAN_V1,
+                af_graph::task::EXPERIMENT_EXECUTION_PLAN_V3,
                 invocation_producer(cas, parent, None)?,
                 children
                     .iter()
@@ -2473,14 +2473,14 @@ impl TaskDomain for OptimizationCandidateTaskDomain {
         &self,
         cas: &Cas,
         _: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
         prepared: &ExperimentPreparedV1,
     ) -> Result<(), String> {
         prepared.validate()?;
-        let child_plan: af_graph::task::ExperimentExecutionPlanV1 = read(
+        let child_plan: af_graph::task::ExperimentExecutionPlanV3 = read(
             cas,
             &prepared.compiled_child_plan_id,
-            af_graph::task::EXPERIMENT_EXECUTION_PLAN_V1,
+            af_graph::task::EXPERIMENT_EXECUTION_PLAN_V3,
         )?;
         let child_outer_plan = child_plan
             .children
@@ -2573,7 +2573,7 @@ impl TaskDomain for OptimizationCandidateTaskDomain {
         &self,
         cas: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV3,
+        _: &ExecutionPlan,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         _definition: &af_graph::task::CompiledNode,

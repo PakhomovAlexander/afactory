@@ -17,7 +17,28 @@ remote_commit() {
   printf '%s\n' "$refs" | awk '/\^\{\}$/ { peeled=$1 } NF == 2 { direct=$1 } END { print (peeled ? peeled : direct) }'
 }
 
+# Even a last-millisecond main advance must not become approved release bytes. The
+# preparation declaration names the exact first parent; refuse before tag/publication.
+check_release_source() {
+  python3 - "$head" "$version" <<'PYSOURCE'
+import json, re, subprocess, sys
+from pathlib import Path
+head, version = sys.argv[1:]
+declaration = json.loads(Path('scripts/release-contract.json').read_text())
+source = declaration['source']
+if (declaration['schema'] != 'af.dev-release-contract/1' or declaration['version'] != version
+        or not re.fullmatch('[0-9a-f]{40}', source)
+        or subprocess.check_output(['git', 'rev-parse', head + '^'], text=True).strip() != source):
+    sys.exit('release source differs from the approved first parent; prepare a new reviewed plan')
+allowed = {'Cargo.toml', 'Cargo.lock', 'CHANGELOG.md', 'scripts/release-contract.json'}
+paths = subprocess.check_output(['git', 'diff', '--name-only', source, head], text=True).splitlines()
+if any(p not in allowed and not p.startswith(('changelog.d/', 'fixtures/performance/kernel-measure/')) for p in paths):
+    sys.exit('release candidate changed paths outside approved metadata')
+PYSOURCE
+}
+
 if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+  check_release_source
   tag="$GITHUB_REF_NAME"
   [[ "$tag" == "$candidate" ]] || { echo "tag $tag does not match version $version" >&2; exit 1; }
 else
@@ -32,6 +53,7 @@ else
   else
     remote="$(remote_commit)"
     if [[ -z "$remote" ]]; then
+      check_release_source
       git config user.name "github-actions[bot]"
       git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
       mkdir -p target/release-tests
@@ -75,5 +97,6 @@ if [[ -n "$tag" ]]; then
     fi
   fi
 fi
+if [[ -n "$tag" ]]; then check_release_source; fi
 mkdir -p target/release-tests
 python3 "$policy" resolve "$head" "$version" "$tag" target/release-tests/plan.json

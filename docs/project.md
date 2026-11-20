@@ -1092,13 +1092,13 @@ counts.
 ### The port
 
 A pipeline that wants a Brief declares the root port and wires it only to the nodes that should
-see the Project. Without a recovery allowance, a pipeline with this port says
-`schema = "af.pipeline/2"` ([schema](../schemas/pipeline-definition-v2.json)); a slot recovery
-allowance uses `af.pipeline/3`. The separate [structured profile](task-execution/structured.md)
-uses `af.pipeline/4` and has no Brief input. Other Pipelines stay `af.pipeline/1`:
+see the Project. Every Task Pipeline uses
+`schema = "af.pipeline/6"` ([schema](../schemas/pipeline-definition-v6.json)), including ordinary,
+Brief, recovery and [structured](task-execution/structured.md) Pipelines. The installed structured
+profile still has no Brief input:
 
 ```toml
-schema = "af.pipeline/2"
+schema = "af.pipeline/6"
 # name, version, …
 
 [contract.inputs.project]
@@ -1128,12 +1128,11 @@ context manifest entry: name `project`, `required_by` `port:project`, the Brief'
 type, its bytes and the runner's token estimate. A Worker output of type `af/ProjectBrief@1` is
 refused at output admission: only the kernel constructs a Brief.
 
-An `af.pipeline/1` pipeline that declares `brief` or `root_default = "project_brief"` is refused
-when it loads, naming `af.pipeline/2`, and so is an `af.pipeline/2` pipeline without the port. A
-Worker manifest declares the port as a plain optional input, never with a root default or `brief`.
-The Planner is not offered an `af.pipeline/2` pipeline to compose, and `af task export` refuses to
-share one, as a shared catalog refuses to admit one: neither the planning request nor a shared
-catalog's contract fixtures carry a pipeline's version yet.
+The Brief remains explicit and optional within the current format. Retired `af.pipeline/1` through
+`/4` inputs are refused, with no migration. A Worker manifest declares the port as a plain optional
+input, never with a root default or `brief`. The Planner is not offered a Pipeline declaring a
+Brief port, and `af task export` and shared-catalog admission still refuse such a Pipeline:
+their interface fixtures carry no Brief constructor authority.
 
 A plan is refused before any dispatch when a Worker node wired to the Brief would receive a
 request over the renderer's 1 MiB cap. The plan measures the request the runner would render for

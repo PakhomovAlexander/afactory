@@ -17,7 +17,7 @@ fn producer() -> Producer {
 
 fn tree(
     cas: &Cas,
-    origin: &str,
+    repository_id: &str,
     parent: Option<&str>,
     files: &BTreeMap<String, Vec<u8>>,
 ) -> String {
@@ -30,7 +30,21 @@ fn tree(
             size: bytes.len() as u64,
         })
         .collect();
-    capture_snapshot(cas, &Manifest::new(entries).unwrap(), origin, parent).unwrap()
+    let manifest = Manifest::new(entries).unwrap();
+    let origin = match parent {
+        Some(parent) => read_snapshot(cas, parent).unwrap().0.origin_id,
+        None => af_source_git::task::write_origin(
+            cas,
+            &af_source_git::task::TaskSourceOrigin::Captured {
+                schema: af_source_git::task::TASK_SOURCE_ORIGIN_SCHEMA.into(),
+                repository_id: repository_id.into(),
+                source_revision: None,
+                content_digest: manifest.content_digest(),
+            },
+        )
+        .unwrap(),
+    };
+    capture_snapshot(cas, &manifest, &origin, parent).unwrap()
 }
 
 fn files(pairs: &[(&str, &str)]) -> BTreeMap<String, Vec<u8>> {
@@ -97,13 +111,13 @@ fn package_source() -> BTreeMap<String, Vec<u8>> {
 fn finalizer_recomputes_actual_package_bytes_and_preserves_other_authority() {
     let temp = tempfile::tempdir().unwrap();
     let cas = Cas::open(temp.path()).unwrap();
-    let origin = cas.put(b"repository").unwrap();
+    let origin = "repository";
     let engine = cas.put(b"engine").unwrap();
     let before = package_source();
-    let source = tree(&cas, &origin, None, &before);
+    let source = tree(&cas, origin, None, &before);
     let mut proposed = before.clone();
     proposed.insert("packages/author/prompt.txt".into(), b"candidate".to_vec());
-    let candidate = tree(&cas, &origin, Some(&source), &proposed);
+    let candidate = tree(&cas, origin, Some(&source), &proposed);
     let (harness, _) = policy(&cas, "packages/author", "checks");
     let finalized =
         finalize_configuration(&cas, &source, &candidate, &harness, &engine, producer()).unwrap();
@@ -148,10 +162,10 @@ fn finalizer_recomputes_actual_package_bytes_and_preserves_other_authority() {
 fn finalizer_refuses_candidate_control_of_oracle_catalog_engine_or_unrelated_bytes() {
     let temp = tempfile::tempdir().unwrap();
     let cas = Cas::open(temp.path()).unwrap();
-    let origin = cas.put(b"repository").unwrap();
+    let origin = "repository";
     let engine = cas.put(b"engine").unwrap();
     let before = package_source();
-    let source = tree(&cas, &origin, None, &before);
+    let source = tree(&cas, origin, None, &before);
     let (harness_id, harness) = policy(&cas, "packages/author", "checks");
     for target in [
         "checks/check.py",
@@ -161,7 +175,7 @@ fn finalizer_refuses_candidate_control_of_oracle_catalog_engine_or_unrelated_byt
     ] {
         let mut proposed = before.clone();
         proposed.insert(target.into(), b"tampered".to_vec());
-        let candidate = tree(&cas, &origin, Some(&source), &proposed);
+        let candidate = tree(&cas, origin, Some(&source), &proposed);
         assert!(
             finalize_configuration(&cas, &source, &candidate, &harness_id, &engine, producer())
                 .is_err(),
@@ -170,14 +184,14 @@ fn finalizer_refuses_candidate_control_of_oracle_catalog_engine_or_unrelated_byt
     }
     let mut proposed = before.clone();
     proposed.remove("checks/check.py");
-    let candidate = tree(&cas, &origin, Some(&source), &proposed);
+    let candidate = tree(&cas, origin, Some(&source), &proposed);
     assert!(validate_configuration_diff(&cas, &source, &candidate, &harness).is_err());
     let mut proposed = before.clone();
     proposed.insert(
         "packages/author/prompt.txt".into(),
         b"../checks/check.py".to_vec(),
     );
-    let candidate = tree(&cas, &origin, Some(&source), &proposed);
+    let candidate = tree(&cas, origin, Some(&source), &proposed);
     let (snapshot, mut manifest) = read_snapshot(&cas, &candidate).unwrap();
     manifest
         .entries
@@ -193,13 +207,13 @@ fn finalizer_refuses_candidate_control_of_oracle_catalog_engine_or_unrelated_byt
 fn harness_only_finalization_retains_an_explicit_unchanged_lock_receipt() {
     let temp = tempfile::tempdir().unwrap();
     let cas = Cas::open(temp.path()).unwrap();
-    let origin = cas.put(b"repository").unwrap();
+    let origin = "repository";
     let engine = cas.put(b"engine").unwrap();
     let before = package_source();
-    let source = tree(&cas, &origin, None, &before);
+    let source = tree(&cas, origin, None, &before);
     let mut proposed = before;
     proposed.insert("harness.sh".into(), b"fixed".to_vec());
-    let candidate = tree(&cas, &origin, Some(&source), &proposed);
+    let candidate = tree(&cas, origin, Some(&source), &proposed);
     let (harness, _) = policy(&cas, "harness.sh", "checks");
     let result =
         finalize_configuration(&cas, &source, &candidate, &harness, &engine, producer()).unwrap();
@@ -218,22 +232,22 @@ fn harness_only_finalization_retains_an_explicit_unchanged_lock_receipt() {
 fn harness_materialization_uses_distinct_derived_fixture_trees_and_fixed_oracle_bytes() {
     let temp = tempfile::tempdir().unwrap();
     let cas = Cas::open(temp.path()).unwrap();
-    let origin = cas.put(b"product").unwrap();
-    let fixture_origin = cas.put(b"fixture").unwrap();
+    let origin = "product";
+    let fixture_origin = "fixture";
     let source_files = files(&[("harness.sh", "broken"), ("oracle.sh", "protected")]);
-    let source = tree(&cas, &origin, None, &source_files);
+    let source = tree(&cas, origin, None, &source_files);
     let mut configuration_files = source_files.clone();
     configuration_files.insert(
         "current-only.txt".into(),
         b"added after the historical case".to_vec(),
     );
-    let configuration = tree(&cas, &origin, Some(&source), &configuration_files);
+    let configuration = tree(&cas, origin, Some(&source), &configuration_files);
     let mut candidate_files = configuration_files;
     candidate_files.insert("harness.sh".into(), b"fixed".to_vec());
-    let candidate = tree(&cas, &origin, Some(&configuration), &candidate_files);
+    let candidate = tree(&cas, origin, Some(&configuration), &candidate_files);
     let fixture = tree(
         &cas,
-        &fixture_origin,
+        fixture_origin,
         None,
         &files(&[
             ("harness.sh", "placeholder"),
@@ -292,7 +306,7 @@ fn harness_materialization_uses_distinct_derived_fixture_trees_and_fixed_oracle_
     assert_eq!(arms, vec![b"broken".to_vec(), b"fixed".to_vec()]);
     let incompatible = tree(
         &cas,
-        &origin,
+        origin,
         None,
         &files(&[
             ("harness.sh", "different baseline"),

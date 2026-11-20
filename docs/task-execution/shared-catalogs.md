@@ -92,7 +92,7 @@ Task-kind packages add reusable business names for installed acceptance profiles
 `kind.toml` can declare:
 
 ```toml
-schema = "af.task-kind/1"
+schema = "af.task-kind/3"
 name = "team/feature-kind"
 version = "1.0.0"
 kind = "team/feature"
@@ -115,6 +115,6 @@ Tests sync a transitive catalog, remove its original repository, plan an importe
 the imported Worker and execute the captured plan. Fresh admission rejects the mutated package.
 Separate cases reject catalog cycles, missing dependencies, namespace collisions and symlinks.
 
-A package-defined data kind uses the separate `af.task-kind/2` shape with profile `structured`
-and captured `structured.json`. See [structured Tasks](structured.md); generation 1 continues
-to describe the existing installed profiles and refuses the structured profile.
+Every installed kind uses `af.task-kind/3`, including a package-defined data kind with profile
+`structured` and captured `structured.json`. See [structured Tasks](structured.md). Retired `/1` and
+`/2` manifests are refused; a structured kind still cannot claim a built-in business kind.

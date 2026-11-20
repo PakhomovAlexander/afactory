@@ -5,6 +5,8 @@ Install with install-scenario-github-adapter.py. The source checkout is inert. T
 trusted machine extension: af verifies signed decisions and pins this entire executable.
 """
 import contextlib
+import errno
+import socket
 import fcntl
 import hashlib
 import http.client
@@ -36,9 +38,10 @@ LOGIN = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?"
 REPO = r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}"
 PUB = r"github-pr:sha256:[0-9a-f]{64}"
 CONFIG_SCHEMA = "af/github-adapter-config@1"
-STATE_SCHEMA = "af/github-adapter-state@4"
-PR_OPERATIONS = ("publish_pr", "publish_performance_pr_v1")
+STATE_SCHEMA = "af/github-adapter-state@9"
+PR_OPERATIONS = ("publish_pr", "publish_performance_pr_v1", "publish_implementation_pr_v1")
 PAYLOAD_SCHEMAS = {
+    "publish_implementation_pr_v1": "af/github-publish-pr@1",
     "publish_performance_pr_v1": "af/github-performance-pr@1",
     "publish_pr": "af/github-publish-pr@1",
     "followup": "af/github-followup@1",
@@ -48,6 +51,14 @@ PAYLOAD_SCHEMAS = {
 
 class Refused(RuntimeError):
     """Safe bounded diagnostic; never holds remote response bytes or credentials."""
+
+
+class TransportUnavailable(Refused):
+    """A positively identified network observation failure; never an identity refusal."""
+
+
+class CredentialsRefused(Refused):
+    """The server explicitly rejected the installed credential."""
 
 
 def need(ok, message):
@@ -207,7 +218,7 @@ def load_config():
 
 
 def subject(operation, payload):
-    prefix = {"publish_pr": "github-pr:", "publish_performance_pr_v1": "github-pr:", "followup": "github-followup:", "notify": "github-notify:"}
+    prefix = {"publish_implementation_pr_v1": "github-pr:", "publish_pr": "github-pr:", "publish_performance_pr_v1": "github-pr:", "followup": "github-followup:", "notify": "github-notify:"}
     return prefix[operation] + digest(canonical(payload))
 
 
@@ -241,7 +252,7 @@ def validate_payload(operation, value, config):
 
 def validate_request(request, config):
     fields(request, ("schema", "method", "intent_id", "input_digest", "operation", "destination", "inputs"))
-    need(request["schema"] == "af/scenario-adapter-request@4", "unsupported request version")
+    need(request["schema"] == "af/scenario-adapter-request@8", "unsupported request version")
     for key in ("intent_id", "input_digest"):
         string(request[key], DIGEST)
     op = request["operation"]
@@ -252,7 +263,7 @@ def validate_request(request, config):
                                           and op in PAYLOAD_SCHEMAS), "invalid method/operation")
     inputs = request["inputs"]
     fields(inputs, ("subject", "revision", "condition") if observe else ("subject", "revision", "body"),
-           () if observe else ("decision", "evidence"))
+           () if observe else (("candidate", "verification", "prepared") if op == "publish_implementation_pr_v1" else ("decision", "evidence")))
     texts = {}
     for key in (("subject", "revision", "condition") if observe else ("subject", "revision", "body")):
         fields(inputs[key], ("type", "value"))
@@ -374,13 +385,20 @@ class Journal:
         need(isinstance(records, dict) and len(records) <= MAX_RECORDS, "journal record bound exceeded")
         subjects = set()
         for key, record in records.items():
-            fields(record, ("request", "request_digest", "phase", "object", "evidence"))
+            fields(record, ("request", "request_digest", "phase", "object", "evidence", "metadata_dispatched", "publication_checkpoint"))
+            need(type(record["metadata_dispatched"]) is bool, "invalid metadata dispatch receipt")
+            need(record["publication_checkpoint"] in (None, "native_proof_ready", "publication_prepared"), "invalid publication checkpoint")
+            need(record["publication_checkpoint"] is None or record["request"]["operation"] == "publish_implementation_pr_v1",
+                 "checkpoint outside scoped publication")
             request = record["request"]
             fields(request, ("schema", "intent_id", "input_digest", "operation", "destination", "inputs"))
             texts, _ = validate_request({**request, "method": "reconcile"}, self.config)
             need(key == request["intent_id"] and record["request_digest"] == digest(canonical(request)),
                  "journal intent identity mismatch")
             need(record["phase"] in ("prepared", "dispatched", "done", "failed"), "invalid journal phase")
+            need(not record["metadata_dispatched"] or (request["operation"] == "publish_implementation_pr_v1"
+                 and record["phase"] in ("dispatched", "done") and record["object"] is not None),
+                 "metadata dispatch is outside a retained scoped repair")
             obj = record["object"]
             if obj is not None:
                 fields(obj, ("id", "number"))
@@ -419,7 +437,7 @@ class Journal:
                  "object already reserved by another intent; inspect its original receipt")
         need(len(records) < MAX_RECORDS, "journal receipt budget exhausted; do not discard uncertain intents")
         record = {"request": wanted, "request_digest": digest(canonical(wanted)),
-                  "phase": "prepared", "object": None, "evidence": None}
+                  "phase": "prepared", "object": None, "evidence": None, "metadata_dispatched": False, "publication_checkpoint": None}
         records[key] = record
         unsettled = sum(r["phase"] in ("prepared", "dispatched") for r in records.values())
         need(len(state_bytes(self.state)) + unsettled * 1024 <= STATE_LIMIT,
@@ -452,8 +470,8 @@ class GitHub:
         self.calls = 0
         self.more = False
 
-    def request(self, method, path, body=None):
-        need((method in ("GET", "POST") and path.startswith("/repos/")) or
+    def request(self, method, path, body=None, *, before_send=None):
+        need((method in ("GET", "POST", "PATCH") and path.startswith("/repos/")) or
              (method == "GET" and path.startswith("/users/")) or
              (method == "GET" and path == "/user") or
              (method == "POST" and path == "/graphql"), "invalid API route")
@@ -465,12 +483,31 @@ class GitHub:
         conn = http.client.HTTPSConnection("api.github.com", timeout=min(5, remaining),
                                            context=self.context)
         try:
-            conn.request(method, path, body=canonical(body) if body is not None else None, headers={
+            # Complete blocking setup before checking mutation authority. Never reconnect
+            # implicitly after that check, even if the guard loses the socket.
+            encoded = canonical(body) if body is not None else None
+            conn.auto_open = 0
+            conn.connect()
+            need(conn.sock is not None, "API connection unavailable before send")
+            need(self.deadline > time.monotonic(), "bounded API connection exhausted")
+            if method in ("POST", "PATCH"):
+                need(callable(before_send), "API mutation requires a final authorization guard")
+                before_send()
+            remaining = self.deadline - time.monotonic()
+            need(remaining > 0, "bounded API authorization exhausted")
+            need(conn.sock is not None, "API connection lost before send")
+            conn.sock.settimeout(min(5, remaining))
+            conn.request(method, path, body=encoded, headers={
                 "Authorization": "Bearer " + self.token,
                 "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
                 "Content-Type": "application/json", "User-Agent": "af-scenario-github-v1",
             })
             response = conn.getresponse()
+            # Only explicit transport/service failures are retryable during preflight.
+            if response.status in (408, 429, 500, 502, 503, 504):
+                raise TransportUnavailable("GitHub service temporarily unavailable")
+            if response.status == 401:
+                raise CredentialsRefused("GitHub credentials rejected")
             # Never follow redirects or log returned URLs, headers, bodies or tokens.
             need(response.status == (200 if method == "GET" or path == "/graphql" else 201),
                  "GitHub request not successful; outcome remains unknown")
@@ -494,8 +531,16 @@ class GitHub:
             need(size is None or len(raw) == int(size), "truncated API response")
             data = decode(raw, HTTP_LIMIT)
             return data
+        except ssl.SSLError as exc:
+            raise Refused("GitHub TLS integrity refused") from exc
         except (OSError, http.client.HTTPException) as exc:
-            raise Refused("GitHub transport uncertain; reconcile the same intent") from exc
+            if isinstance(exc, (TimeoutError, ConnectionError, socket.gaierror,
+                                http.client.RemoteDisconnected, http.client.IncompleteRead)) or (
+                    isinstance(exc, OSError) and exc.errno in (
+                        errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ENETDOWN,
+                        errno.ECONNRESET, errno.ECONNREFUSED, errno.ETIMEDOUT)):
+                raise TransportUnavailable("GitHub transport uncertain; reconcile the same intent") from exc
+            raise Refused("GitHub transport or response refused") from exc
         finally:
             conn.close()
 
@@ -543,6 +588,16 @@ class Adapter:
         need(isinstance(repo, dict) and repo.get("id") == self.config["repository_id"]
              and repo.get("full_name") == self.config["repository"], "repository identity changed")
 
+    def before_mutation(self, record):
+        req = record["request"]
+        validate_request({**req, "method": "execute"}, self.config)
+        need(req["operation"] != "publish_implementation_pr_v1" or getattr(self, "workspace", None) is not None,
+             "scoped implementation publication requires the native workspace adapter")
+        decision = req["inputs"].get("decision")
+        if decision is not None:
+            need(decision["value"]["request"]["expires_unix_ms"] > time.time_ns() // 1_000_000,
+                 "publication decision expired before send; reconcile the same intent")
+
     def locked_head(self, payload, revision):
         path = self.repo + "/branches/" + quote(payload["head"], safe="")
         protection = self.service.request("GET", path + "/protection")
@@ -564,11 +619,14 @@ class Adapter:
         req = record["request"]
         return decode(req["inputs"]["body"]["value"].encode())
 
+    def publication_body(self, record):
+        return self.payload(record)["body"]
+
     def object_id(self, remote):
         need(isinstance(remote, dict), "invalid remote receipt")
         return {"id": integer(remote.get("id")), "number": integer(remote.get("number"))}
 
-    def validate_remote(self, record, remote):
+    def validate_remote(self, record, remote, *, expected_revision=None, expected_body=None):
         req, p = record["request"], self.payload(record)
         obj = self.object_id(remote)
         if record["object"] is not None:
@@ -588,7 +646,7 @@ class Adapter:
              and remote["user"].get("id") == self.config["actor"]["id"]
              and remote["user"].get("login") == self.config["actor"]["login"]
              and remote.get("title") == p["title"]
-             and remote.get("body") == p["body"] + self.marker(record),
+             and remote.get("body") == (self.publication_body(record) + self.marker(record) if expected_body is None else expected_body),
              "foreign actor, marker or changed publication content")
         if pr:
             for side, ref in (("head", p["head"]), ("base", p["base"])):
@@ -598,7 +656,7 @@ class Adapter:
                      and value["repo"].get("id") == self.config["repository_id"]
                      and value["repo"].get("full_name") == self.config["repository"],
                      "PR branch or repository identity changed")
-            need(remote["head"].get("sha") == req["inputs"]["revision"]["value"], "PR head is stale")
+            need(remote["head"].get("sha") == (req["inputs"]["revision"]["value"] if expected_revision is None else expected_revision), "PR head is stale")
         else:
             need("pull_request" not in remote, "a PR cannot satisfy an issue receipt")
         return obj
@@ -737,7 +795,7 @@ class Adapter:
             self.locked_head(p, revision)
             path = self.repo + "/pulls"
             body = {"head": p["head"], "base": p["base"], "title": p["title"],
-                    "body": p["body"] + self.marker(record), "draft": False,
+                    "body": self.publication_body(record) + self.marker(record), "draft": False,
                     "maintainer_can_modify": False}
         else:
             source, remote = self.publication(p["publication"], revision)
@@ -766,7 +824,7 @@ class Adapter:
         # HTTP errors, including 401/403/422, remain uncertain once dispatch is possible.
         record["phase"] = "dispatched"
         self.journal.save()
-        remote = self.service.request("POST", path, body)
+        remote = self.service.request("POST", path, body, before_send=lambda: self.before_mutation(record))
         if op == "notify":
             need(isinstance(remote, dict) and not remote.get("errors"),
                  "review mutation returned errors; outcome uncertain")
@@ -825,7 +883,7 @@ class Adapter:
 
     def handle(self, request):
         texts, _ = validate_request(request, self.config)
-        response = {"schema": "af/scenario-adapter-response@1", "intent_id": request["intent_id"],
+        response = {"schema": "af/scenario-adapter-response@3", "intent_id": request["intent_id"],
                     "input_digest": request["input_digest"], "outcome": "pending",
                     "evidence": "Reconcile the retained intent", "observation": None}
         try:
@@ -879,7 +937,7 @@ def schema_documents():
     def document(name, value):
         if name == "github-performance-pr":
             value = dict(title="Performance pull request v1", **value)
-        version = 4 if name == "github-adapter-state" else 1
+        version = 9 if name == "github-adapter-state" else 1
         documents[name + "-v%d.json" % version] = {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "$id": "urn:af:schema:" + name + ":%d" % version,
@@ -907,13 +965,13 @@ def schema_documents():
         else:
             props.update(title=text(maximum=200), body=text(maximum=48000))
         document(schema.split("/")[1].split("@")[0], obj(props))
-    request = obj({"schema": {"const": "af/scenario-adapter-request@4"},
+    request = obj({"schema": {"const": "af/scenario-adapter-request@8"},
                    "intent_id": text(DIGEST), "input_digest": text(DIGEST),
                    "operation": {"enum": list(PAYLOAD_SCHEMAS)}, "destination": text(),
                    "inputs": {"type": "object", "additionalProperties": {
-                       "$ref": "urn:af:schema:scenario:5#/$defs/Datum"}}})
-    record = obj({"request": request, "request_digest": text(DIGEST),
-                  "phase": {"enum": ["prepared", "dispatched", "done", "failed"]},
+                       "$ref": "urn:af:schema:scenario:10#/$defs/Datum"}}})
+    record = obj({"publication_checkpoint": {"enum": [None, "native_proof_ready", "publication_prepared"]}, "request": request, "request_digest": text(DIGEST),
+                  "phase": {"enum": ["prepared", "dispatched", "done", "failed"]}, "metadata_dispatched": {"type":"boolean"},
                   "object": {"anyOf": [{"type": "null"}, obj({"id": positive, "number": positive})]},
                   "evidence": {"anyOf": [{"type": "null"}, text(maximum=1000)]}})
     document("github-adapter-state", obj({"schema": {"const": STATE_SCHEMA},

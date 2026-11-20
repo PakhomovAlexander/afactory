@@ -152,7 +152,7 @@ daemon, a Prometheus endpoint, sampling.
 ### Runs and traces
 
 A **Telemetry Run** is the work one kernel run id covers inside one Store: a Task run
-(`af task run`, a resume), a Campaign run (`af review run`), a self-optimizer run, a kernel
+(`af task run`, a resume, or native `af review run`), a self-optimizer run, a kernel
 measurement. A kernel run id is not machine-global — `task_run_id` hashes only the Task ID under
 a fixed namespace, and two Stores may hold the same Task ID — so Telemetry namespaces every run
 by its Store instance: `af.store_id` is `SHA-256` of the Store directory's canonical absolute
@@ -1089,7 +1089,7 @@ print for the selected Task; it reads only what those commands read.
 writes one file, or for `dir` one directory; `--content` includes blobs, as the blob files of a
 `dir` export or as a sidecar directory for `perfetto`, and is refused for the other formats.
 **Selection.** A segment belongs to a process, and one process may serve several runs (a Task
-whose review node runs a Campaign writes both streams to one segment), so `--run` and `--since`
+with native Review nodes writes their spans to the same segment), so `--run` and `--since`
 never copy a segment whole: the export writes, for each source segment, a derived segment that
 keeps the source's header, segment id and record sequences and holds only the records of the
 selected runs (their spans, events, `config` parts, `node`, `finding`, `demand`, `blob` and

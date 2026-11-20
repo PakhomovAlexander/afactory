@@ -7,6 +7,7 @@
 //! with a private home, expecting the exit code the example documents. An example that needs
 //! something this repository cannot have (a Task, a Campaign, a registered Provider, the
 //! network) says so with `# needs: …`, and is held to that form instead of run.
+//! Task onboarding examples run separately with their documented absent-authority preconditions.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -243,26 +244,32 @@ fn examples(page: &str, text: &str) -> Vec<Example> {
     found
 }
 
-/// The repository every example runs in: two commits on `main`, the second the `.af/` this
-/// binary's onboarding writes (Codex reviewers, a trivial Gate), and an uncommitted change.
-fn onboarded(root: &Path) -> PathBuf {
+fn git(repo: &Path, args: &[&str]) {
+    let done = Command::new("git")
+        .current_dir(repo)
+        .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(done.status.success(), "git {args:?}: {done:?}");
+}
+
+fn repository(root: &Path) -> PathBuf {
     let repo = root.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
-    let git = |args: &[&str]| {
-        let done = Command::new("git")
-            .current_dir(&repo)
-            .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
-            .args(args)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .output()
-            .unwrap();
-        assert!(done.status.success(), "git {args:?}: {done:?}");
-    };
-    git(&["init", "-q", "-b", "main"]);
+    git(&repo, &["init", "-q", "-b", "main"]);
     std::fs::write(repo.join("README.md"), "# Example\n").unwrap();
-    git(&["add", "-A"]);
-    git(&["commit", "-q", "-m", "init"]);
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-q", "-m", "init"]);
+    repo
+}
+
+/// The repository every unconditional example runs in: two commits on `main`, the second
+/// the `.af/` this binary writes (Codex reviewers, a trivial Gate), and an uncommitted change.
+fn onboarded(root: &Path) -> PathBuf {
+    let repo = repository(root);
     let onboard = crate::common::af()
         .args([
             "onboard",
@@ -276,8 +283,8 @@ fn onboarded(root: &Path) -> PathBuf {
         .output()
         .unwrap();
     assert!(onboard.status.success(), "{onboard:?}");
-    git(&["add", "-A"]);
-    git(&["commit", "-q", "-m", "af review policy"]);
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-q", "-m", "af review policy"]);
     std::fs::write(repo.join("notes.md"), "# Notes\n\nan uncommitted change\n").unwrap();
     repo
 }
@@ -320,6 +327,15 @@ fn shim_tools(bin: &Path, sources: &[&Path]) {
 /// The PATH examples run with: their own bin, which holds this binary and the system's tools.
 fn examples_path(bin: &Path) -> String {
     bin.display().to_string()
+}
+
+fn example_tools(root: &Path) -> PathBuf {
+    let bin = root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::os::unix::fs::symlink(crate::common::af_binary(), bin.join("af")).unwrap();
+    let system: Vec<&Path> = SYSTEM_DIRS.iter().map(Path::new).collect();
+    shim_tools(&bin, &system);
+    bin
 }
 
 fn has_jq(bin: &Path) -> bool {
@@ -451,11 +467,7 @@ fn every_help_example_runs_as_written_in_an_onboarded_repository() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().canonicalize().unwrap();
     let repo = onboarded(&root);
-    let bin = root.join("bin");
-    std::fs::create_dir_all(&bin).unwrap();
-    std::os::unix::fs::symlink(crate::common::af_binary(), bin.join("af")).unwrap();
-    let system: Vec<&Path> = SYSTEM_DIRS.iter().map(Path::new).collect();
-    shim_tools(&bin, &system);
+    let bin = example_tools(&root);
     let jq = has_jq(&bin);
     let mut seen = std::collections::BTreeSet::new();
     let mut ran = 0;
@@ -479,6 +491,103 @@ fn every_help_example_runs_as_written_in_an_onboarded_repository() {
     }
     assert!(ran > 60, "only {ran} examples ran");
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}
+
+/// Execute the printed Task onboarding commands under their actual preconditions, then
+/// prove those same commands refuse an existing Task table without changing any authority.
+#[test]
+fn task_onboarding_examples_run_with_their_preconditions_and_preserve_existing_settings() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    let bin = example_tools(&root);
+    let jq = has_jq(&bin);
+    let mut seen = std::collections::BTreeSet::new();
+    for (args, expected) in [(vec!["--help"], 1), (vec!["onboard", "--help"], 2)] {
+        let page = out(&af_at(WIDTH, &args));
+        let mut ran = 0;
+        for example in examples(&args.join(" "), &page) {
+            if !example.text.starts_with("af onboard --tasks") {
+                continue;
+            }
+            assert!(seen.insert(example.text.clone()), "{example:?}");
+            let isolated = tempfile::tempdir_in(&root).unwrap();
+            let repo = repository(isolated.path());
+            // Discovery may select this Gate, but onboarding must never execute it.
+            std::fs::write(repo.join("Makefile"), "check:\n\t@touch gate-ran\n").unwrap();
+            let project = repo.join(".af/af.toml");
+            match example.needs.as_deref() {
+                Some("a repository without .af/")
+                | Some("a repository without .af/ and with an acceptance Gate") => {}
+                Some(".af/ without Task settings, catalog, code policy or packages") => {
+                    std::fs::create_dir(repo.join(".af")).unwrap();
+                    std::fs::write(&project, "version = 2\n").unwrap();
+                    std::fs::write(repo.join(".af/owner.txt"), "project-owned\n").unwrap();
+                }
+                _ => panic!("undocumented onboarding precondition: {example:?}"),
+            }
+            let (code, output) = run(&example, &repo, &bin, jq);
+            assert_eq!(code, Some(example.exit), "{example:?}\n{output}");
+            if example.text.ends_with("--apply") {
+                assert!(repo.join(".af/task-catalog.toml").is_file());
+                assert!(repo.join(".af/code-policy.toml").is_file());
+                assert!(
+                    repo.join(".af/task-packages/onboard/review-code/task.json")
+                        .is_file()
+                );
+                assert!(
+                    std::fs::read_to_string(&project)
+                        .unwrap()
+                        .starts_with("version = 2\n")
+                );
+                assert_eq!(
+                    std::fs::read_to_string(repo.join(".af/owner.txt")).unwrap(),
+                    "project-owned\n"
+                );
+            } else {
+                assert!(
+                    !repo.join(".af").exists(),
+                    "a preview wrote authority: {example:?}"
+                );
+                std::fs::create_dir(repo.join(".af")).unwrap();
+                std::fs::write(&project, "version = 2\n[task]\n").unwrap();
+            }
+            let before = authority_bytes(&repo);
+            let (code, output) = run(&example, &repo, &bin, jq);
+            assert_eq!(
+                code,
+                Some(1),
+                "existing Task settings: {example:?}\n{output}"
+            );
+            assert!(output.contains("already declares [task]"), "{output}");
+            assert!(
+                output.contains("refuses to merge Task settings"),
+                "{output}"
+            );
+            assert_eq!(authority_bytes(&repo), before, "{example:?}");
+            assert!(!repo.join("gate-ran").exists());
+            ran += 1;
+        }
+        assert_eq!(
+            ran, expected,
+            "{args:?}: Task onboarding examples must execute"
+        );
+    }
+}
+
+fn authority_bytes(repo: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+    let mut files = std::collections::BTreeMap::new();
+    let mut pending = vec![repo.join(".af")];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_dir() {
+                pending.push(entry.path());
+            } else {
+                files.insert(entry.path(), std::fs::read(entry.path()).unwrap());
+            }
+        }
+    }
+    files
 }
 
 /// A Provider CLI in a system directory, here an incompatible `codex` and `claude` that fail

@@ -319,8 +319,24 @@ impl Browser {
     }
 
     /// The browser on a machine whose registry names no Provider: a first run.
-    fn launch_first_run(cwd: &Path, home: &Path) -> Browser {
-        Browser::spawn(cwd, home, ROWS, COLS, &[])
+    fn launch_first_run(cwd: &Path, home: &Path, rows: usize, columns: usize) -> Browser {
+        // Ambient real Provider CLIs must not change the sidebar rows on the test host.
+        let git = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .map(|directory| directory.join("git"))
+            .find(|candidate| candidate.is_file())
+            .unwrap();
+        let shims = home.join("shims");
+        std::fs::create_dir_all(&shims).unwrap();
+        if !shims.join("git").exists() {
+            std::os::unix::fs::symlink(git, shims.join("git")).unwrap();
+        }
+        Browser::spawn(
+            cwd,
+            home,
+            rows,
+            columns,
+            &[("PATH", shims.to_str().unwrap())],
+        )
     }
 
     fn spawn(
@@ -408,9 +424,28 @@ impl Browser {
 
     /// Type keys; each batch gets its own read by the browser.
     fn keys(&mut self, keys: &[u8]) {
+        self.input(keys);
+        std::thread::sleep(Duration::from_millis(250));
+    }
+
+    /// Send input immediately. A following screen assertion acknowledges its processing.
+    fn input(&mut self, keys: &[u8]) {
         self.writer.write_all(keys).unwrap();
         self.writer.flush().unwrap();
-        std::thread::sleep(Duration::from_millis(250));
+    }
+
+    /// Resize the real PTY; the browser must repaint without changing keyboard focus.
+    fn resize(&mut self, rows: usize, columns: usize) {
+        self._master
+            .resize(PtySize {
+                rows: rows as u16,
+                cols: columns as u16,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        self.rows = rows;
+        self.columns = columns;
     }
 
     fn exit_code(mut self) -> u32 {
@@ -591,15 +626,25 @@ fn bare_af_in_a_repository_opens_the_project_scope() {
 fn bare_af_with_no_provider_registered_opens_on_the_providers_pane() {
     let (_temp, root) = temp_root();
     let repo = hub(&root);
-    let mut browser = Browser::launch_first_run(&repo, &root.join("home"));
-    // The row is cut at the pane's width; `l` scrolls the rest into view.
-    let hint = "no Provider registered yet -- :provider detect scans this machine";
-    let ready = |screen: &Screen| screen.text().contains(hint);
-    let screen = browser.wait_for("the first-run row", ready);
-    assert!(screen.text().contains("PROVIDERS"), "{}", screen.text());
-    assert!(!screen.text().contains("SETTINGS"), "{}", screen.text());
-    browser.keys(b":q\r");
-    assert_eq!(browser.exit_code(), 0);
+    for (rows, columns) in [(24, 80), (30, 100)] {
+        let mut browser = Browser::launch_first_run(&repo, &root.join("home"), rows, columns);
+        let ready = |screen: &Screen| screen.text().contains("no Provider registered yet");
+        let screen = browser.wait_for("the first-run row and visible sidebar", ready);
+        assert!(screen.text().contains("PROVIDERS"), "{}", screen.text());
+        assert!(
+            bar_rows(&screen)
+                .iter()
+                .any(|row| row.contains("providers/"))
+        );
+        assert!(!screen.text().contains("SETTINGS"), "{}", screen.text());
+        // The initial cursor operates the sidebar even while Providers fills the right pane.
+        browser.input(b"j\r");
+        browser.wait_for("startup left cursor opens Workers", |s| {
+            s.text().contains("WORKERS  project: hub")
+        });
+        browser.input(b":q\r");
+        assert_eq!(browser.exit_code(), 0);
+    }
 }
 
 #[test]
@@ -721,7 +766,7 @@ fn the_tasks_pane_shows_the_numbers_af_task_show_json_records() {
     // The Store is read on its thread after the bar shows (ADR-0240): the Task's row must be
     // listed before the keys descend into tasks/, or `j` lands on the next folder.
     let listed = |screen: &Screen| screen.text().contains("pagination-c~");
-    browser.wait_for("the Task listed", listed);
+    let listed_screen = browser.wait_for("the Task listed", listed);
     // ]] four times reaches tasks/; its first group is done/, and in it the Task.
     browser.keys(b"]]]]]]]]");
     browser.keys(b"jj");
@@ -775,7 +820,7 @@ fn the_tasks_pane_shows_the_numbers_af_task_show_json_records() {
     let expected = format!("PROGRESS  {settled} / {} stages", nodes.len());
     assert_eq!(line("PROGRESS "), expected);
     let percent = settled * 100 / nodes.len();
-    let bar = bar_rows(&screen);
+    let bar = bar_rows(&listed_screen);
     let row = bar
         .iter()
         .find(|row| row.trim_start().starts_with("pagination"));
@@ -849,7 +894,7 @@ fn the_tasks_pane_shows_the_numbers_af_task_show_json_records() {
             .find(|value| value.starts_with("sha256:"));
         assert_eq!(*words.last().unwrap(), id.map_or("-".to_owned(), short));
     }
-    browser.keys(b"q");
+    browser.keys(b":q\r");
     assert_eq!(browser.exit_code(), 0);
 }
 
@@ -895,38 +940,187 @@ fn the_user_scope_groups_tasks_by_repository() {
     assert_eq!(browser.exit_code(), 0);
 }
 
-/// The Tasks pane at the 80x24 minimum on a real pseudo-terminal: the bar is hidden below 90
-/// columns, the Task's rows fit the main pane, and the status line names the pane.
+/// Start on the visible sidebar, open a Task with either key and navigate its state without
+/// first revealing the bar or switching focus. Resizing must preserve the selected Attempt.
 #[test]
 fn the_tasks_pane_at_80x24_on_a_pseudo_terminal() {
     let (_temp, root) = temp_root();
     let home = root.join("home");
     let repo = hub_with_a_task(&root, &home);
-    let mut browser = Browser::launch_sized(&repo, &home, 24, 80);
-    let ready = |screen: &Screen| screen.text().contains("SETTINGS  project: hub");
-    browser.wait_for("the project settings at 80x24", ready);
-    // The bar starts hidden at 80 columns; <C-b> shows it, and ]] four times reaches tasks/.
-    // The Store is read on its thread after the bar shows (ADR-0240): the Task's row must be
-    // listed before the keys descend into tasks/, or `j` lands on the next folder.
-    browser.keys(b"\x02");
-    let listed = |screen: &Screen| screen.text().contains("pagination-c~");
-    browser.wait_for("the Task listed", listed);
-    browser.keys(b"]]]]]]]]");
-    browser.keys(b"jj");
-    browser.keys(b"\r");
-    let opened = |screen: &Screen| screen.text().contains("TASK  pagination-cli");
-    let screen = browser.wait_for("the Task at 80x24", opened);
-    let lines = screen.lines();
-    assert_eq!(lines.len(), 24);
-    assert!(
-        lines.iter().all(|line| line.len() <= 80),
-        "{}",
-        screen.text()
-    );
-    assert!(screen.text().contains("PROGRESS"), "{}", screen.text());
-    assert!(lines[23].starts_with("NORMAL"), "{}", screen.text());
-    browser.keys(b":q\r");
-    assert_eq!(browser.exit_code(), 0);
+    let shown = af(&repo, &home, &["task", "show", "pagination-cli", "--json"]);
+    assert!(shown.status.success());
+    let show: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    let state = std::fs::read_dir(home.join("state/af/task/local"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let attempt_id = show["execution_records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|entry| {
+            let record = &entry["record"];
+            if record["kind"] != "reserved" {
+                return None;
+            }
+            let invocation = recorded(&state, record["invocation_id"].as_str().unwrap());
+            (invocation["payload"]["node"] == "root.nodes.implement")
+                .then(|| record["attempt_id"].as_str().unwrap().to_owned())
+        })
+        .expect("the recorded implement Attempt");
+    let attempt_header = format!("ATTEMPT  {attempt_id}");
+    for (rows, columns) in [(24, 80), (30, 100)] {
+        let mut browser = Browser::launch_first_run(&repo, &home, rows, columns);
+        browser.wait_for("startup sidebar and Task listed", |screen| {
+            screen.text().contains("PROVIDERS  project: hub")
+                && bar_rows(screen)
+                    .iter()
+                    .any(|line| line.contains("pagination-c~"))
+        });
+        // Plain movement works from startup; no Ctrl-b or Tab workaround.
+        browser.input(b"j\r");
+        browser.wait_for("Workers opened by moving left", |screen| {
+            screen.text().contains("WORKERS") && screen.text().contains("workers/")
+        });
+        browser.input(b"gg]]]]]]]]jj");
+        for open in [b"\r".as_slice(), b"l".as_slice()] {
+            browser.input(open);
+            let screen = browser.wait_for("Task opens with navigation focused", |screen| {
+                screen.text().contains("TASK  pagination-cli")
+                    && screen.lines()[rows - 1].starts_with("INSPECT navigation")
+            });
+            let left_width = (columns / 3).min(29);
+            assert!(
+                screen.lines()[0].starts_with("Overview"),
+                "{}",
+                screen.text()
+            );
+            assert_eq!(screen.lines()[0].get(left_width - 1..left_width), Some("|"));
+            assert!(screen.text().contains("PROGRESS"), "{}", screen.text());
+            let home_selected = |s: &Screen| {
+                s.text().contains("TASKS  project: hub")
+                    && !s.text().contains("INSPECT")
+                    && bar_rows(s)
+                        .iter()
+                        .any(|line| line.contains("pagination-c~"))
+                    && s.lines()[0].get(BAR_INNER..BAR_INNER + 1) == Some("|")
+            };
+            browser.input(b"h");
+            browser.wait_for("h from Overview restores home sidebar", home_selected);
+            browser.input(open);
+            browser.wait_for("selected Task reopens with navigation focused", |s| {
+                s.text().contains("PROGRESS") && s.text().contains("INSPECT navigation")
+            });
+            // j/k and both arrow directions address the left navigation immediately.
+            browser.input(b"j\x1b[Bj");
+            browser.wait_for("implement step selected", |s| {
+                s.lines()[1]
+                    .get(left_width..)
+                    .is_some_and(|text| text == "STEP  implement")
+            });
+            browser.input(b"h");
+            browser.wait_for("h from a node restores home sidebar", home_selected);
+            browser.input(open);
+            browser.wait_for("same Task reopens after leaving a node", |s| {
+                s.text().contains("PROGRESS") && s.text().contains("INSPECT navigation")
+            });
+            browser.input(b"jjj");
+            browser.wait_for("implement selected after reopening", |s| {
+                s.lines()[1]
+                    .get(left_width..)
+                    .is_some_and(|text| text == "STEP  implement")
+            });
+            browser.input(b"k");
+            browser.wait_for("previous step selected", |s| {
+                s.lines()[1]
+                    .get(left_width..)
+                    .is_some_and(|text| text == "STEP  inputs")
+            });
+            browser.input(b"\x1b[B");
+            browser.wait_for("Down restores implement", |s| {
+                s.lines()[1]
+                    .get(left_width..)
+                    .is_some_and(|text| text == "STEP  implement")
+            });
+            browser.input(b"\x1b[A");
+            browser.wait_for("Up restores inputs", |s| {
+                s.lines()[1]
+                    .get(left_width..)
+                    .is_some_and(|text| text == "STEP  inputs")
+            });
+            browser.input(b"j");
+            browser.input(open);
+            let attempt = browser.wait_for("step expands to its Attempt on the left", |s| {
+                s.lines()[1].get(left_width..).is_some_and(|text| {
+                    text == &attempt_header[..attempt_header.len().min(columns - left_width)]
+                }) && s.text().contains("Step: implement")
+                    && s.text().contains("INSPECT navigation")
+                    && s.text().contains("1. succeeded")
+            });
+            assert_eq!(
+                attempt.lines()[1].get(left_width..),
+                Some(&attempt_header[..attempt_header.len().min(columns - left_width)])
+            );
+            browser.input(open);
+            browser.wait_for("Attempt activity focused", |s| {
+                s.text().contains("INSPECT activity")
+                    && s.text().contains("Live activity unavailable")
+            });
+            // Resize in both directions while activity is focused, then restore the start size.
+            for (new_rows, new_columns) in [(30, 100), (24, 80), (rows, columns)] {
+                let from = browser.drained();
+                browser.resize(new_rows, new_columns);
+                browser.wait_written(
+                    from,
+                    "resized activity preserves focus and Attempt",
+                    |s, _| {
+                        let width = (new_columns / 3).min(29);
+                        s.lines()[1].get(width..).is_some_and(|text| {
+                            text == &attempt_header[..attempt_header.len().min(new_columns - width)]
+                        }) && s.lines()[new_rows - 1].contains("INSPECT activity")
+                            && s.lines()[0].get(width - 1..width) == Some("|")
+                    },
+                );
+            }
+            for back in [b"\t".as_slice(), b"h".as_slice(), b"\x1b".as_slice()] {
+                browser.input(back);
+                browser.wait_for("activity returns to left navigation", |s| {
+                    s.text().contains("INSPECT navigation")
+                });
+                browser.input(b"k");
+                browser.wait_for("left movement after activity", |s| {
+                    s.lines()[1]
+                        .get(left_width..)
+                        .is_some_and(|text| text == "STEP  implement")
+                });
+                browser.input(open);
+                browser.wait_for("same Attempt selected again", |s| {
+                    s.lines()[1].get(left_width..).is_some_and(|text| {
+                        text == &attempt_header[..attempt_header.len().min(columns - left_width)]
+                    }) && s.text().contains("INSPECT navigation")
+                });
+                browser.input(open);
+                browser.wait_for("activity reopened", |s| {
+                    s.text().contains("INSPECT activity")
+                });
+            }
+            let back = if open == b"l" {
+                b"h".as_slice()
+            } else {
+                b"\x1b".as_slice()
+            };
+            browser.input(back);
+            browser.wait_for("navigation before leaving Task", |s| {
+                s.text().contains("INSPECT navigation")
+            });
+            browser.input(back);
+            browser.wait_for("Task folder with original Task selected", home_selected);
+        }
+        browser.input(b":q\r");
+        assert_eq!(browser.exit_code(), 0);
+    }
 }
 
 /// One recorded artifact, read from the Task state's content-addressed objects.
@@ -1006,10 +1200,6 @@ fn the_workers_pane_shows_the_attempts_af_task_show_json_records() {
         let ready = |screen: &Screen| screen.text().contains("SETTINGS  project: hub");
         browser.wait_for("the project settings", ready);
         let narrow = columns < 90;
-        if narrow {
-            // The bar starts hidden below 90 columns; <C-b> shows it.
-            browser.keys(b"\x02");
-        }
         // ]] twice reaches workers/; opening it lists the Worker packages HEAD commits.
         browser.keys(b"]]]]");
         browser.keys(b"\r");
@@ -1478,167 +1668,55 @@ fn the_browser_runs_nothing_a_hostile_git_config_names() {
     );
 }
 
-/// A repository whose committed review pipeline has one command reviewer, token-free: it reports
-/// one major Finding on every Round.
-fn reviewed_repository(root: &Path) -> PathBuf {
-    let repo = root.join("reviewed");
-    std::fs::create_dir_all(repo.join(".af/pipelines")).unwrap();
-    std::fs::write(repo.join("source.txt"), "fn main() { loop {} }\n").unwrap();
-    let finding = r#"{"findings":[{"severity":"major","file":"source.txt","line":1,"title":"Unbounded loop","body":"spins","fix":"bound it","confidence":0.9,"rule_id":"test.rules/loop-safety@1","occurrence_key":"main-loop"}],"benchmark_demands":[],"dispositions":[]}"#;
-    let pipeline = format!(
-        r#"version = 2
-[subject]
-kind = "whole-tree"
-[[checks]]
-name = "noop"
-program = "/bin/sh"
-args = [{{ value = "-c" }}, {{ value = "true" }}]
-[[nodes]]
-id = "gate"
-kind = "gate"
-outputs = [{{ name = "decision", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }}]
-[[nodes]]
-id = "generation"
-kind = "generation"
-outputs = [{{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }}]
-[[nodes]]
-id = "reviewer"
-kind = "reviewer"
-inputs = [{{ name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }}, {{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }}]
-outputs = [{{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
-gated_by = "gate"
-runner = {{ program = "/bin/sh", args = [{{ value = "-c" }}, {{ value = '''cat >/dev/null; printf '%s' '{finding}' ''' }}] }}
-[[nodes]]
-id = "gather"
-kind = "gather"
-inputs = [{{ name = "reviewer", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
-outputs = [{{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "any" }}]
-[[nodes]]
-id = "ledger"
-kind = "ledger"
-inputs = [{{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "any" }}]
-outputs = [
-  {{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }},
-  {{ name = "demands", type = "review.kernel/DemandSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}
-]
-[[edges]]
-from = {{ node = "gate", port = "decision" }}
-to = {{ node = "reviewer", port = "gate" }}
-[[edges]]
-from = {{ node = "generation", port = "findings" }}
-to = {{ node = "reviewer", port = "prior_findings" }}
-[[edges]]
-from = {{ node = "reviewer", port = "result" }}
-to = {{ node = "gather", port = "reviewer" }}
-[[edges]]
-from = {{ node = "gather", port = "reports" }}
-to = {{ node = "ledger", port = "reports" }}
-[convergence]
-clean_rounds = 1
-max_rounds = 1
-gate = "major"
-"#
-    );
-    std::fs::write(repo.join(".af/pipelines/review.toml"), &pipeline).unwrap();
-    std::fs::write(
-        repo.join(".af/af.toml"),
-        "version=1\n[project]\nname='reviewed'\nmin_af='0.6'\n[defaults]\npipeline='review'\n",
-    )
-    .unwrap();
-    let mut lock = af_pipeline_config::lock::Lockfile::empty();
-    lock.pipelines.insert(
-        "review".into(),
-        af_pipeline_config::lock::Pin {
-            version: "1.0.0".into(),
-            digest: af_store::canonical::blob_content_id(pipeline.as_bytes()),
-        },
-    );
-    std::fs::write(repo.join(".af/af.lock"), lock.to_toml()).unwrap();
-    git(&repo, &["init", "-q", "-b", "main"]);
-    git(&repo, &["config", "user.name", "Fixture"]);
-    git(&repo, &["config", "user.email", "fixture@example.invalid"]);
-    git(&repo, &["add", "-A"]);
-    git(&repo, &["commit", "-qm", "review authority"]);
-    repo
-}
-
-/// What a plain `af review run` recorded, on a real pseudo-terminal: campaigns/ lists the
-/// Campaign it keeps for the repository, with its Round, its reviewer's chip, its verdict and
-/// its spend, and the Campaign's pane shows its Ledger by reviewer and the commands that apply.
+/// A native Review recorded by the facade is navigated through the common Tasks pane.
+/// This live-terminal case remains in the host gate; the Worker runs the in-process pane tests.
 #[test]
-fn the_campaigns_pane_shows_the_campaign_af_review_run_recorded() {
+fn the_tasks_pane_shows_the_native_review_af_review_run_recorded() {
     let (_temp, root) = temp_root();
     let home = root.join("home");
-    let repo = reviewed_repository(&root);
-    let ran = af(&repo, &home, &["review", "run", "--policy-rev", "HEAD"]);
-    let stderr = String::from_utf8_lossy(&ran.stderr);
+    let (repo, _) = crate::task_cli::fixture_named(&root, "review");
+    let ran = af(
+        &repo,
+        &home,
+        &["review", "run", "--file", "review.json", "--json"],
+    );
     assert_eq!(
         ran.status.code(),
         Some(3),
-        "a major Finding fails: {stderr}"
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
     );
-    let mut browser = Browser::launch(&repo, &home);
-    browser.wait_for("the bar", |screen| shows(screen, "  v campaigns/"));
-    // ]] five times reaches campaigns/.
-    browser.keys(b"]]]]]]]]]]");
+    let recorded: serde_json::Value = serde_json::from_slice(&ran.stdout).unwrap();
+    assert_eq!(recorded["result"]["domain_conclusion"], "changes_requested");
+    assert_eq!(recorded["attempts"], 3);
+    let mut browser = Browser::launch_sized(&repo, &home, ROWS, 120);
+    browser.wait_for("the Tasks folder", |s| shows(s, "  v tasks/"));
+    browser.wait_for("the native Review row", |s| s.text().contains("review-cli"));
+    browser.keys(b"]]]]]]]]");
+    browser.keys(b"jj");
     browser.keys(b"\r");
-    let main = |screen: &Screen| -> Vec<String> {
-        let lines = screen.lines();
-        let main = lines
-            .iter()
-            .map(|line| line.get(BAR_INNER + 1..).unwrap_or(""));
-        main.map(str::to_owned).collect()
-    };
-    let listed = |screen: &Screen| main(screen).iter().any(|row| row.starts_with("  local "));
-    let screen = browser.wait_for("the Campaign's row", listed);
-    let rows = main(&screen);
-    let at = rows
-        .iter()
-        .position(|row| row.starts_with("  local "))
-        .unwrap();
+    let screen = browser.wait_for("the native Review Task", |s| {
+        s.text().contains("TASK  review-cli") && s.text().contains("FINDINGS  (af review ledger)")
+    });
     let text = screen.text();
+    assert!(text.contains("changes_requested"), "{text}");
     assert!(
-        rows[at].ends_with("round 1.1  fail  fail (exhausted)"),
+        text.contains("root.nodes.correctness") || text.contains("correctness"),
         "{text}"
     );
-    let spend: Vec<&str> = rows[at + 1].split_whitespace().collect();
-    assert_eq!(spend[0], "spend", "{text}");
-    assert!(spend[1].parse::<u128>().is_ok(), "{text}");
-    assert_eq!(rows[at + 2].trim(), "nodes  reviewer", "{text}");
-    let bar = bar_rows(&screen);
+    assert!(text.contains("0 tok"), "{text}");
     assert!(
-        bar.iter()
-            .any(|row| row.starts_with("      local") && row.ends_with("fail")),
+        text.contains("major") && text.contains("Missing behavior"),
         "{text}"
     );
-    // The Campaign: its reviewer's Attempt, its Ledger by reviewer, and the commands.
-    browser.keys(b"j");
-    browser.keys(b"\r");
-    let opened = |screen: &Screen| main(screen).iter().any(|row| row.starts_with("COMMANDS"));
-    let screen = browser.wait_for("the Campaign's pane", opened);
-    let rows = main(&screen);
-    let text = screen.text();
-    assert!(rows[0].starts_with("CAMPAIGN  local  c-"), "{text}");
-    assert_eq!(
-        rows[1], "STATE fail  round 1 epoch 1  verdict fail (exhausted)",
-        "{text}"
-    );
-    let node = rows
-        .iter()
-        .find(|row| row.starts_with("  selected  reviewer"));
-    assert!(node.is_some(), "{text}");
-    assert!(rows.contains(&"  reviewer  1 finding".to_owned()), "{text}");
-    let finding = rows.iter().find(|row| row.contains("major   open"));
-    assert!(
-        finding.is_some_and(|row| row.contains("source.txt:1  Unbounded loop")),
-        "{text}"
-    );
-    assert!(
-        rows.iter()
-            .any(|row| row.starts_with("  :review report --campaign local --state ")),
-        "{text}"
-    );
-    browser.keys(b"q");
+    // The inspector opens on Overview with its navigation focused on the left.
+    // Select History there instead of searching the Overview's clipped viewport.
+    browser.keys(b"jjjjjjjjj");
+    browser.wait_for("the Review history", |s| {
+        s.text().contains("HISTORY  (af task show)")
+    });
+    assert!(!text.contains("CAMPAIGN"), "{text}");
+    browser.keys(b":q\r");
     assert_eq!(browser.exit_code(), 0);
 }
 
@@ -1847,4 +1925,214 @@ fn a_refused_store_shows_its_refusal_while_the_others_load() {
     assert!(tasks_read_over(&screen), "{}", screen.text());
     browser.keys(b"q");
     assert_eq!(browser.exit_code(), 0);
+}
+
+/// Real Task -> identity-checked native Codex -> pipe observer -> ring -> background reader
+/// -> real terminal. The fake runner waits for FIFO acknowledgements, so neither update
+/// can come from process settlement, and scrolling is exercised while the Worker stays alive.
+#[test]
+fn running_codex_activity_is_safe_live_and_scrollable_on_a_pseudo_terminal() {
+    use std::process::Stdio;
+    let fixture = crate::task_document::provider_admission::Fixture::new(true, 5, 49152);
+    for name in ["activity-ready", "activity-control"] {
+        nix::unistd::mkfifo(
+            &fixture.home.join(name),
+            nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+        )
+        .unwrap();
+    }
+    let mut ready = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(fixture.home.join("activity-ready"))
+        .unwrap();
+    let mut control = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(fixture.home.join("activity-control"))
+        .unwrap();
+    let program = fixture._root.path().join("bin/codex");
+    let source = std::fs::read_to_string(&program).unwrap();
+    let live = r#"kind='author'; r=json.loads(request)
+ activity_ready=open(home+'/activity-ready','wb',buffering=0)
+ activity_control=open(home+'/activity-control','rb',buffering=0)
+ for i in range(48):
+  print(json.dumps({'type':'item.started','item':{'type':'command_execution','command':'SECRET_ACTIVITY_ARGUMENT\u001b[2J','aggregated_output':'SECRET_ACTIVITY_OUTPUT','reasoning':'SECRET_ACTIVITY_REASONING'}}),flush=True)
+ activity_ready.write(b'1')
+ assert activity_control.read(1)==b'1'
+ print(json.dumps({'type':'item.started','item':{'type':'mcp_tool_call','tool':'SECRET_ACTIVITY_TOOL','arguments':{'prompt':'SECRET_ACTIVITY_PROMPT'}}}),flush=True)
+ activity_ready.write(b'2')
+ assert activity_control.read(1)==b'2'
+ for i in range(48):
+  print(json.dumps({'type':'item.completed','item':{'type':'file_change','status':'completed','changes':[{'path':'SECRET_ACTIVITY_PATH'}]}}),flush=True)
+ activity_ready.write(b'3')
+ assert activity_control.read(1)==b'3'
+ activity_ready.close()
+ activity_control.close()"#;
+    assert!(source.contains("kind='author'; r=json.loads(request)"));
+    std::fs::write(
+        &program,
+        source.replace("kind='author'; r=json.loads(request)", live),
+    )
+    .unwrap();
+    let provider_file = fixture.home.join("providers.toml");
+    let mut command = crate::common::af();
+    command.env_clear().current_dir(&fixture.repo);
+    for (name, value) in environment(&fixture.home) {
+        command.env(name, value);
+    }
+    command
+        .env("PATH", &fixture.path)
+        .env("AF_PROVIDERS_FILE", &provider_file)
+        .args([
+            "task",
+            "start",
+            "--execute",
+            "--file",
+            "document.json",
+            "--json",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let task = command.spawn().unwrap();
+    enum Ready {
+        Marker(u8),
+        Exited(Output),
+    }
+    let (send, receive) = mpsc::channel();
+    let signals = send.clone();
+    let reading = std::thread::spawn(move || {
+        for _ in 0..3 {
+            let mut marker = [0];
+            ready.read_exact(&mut marker).unwrap();
+            if signals.send(Ready::Marker(marker[0])).is_err() {
+                break;
+            }
+        }
+    });
+    let ended = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let ending = std::sync::Arc::clone(&ended);
+    std::thread::spawn(move || {
+        let result = task.wait_with_output().unwrap();
+        ending.store(true, std::sync::atomic::Ordering::Release);
+        send.send(Ready::Exited(result)).ok();
+    });
+    let alive = || !ended.load(std::sync::atomic::Ordering::Acquire);
+    let ready = |expected| match receive.recv().unwrap() {
+        Ready::Marker(marker) => assert_eq!(marker, expected),
+        Ready::Exited(result) => panic!(
+            "Task ended before its native activity: {}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        ),
+    };
+    ready(b'1');
+    assert!(alive(), "Worker must still be running");
+    let task_file: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(fixture.repo.join("document.json")).unwrap())
+            .unwrap();
+    let task_id = task_file["task_id"].as_str().unwrap();
+    let mut browser = Browser::spawn(
+        &fixture.repo,
+        &fixture.home,
+        30,
+        100,
+        &[
+            ("PATH", fixture.path.to_str().unwrap()),
+            ("AF_PROVIDERS_FILE", provider_file.to_str().unwrap()),
+        ],
+    );
+    browser.wait_for("the Task listed", |s| s.text().contains(task_id));
+    browser.keys(b"]]]]]]]]jj\r");
+    browser.wait_for("the running step", |s| s.text().contains("STEP"));
+    browser.keys(b"\r\r");
+    let first = browser.wait_for("live command metadata", |s| {
+        s.text().contains("Running command") && s.text().contains("following")
+    });
+    assert!(
+        first.text().contains("Worker:") && first.text().contains("Activity age:"),
+        "{}",
+        first.text()
+    );
+    assert!(alive());
+    control.write_all(b"1").unwrap();
+    ready(b'2');
+    browser.wait_for("the next native operation before exit", |s| {
+        s.text().contains("Latest: Using tool / started")
+    });
+    browser.keys(b"\x1b[5~");
+    let paused = browser.wait_for("paused activity", |s| s.text().contains("paused (0 new)"));
+    let log_lines = |s: &Screen| {
+        s.lines()
+            .into_iter()
+            .filter(|line| line.contains('#'))
+            .collect::<Vec<_>>()
+    };
+    let before = log_lines(&paused);
+    assert!(!before.is_empty(), "{}", paused.text());
+    control.write_all(b"2").unwrap();
+    ready(b'3');
+    let updated = browser.wait_for("new activity while paused", |s| {
+        s.text().contains("paused (48 new)")
+    });
+    assert_eq!(
+        log_lines(&updated),
+        before,
+        "polling must preserve the paused viewport"
+    );
+    assert!(alive());
+    assert!(!String::from_utf8_lossy(&browser.bytes).contains("SECRET_ACTIVITY"));
+    browser.keys(b"G");
+    browser.wait_for("following resumed at the bottom", |s| {
+        s.text().contains("following") && s.text().contains("#97 Changing files")
+    });
+    browser.keys(b"h");
+    browser.wait_for("focus returned left", |s| {
+        s.text().contains("INSPECT navigation")
+    });
+    browser.keys(b"\x1b[Z");
+    browser.wait_for("BackTab restored right focus", |s| {
+        s.text().contains("INSPECT activity")
+    });
+    browser.keys(b"\t\r");
+    browser.wait_for("activity reopened after h backed out", |s| {
+        s.text().contains("following") && s.text().contains("#97 Changing files")
+    });
+    browser.keys(b"\x03");
+    assert!(
+        alive(),
+        "Ctrl-C in the browser cannot cancel a separate Task process"
+    );
+    browser.keys(b":q\r");
+    assert_eq!(browser.exit_code(), 0);
+    control.write_all(b"3").unwrap();
+    let Ready::Exited(result) = receive.recv().unwrap() else {
+        panic!("unexpected native marker");
+    };
+    assert!(
+        result.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    reading.join().unwrap();
+    // Sidecar bytes remain metadata-only even after content admission and process settlement.
+    let mut files = vec![fixture.home.join("state/af/task/local")];
+    let mut rings = 0;
+    while let Some(path) = files.pop() {
+        if path.is_dir() {
+            files.extend(std::fs::read_dir(path).unwrap().map(|e| e.unwrap().path()));
+        } else if path
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::file_name)
+            .is_some_and(|name| name == "activity")
+        {
+            rings += 1;
+            let bytes = std::fs::read(&path).unwrap();
+            assert!(bytes.len() <= af_store::activity::MAX_BYTES as usize);
+            assert!(!String::from_utf8_lossy(&bytes).contains("SECRET_ACTIVITY"));
+        }
+    }
+    assert_eq!(rings, 1);
 }

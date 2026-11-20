@@ -3,7 +3,8 @@
 
 /// What a native client reported. In particular, a contention report does not prove that
 /// another process is still alive, and an unknown failure never implies a login is needed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum NativeFailureKind {
     AuthMissing,
     AuthRevoked,
@@ -16,7 +17,8 @@ pub enum NativeFailureKind {
     ModelUnavailable,
     Network,
     /// The installed CLI refused af's own arguments (`unknown option`, `unexpected argument`, a
-    /// usage block): it is older than, or otherwise different from, what af invokes.
+    /// usage block), or the provider rejected its output schema (`invalid_json_schema`).
+    /// Both are deterministic refusals of the captured invocation.
     UnsupportedInvocation,
     /// The bound model's safety classifier flagged the request and the model refused it: the
     /// result reports `safety_stops` above zero or `stop_reason` `refusal`, or the client's
@@ -28,6 +30,50 @@ pub enum NativeFailureKind {
     /// wall (ADR-0208).
     Environment,
     Unknown,
+}
+
+pub const NATIVE_FAILURE_EVIDENCE_V1: &str = "af/NativeFailureEvidence@1";
+
+/// The final adapter classification of a failed Attempt, retained separately from display
+/// text and usage. In particular, complete accounting does not erase a native failure class.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeFailureEvidenceV1 {
+    schema: String,
+    kind: NativeFailureKind,
+}
+
+impl NativeFailureEvidenceV1 {
+    pub fn new(kind: NativeFailureKind) -> Self {
+        Self {
+            schema: "af.native-failure/1".into(),
+            kind,
+        }
+    }
+
+    pub fn decode(value: serde_json::Value) -> Result<Self, String> {
+        let evidence: Self =
+            serde_json::from_value(value).map_err(|_| "Invalid native failure evidence")?;
+        if evidence.schema != "af.native-failure/1" {
+            return Err("Unsupported native failure evidence".into());
+        }
+        Ok(evidence)
+    }
+
+    /// Structured native evidence takes precedence over untrusted diagnostic words.
+    pub fn task_cause(&self) -> Option<af_contracts::task::state::TaskCauseV1> {
+        use NativeFailureKind::*;
+        use af_contracts::task::state::TaskCauseV1 as Cause;
+        match self.kind {
+            AuthMissing | AuthRevoked | AuthExpired | AuthRefreshContended | AuthRefreshFailed
+            | AuthRejected => Some(Cause::IdentityUnverified),
+            Quota | Capacity => Some(Cause::ProviderCapacity),
+            ModelUnavailable | ModelRefused => Some(Cause::ModelRefused),
+            Network => Some(Cause::ProviderNetwork),
+            UnsupportedInvocation | Environment => Some(Cause::ProviderEnvironment),
+            Unknown => None,
+        }
+    }
 }
 
 impl NativeFailureKind {
@@ -123,7 +169,7 @@ impl NativeFailureKind {
     /// Whether the Provider refused this exact input, so that the same input sent again is
     /// refused again: such an Attempt is not retried automatically (ADR-0147).
     pub fn refuses_input(self) -> bool {
-        self == Self::ModelRefused
+        matches!(self, Self::ModelRefused | Self::UnsupportedInvocation)
     }
 
     /// Why an Attempt that ended with this failure and no usage report has unknown usage
@@ -266,6 +312,23 @@ pub fn classify_native_failure(message: &str) -> NativeFailureKind {
     use NativeFailureKind::*;
     let text = message.to_ascii_lowercase();
     let contains = |patterns: &[&str]| patterns.iter().any(|pattern| text.contains(pattern));
+    // This classifier is called only on native failure channels, never agent messages.
+    // A schema rejection is a deterministic refusal of our invocation, not a model reply.
+    if contains(&["invalid_json_schema"]) {
+        return UnsupportedInvocation;
+    }
+    classify_native_diagnostic(message, false)
+}
+
+/// Authentication sensitivity is independent of schema-rejection retry precedence.
+pub fn native_auth_seen(message: &str) -> bool {
+    classify_native_diagnostic(message, true).is_auth()
+}
+
+fn classify_native_diagnostic(message: &str, auth_only: bool) -> NativeFailureKind {
+    use NativeFailureKind::*;
+    let text = message.to_ascii_lowercase();
+    let contains = |patterns: &[&str]| patterns.iter().any(|pattern| text.contains(pattern));
     let refresh = contains(&[
         "refresh token",
         "refresh_token",
@@ -323,6 +386,38 @@ pub fn classify_native_failure(message: &str) -> NativeFailureKind {
     ]) || credentials && contains(&["not found", "missing", "not configured"])
     {
         return AuthMissing;
+    }
+    let explicit_rejection = contains(&[
+        "auth_rejected",
+        "authentication_error",
+        "invalid_api_key",
+        "invalid api key",
+        "invalid_token",
+        "invalid token",
+        "invalid_grant",
+        "authentication failed",
+        "unauthorized",
+        "unauthorised",
+        "http 401",
+        "status 401",
+        "refresh_token_reused",
+    ]);
+    // The request error code is not a statement that credentials are invalid.
+    let rejected = explicit_rejection
+        || credentials
+            && (text
+                .split("invalid_json_schema")
+                .any(|part| part.contains("invalid"))
+                || contains(&["rejected", "already used"]));
+    // Explicit authentication signals remain sensitive alongside transport/schema errors.
+    // An inferred refresh failure must still yield to the underlying non-auth cause.
+    if auth_only {
+        if contains(&["auth_refresh_failed"]) {
+            return AuthRefreshFailed;
+        }
+        if rejected {
+            return AuthRejected;
+        }
     }
     // Claude Code's own words when the bound model's safety classifier flagged a request and no
     // fallback model answered: "<Model>'s safeguards flagged this message (…/aup). This
@@ -393,22 +488,7 @@ pub fn classify_native_failure(message: &str) -> NativeFailureKind {
     {
         return AuthRefreshFailed;
     }
-    if contains(&[
-        "auth_rejected",
-        "authentication_error",
-        "invalid_api_key",
-        "invalid api key",
-        "invalid_token",
-        "invalid token",
-        "invalid_grant",
-        "authentication failed",
-        "unauthorized",
-        "unauthorised",
-        "http 401",
-        "status 401",
-        "refresh_token_reused",
-    ]) || credentials && contains(&["invalid", "rejected", "already used"])
-    {
+    if rejected {
         return AuthRejected;
     }
     Unknown
@@ -417,6 +497,106 @@ pub fn classify_native_failure(message: &str) -> NativeFailureKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn authentication_sensitivity_survives_schema_rejection_precedence() {
+        for auth in [
+            "HTTP 401 authentication_error for alice@example.com",
+            "auth_expired",
+            "auth_revoked",
+            "auth_refresh_contended",
+            "auth_refresh_failed",
+            "Your API key is invalid",
+        ] {
+            for message in [
+                format!("{auth} connection reset"),
+                format!("{auth} invalid_json_schema"),
+                format!("invalid_json_schema connection reset {auth}"),
+            ] {
+                if message.contains("invalid_json_schema") {
+                    assert_eq!(
+                        classify_native_failure(&message),
+                        NativeFailureKind::UnsupportedInvocation
+                    );
+                }
+
+                assert!(native_auth_seen(&message));
+            }
+        }
+        assert!(!native_auth_seen(
+            "invalid_json_schema: schema must specify a type"
+        ));
+    }
+
+    #[test]
+    fn inferred_refresh_failures_keep_underlying_non_auth_evidence() {
+        use NativeFailureKind::*;
+        for (cause, expected) in [
+            ("connection refused", Network),
+            ("HTTP 429 rate limit", Quota),
+            ("at capacity", Capacity),
+            ("model_not_found", ModelUnavailable),
+        ] {
+            for suffix in ["", " invalid_json_schema: schema must specify a type"] {
+                let message = format!("Failed to refresh OAuth token: {cause}{suffix}");
+                assert!(!native_auth_seen(&message), "{message}");
+                let kind = classify_native_failure(&message);
+                assert_eq!(
+                    kind,
+                    if suffix.is_empty() {
+                        expected
+                    } else {
+                        UnsupportedInvocation
+                    }
+                );
+                let mut stdout = message.as_bytes().to_vec();
+                let mut stderr = b"native diagnostic".to_vec();
+                kind.redact_capture(native_auth_seen(&message), &mut stdout, &mut stderr);
+                assert_eq!(stdout, message.as_bytes());
+                assert_eq!(stderr, b"native diagnostic");
+            }
+        }
+        assert!(native_auth_seen("Failed to refresh OAuth token"));
+    }
+
+    #[test]
+    fn native_failure_evidence_schema_and_reader_agree_and_old_versions_fail_closed() {
+        use serde_json::json;
+        let workspace = std::env::var_os("AF_WORKSPACE_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+        let schema: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(workspace.join("schemas/native-failure-v1.json")).unwrap(),
+        )
+        .unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        assert_eq!(
+            schema["properties"]["kind"]["enum"]
+                .as_array()
+                .unwrap()
+                .len(),
+            NativeFailureKind::ALL.len()
+        );
+        for kind in NativeFailureKind::ALL {
+            let value = serde_json::to_value(NativeFailureEvidenceV1::new(kind)).unwrap();
+            assert!(validator.is_valid(&value));
+            assert_eq!(value["kind"], kind.as_str());
+            let decoded = NativeFailureEvidenceV1::decode(value.clone()).unwrap();
+            assert_eq!(decoded.kind, kind);
+            assert_eq!(serde_json::to_value(decoded).unwrap(), value);
+        }
+        for value in [
+            json!({"schema":"af.native-failure/0","kind":"quota"}),
+            json!({"schema":"af.native-failure/2","kind":"quota"}),
+            json!({"schema":"af.native-failure/1","kind":"made_up"}),
+            json!({"schema":"af.native-failure/1","kind":"quota","message":"model_unavailable"}),
+            json!({"schema":"af.native-failure/1"}),
+            json!({"kind":"quota"}),
+        ] {
+            assert!(!validator.is_valid(&value));
+            assert!(NativeFailureEvidenceV1::decode(value).is_err());
+        }
+    }
 
     #[test]
     fn only_network_and_capacity_failures_are_transient_and_a_named_wait_is_read() {

@@ -144,7 +144,7 @@ fn main() -> Result<(), String> {
     let base = Manifest::new(base).map_err(|e| e.to_string())?;
     let tree = Manifest::new(tree).map_err(|e| e.to_string())?;
     let origin = cas
-        .put_json(&serde_json::json!({"schema": "af.task-source-origin/1"}))
+        .put_json(&serde_json::json!({"schema":"af.task-source-origin/3","kind":"captured","repository_id":"fixture","source_revision":null,"content_digest":base.content_digest()}))
         .map_err(|e| e.to_string())?;
     let base_id = capture_snapshot(&cas, &base, &origin, None)?;
     let tree_id = capture_snapshot(&cas, &tree, &origin, Some(&base_id))?;

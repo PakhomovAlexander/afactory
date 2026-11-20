@@ -13,8 +13,6 @@ license.workspace = true
 doctest = false
 
 [dependencies]
-af-attempt = { path = "../af-attempt" }
-af-check = { path = "../af-check" }
 af-contracts = { path = "../af-contracts" }
 af-runner = { path = "../af-runner" }
 af-graph = { path = "../af-graph" }

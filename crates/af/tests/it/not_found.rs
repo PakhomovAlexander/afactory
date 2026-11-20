@@ -110,9 +110,9 @@ fn every_not_found_refusal_takes_one_shape() {
             "; nothing to collect",
         ),
         (
-            vec!["review", "ledger", "--campaign", "nope"],
-            "Campaign nope not found in ",
-            "; af review campaigns lists the Campaigns, and af review run --campaign nope starts it",
+            vec!["review", "ledger", "nope", "--state", state_arg],
+            "Task Store not found in ",
+            "; af task plan --file FILE creates it",
         ),
         (
             vec!["provider", "remove", "nope"],
@@ -123,21 +123,6 @@ fn every_not_found_refusal_takes_one_shape() {
             vec!["provider", "models", "nope"],
             "Provider nope not found in this machine's Provider registry",
             "; af provider status lists the Providers af knows",
-        ),
-        (
-            vec![
-                "review",
-                "plan",
-                "--policy-rev",
-                "HEAD",
-                "--base",
-                "HEAD",
-                "--uncommitted",
-                "--provider",
-                "nosuchnode=x",
-            ],
-            "Node nosuchnode not found in .af/pipelines/review.toml",
-            "; model Workers: architecture, correctness",
         ),
         (
             vec!["help", "nope"],

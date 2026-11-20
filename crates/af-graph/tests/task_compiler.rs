@@ -8,7 +8,7 @@ use af_graph::task::{CompileContext, OperatorSignature, compile_task};
 
 fn fixture() -> (
     TaskRevisionV1,
-    BTreeMap<String, PipelineDefinitionV1>,
+    BTreeMap<String, PipelineDefinition>,
     BTreeMap<String, OperatorSignature>,
 ) {
     let root = std::env::var_os("AF_WORKSPACE_ROOT")
@@ -17,7 +17,7 @@ fn fixture() -> (
         .join("fixtures/task-contracts/v1");
     let task: TaskRevisionV1 =
         serde_json::from_slice(&std::fs::read(root.join("task-revision.json")).unwrap()).unwrap();
-    let definition: PipelineDefinitionV1 =
+    let definition: PipelineDefinition =
         serde_json::from_slice(&std::fs::read(root.join("pipeline-definition.json")).unwrap())
             .unwrap();
     let mut output = definition.contract.outputs["document"].clone();
@@ -80,141 +80,97 @@ fn compilation_is_deterministic_and_root_business_inputs_are_explicit_nodes() {
         task.inputs["requirements"].artifact_ids
     );
     assert_eq!(a.coverage["checked"], a.outputs["document"]);
-}
-
-#[test]
-fn installed_review_retains_its_optional_predecessor_barrier_and_task_branch_decision() {
-    use af_graph::task::{CompiledOperator, CompiledTask, ReviewOperation};
-    use af_graph::{ArtifactMap, Dispatch, Node, NodeOutcome, SuppressionReason};
-    use std::sync::Mutex;
-
-    struct Host<'a> {
-        graph: &'a CompiledTask,
-        upstream_fails: bool,
-        selected: bool,
-        invocations: Mutex<Vec<String>>,
-    }
-    impl Dispatch for Host<'_> {
-        fn requires_successful_predecessors(&self, node: &Node) -> bool {
-            self.graph.requires_successful_predecessors(&node.id)
-        }
-        fn task_node_selected(&self, node: &Node, _: &ArtifactMap) -> Result<bool, String> {
-            Ok(node.id == "root.inputs" || self.selected)
-        }
-        fn record_invocation(&self, node: &Node, _: &ArtifactMap) -> Result<(), String> {
-            self.invocations.lock().unwrap().push(node.id.clone());
-            Ok(())
-        }
-        fn run(&self, node: &Node, inputs: &ArtifactMap) -> Result<ArtifactMap, String> {
-            if node.id == "root.inputs" {
-                if self.upstream_fails {
-                    return Err("upstream did not produce a receipt".into());
-                }
-                return Ok(BTreeMap::from([("requirements".into(), vec![])]));
-            }
-            assert!(
-                inputs["input"].is_empty(),
-                "a completed optional producer may have no value"
+    // Features do not select formats, and exact compilation/replay keeps their declarations.
+    for (brief, recovery) in [
+        (false, None),
+        (false, Some(0)),
+        (false, Some(8)),
+        (true, None),
+        (true, Some(2)),
+    ] {
+        let mut task = task.clone();
+        let mut pipelines = pipelines.clone();
+        let mut signatures = signatures.clone();
+        let pipeline = pipelines.get_mut("builtin/document").unwrap();
+        pipeline.slots.get_mut("author").unwrap().recovery_attempts = recovery;
+        if brief {
+            let mut port = pipeline.contract.inputs["requirements"].clone();
+            port.artifact_type = "af/ProjectBrief@1".into();
+            port.optional = true;
+            port.root_default = Some(RootDefaultV1::ProjectBrief);
+            port.brief = Some("orient".into());
+            pipeline
+                .contract
+                .inputs
+                .insert("project".into(), port.clone());
+            pipeline.nodes[0].inputs.insert(
+                "project".into(),
+                ValueRefV1::Input {
+                    port: "project".into(),
+                },
             );
-            Ok(BTreeMap::from([(
-                "output".into(),
-                vec!["completed-output".into()],
-            )]))
+            port.root_default = None;
+            port.brief = None;
+            signatures
+                .get_mut("worker/builtin/document-author")
+                .unwrap()
+                .contract
+                .inputs
+                .insert("project".into(), port);
+            task.inputs.insert(
+                "project".into(),
+                af_contracts::task::ArtifactInputV1 {
+                    artifact_ids: vec![format!("sha256:{}", "b".repeat(64))],
+                    artifact_type: "af/ProjectBrief@1".into(),
+                    cardinality: af_contracts::PortCardinality::One,
+                    snapshot_id: None,
+                },
+            );
         }
-    }
-    let (task, pipelines, signatures) = fixture();
-    let mut graph = compile_task(
-        &task,
-        "builtin/document",
-        &CompileContext {
-            slot_workers: BTreeMap::new(),
-            acceptance_outputs: BTreeMap::from([("checked".into(), "document".into())]),
+        let context = CompileContext {
             pipelines: &pipelines,
             signatures: &signatures,
-            max_nodes: 64,
-            max_depth: 4,
-        },
-    )
-    .unwrap();
-    graph
-        .nodes
-        .get_mut("root.inputs")
-        .unwrap()
-        .contract
-        .outputs
-        .get_mut("requirements")
-        .unwrap()
-        .optional = true;
-    graph
-        .nodes
-        .get_mut("root.nodes.write")
-        .unwrap()
-        .contract
-        .inputs
-        .get_mut("input")
-        .unwrap()
-        .optional = true;
-    let ordinary = graph.nodes["root.nodes.write"].operator.clone();
-    for (compatibility, upstream_fails, selected) in [
-        (false, true, true),
-        (true, true, true),
-        (true, false, true),
-        (true, false, false),
-    ] {
-        graph.nodes.get_mut("root.nodes.write").unwrap().operator = if compatibility {
-            CompiledOperator::ReviewDomain {
-                review_node: "gather".into(),
-                operation: ReviewOperation::Gather,
-            }
-        } else {
-            ordinary.clone()
+            slot_workers: context.slot_workers.clone(),
+            acceptance_outputs: context.acceptance_outputs.clone(),
+            max_nodes: context.max_nodes,
+            max_depth: context.max_depth,
         };
-        let host = Host {
-            graph: &graph,
-            upstream_fails,
-            selected,
-            invocations: Mutex::new(vec![]),
-        };
-        let report = graph.run(&host).unwrap();
-        let ran = host
-            .invocations
-            .lock()
-            .unwrap()
-            .contains(&"root.nodes.write".to_string());
-        match (compatibility && upstream_fails, selected) {
-            (true, _) => {
-                assert!(!ran);
-                assert!(matches!(
-                    report.outcome("root.nodes.write"),
-                    Some(NodeOutcome::Suppressed {
-                        reason: SuppressionReason::UpstreamMissing
-                    })
-                ));
-            }
-            (false, false) => {
-                assert!(!ran);
-                assert!(matches!(
-                    report.outcome("root.nodes.write"),
-                    Some(NodeOutcome::Suppressed {
-                        reason: SuppressionReason::BranchNotSelected
-                    })
-                ));
-            }
-            (false, true) => {
-                assert!(ran);
-                assert!(matches!(
-                    report.outcome("root.nodes.write"),
-                    Some(NodeOutcome::Completed { .. })
-                ));
-            }
+        let graph = compile_task(&task, "builtin/document", &context).unwrap();
+        assert_eq!(graph.schema, af_graph::task::COMPILED_TASK_SCHEMA_V6);
+        assert_eq!(
+            graph,
+            compile_task(&task, "builtin/document", &context).unwrap()
+        );
+        let replay: af_graph::task::CompiledTask =
+            serde_json::from_slice(&serde_json::to_vec(&graph).unwrap()).unwrap();
+        assert_eq!(graph, replay);
+        assert_eq!(graph.slots["root.slots.author"].recovery_attempts, recovery);
+        assert_eq!(
+            graph.slots["root.slots.author"].recovery_allowance(),
+            recovery.unwrap_or(DEFAULT_RECOVERY_ATTEMPTS)
+        );
+        assert_eq!(
+            graph.nodes["root.inputs"]
+                .contract
+                .outputs
+                .contains_key("project"),
+            brief
+        );
+        if brief {
+            let port = &graph.nodes["root.inputs"].contract.outputs["project"];
+            assert!(port.root_default.is_none() && port.brief.is_none());
+            assert_eq!(
+                graph.nodes["root.nodes.write"].inputs["project"].qualified(),
+                "root.inputs.project"
+            );
         }
     }
 }
 
 #[test]
-fn installed_review_worker_is_guarded_by_the_same_compiled_provider_admission() {
+fn native_worker_is_guarded_by_the_same_compiled_provider_admission() {
     use af_contracts::task::plan::{EffectiveWorkerBindingV3, WorkerExecutionV3};
-    use af_graph::task::{CompiledOperator, OperatorAttemptCost, ReviewOperation};
+    use af_graph::task::{CompiledOperator, OperatorAttemptCost};
     let (task, pipelines, signatures) = fixture();
     let mut graph = compile_task(
         &task,
@@ -237,10 +193,6 @@ fn installed_review_worker_is_guarded_by_the_same_compiled_provider_admission() 
         panic!("fixture Worker")
     };
     let slot = slot.clone();
-    graph.nodes.get_mut("root.nodes.write").unwrap().operator = CompiledOperator::ReviewDomain {
-        review_node: "correctness".into(),
-        operation: ReviewOperation::Reviewer { slot: slot.clone() },
-    };
     let bindings = BTreeMap::from([(
         slot.clone(),
         EffectiveWorkerBindingV3 {
@@ -626,7 +578,7 @@ fn missing_inputs_cycles_unknown_ports_and_recursive_calls_fail_before_dispatch(
 
 fn branching_fixture() -> (
     TaskRevisionV1,
-    BTreeMap<String, PipelineDefinitionV1>,
+    BTreeMap<String, PipelineDefinition>,
     BTreeMap<String, OperatorSignature>,
 ) {
     let (mut task, mut pipelines, mut signatures) = fixture();
@@ -1017,58 +969,6 @@ fn planning_compilation_has_a_proposal_contract_without_business_coverage_or_ver
     );
 }
 
-#[test]
-fn captured_integration_allowance_is_dormant_and_cannot_collide_or_add_paid_work() {
-    use af_graph::task::CompiledReviewIntegrationV1;
-    let (task, pipelines, signatures) = fixture();
-    let context = CompileContext {
-        slot_workers: BTreeMap::new(),
-        acceptance_outputs: BTreeMap::from([("checked".into(), "document".into())]),
-        pipelines: &pipelines,
-        signatures: &signatures,
-        max_nodes: 64,
-        max_depth: 4,
-    };
-    let ordinary = compile_task(&task, "builtin/document", &context).unwrap();
-    let old_bytes = serde_json::to_value(&ordinary).unwrap();
-    assert!(old_bytes.get("review_integration").is_none());
-    let mut graph = ordinary.clone();
-    graph.review_integration = Some(CompiledReviewIntegrationV1 {
-        node: "root.integration_checks".into(),
-        sequence_policy_id: format!("sha256:{}", "a".repeat(64)),
-        allowance: af_attempt::task_budget::NodeAllowance {
-            tokens_per_attempt: 0,
-            wall_ms_per_attempt: 1000,
-            max_attempts: 1,
-            verification_attempts: 0,
-        },
-    });
-    let allowances = graph.execution_allowances().unwrap();
-    assert_eq!(allowances.len(), ordinary.allowances.len() + 1);
-    assert_eq!(graph.nodes, ordinary.nodes);
-    assert_eq!(graph.order, ordinary.order);
-    assert_eq!(graph.outputs, ordinary.outputs);
-    assert_eq!(graph.coverage, ordinary.coverage);
-    let mut budget = graph.budget(task.limits.clone()).unwrap();
-    let reservation = budget.prepare("root.integration_checks", 1).unwrap();
-    assert_eq!(reservation.tokens, 0);
-    for mutation in 0..4 {
-        let mut bad = graph.clone();
-        let phase = bad.review_integration.as_mut().unwrap();
-        match mutation {
-            0 => phase.node = "root.nodes.write".into(),
-            1 => phase.allowance.tokens_per_attempt = 1,
-            2 => phase.allowance.max_attempts = 2,
-            3 => phase.allowance.verification_attempts = 1,
-            _ => unreachable!(),
-        }
-        assert!(bad.execution_allowances().is_err());
-    }
-    let mut null = old_bytes;
-    null["review_integration"] = serde_json::Value::Null;
-    assert!(serde_json::from_value::<af_graph::task::CompiledTask>(null).is_err());
-}
-
 /// #331 item 3 (ADR-0254): the Diff Subject is a kernel-supplied typed input. Only a Worker that
 /// reads its `source` without writing it declares it, on its optional `diff_subject` port with
 /// `same_as source` affinity; no Pipeline binds it, takes it or returns it.
@@ -1087,7 +987,7 @@ fn only_a_judging_worker_declares_the_diff_subject_and_no_pipeline_binds_it() {
     let same_as_source = PortAffinityV1::SameAs {
         input: "source".into(),
     };
-    let compile = |pipelines: &BTreeMap<String, PipelineDefinitionV1>,
+    let compile = |pipelines: &BTreeMap<String, PipelineDefinition>,
                    signatures: &BTreeMap<String, OperatorSignature>| {
         compile_task(
             &task,
@@ -1252,7 +1152,7 @@ fn development_build_cache_edges_require_the_same_slot_and_warm_input_is_kernel_
         },
     );
     pipeline.nodes.push(second);
-    let compile = |pipelines: &BTreeMap<String, PipelineDefinitionV1>| {
+    let compile = |pipelines: &BTreeMap<String, PipelineDefinition>| {
         compile_task(
             &task,
             "builtin/document",

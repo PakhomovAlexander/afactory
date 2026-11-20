@@ -1,4 +1,4 @@
-//! What `af task report` prints (ADR-0142), as one `af/task-report@3` document: what recorded Tasks cost and how they ran, read from
+//! What `af task report` prints (ADR-0142), as one `af/task-report@4` document: what recorded Tasks cost and how they ran, read from
 //! the Store and never estimated. A figure the Store does not record is absent, never zero.
 //!
 //! The document names a Provider only by its kind, model and effort. It has no field for a
@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use super::usage::{DecimalU128, TaskUnknownUsageCauseV1};
 use super::{is_name, is_package_name, require, safe_number};
 
-pub const TASK_REPORT_V3: &str = "af/task-report@3";
+pub const TASK_REPORT_V4: &str = "af/task-report@4";
 
 /// The first line of the Markdown block a pull request description carries.
 pub const TASK_REPORT_BEGIN: &str = "<!-- af-task-report:v1 -->";
@@ -45,7 +45,7 @@ const PRIVATE_SEGMENTS: [&str; 8] = [
 /// side of the `/` a name of a home, auth or state directory. Anything else, including any
 /// value with an `@` such as an email address, may be a path, a URL or an account and is
 /// reported as [`TASK_REPORT_UNKNOWN_MODEL`].
-/// `schemas/task-report-v3.json` states the same rule as the model's pattern, and
+/// `schemas/task-report-v4.json` states the same rule as the model's pattern, and
 /// [`TASK_REPORT_MODEL_CASES`] is the table both are held to.
 pub fn is_model_identity(model: &str) -> bool {
     let bytes = model.as_bytes();
@@ -133,7 +133,7 @@ pub const TASK_REPORT_MODEL_CASES: [(&str, bool); 51] = [
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskReportV3 {
-    /// Always [`TASK_REPORT_V3`].
+    /// Always [`TASK_REPORT_V4`].
     pub schema: String,
     /// Each distinct pipeline the reported Tasks' current plans run, in first-use order.
     pub pipelines: Vec<TaskReportPipelineV1>,
@@ -535,7 +535,7 @@ impl TaskReportV3 {
             task.round = u64::try_from(index + 1).map_err(|e| e.to_string())?;
         }
         let report = Self {
-            schema: TASK_REPORT_V3.into(),
+            schema: TASK_REPORT_V4.into(),
             pipelines,
             totals: TaskReportTotalsV1::of(&tasks)?,
             tasks,
@@ -546,7 +546,7 @@ impl TaskReportV3 {
 
     pub fn validate(&self) -> Result<(), String> {
         require(
-            self.schema == TASK_REPORT_V3,
+            self.schema == TASK_REPORT_V4,
             "Task report needs its schema",
         )?;
         require(

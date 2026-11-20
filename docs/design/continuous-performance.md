@@ -163,7 +163,8 @@ cannot be silently omitted or downgraded when a run fails.
 | State library | Cold application projection and prewarmed projection of exactly 10,000 valid relevant events | Quick, nightly |
 | Authority library | Current-plan check and first `TaskRuntime::new`; two-node graphs at both large package sizes, fresh valid leases | Quick, nightly |
 | CLI Task | Start without execution; separately run RootInputs plus check(`true`), with the check proved executed | Quick, nightly, release |
-| CLI state | `task show`, `review ledger`, `review report` against matching 10,000-event Task/Campaign fixtures | Quick, nightly, release |
+| CLI state | `task show`, `review ledger`, `review report` against matching 10,000-event native Task fixtures | Quick, nightly, release |
+| CLI wait | Real two-second timeout over small and artifact-heavy Tasks, 100/10,000 events and zero/100 historical Tasks; total CPU, wall and RSS | Nightly |
 | Persistence diagnostic | Real filesystem CAS write/read and state append/read, with declared flush semantics and logical bytes | Advisory nightly/manual |
 
 Issue #255's reported 11.044 CPU seconds is historical motivation, not a current
@@ -323,7 +324,11 @@ Optional metrics carry an unavailable reason; required missing metrics fail the 
 
 ## 7. What makes a regression or a pass
 
-The primary metric is wall time. Each critical case instance has exactly one primary
+The default primary metric is wall time. `cli_task_wait` instead uses `total_cpu_ms`, user plus
+system CPU from one reaped-child rusage record over the whole CLI lifetime, with wall and RSS
+reported separately. Its timeout clock starts after the initial Task open; final status is also
+part of the measured process lifetime. The [wait investigation procedure](../measurements/task-wait-validation-reuse.md)
+describes its fixtures and comparison commands. Each critical case instance has exactly one primary
 metric with a reviewed relative tolerance `r` and strictly positive absolute tolerance
 `a`. Initial wall-time policy is `r = 0.05`, `a = 1 ms`; any different case value must
 be explicit in the registry and calibrated. This floor prevents tiny absolute changes
@@ -851,9 +856,10 @@ from other hosts and recomputes the verdict. It also adds the CLI adapters and o
 `fixtures/performance/cli.toml` with side-written fixtures, host identity, and evidence
 `af.perf-sample/2` and `af.perf-shard/2`. Its completion (ADR-0169) takes one machine
 coordination lock before any shared resource is touched. Each side writes its large Task and
-Campaign state once per shard as an immutable seed that every sample copies privately. That
-brings `review ledger` and `review report` over a 10,000-event Campaign written by each side's
-own `af review run` and Findings Ledger writer. Linux recipes build in a pinned build image
+Review state once per shard as an immutable seed that every sample copies privately. The
+current native fixture invokes `af review run --file` and extends common Task records to exactly
+10,000 events; `review ledger` and `review report` inspect that Task's canonical Findings and
+accounting. The original Campaign representation is retired; no fixture reader restores it. Linux recipes build in a pinned build image
 without network (`af.perf-builds/4`, `af.perf-shard/3`, `af.perf-cli/2`). Every recipe,
 environment and case is executable where its host provides it, and a host that cannot refuses
 at run time with its reason. The p2/p3 closeout (ADR-0170) seeds the native source capture and
@@ -872,7 +878,7 @@ p4 (ADR-0172) admits every file a measured side wrote through held, non-followin
 within declared bounds and the run's deadline, and replaces the history's prefix observation by
 the supervisor's streamed observation of declared JSON fields (`af.perf-supervisor-request/4`,
 `af.perf-supervisor-result/5`, `af.perf-cli/6`). It adds `cli.py report`, `cli.py history` and
-`cli.py archive` with its collector and runbook (`af.perf-report/1`, `af.perf-history/1`,
+`cli.py archive` with its collector and runbook (`af.perf-report/1`, `af.perf-history/2`,
 `af.perf-archive/1`, `af.perf-archive-event/1`, `af.perf-archive-collection/1`,
 `af.perf-archive-status/1`, `af.perf-transport/1`); continuous collection remains an
 operational obligation until it is provisioned and observed. Its closeout (ADR-0173) bounds
@@ -923,7 +929,7 @@ p6b's release handoff (ADR-0180) adds `.github/workflows/performance-release.yml
 read-only handoff verifies the workflow's identity, the published tag and SHA, and a successful
 `sign and publish` in any attempt. It writes the immutable claim `af.perf-release-claim/1` of the
 run, tag and SHA before any sample, and measures only the first valid claim through the
-token-free `performance.yml` (`af.perf-schedule/2`). Duplicates link the retained result or are
+token-free `performance.yml` (`af.perf-schedule/3`). Duplicates link the retained result or are
 incomplete, and only `remeasure_of` measures again; every decision is
 `af.perf-release-handoff/1`. A hosted staging demonstration remains operational evidence.
 p6b's calibration (ADR-0181) adds `cli.py cohort-declare`, `calibration-prepare` and `readiness`.
@@ -961,7 +967,7 @@ complete retained listings, binding each original's producer (`af.perf-readiness
 plans carry their calibrated CPU/image groups, and a host outside them cannot satisfy the
 required check (`af.perf-run/6`). A bridge's diff covers the build closure, and it measures as
 active only with a verified golden check of both product sources and a post-merge A/A
-(`af.perf-activation/3`, `af.perf-equivalence/1`, `af.perf-activation-verification/2`). Costs read
+(`af.perf-activation/3`, `af.perf-equivalence/2`, `af.perf-activation-verification/2`). Costs read
 the observed cache and keep failed attempts, and shipping is bound to one reviewed suite with
 every planned sample accounted for (`af.perf-cost/2`, `af.perf-shipping/2`). The hosted cohort,
 its proposed activation, a real bridge, the cost and shipping runs, the staging handoff and

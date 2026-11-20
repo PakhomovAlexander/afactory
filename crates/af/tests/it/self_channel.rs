@@ -348,7 +348,7 @@ fn a_running_nightly_is_told_a_newer_date_and_no_pin_or_other_version_reaches_a_
     let repo = sandbox.pinned_repo("nightly-pin", &Sandbox::lock(NIGHTLY, Some(&digest)));
     let run = sandbox
         .command(&real)
-        .args(["review", "campaigns"])
+        .args(["task", "list"])
         .current_dir(&repo)
         .output()
         .unwrap();
@@ -374,13 +374,13 @@ fn a_running_nightly_is_told_a_newer_date_and_no_pin_or_other_version_reaches_a_
     );
     let run = sandbox
         .command(&real)
-        .args(["review", "campaigns"])
+        .args(["task", "list"])
         .current_dir(&repo)
         .env("AF_SELF__INSTALL_PINS", "\"always\"")
         .output()
         .unwrap();
     assert!(
-        out(&run).contains("fake af 0.13.0 review campaigns"),
+        out(&run).contains("fake af 0.13.0 task list"),
         "{}\n{}",
         out(&run),
         err(&run)

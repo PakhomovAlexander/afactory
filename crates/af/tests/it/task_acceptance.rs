@@ -133,7 +133,7 @@ fn requirements_retention_and_final_snapshot_are_proved_before_attempts() {
         let packages = repo.join(".af/task-packages/fixture");
         if stale {
             let path = packages.join("implementation/pipeline.toml");
-            let mut pipeline: af_contracts::task::pipeline::PipelineDefinitionV1 =
+            let mut pipeline: af_contracts::task::pipeline::PipelineDefinition =
                 toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
             let evaluation = pipeline
                 .nodes
@@ -153,7 +153,7 @@ fn requirements_retention_and_final_snapshot_are_proved_before_attempts() {
             std::fs::write(path, toml::to_string(&pipeline).unwrap()).unwrap();
         } else if case == "review_requirements" {
             let path = packages.join("review/pipeline.toml");
-            let mut pipeline: af_contracts::task::pipeline::PipelineDefinitionV1 =
+            let mut pipeline: af_contracts::task::pipeline::PipelineDefinition =
                 toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
             pipeline
                 .nodes
@@ -208,7 +208,7 @@ fn requirements_retention_and_final_snapshot_are_proved_before_attempts() {
     }
 }
 
-/// The shipped reviewed-verification topology publishes evaluator acceptance, while the
+/// The generic reviewed-verification fixture topology publishes evaluator acceptance, while the
 /// canonical Review receipt is retained by its public source. Both judgments must count,
 /// including when a base-backed source delivers the evaluator's typed Diff Subject.
 #[test]
@@ -231,12 +231,12 @@ fn verification_evaluator_pass_cannot_override_required_open_review_findings() {
         let base = String::from_utf8(base.stdout).unwrap();
         let packages = repo.join(".af/task-packages/fixture");
         let pipeline = include_str!(
-            "../../../../.af/task-packages/kernel/verification-reviewed/pipeline.toml"
+            "../../../../fixtures/native-catalog-contracts/.af/task-packages/kernel/verification-reviewed/pipeline.toml"
         )
         .replace("kernel/verification-reviewed", "fixture/implementation")
         .replace("kernel/review-code", "fixture/review")
         .replace("\"kernel/", "\"fixture/")
-        .replace("version = \"1.2.0\"", "version = \"1.0.0\"")
+        .replace("version = \"1.2.1\"", "version = \"1.0.1\"")
         .replace("max_attempts = 2\n", "max_attempts = 1\n")
         .replace(
             "allow_local_replacement = true",
@@ -244,13 +244,13 @@ fn verification_evaluator_pass_cannot_override_required_open_review_findings() {
         )
         .replace("standard = true", "");
         std::fs::write(packages.join("implementation/pipeline.toml"), pipeline).unwrap();
-        // This test installs the CURRENT shipped verification topology. Its evaluator
+        // This test installs the explicit generic verification contract fixture. Its evaluator
         // consumes EvaluationInput@2, including the optional exact diff Subject.
         let path = packages.join("evaluator/worker.toml");
         let mut evaluator: af_pipeline_config::task::catalog::TaskWorkerManifest =
             toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let current: af_pipeline_config::task::catalog::TaskWorkerManifest = toml::from_str(
-            include_str!("../../../../.af/task-packages/kernel/evaluator/worker.toml"),
+            include_str!("../../../../fixtures/native-catalog-contracts/.af/task-packages/kernel/evaluator/worker.toml"),
         )
         .unwrap();
         evaluator.signature.worker_input_type = current.signature.worker_input_type;
@@ -262,7 +262,7 @@ fn verification_evaluator_pass_cannot_override_required_open_review_findings() {
         let path = packages.join("evaluator/input.schema.json");
         let mut schema: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         let current_schema: Value = serde_json::from_str(include_str!(
-            "../../../../.af/task-packages/kernel/evaluator/input.schema.json"
+            "../../../../fixtures/native-catalog-contracts/.af/task-packages/kernel/evaluator/input.schema.json"
         ))
         .unwrap();
         schema["properties"]["diff_subject"] = current_schema["properties"]["diff_subject"].clone();
@@ -298,7 +298,7 @@ assert change['before']!=change['after']
         let kind = packages.join("verification-kind");
         std::fs::create_dir(&kind).unwrap();
         std::fs::write(kind.join("kind.toml"),
-            "schema = \"af.task-kind/1\"\nname = \"fixture/verification-kind\"\nversion = \"1.0.0\"\nkind = \"verification\"\nprofile = \"implementation\"\n").unwrap();
+            "schema = \"af.task-kind/3\"\nname = \"fixture/verification-kind\"\nversion = \"1.0.0\"\nkind = \"verification\"\nprofile = \"implementation\"\n").unwrap();
         let path = repo.join(".af/task-catalog.toml");
         let mut catalog: toml::Value =
             toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
@@ -476,7 +476,7 @@ fn verification_replay_refuses_hidden_or_overridden_review(state: &Path, inspect
         .task_projection(&cas, "pagination-cli")
         .unwrap()
         .unwrap();
-    let plan: af_contracts::task::plan::ExecutionPlanV3 = serde_json::from_value(
+    let plan: af_contracts::task::plan::ExecutionPlan = serde_json::from_value(
         cas.get_artifact(projection.plan_id.as_ref().unwrap())
             .unwrap()
             .payload,

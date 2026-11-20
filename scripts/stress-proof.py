@@ -46,11 +46,11 @@ ROOT = Path(__file__).resolve().parent.parent
 FAMILIES = (
     'task_starters::heavy_starter_repair_uses_current_evidence',
     'task_repair::interrupted_fix_verification_resumes_same_continuation_and_charges_the_lost_attempt',
-    'campaign_loop::trusted_reuse_keeps_evidence_satisfaction_current_after_head_change',
-    'campaign_loop::waiver_remains_current_when_the_subject_advances',
+    'review_decisions::satisfied_evidence_becomes_stale_on_a_real_new_subject_and_requires_explicit_reuse',
+    'review_decisions::waiver_remains_current_when_the_native_subject_advances',
     'telemetry_runs::telemetry_tail_follows_a_live_run_within_the_flush_latency',
     'task_file::captured_task_kind_packages_keep_business_names_and_domain_acceptance',
-    'review_plan_refusals::first_run_refusals_name_the_fix',
+    'task_file::native_review_preflight_commands_inspect_real_task_documents_and_refuse_empty_diff',
 )
 BINARY = 'af::it'
 SAMPLE_SECONDS = 1.0

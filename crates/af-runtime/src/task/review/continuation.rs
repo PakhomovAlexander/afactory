@@ -37,6 +37,23 @@ pub(super) fn signature() -> OperatorSignature {
 }
 
 impl ReviewTaskDomain {
+    pub(super) fn validate_continuation_binding(
+        &self,
+        cas: &Cas,
+        id: &str,
+        subject: &ResolvedReviewSubject,
+        input: &TaskInvocationV1,
+    ) -> Result<(), String> {
+        if envelope(cas, id)?.artifact_type
+            == af_contracts::task::native_review::TASK_REVIEW_COMMIT_V1
+        {
+            self.restore_integration_commit(cas, id, subject, input)
+                .map(|_| ())
+        } else {
+            self.restore_continuation(cas, id, subject, input)
+                .map(|_| ())
+        }
+    }
     fn continuation(
         &self,
         cas: &Cas,
@@ -96,7 +113,7 @@ impl ReviewTaskDomain {
         &self,
         cas: &Cas,
         id: &str,
-        subject: &TaskReviewSubjectV1,
+        subject: &ResolvedReviewSubject,
         input: &TaskInvocationV1,
     ) -> Result<TaskReviewContinuationV1, String> {
         let artifact = envelope(cas, id)?;

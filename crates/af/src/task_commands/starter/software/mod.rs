@@ -65,9 +65,9 @@ pub(super) fn definition(
     incoming: Ports,
     outgoing: Ports,
     attempts: u32,
-) -> PipelineDefinitionV1 {
-    PipelineDefinitionV1 {
-        schema: PipelineSchema::V1,
+) -> PipelineDefinition {
+    PipelineDefinition {
+        schema: PipelineSchema::V6,
         name: format!("builtin/{name}"),
         version: "1.0.0".into(),
         contract: PipelineContractV1 {
@@ -86,7 +86,7 @@ pub(super) fn definition(
         max_parallel: 2,
     }
 }
-pub(super) fn cover(pipeline: &mut PipelineDefinitionV1, obligation: &str, port: &str) {
+pub(super) fn cover(pipeline: &mut PipelineDefinition, obligation: &str, port: &str) {
     pipeline
         .contract
         .outputs
@@ -182,7 +182,7 @@ pub(super) fn worker_definition(
     }
 }
 
-fn verification(evaluator: &TaskWorkerManifest) -> PipelineDefinitionV1 {
+fn verification(evaluator: &TaskWorkerManifest) -> PipelineDefinition {
     let mut p = definition(
         "verification",
         "verification",
@@ -244,7 +244,7 @@ fn implementation(
     implementer: &TaskWorkerManifest,
     evaluator: &TaskWorkerManifest,
     heavy: bool,
-) -> PipelineDefinitionV1 {
+) -> PipelineDefinition {
     let maximum = if heavy { 2 } else { 1 };
     let mut p = definition(
         if heavy {
@@ -312,7 +312,7 @@ fn implementation(
     p
 }
 
-fn review(correctness: &TaskWorkerManifest, bugs: &TaskWorkerManifest) -> PipelineDefinitionV1 {
+fn review(correctness: &TaskWorkerManifest, bugs: &TaskWorkerManifest) -> PipelineDefinition {
     let mut base = port(SOURCE_TREE_V1);
     base.optional = true;
     let mut continuation = same(TASK_REVIEW_CONTINUATION_V1);
@@ -389,7 +389,7 @@ fn review(correctness: &TaskWorkerManifest, bugs: &TaskWorkerManifest) -> Pipeli
     p
 }
 
-fn review_heavy(light: &PipelineDefinitionV1) -> PipelineDefinitionV1 {
+fn review_heavy(light: &PipelineDefinition) -> PipelineDefinition {
     let mut p = light.clone();
     p.name = "builtin/review-heavy".into();
     p.max_attempts = 6;
@@ -433,7 +433,7 @@ fn reviewed(
     implementer: &TaskWorkerManifest,
     correctness: &TaskWorkerManifest,
     bugs: &TaskWorkerManifest,
-) -> PipelineDefinitionV1 {
+) -> PipelineDefinition {
     let mut p = definition(
         "implementation-reviewed",
         "implement",
@@ -511,7 +511,7 @@ fn repair(
     repairer: &TaskWorkerManifest,
     verifier: &TaskWorkerManifest,
     heavy: bool,
-) -> PipelineDefinitionV1 {
+) -> PipelineDefinition {
     let mut p = definition(
         if heavy {
             "repair-heavy"
@@ -628,11 +628,11 @@ fn repair(
 }
 
 fn reviewed_repair(
-    base: &PipelineDefinitionV1,
+    base: &PipelineDefinition,
     repairer: &TaskWorkerManifest,
     verifier: &TaskWorkerManifest,
     heavy: bool,
-) -> PipelineDefinitionV1 {
+) -> PipelineDefinition {
     let mut p = base.clone();
     p.name = format!(
         "builtin/implementation-repair-{}",
@@ -747,9 +747,9 @@ fn reviewed_repair(
 // Review and goal acceptance refer to the selected final Snapshot. Keep Review's original
 // Snapshot artifact and reuse its exact checks; the evaluator has one protected Attempt.
 fn with_goal_acceptance(
-    mut p: PipelineDefinitionV1,
+    mut p: PipelineDefinition,
     evaluator: &TaskWorkerManifest,
-) -> PipelineDefinitionV1 {
+) -> PipelineDefinition {
     let authors: Vec<_> = ["implementer", "repairer"]
         .into_iter()
         .filter(|s| p.slots.contains_key(*s))
@@ -823,7 +823,7 @@ pub(super) fn payload_schema(bytes: &[u8]) -> Result<Value, String> {
     object.remove("$id");
     object.remove("$schema");
     let contracts: Value = serde_json::from_slice(include_bytes!(
-        "../../../../../../schemas/task-contracts-v3.json"
+        "../../../../../../schemas/task-contracts-v4.json"
     ))
     .map_err(|e| e.to_string())?;
     fn localize(
@@ -834,7 +834,7 @@ pub(super) fn payload_schema(bytes: &[u8]) -> Result<Value, String> {
         match value {
             Value::Object(object) => {
                 if let Some(reference) = object.get("$ref").and_then(Value::as_str) {
-                    if reference == "urn:af:schema:task-contracts:3#/$defs/digest" {
+                    if reference == "urn:af:schema:task-contracts:4#/$defs/digest" {
                         *value = digest.clone();
                         return Ok(());
                     }
@@ -931,7 +931,7 @@ pub(super) fn files(developer_key: Option<String>) -> Result<BTreeMap<String, Ve
         ("requirements", optional_requirements()),
         ("source", port(SOURCE_TREE_V1)),
         ("history", port(REVIEW_HISTORY_V1)),
-        ("subject", same(TASK_REVIEW_SUBJECT_V2)),
+        ("subject", same(TASK_REVIEW_SUBJECT_V3)),
         ("assignment", same(TASK_REVIEW_ASSIGNMENT_V1)),
         ("checks", same(TASK_CHECK_RECEIPT_V2)),
     ]);
@@ -1014,7 +1014,7 @@ pub(super) fn files(developer_key: Option<String>) -> Result<BTreeMap<String, Ve
     ]);
     let mut packages = BTreeMap::new();
     let mut contracts = CatalogContractFixtures {
-        schema: "af.catalog-contract-fixtures/1".into(),
+        schema: "af.catalog-contract-fixtures/2".into(),
         pipelines: BTreeMap::new(),
         workers: BTreeMap::new(),
         kinds: BTreeMap::new(),

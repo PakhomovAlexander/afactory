@@ -19,9 +19,9 @@ use serde::{Deserialize, Serialize};
 pub(crate) enum StoreKind {
     /// A Task Store (`af task … --state DIR`).
     Task,
-    /// One review campaign's Store (`af review run --state DIR`).
+    /// An explicitly registered Review Store, retained independently of frontend execution.
     Review,
-    /// A directory of review campaign Stores (`af review … --state-root DIR`).
+    /// An explicitly registered directory of Review Stores; no execution authority.
     ReviewRoot,
     /// A Project Store, `$XDG_STATE_HOME/af/project/<hex>` (ADR-0158). The registry that can hold
     /// it is version 2 (ADR-0145).

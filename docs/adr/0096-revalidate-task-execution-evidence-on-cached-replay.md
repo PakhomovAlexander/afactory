@@ -1,7 +1,8 @@
 # ADR-0096: Revalidate Task execution evidence on cached replay
 
 Date: 2026-09-13
-Status: Accepted
+Status: Accepted; unchanged-observation reuse superseded in part by
+[the Task observation decision](2026-11-10-reuse-validated-artifacts-for-task-observation.md).
 
 ## Context
 

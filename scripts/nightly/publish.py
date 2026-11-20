@@ -14,7 +14,7 @@ as `build` left it, creates the pre-release of tag nightly-YYYY.MM.DD at its hea
 digest.md as its notes, uploads the two archives, SHA256SUMS, SHA256SUMS.minisig,
 nightly.json, daily.json and report.html, sends digest.md as one plain-text Telegram message, prunes the nightly
 pre-releases beyond the newest `keep_nights`, writes builds_root/<date>/publish.json
-(af.nightly-publish/1) and prints the release URL. A later `publish` of the night amends it:
+(af.nightly-publish/2) and prints the release URL. A later `publish` of the night amends it:
 the shipped archives, sums, signature and record must be the ones on the release, and only the
 notes, daily.json and report.html are replaced. A `skipped` night publishes nothing and sends
 one line. docs/nightly.md is the operator page.
@@ -64,7 +64,7 @@ class Failed(Exception):
 # Configuration and secrets ------------------------------------------------------------------
 
 def load_config(path):
-    """The af.nightly-config/1 TOML at `path`, validated; its `[publish]` table is required."""
+    """The af.nightly-config/2 TOML at `path`, validated; its `[publish]` table is required."""
     try:
         with open(path, "rb") as stream:
             data = stream.read(toml_file.MAX_TOML_BYTES + 1)
@@ -420,6 +420,41 @@ def previous_receipt(path, record):
     return receipt
 
 
+def reconcile(config, record, receipt, directory, github, run):
+    """Read-only completion proof against the sealed build and certified report.
+
+    A receipt records an outcome, never authority to recreate, amend or prune a remote.
+    """
+    contracts.validate_nightly_publish(receipt)
+    if (receipt["date"], receipt["tag"], receipt["head_sha"], receipt["repository"], receipt["status"]) != (
+            record["date"], record["tag"], record["head_sha"], config["repository"], "published"):
+        raise Refused("publication receipt identity differs")
+    if (receipt["failures"] or receipt["foreign"] or receipt["prune_failures"]
+            or record["tag"] in receipt["pruned"]
+            or config["publish"].get("telegram_token_file") and receipt["telegram"] is None):
+        raise Refused("publication incomplete; failed or pruned receipt retained")
+    shipped = verify_night(config, record, run)
+    report, notes = read_report(directory, record, config["repository"])
+    if github.repository != config["repository"]:
+        raise Refused("publication repository differs")
+    if github.tag_commit(record["tag"]) != record["head_sha"]:
+        raise Refused("remote tag absent or changed; no repeated mutation authorized")
+    release = github.release_by_tag(record["tag"])
+    if release is None:
+        raise Refused("remote release absent; no repeated mutation authorized")
+    check_release_response(release, record, config["repository"])
+    if ({"id": release["id"], "url": release["html_url"]} != receipt["release"]
+            or release["body"] != notes):
+        raise Refused("remote release identity or certified notes changed")
+    files = dict(shipped, **report)
+    by_name = {item["name"]: item for item in release["assets"]}
+    if len(by_name) != len(release["assets"]) or set(by_name) != set(files):
+        raise Refused("remote asset set differs from sealed build and certified report")
+    assets = [reported(name, by_name[name], files[name]) for name in release_assets(record["tag"])]
+    if assets != receipt["assets"]:
+        raise Refused("receipt assets differ from sealed build and certified report")
+
+
 def write_receipt(path, receipt):
     data = contracts.write_bytes(receipt, "nightly-publish")
     with open(path + ".tmp", "wb") as stream:
@@ -427,6 +462,11 @@ def write_receipt(path, receipt):
         stream.flush()
         os.fsync(stream.fileno())
     os.replace(path + ".tmp", path)
+    parent = os.open(os.path.dirname(path), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(parent)
+    finally:
+        os.close(parent)
 
 
 def publish(config, args, github, telegram_send, run, clock):
@@ -440,7 +480,7 @@ def publish(config, args, github, telegram_send, run, clock):
     receipt = {"schema": contracts.CONTRACTS["nightly-publish"][0], "date": record["date"],
                "tag": record["tag"], "head_sha": record["head_sha"],
                "repository": config["repository"], "pruned": [], "prune_failures": [],
-               "foreign": []}
+               "foreign": [], "failures": []}
     failures = []
     if record["status"] == "skipped":
         receipt.update(status="skipped", release=None, assets=[])
@@ -469,11 +509,15 @@ def publish(config, args, github, telegram_send, run, clock):
                                  or amended and not args.notify_again):
         receipt.update(telegram=previous["telegram"],
                        telegram_reason=previous["telegram_reason"])
+        receipt["failures"].extend(item for item in previous["failures"]
+                                   if item["stage"] == "notification")
+        failures.extend(item["reason"] for item in receipt["failures"])
     else:
         sent, reason, failure = notify(telegram, text)
         receipt.update(telegram=sent, telegram_reason=reason)
         if failure:
             failures.append(failure)
+            receipt["failures"].append({"stage": "notification", "reason": failure[:1024]})
     if record["status"] == "built":
         # The release and the message are out: a pruning failure is reported beside them.
         pruned, prune_failures, foreign = [], [], []
@@ -482,9 +526,11 @@ def publish(config, args, github, telegram_send, run, clock):
                   record["tag"], pruned, prune_failures, foreign)
         except Refused as error:
             failures.append("nightly: failed: pruning: %s" % error)
+            receipt["failures"].append({"stage": "pruning", "reason": str(error)[:1024]})
         receipt.update(pruned=sorted(pruned), prune_failures=prune_failures, foreign=foreign)
         failures += ["nightly: refused: %s is a nightly-named release that is a draft or not "
                      "a pre-release: foreign, never pruned" % tag for tag in foreign]
+    receipt["failures"].extend({"stage": "foreign", "reason": tag} for tag in receipt["foreign"])
     receipt.update(amendments=(previous["amendments"] + 1 if previous is not None else 1)
                    if amended else 0, published_unix_ms=clock())
     write_receipt(path, receipt)
@@ -506,7 +552,7 @@ def parse(argv):
     commands.required = True
     command = commands.add_parser("publish", help="publish the night's pre-release, send its "
                                   "digest and prune old nightlies")
-    command.add_argument("--config", required=True, help="the af.nightly-config/1 TOML with "
+    command.add_argument("--config", required=True, help="the af.nightly-config/2 TOML with "
                          "its [publish] table")
     nightly_chain.add_night_options(command)
     directory = command.add_mutually_exclusive_group()

@@ -427,7 +427,7 @@ class RequestIdentity(TempDir):
                 request, line = self.recorded(instance_id)
                 self.assertIs(oracle.check_request(self.doc, request), request)
                 extra = {}
-                if request["contract_id"] == "persistence_fs_v1":
+                if request["contract_id"] == "persistence_fs_v3":
                     expected = reference.persistence_logical_bytes(
                         request["parameters"]["operation"])
                     extra = {"logical_bytes": {"value": str(expected or 4096),
@@ -704,6 +704,8 @@ def supervised_reply(stdout, lifecycle="clean", termination=None):
                    "before_launch_ns": "1", "cleanup_ns": "1", "after_exit_ns": "1"},
         "stdout": {"retained": len(stdout), "total": len(stdout), "truncated": 0},
         "stderr": {"retained": 0, "total": 0, "truncated": 0},
+        # No evidence transfer was requested by these ordinary probe cases.
+        "evidence": None,
         "stdout_pattern_counts": [], "stdout_json": None, "setup": None,
         "lifecycle": {"observation": observation, "descendants_at_exit": counts[0],
                       "remaining_after_cleanup": counts[1], "pipes_held": False,

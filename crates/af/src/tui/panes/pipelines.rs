@@ -7,7 +7,7 @@
 //! authority, into a scratch Store that is discarded, on a thread the event loop polls. No
 //! Store is written, nothing is admitted and no Worker runs. Until that plan lands, and when
 //! the kernel refuses it, the committed declaration is drawn as the same kind of tree; a
-//! review Pipeline, which no plan compiles without a diff, is always drawn that way. No pane
+//! retired Campaign declaration is refused with native Task replacement usage. No pane
 //! prints a declaration's TOML; `gf` opens the file.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -16,11 +16,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
-use af_contracts::DemandRequirement;
 use af_contracts::task::pipeline::{
-    PipelineDefinitionV1, ReceiptOutcomeV1, TaskOperatorV1, WorkerSlotV1,
+    PipelineDefinition, ReceiptOutcomeV1, TaskOperatorV1, WorkerSlotV1,
 };
-use af_pipeline_config::{CommandSpec, Definition as ReviewDefinition, NodeKindSpec, SeveritySpec};
 use toml::Value;
 
 use super::{Effect, Pane, Row, SPINNER};
@@ -64,7 +62,7 @@ pub(crate) fn preview_task(name: &str, kind: &str, max_attempts: u64) -> serde_j
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Source {
-    /// A review Pipeline under `.af/pipelines/`: planned against a diff, not a Task.
+    /// A retired Campaign Pipeline under `.af/pipelines/`, displayed only as a refusal.
     Review,
     /// A pipeline package, with the kind and Attempt bound its preview Task takes.
     Package {
@@ -347,7 +345,7 @@ impl PipelinesPane {
     fn package_rows(&self, entry: &Entry, at: usize) -> Declared {
         let mut rows = Vec::new();
         let mut marks = BTreeMap::new();
-        let definition: PipelineDefinitionV1 = match toml::from_str(&entry.declaration) {
+        let definition: PipelineDefinition = match toml::from_str(&entry.declaration) {
             Ok(definition) => definition,
             Err(error) => {
                 let heading = format!("PIPE  {} ({})", entry.label, entry.id);
@@ -395,7 +393,7 @@ impl PipelinesPane {
     #[allow(clippy::too_many_arguments)]
     fn node_rows(
         &self,
-        definition: &PipelineDefinitionV1,
+        definition: &PipelineDefinition,
         bound: &BTreeMap<String, WorkerSlotV1>,
         prefix: &str,
         stack: &mut Vec<String>,
@@ -442,8 +440,7 @@ impl PipelinesPane {
                     });
                     if let Some(callee) = callee
                         && !stack.contains(pipeline)
-                        && let Ok(inner) =
-                            toml::from_str::<PipelineDefinitionV1>(&callee.declaration)
+                        && let Ok(inner) = toml::from_str::<PipelineDefinition>(&callee.declaration)
                     {
                         // `child = "parent"` binds the callee's slot to the caller's.
                         let inner_bound: BTreeMap<String, WorkerSlotV1> = bindings
@@ -820,154 +817,25 @@ struct Declared {
 /// package or runner, its gate and its Demand classification, the way `af task explain --tree`
 /// draws a plan. No diff is planned, so no Round, binding or Provider appears; the command that
 /// plans one is named last.
-fn review_rows(entry: &Entry, at: usize) -> Declared {
-    let heading = format!("PIPE  {} ({})  [review pipeline]", entry.label, entry.id);
-    let mut rows = vec![Row::painted(heading, Paint::Title), Row::blank()];
-    let mut marks = BTreeMap::new();
-    let definition: ReviewDefinition = match toml::from_str(&entry.declaration) {
-        Ok(definition) => definition,
-        Err(error) => {
-            let why =
-                format!("the committed declaration is not a review pipeline af reads: {error}");
-            rows.extend(Row::errors("error", why.lines()));
-            rows.push(Row::painted("gf opens the file", Paint::Muted));
-            return Declared { rows, marks };
-        }
-    };
-    let subject = definition.subject.map_or_else(
-        || "not declared".to_owned(),
-        |subject| subject.kind.to_string(),
-    );
-    rows.push(Row::plain(format!("subject   {subject}")));
-    let convergence = definition.convergence;
-    rows.push(Row::plain(format!(
-        "rounds    {} clean, {} at most, gate {}",
-        convergence.clean_rounds,
-        convergence.max_rounds,
-        severity_word(convergence.gate)
-    )));
-    if let Some(budget) = definition.budgets {
-        let fan_out = budget
-            .fan_out
-            .map_or(String::new(), |cap| format!(", {cap} per scatter"));
-        rows.push(Row::plain(format!(
-            "budget    {} tokens per attempt, {} per run{fan_out}",
-            budget.attempt, budget.run
-        )));
-    }
-    if definition.checks.is_empty() {
-        rows.push(Row::plain("checks    none"));
-    }
-    for (index, check) in definition.checks.iter().enumerate() {
-        let lead = if index == 0 {
-            "checks    "
-        } else {
-            "          "
-        };
-        let optional = if check.required { "" } else { "  (optional)" };
-        rows.push(Row::plain(format!(
-            "{lead}{}  {}{optional}",
-            check.name,
-            command_text(&check.command)
-        )));
-    }
-    rows.push(Row::blank());
-    // What feeds each node, from the edges: in declared order, each once.
-    let mut fed: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    for edge in &definition.edges {
-        let from = fed.entry(edge.to.node.as_str()).or_default();
-        if !from.contains(&edge.from.node.as_str()) {
-            from.push(edge.from.node.as_str());
-        }
-    }
-    let checks: Vec<&str> = definition
-        .checks
-        .iter()
-        .map(|check| check.name.as_str())
-        .collect();
-    let count = definition.nodes.len();
-    for (index, node) in definition.nodes.iter().enumerate() {
-        let branch = if index + 1 == count { "'-- " } else { "+-- " };
-        let kind = kind_word(node.kind);
-        let mut parts: Vec<String> = Vec::new();
-        // A node named after its kind says it once; a reviewer's kind leads its binding.
-        if node.id != kind && !matches!(node.kind, NodeKindSpec::Reviewer | NodeKindSpec::Scatter) {
-            parts.push(kind.to_owned());
-        }
-        match node.kind {
-            NodeKindSpec::Gate => parts.push(if checks.is_empty() {
-                "no checks".to_owned()
-            } else {
-                format!("checks {}", checks.join(", "))
-            }),
-            NodeKindSpec::Reviewer | NodeKindSpec::Scatter => {
-                let (bound, mark) = match (&node.package, &node.runner) {
-                    (Some(package), _) => (format!("-> {package}"), format!("package {package}")),
-                    (None, Some(runner)) => (
-                        format!("-> runner {}", runner.program),
-                        format!("runner {}", command_text(runner)),
-                    ),
-                    (None, None) => ("-> unbound".to_owned(), "no package or runner".to_owned()),
-                };
-                marks.insert(at + rows.len(), format!("{}: {mark}", node.id));
-                parts.push(format!("{kind} {bound}"));
-                if let Some(gate) = &node.gated_by {
-                    parts.push(format!("after {gate}"));
-                }
-                let demands = match node.demands {
-                    Some(DemandRequirement::Advisory) => "advisory",
-                    _ => "required",
-                };
-                parts.push(format!("demands {demands}"));
-            }
-            _ => {
-                if let Some(from) = fed.get(node.id.as_str()) {
-                    parts.push(format!("<- {}", from.join(", ")));
-                }
-            }
-        }
-        let mut line = format!("{branch}{}", node.id);
-        for part in parts {
-            line.push_str("  ");
-            line.push_str(&part);
-        }
-        rows.push(Row::plain(line));
-    }
-    rows.push(Row::blank());
-    let why = "planned against a diff the browser does not hold; token-free:";
-    rows.push(Row::painted(why, Paint::Muted));
-    rows.push(Row::painted(
-        format!("  af review plan --pipeline {}", entry.id),
-        Paint::Muted,
-    ));
-    Declared { rows, marks }
-}
-
-/// A check's or runner's command line, program first.
-fn command_text(command: &CommandSpec) -> String {
-    std::iter::once(command.program.as_str())
-        .chain(command.args.iter().map(|arg| arg.value.as_str()))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn severity_word(severity: SeveritySpec) -> &'static str {
-    match severity {
-        SeveritySpec::Blocker => "blocker",
-        SeveritySpec::Major => "major",
-        SeveritySpec::Minor => "minor",
-    }
-}
-
-fn kind_word(kind: NodeKindSpec) -> &'static str {
-    match kind {
-        NodeKindSpec::Generation => "generation",
-        NodeKindSpec::Gate => "gate",
-        NodeKindSpec::Reviewer => "reviewer",
-        NodeKindSpec::Slicer => "slicer",
-        NodeKindSpec::Scatter => "scatter",
-        NodeKindSpec::Gather => "gather",
-        NodeKindSpec::Ledger => "ledger",
+fn review_rows(entry: &Entry, _at: usize) -> Declared {
+    Declared {
+        rows: vec![
+            Row::painted(
+                format!(
+                    "PIPE  {} ({})  [retired Campaign configuration]",
+                    entry.label, entry.id
+                ),
+                Paint::Title,
+            ),
+            Row::blank(),
+            Row::plain(
+                "Campaign pipeline definitions are refused; no compatibility reader is installed.",
+            ),
+            Row::plain("Use a native Review Pipeline pinned by the .af/task-catalog.toml catalog."),
+            Row::plain("  af review plan --file ../review.json --base HEAD --uncommitted"),
+            Row::painted("gf opens the retired file for replacement", Paint::Muted),
+        ],
+        marks: BTreeMap::new(),
     }
 }
 
@@ -1941,29 +1809,13 @@ mod tests {
         pane.load(&scope(root)).unwrap();
         pane.open(Some(".af/pipelines/review.toml"));
         let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
-        let head = [
-            "PIPE  review (.af/pipelines/review.toml)  [review pipeline]",
-            "",
-            "subject   diff",
-            "rounds    1 clean, 1 at most, gate major",
-            "budget    400000 tokens per attempt, 400000 per run",
-            "checks    none",
-            "",
-            "+-- gate  no checks",
-            "+-- generation",
-            "+-- correctness  reviewer -> correctness  after gate  demands required",
-            "+-- gather  <- correctness",
-            "'-- ledger  <- gather",
-            "",
-            "planned against a diff the browser does not hold; token-free:",
-            "  af review plan --pipeline .af/pipelines/review.toml",
-        ];
-        assert_eq!(rows, head, "{rows:#?}");
-        assert_eq!(
-            pane.status(9).as_deref(),
-            Some("correctness: package correctness")
+        assert!(rows[0].ends_with("[retired Campaign configuration]"));
+        assert!(rows.iter().any(|r| r.contains("no compatibility reader")));
+        assert!(
+            rows.iter()
+                .any(|r| r.contains("af review plan --file ../review.json"))
         );
-        assert_eq!(pane.status(8), None);
+        assert_eq!(pane.status(9), None);
         assert!(
             pane.busy().is_none(),
             "nothing is compiled for a review pipeline"
@@ -2000,7 +1852,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("{needle}: {rows:#?}"))
         };
         let title = at(
-            "PIPE  fixture/implementation@1.0.0 (.af/task-packages/fixture/shadow/pipeline.toml)  [declared]",
+            "PIPE  fixture/implementation@1.0.1 (.af/task-packages/fixture/shadow/pipeline.toml)  [declared]",
         );
         let implement =
             at("+-- implement  worker implementer -> fixture/implementer  attempts 1..1");
@@ -2088,7 +1940,7 @@ mod tests {
         pane.open(Some(".af/task-packages/fixture/outer/pipeline.toml"));
         let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
         let tree = [
-            "PIPE  fixture/outer@1.0.0 (.af/task-packages/fixture/outer/pipeline.toml)  [declared]",
+            "PIPE  fixture/outer@1.0.1 (.af/task-packages/fixture/outer/pipeline.toml)  [declared]",
             "attempts  3 at most, 2 in parallel",
             "",
             "+-- implement  call fixture/implementation",

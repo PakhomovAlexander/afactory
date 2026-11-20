@@ -6,7 +6,7 @@
 pub mod acceptance;
 pub mod agent_loop;
 pub mod attempt_wall;
-pub mod campaign_review;
+pub mod check_containment;
 pub mod check_layer;
 pub mod check_report;
 pub mod collection;
@@ -24,8 +24,10 @@ pub mod gate_retry;
 pub mod handoff;
 pub mod input_bindings;
 pub mod knowledge;
+pub mod lifecycle;
 pub mod limits_fit;
 pub mod measurement;
+pub mod native_review;
 pub mod optimization;
 pub mod optimization_experiment;
 pub mod optimization_light;
@@ -41,8 +43,8 @@ pub mod repair;
 pub mod report_domain;
 pub mod review;
 pub mod review_context;
-pub mod review_handoff;
-pub mod review_integration;
+pub mod review_decisions;
+pub mod review_ledger;
 pub mod run_report;
 pub mod runtime;
 pub mod seal;
@@ -51,6 +53,7 @@ pub mod state;
 pub mod storage_sweep;
 pub mod usage;
 pub mod verification;
+pub mod wake;
 
 use std::collections::{BTreeMap, BTreeSet};
 

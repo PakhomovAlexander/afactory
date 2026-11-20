@@ -4,7 +4,7 @@ use super::host::TaskDomain;
 use super::*;
 use af_contracts::task::feedback::*;
 use af_contracts::task::pipeline::TaskOperatorV1;
-use af_contracts::task::plan::ExecutionPlanV3;
+use af_contracts::task::plan::ExecutionPlan;
 use af_contracts::task::planning::*;
 use af_contracts::task::{TaskAcceptanceV1, TaskResultV1};
 use af_pipeline_config::task::catalog::TaskPlanCompiler;
@@ -113,7 +113,7 @@ impl TaskDomain for PlanningTaskDomain<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         _definition: &af_graph::task::CompiledNode,
@@ -253,11 +253,18 @@ impl TaskOperatorHost for PlanningTaskHost<'_> {
     }
 }
 impl TaskDomain for PlanningTaskHost<'_> {
+    fn admit_worker_signature(
+        &self,
+        signature: &af_graph::task::OperatorSignature,
+    ) -> Result<(), String> {
+        self.inner.admit_worker_signature(signature)
+    }
+
     fn validate_retry(
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
         input: &TaskInvocationV1,
         previous: &BTreeMap<String, af_contracts::task::execution::TaskAttemptResultV1>,
     ) -> Result<(), String> {
@@ -276,7 +283,7 @@ impl TaskDomain for PlanningTaskHost<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         definition: &af_graph::task::CompiledNode,

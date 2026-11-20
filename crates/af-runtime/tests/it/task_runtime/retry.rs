@@ -31,7 +31,7 @@ impl TaskDomain for NoRetry {
         &self,
         cas: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV3,
+        _: &ExecutionPlan,
         input: &TaskInvocationV1,
         previous: &BTreeMap<String, TaskAttemptResultV1>,
     ) -> Result<(), String> {
@@ -58,7 +58,7 @@ impl TaskDomain for NoRetry {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         definition: &af_graph::task::CompiledNode,

@@ -1,6 +1,6 @@
 //! The CLI selects from exact shared definitions without creating a Planner invocation.
 use crate::task_cli;
-use af_contracts::task::pipeline::PipelineDefinitionV1;
+use af_contracts::task::pipeline::PipelineDefinition;
 use serde_json::{Value, json};
 use std::path::Path;
 use std::process::Command;
@@ -38,7 +38,7 @@ fn save_catalog(repo: &Path, catalog: &toml::Value) {
     )
     .unwrap();
 }
-fn original(repo: &Path) -> PipelineDefinitionV1 {
+fn original(repo: &Path) -> PipelineDefinition {
     toml::from_str(
         &std::fs::read_to_string(
             repo.join(".af/task-packages/fixture/implementation/pipeline.toml"),
@@ -47,7 +47,7 @@ fn original(repo: &Path) -> PipelineDefinitionV1 {
     )
     .unwrap()
 }
-fn pipeline(repo: &Path, catalog: &mut toml::Value, pipeline: &PipelineDefinitionV1) {
+fn pipeline(repo: &Path, catalog: &mut toml::Value, pipeline: &PipelineDefinition) {
     let path = format!(".af/task-packages/{}", pipeline.name);
     let directory = repo.join(&path);
     std::fs::create_dir_all(&directory).unwrap();
@@ -58,7 +58,7 @@ fn pipeline(repo: &Path, catalog: &mut toml::Value, pipeline: &PipelineDefinitio
     .unwrap();
     catalog["packages"].as_table_mut().unwrap().insert(
         pipeline.name.clone(),
-        toml::Value::try_from(json!({"version":"1.0.0","path":path,
+        toml::Value::try_from(json!({"version":pipeline.version,"path":path,
             "digest":af_pipeline_config::lock::package_digest(&pipeline.name, &directory).unwrap()}))
         .unwrap(),
     );

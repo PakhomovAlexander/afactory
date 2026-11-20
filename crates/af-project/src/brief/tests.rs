@@ -408,7 +408,7 @@ fn a_bound_brief_port_constructs_nothing_and_only_selectable_pipelines_count() {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
     let text = std::fs::read(root.join("fixtures/task-contracts/v2/pipeline-definition.json"));
-    let oriented: PipelineDefinitionV1 = serde_json::from_slice(&text.unwrap()).unwrap();
+    let oriented: PipelineDefinition = serde_json::from_slice(&text.unwrap()).unwrap();
     assert_eq!(
         oriented.contract.inputs["project"].root_default,
         Some(RootDefaultV1::ProjectBrief)

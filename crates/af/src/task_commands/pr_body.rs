@@ -135,17 +135,18 @@ fn incomplete(text: &str) -> Option<Incomplete> {
 }
 
 /// The table header and its separator row, as `scripts/pr-lines.py` writes them.
-const HEADER: [&str; 3] = ["Directory", "Added", "Share"];
-const SEPARATOR_ROW: &str = "|:--|--:|:--|";
-/// The eighth blocks a share's bar is drawn with.
-const BLOCKS: &str = "▏▎▍▌▋▊▉█";
+const HEADER: [&str; 5] = ["Area", "Changes", "+", "−", "Share of additions"];
+const INDENT: &str = "&nbsp;&nbsp;&nbsp;&nbsp;";
+const KINDS: [&str; 3] = ["main", "tests", "other"];
+const SEPARATOR_ROW: &str = "|:--|--:|:--|:--|:--|";
 
 /// What is wrong with the block's body `lines`, by the rules of `parse` in
 /// `scripts/pr-lines.py`, which `scripts/check-pr-report.py` reads the block with: the title
 /// `**Lines added: <figure>**`, then the table header, its separator and at least one row per
-/// directory, each directory once; or `**Lines added: none**` alone. Blank lines do not count.
-/// `None` when the parser reads it back. A figure or share in non-ASCII digits, which the
-/// script never prints, is refused here even where Python's `\d` would read it.
+/// directory, with crates and their code kinds nested in the same table; or
+/// `**Lines added: none**` alone. Blank lines do not count.
+/// `None` when the parser reads it back. Numeric correctness belongs to canonical regeneration
+/// from commits: rounded figures cannot prove exact parent sums.
 fn body_problem(lines: &[&str]) -> Option<String> {
     let lines: Vec<&str> = lines
         .iter()
@@ -190,39 +191,157 @@ fn body_problem(lines: &[&str]) -> Option<String> {
         let inner = inner.strip_suffix(':').unwrap_or(inner);
         !inner.is_empty() && inner.bytes().all(|b| b == b'-')
     };
-    if !row_cells(lines[2]).is_some_and(|cells| cells.len() == 3 && cells.iter().all(separator)) {
+    if !row_cells(lines[2]).is_some_and(|cells| cells.len() == 5 && cells.iter().all(separator)) {
         return Some(format!(
             "its block's header is not followed by its separator `{SEPARATOR_ROW}`: `{}`",
             shown(lines[2])
         ));
     }
-    let mut names: Vec<String> = Vec::new();
+    let mut paths = Vec::new();
+    let mut stack: Vec<(String, bool, String)> = Vec::new();
+    let mut branches = Vec::new();
+    let mut parents = Vec::new();
     for line in &lines[3..] {
-        let Some([name, figure, share]) =
-            row_cells(line).and_then(|c| <[String; 3]>::try_from(c).ok())
+        let Some([area, changes, added_bar, deleted_bar, share]) =
+            row_cells(line).and_then(|c| <[String; 5]>::try_from(c).ok())
         else {
-            return Some(format!(
-                "its block has a line that is not a row of three cells `| directory | figure | \
-                 bar share |`: `{}`",
-                shown(line)
-            ));
+            return Some("its block has a line that is not a row of five cells".into());
         };
-        if name.is_empty() || !is_figure(&figure) || !is_share(&share) {
-            return Some(format!(
-                "its block has a row that is not `| directory | figure | bar share |` (a figure \
-                 as `412`, `1.5k` or `23k`; the share as `40%` or `<1%` after its bar): `{}`",
-                shown(line)
-            ));
+        let (mut name, mut depth) = (area.as_str(), 0);
+        while let Some(rest) = name.strip_prefix(INDENT) {
+            depth += 1;
+            name = rest;
         }
-        if names.contains(&name) {
-            return Some(format!(
-                "its block has two rows for `{}`",
-                preview::short(&preview::text(&name), 60)
-            ));
+        let unbold = |text: &str| {
+            text.strip_prefix("**")
+                .and_then(|t| t.strip_suffix("**"))
+                .map(str::to_owned)
+        };
+        let bold = unbold(name).is_some();
+        let (name, changes, share) = if bold {
+            let (Some(name), Some(changes), Some(share)) =
+                (unbold(name), unbold(&changes), unbold(&share))
+            else {
+                return Some("its block has an inconsistent bold row".into());
+            };
+            (name, changes, share)
+        } else {
+            (name.to_owned(), changes, share)
+        };
+        let bar_cell = |cell: &str| {
+            if bold && !cell.is_empty() {
+                unbold(cell).filter(|bar| !bar.is_empty())
+            } else {
+                Some(cell.to_owned())
+            }
+        };
+        let (Some(added_bar), Some(deleted_bar)) = (bar_cell(&added_bar), bar_cell(&deleted_bar))
+        else {
+            return Some("its block has an inconsistent bold bar".into());
+        };
+        if depth > 2 || depth > stack.len() {
+            return Some("its block has a missing hierarchy parent".into());
         }
-        names.push(name);
+        stack.truncate(depth);
+        if !safe_name(&name) {
+            return Some("its block has an invalid hierarchy name".into());
+        }
+        let Some((added, deleted)) = changes.strip_prefix('+').and_then(|s| s.split_once("/−"))
+        else {
+            return Some("its block has invalid changes".into());
+        };
+        if !is_figure(added)
+            || !is_figure(deleted)
+            || (added == "0" && deleted == "0")
+            || !is_share(&share)
+        {
+            return Some("its block has invalid changes or share".into());
+        }
+        if !is_bar(&added_bar, added) || !is_bar(&deleted_bar, deleted) {
+            return Some("its block has an invalid addition or deletion bar".into());
+        }
+        if (depth == 0 && !bold)
+            || (depth == 2 && bold)
+            || (depth > 0
+                && (stack[0].0 != "crates"
+                    || (depth == 2 && (!stack[1].1 || !KINDS.contains(&name.as_str())))))
+        {
+            return Some("its block has an invalid hierarchy or bold row".into());
+        }
+        let denominator = stack.last().map_or(total, |row| row.2.as_str());
+        if (denominator == "0" && share != "—")
+            || (denominator != "0" && (share == "—" || (added == "0") != (share == "0%")))
+        {
+            return Some("its block has an invalid addition share denominator".into());
+        }
+        let mut path: Vec<String> = stack.iter().map(|row| row.0.clone()).collect();
+        path.push(name.clone());
+        if paths.contains(&path) {
+            return Some("its block has two rows in the same hierarchy parent".into());
+        }
+        if depth > 0 {
+            parents.push(path[..depth].to_vec());
+        }
+        if depth == 1 && bold {
+            branches.push(path.clone());
+        }
+        paths.push(path);
+        stack.push((name, bold, added.to_owned()));
+    }
+    if branches.iter().any(|path| !parents.contains(path)) {
+        return Some("its block has a hierarchy branch with no children".into());
     }
     None
+}
+
+/// Bars are at most twelve cells: full blocks followed by at most one eighth block.
+/// Exact lengths come from commit regeneration, since printed counts can be rounded.
+fn is_bar(bar: &str, count: &str) -> bool {
+    if bar.is_empty() {
+        return count == "0";
+    }
+    if count == "0" {
+        return false;
+    }
+    let rest = bar.trim_start_matches('█');
+    let full = (bar.len() - rest.len()) / '█'.len_utf8();
+    (rest.is_empty() && full <= 12)
+        || (full < 12 && rest.chars().count() == 1 && "▏▎▍▌▋▊▉".contains(rest))
+}
+
+/// Names contain literal safe characters or canonical numeric entities for syntax/whitespace.
+/// An escaped ampersand cannot become structural indentation or bold markup.
+fn safe_name(mut name: &str) -> bool {
+    let quoted = name.starts_with("&#34;") && name.ends_with("&#34;");
+    let mut whitespace = false;
+    if name.is_empty() {
+        return false;
+    }
+    let escaped = |c: char| {
+        c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c) || "\\|&<>`*_[]~↳\"".contains(c)
+    };
+    while !name.is_empty() {
+        if let Some(rest) = name.strip_prefix("&#") {
+            let Some((digits, rest)) = rest.split_once(';') else {
+                return false;
+            };
+            let Some(c) = digits.parse::<u32>().ok().and_then(char::from_u32) else {
+                return false;
+            };
+            whitespace |= c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c);
+            if !escaped(c) || digits != u32::from(c).to_string() {
+                return false;
+            }
+            name = rest;
+        } else {
+            let c = name.chars().next().expect("nonempty name");
+            if escaped(c) || c == '/' {
+                return false;
+            }
+            name = &name[c.len_utf8()..];
+        }
+    }
+    !whitespace || quoted
 }
 
 /// The cells of a table row written with both outer `|`, a `\|` read as a `|`, each trimmed;
@@ -270,7 +389,7 @@ fn title_figure(line: &str) -> Option<&str> {
 }
 
 /// A count as `scripts/pr-lines.py` writes it: `0`, up to three digits, or up to three digits
-/// with an optional decimal and `k` (`18.9k`).
+/// with an optional decimal and `k` (`18.9k`); thousands have no digit cap.
 fn is_figure(figure: &str) -> bool {
     let digits = |text: &str| {
         (1..=3).contains(&text.len())
@@ -283,6 +402,9 @@ fn is_figure(figure: &str) -> bool {
     let Some(thousands) = figure.strip_suffix('k') else {
         return false;
     };
+    let digits = |text: &str| {
+        !text.is_empty() && !text.starts_with('0') && text.bytes().all(|b| b.is_ascii_digit())
+    };
     match thousands.split_once('.') {
         Some((whole, tenth)) => {
             digits(whole) && tenth.len() == 1 && tenth.bytes().all(|b| b.is_ascii_digit())
@@ -291,17 +413,14 @@ fn is_figure(figure: &str) -> bool {
     }
 }
 
-/// A share as `scripts/pr-lines.py` writes it: a bar of at least one eighth block, one space,
-/// and `<1%` or one to three digits and `%`.
+/// A parent-relative addition percentage, or an undefined zero-denominator share.
 fn is_share(share: &str) -> bool {
-    let Some((bar, percent)) = share.split_once(' ') else {
-        return false;
-    };
-    let number = percent.strip_suffix('%').unwrap_or("");
-    !bar.is_empty()
-        && bar.chars().all(|c| BLOCKS.contains(c))
-        && (percent == "<1%"
-            || ((1..=3).contains(&number.len()) && number.bytes().all(|b| b.is_ascii_digit())))
+    if matches!(share, "—" | "<1%" | "0%" | "100%") {
+        return true;
+    }
+    share.strip_suffix('%').is_some_and(|n| {
+        (1..=2).contains(&n.len()) && !n.starts_with('0') && n.bytes().all(|b| b.is_ascii_digit())
+    })
 }
 
 /// The refusal of a block the script began and did not finish: what it lacks, and the command
@@ -556,14 +675,14 @@ mod tests {
                  print('<!-- /af-pr-lines -->')\n",
                 Err(
                     "its block's title is not followed by the table: the header \
-                     `| Directory | Added | Share |`, its separator `|:--|--:|:--|` and one row \
+                     `| Area | Changes | + | − | Share of additions |`, its separator `|:--|--:|:--|:--|:--|` and one row \
                      per directory",
                 ),
             ),
             (
                 "print('<!-- af-pr-lines:v1 -->')\nprint('**Lines added: 18.9k**')\nprint()\n\
-                 print('| Directory | Added | Share |')\nprint('|:--|--:|:--|')\n\
-                 print('| crates | 18.9k | \u{2588}\u{2588} 100% |')\n\
+                 print('| Area | Changes | + | − | Share of additions |')\nprint('|:--|--:|:--|:--|:--|')\n\
+                 print('| **docs** | **+18.9k/−0** | **████████████** |  | **100%** |')\n\
                  print('<!-- /af-pr-lines -->')\n",
                 Ok(()),
             ),
@@ -597,130 +716,101 @@ mod tests {
         assert_eq!(title_figure("Lines added: 7"), None);
     }
 
-    /// The bodies the parity test reads with both parsers: what `scripts/pr-lines.py` prints,
-    /// and every way a body can depart from it.
-    fn bodies() -> Vec<Vec<&'static str>> {
-        let header = "| Directory | Added | Share |";
-        let separator = "|:--|--:|:--|";
-        let row = "| crates | 412 | \u{2588}\u{2588}\u{2588} 80% |";
-        let other = "| docs | 1.5k | \u{258f} <1% |";
-        vec![
-            vec![],
-            vec![""],
-            vec!["**Lines added: none**"],
-            vec!["", "**Lines added: none**", ""],
-            vec!["**Lines added: none**", "| x |"],
-            vec!["**Lines added: 1**"],
-            vec!["**Lines added: 0**"],
-            vec!["**Lines added: 1**", header, separator],
-            vec!["**Lines added: 412**", "", header, separator, row],
-            vec!["**Lines added: 2k**", header, separator, row, other],
-            vec!["**Lines added: 2k**", header, separator, row, row],
-            vec![
-                "**Lines added: 2k**",
-                "| Directory | Added |",
-                separator,
-                row,
-            ],
-            vec![
-                "**Lines added: 2k**",
-                "Directory | Added | Share",
-                separator,
-                row,
-            ],
-            vec!["**Lines added: 2k**", header, "|---|---|", row],
-            vec!["**Lines added: 2k**", header, "|:-:|-:|:--|", row],
-            vec!["**Lines added: 2k**", header, "|:--|--x|:--|", row],
-            vec!["**Lines added: 2k**", header, separator, "| crates | 412 |"],
-            vec![
-                "**Lines added: 2k**",
-                header,
-                separator,
-                "| | 412 | \u{2588} 5% |",
-            ],
-            vec![
-                "**Lines added: 2k**",
-                header,
-                separator,
-                "| a | 0412 | \u{2588} 5% |",
-            ],
-            vec!["**Lines added: 2k**", header, separator, "| a | 41 | 5% |"],
-            vec![
-                "**Lines added: 2k**",
-                header,
-                separator,
-                "| a | 41 | \u{2588}5% |",
-            ],
-            vec![
-                "**Lines added: 2k**",
-                header,
-                separator,
-                "| a | 41 | \u{2588} 1000% |",
-            ],
-            vec![
-                "**Lines added: 2k**",
-                header,
-                separator,
-                "| a | 41 | x 5% |",
-            ],
-            vec![
-                "**Lines added: 2k**",
-                header,
-                separator,
-                "| a\\|b | 41 | \u{2588} 5% |",
-            ],
-            vec![
-                "**Lines added: 2k**",
-                header,
-                separator,
-                "| a | 41 | \u{2588} 5% \\|",
-            ],
-            vec![
-                "**Lines added: 2k**",
-                header,
-                separator,
-                "| a | 23k | \u{2588} 5% |",
-                "x",
-            ],
-            vec!["| crates | 412 |"],
-            vec!["**Lines added: many**"],
-        ]
-    }
-
-    /// GA second fix item 1: af's reading of a block's body agrees with `parse` of
-    /// `scripts/pr-lines.py`, which `scripts/check-pr-report.py` uses, on every body above: the
-    /// test asks the script itself, af never does.
+    /// Both parsers read valid generated reports and reject malformed structure/count/share rows.
     #[test]
     fn the_block_rules_are_the_parsers() {
         let script = std::env::var_os("AF_WORKSPACE_ROOT")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
             .join(PR_LINES);
-        let cases = bodies();
-        let program = "import importlib.util, json, sys\n\
-             spec = importlib.util.spec_from_file_location('pr_lines', sys.argv[1])\n\
-             module = importlib.util.module_from_spec(spec)\n\
-             spec.loader.exec_module(module)\n\
-             cases = json.load(sys.stdin)\n\
-             print(json.dumps([module.parse(lines)[0] is not None for lines in cases]))\n";
-        let mut child = std::process::Command::new("python3")
+        let program = r#"import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location('pr_lines', sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+entries = [(3, 2, 'crates/a/src/lib.rs'), (0, 4, 'crates/a/tests/t.rs'),
+           (0, 2, 'crates/b/src/lib.rs'), (1, 1, 'crates/direct'), (0, 8, 'gone/a')]
+valid = m.render_entries(entries)
+zero = m.render_entries([(0, 2, 'crates/a/src/lib.rs')])
+safe = m.render_entries([(1, 0, 'crates/↳ &nbsp;**雪\t/src/lib.rs'), (1, 0, 'root')])
+cases = [([], False), (['**Lines added: none**'], True),
+         (['**Lines added: none**', 'extra'], False),
+         (['**Lines added: 1**'], False), (['**Lines added: 1000**'], False)]
+collisions = []
+for name in ['a', ' &nbsp;**雪|\t\u00a0', 'a (file)']:
+    collisions.append(m.render_entries([(3, 0, f'crates/{name}/src/lib.rs'),
+        (0, 2, f'crates/{name}'), (1, 0, f'crates/{name} (file)'),
+        (1, 0, f'crates/{name} (file2)/src/lib.rs')]))
+collisions.append(m.render_entries([(3, 0, 'crates/a/src/lib.rs'), (0, 2, 'crates'),
+                                   (1, 0, 'crates (file)')]))
+for body in [*collisions, valid, zero, safe, m.render_entries([(2500000, 1, 'docs/a')]),
+             m.render_entries([(1, 0, 'crates')]),
+             m.render_entries([(1, 0, 'crates/\u00a0\u00a0\u00a0\u00a0/src/lib.rs')])]:
+    cases.append((body.splitlines(), True))
+for before, after in [
+    ('Area', 'Directory'), ('|:--|--:|:--|:--|:--|', '|---|---|'),
+    ('**gone**', '**&#160;fake**'), ('**gone**', '**&#034;fake**'),
+    ('**gone**', '**a&#999999999999999999999999;**'),
+    ('**gone**', '**fake↳**'), ('**gone**', '**fake/**'),
+    ('+3/−2', '+3/-2'), ('+3/−2', '+3/−2.2'),
+    ('+3/−2', '+3/−1000'), ('**100%**', '**1000%**'),
+    ('&nbsp;&nbsp;&nbsp;&nbsp;**a**', '&nbsp;&nbsp;&nbsp;&nbsp;'*3+'**a**'),
+    ('+3/−6', '+0/−0'), ('+3/−2', '+03/−2'),
+    ('**100%**', '**101%**'), ('**100%**', '**—**'), (' 0% ', ' <1% '),
+    ('**crates**', 'crates'), ('**+4/−9**', '+4/−8'),
+    ('&nbsp;&nbsp;&nbsp;&nbsp;**a**', '&nbsp;**a**'),
+    ('&nbsp;&nbsp;&nbsp;&nbsp;**a**', '&nbsp;&nbsp;&nbsp;&nbsp;a'),
+    ('&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;tests', '&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;shared'),
+    ('**gone**', '**gone/**'), ('**gone**', '**&nbsp;gone**')]:
+    assert before in valid, before
+    cases.append((valid.replace(before, after).splitlines(), False))
+for transform in [lambda rows: rows[:4]+rows[5:], lambda rows: rows+rows[4:5],
+                  lambda rows: rows[:5]+rows[6:]]:
+    cases.append((transform(valid.splitlines()), False))
+for column in [2, 3]:
+    for bad in ['', '—', '-', 'x', '█'*13, '█'*12+'▏', '▏█', '▏▎', '█ █', '** **']:
+        rows = valid.splitlines()
+        cells = m.row_cells(rows[4])
+        cells[column] = '**'+bad+'**'
+        rows[4] = '| ' + ' | '.join(cells) + ' |'
+        cases.append((rows, False))
+    for glyph in ['▏', '█'*12, '█'*11+'▉', *'▏▎▍▌▋▊▉']:
+        rows = valid.splitlines()
+        cells = m.row_cells(rows[4])
+        cells[column] = '**'+glyph+'**'
+        rows[4] = '| ' + ' | '.join(cells) + ' |'
+        cases.append((rows, True))
+for body, column in [(zero, 2), (m.render_entries([(2, 0, 'crates/a/src/lib.rs')]), 3)]:
+    for index in [4, 5, 6]:
+        for bad in ['**', '***', '****', '** **', '**▏**', '**—**', '▏']:
+            rows = body.splitlines()
+            cells = m.row_cells(rows[index])
+            assert cells[column] == ''
+            cells[column] = bad
+            rows[index] = '| ' + ' | '.join(cells) + ' |'
+            assert rows != body.splitlines(), (index, column, bad)
+            assert m.parse(rows)[0] is None, (index, column, bad)
+            cases.append((rows, False))
+cases.append((['**Lines added: 3**', '| Area | Changes | Share of additions |',
+               '|:--|--:|:--|', '| **docs** | **+3/−0** | **100%** |'], False))
+for rows, expected in cases:
+    assert (m.parse(rows)[0] is not None) == expected, rows
+print(json.dumps(cases))
+"#;
+        let output = std::process::Command::new("python3")
             .args(["-I", "-c", program])
-            .arg(&script)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
+            .arg(script)
+            .output()
             .unwrap();
-        let input = serde_json::to_vec(&cases).unwrap();
-        std::io::Write::write_all(child.stdin.as_mut().unwrap(), &input).unwrap();
-        drop(child.stdin.take());
-        let output = child.wait_with_output().unwrap();
-        assert!(output.status.success());
-        let accepted: Vec<bool> = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(accepted.len(), cases.len());
-        assert!(accepted.iter().any(|a| *a) && accepted.iter().any(|a| !*a));
-        for (lines, parsed) in cases.iter().zip(accepted) {
-            let problem = body_problem(lines);
-            assert_eq!(problem.is_none(), parsed, "{lines:?}: {problem:?}");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let cases: Vec<(Vec<String>, bool)> = serde_json::from_slice(&output.stdout).unwrap();
+        for (lines, expected) in cases {
+            let borrowed: Vec<&str> = lines.iter().map(String::as_str).collect();
+            let problem = body_problem(&borrowed);
+            assert_eq!(problem.is_none(), expected, "{lines:?}: {problem:?}");
         }
     }
 }

@@ -1,4 +1,5 @@
-//! Document Tasks carry typed content and exact source references, without code Snapshots.
+//! Document and Report Tasks share typed drafts and exact source references.
+//! Only Reports bind repository citations to a source Snapshot.
 //! Shape validation does not confer acceptance; installed domain checks own receipt identity.
 use super::pipeline::ReceiptOutcomeV1;
 use super::{is_name, require};
@@ -7,8 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const DOCUMENT_SOURCES_V1: &str = "af/DocumentSources@1";
-pub const DOCUMENT_DRAFT_V1: &str = "af/DocumentDraft@1";
-pub const DOCUMENT_DRAFT_V2: &str = "af/DocumentDraft@2";
+pub const DOCUMENT_DRAFT_V3: &str = "af/DocumentDraft@3";
 pub const DOCUMENT_V1: &str = "af/Document@1";
 /// The payload version of a rendered Document: its text is the canonical Markdown of its draft
 /// under the rendering this version names. `af.document/2` escapes only what is Markdown markup
@@ -83,26 +83,71 @@ pub struct DocumentSectionV1 {
     pub body: String,
 }
 
+/// Citations retain their domain: captured source names or exact repository locations.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DraftCitation {
+    Source { name: String },
+    Repository { location: RepositoryCitationV1 },
+}
+impl From<String> for DraftCitation {
+    fn from(name: String) -> Self {
+        Self::Source { name }
+    }
+}
+impl From<&str> for DraftCitation {
+    fn from(name: &str) -> Self {
+        Self::Source { name: name.into() }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct DocumentDraftV1 {
+pub struct DocumentDraft {
     pub schema: String,
     pub title: String,
     pub sections: Vec<DocumentSectionV1>,
     #[serde(deserialize_with = "super::unique_set")]
-    pub citations: BTreeSet<String>,
+    pub citations: BTreeSet<DraftCitation>,
 }
-impl DocumentDraftV1 {
+impl DocumentDraft {
+    pub fn named_citations(&self) -> impl Iterator<Item = &String> {
+        self.citations.iter().filter_map(|citation| match citation {
+            DraftCitation::Source { name } => Some(name),
+            DraftCitation::Repository { .. } => None,
+        })
+    }
+    pub fn repository_citations(&self) -> impl Iterator<Item = &RepositoryCitationV1> {
+        self.citations.iter().filter_map(|citation| match citation {
+            DraftCitation::Repository { location } => Some(location),
+            DraftCitation::Source { .. } => None,
+        })
+    }
+    pub fn validate_document(&self) -> Result<(), String> {
+        self.validate()?;
+        require(
+            self.repository_citations().next().is_none(),
+            "Document Tasks cannot cite a repository Snapshot",
+        )
+    }
     pub fn validate(&self) -> Result<(), String> {
         require(
-            self.schema == "af.document-draft/1"
+            self.schema == "af.document-draft/3"
                 && line(&self.title, 256)
                 && !self.sections.is_empty()
                 && self.sections.len() <= 32
-                && self.citations.len() <= 32
-                && self.citations.iter().all(|s| is_name(s)),
-            "Document draft requires bounded sections and named source citations",
+                && self.named_citations().count() <= 32
+                && self.repository_citations().count() <= 64,
+            "Document draft requires its current schema, bounded sections and typed citations",
         )?;
+        for citation in &self.citations {
+            match citation {
+                DraftCitation::Source { name } => {
+                    require(is_name(name), "Invalid captured source name")?
+                }
+                DraftCitation::Repository { location } => location.validate()?,
+            }
+        }
         let mut headings = BTreeSet::new();
         let mut total = self.title.len();
         for section in &self.sections {
@@ -154,45 +199,6 @@ impl RepositoryCitationV1 {
         match self.line {
             Some(line) => format!("{}:{line}", self.path),
             None => self.path.clone(),
-        }
-    }
-}
-
-/// `af/DocumentDraft@1` plus repository citations. Only the report profile accepts it; the
-/// Document profile keeps its first version unchanged.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DocumentDraftV2 {
-    pub schema: String,
-    pub title: String,
-    pub sections: Vec<DocumentSectionV1>,
-    #[serde(deserialize_with = "super::unique_set")]
-    pub citations: BTreeSet<String>,
-    #[serde(
-        default,
-        skip_serializing_if = "BTreeSet::is_empty",
-        deserialize_with = "super::unique_set"
-    )]
-    pub repository_citations: BTreeSet<RepositoryCitationV1>,
-}
-impl DocumentDraftV2 {
-    pub fn validate(&self) -> Result<(), String> {
-        require(
-            self.schema == "af.document-draft/2" && self.repository_citations.len() <= 64,
-            "Document draft 2 requires its schema and at most 64 repository citations",
-        )?;
-        for citation in &self.repository_citations {
-            citation.validate()?;
-        }
-        self.as_first_version().validate()
-    }
-    /// The same title, sections and named citations, as the first version spells them.
-    pub fn as_first_version(&self) -> DocumentDraftV1 {
-        DocumentDraftV1 {
-            schema: "af.document-draft/1".into(),
-            title: self.title.clone(),
-            sections: self.sections.clone(),
-            citations: self.citations.clone(),
         }
     }
 }
