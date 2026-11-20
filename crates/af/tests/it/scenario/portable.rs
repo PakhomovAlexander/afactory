@@ -611,10 +611,13 @@ fn private_write(path: &Path, bytes: impl AsRef<[u8]>) {
 fn github_fixture(receiver: &Receiver) -> String {
     let state = receiver.root.join("fake-github");
     fs::create_dir(&state).unwrap();
-    include_str!("../../../../../fixtures/project-backlog/fake-github-adapter.py").replace(
+    let adapter = include_str!("../../../../../scripts/project-backlog-github.py");
+    let http = include_str!("../../../../../fixtures/project-backlog/fake-github-http.py").replace(
         "__AF_BACKLOG_FIXTURE_STATE__",
         &serde_json::to_string(&state).unwrap(),
-    )
+    );
+    let (implementation, entrypoint) = adapter.split_once("\nif __name__ == ").unwrap();
+    format!("{implementation}\n{http}\nif __name__ == {entrypoint}")
 }
 
 fn capture_backlog_batch(receiver: &Receiver, github: Option<&str>) -> Value {
@@ -1082,27 +1085,33 @@ fn portable_backlog_settles_and_dispatches_the_frozen_batch_in_two_receivers() {
     assert_ne!(receipts[0], receipts[1]);
 }
 
-fn start_github_backlog(receiver: &Receiver, id: &str, batch: &Value) {
-    let bundle_path = receiver.root.join("prepared.json");
+fn start_github_backlog(receiver: &Receiver, id: &str, batch: &Value) -> (String, Value) {
+    let ant_path = receiver.root.join("ant.json");
     let policy_path = receiver.root.join("policy.json");
     if !policy_path.exists() {
         private_write(&policy_path, "{}");
     }
-    let empty = receiver.root.join("empty.json");
-    fs::write(&empty, "{}").unwrap();
-    let paths = [
+    let state_args = ["--state", receiver.scenarios.to_str().unwrap(), "--json"];
+    let definition_args = [
         "--file",
-        bundle_path.to_str().unwrap(),
+        ant_path.to_str().unwrap(),
         "--authority",
         policy_path.to_str().unwrap(),
-        "--state",
-        receiver.scenarios.to_str().unwrap(),
-        "--json",
     ];
+    let ant = |args: &[&str]| ok(receiver.af(&[&["ant"][..], args, &state_args].concat()));
     save(&receiver.input, batch);
     let bundle = ok(receiver.prepare_artifact(BACKLOG, None));
     let root = &bundle["definitions"]["daily-backlog"];
-    save(&bundle_path, &bundle);
+    let limits = root["limits"].clone();
+    let due = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        / 60
+        * 60_000;
+    let hour = due / 3_600_000 % 24;
+    let minute = due / 60_000 % 60;
+    let before_due = (due - 1).to_string();
     save(
         &policy_path,
         &json!({
@@ -1111,21 +1120,45 @@ fn start_github_backlog(receiver: &Receiver, id: &str, batch: &Value) {
             "adapters":{}, "decision_keys":{}, "file_roots":[]
         }),
     );
-    let pin = ok(receiver.af(&[&["scenario", "validate"][..], &paths].concat()));
-    let start = [
+    save(
+        &ant_path,
+        &json!({
+            "schema":"af/ant@12", "id":id, "scenario":bundle, "inputs":{},
+            "schedule":{"kind":"daily","timezone":"UTC","hour":hour,"minute":minute,"start_unix_ms":due - 1},
+            "owner":"fixture-owner", "notification":"local:fixture-owner",
+            "execution":{"overlap":"skip","missed":"skip","lateness_ms":120000,"per_run":limits,
+                         "rolling_tokens":150000,"rolling_window_ms":86400000}
+        }),
+    );
+    let pin = ant(&[&["validate"][..], &definition_args].concat());
+    ant(&[
+        &["add"][..],
+        &definition_args,
         &[
-            "scenario",
-            "start",
-            id,
-            "--inputs",
-            empty.to_str().unwrap(),
             "--confirm-pin",
             pin["revision"].as_str().unwrap(),
-        ][..],
-        &paths,
+            "--now",
+            &before_due,
+        ],
     ]
-    .concat();
-    ok(receiver.af(&start));
+    .concat());
+    ant(&["enable", id, "--now", &before_due]);
+    // Use the same real clock for the dispatch deadline on tick and on resume.
+    let tick = ant(&["tick"]);
+    let shown = ant(&["show", id]);
+    let occurrences = shown["occurrences"].as_array().unwrap();
+    assert_eq!(occurrences.len(), 1);
+    let run_id = occurrences[0]["outcome"]["run_id"].as_str().unwrap();
+    assert_eq!(tick["started"], json!([run_id]));
+    (run_id.to_owned(), tick["runs"][run_id].clone())
+}
+
+fn http_requests(fake: &Path) -> Vec<Value> {
+    fs::read_to_string(fake.join("requests"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
 }
 
 fn configure_github_fixture_bounds(receiver: &Receiver) {
@@ -1151,11 +1184,11 @@ fn portable_backlog_github_reconciles_a_lost_create_without_duplicate_writes() {
     configure_github_fixture_bounds(&receiver);
     let executable = github_fixture(&receiver);
     let reference = capture_backlog_batch(&receiver, Some(&executable));
-    start_github_backlog(&receiver, "github-backlog", &reference);
+    let (run_id, first) = start_github_backlog(&receiver, "github-backlog", &reference);
     let resume = [
         "scenario",
         "resume",
-        "github-backlog",
+        &run_id,
         "--state",
         receiver.scenarios.to_str().unwrap(),
         "--json",
@@ -1197,7 +1230,8 @@ fn portable_backlog_github_reconciles_a_lost_create_without_duplicate_writes() {
     let fake = receiver.root.join("fake-github");
 
     // The native assessment and intent survive an interruption before any executable can send.
-    check_pending(pending());
+    assert_eq!(first["status"], "waiting", "{}", first["failure"]);
+    assert_eq!(first["frames"]["root"]["steps"][1]["status"], "succeeded");
     let intents = publications();
     assert_eq!(intents.len(), 2);
     assert_eq!(state(&intents[1])["outcome"]["kind"], "adapter_unavailable");
@@ -1257,7 +1291,11 @@ fn portable_backlog_github_reconciles_a_lost_create_without_duplicate_writes() {
 
     let mut human = issue;
     human["state"] = json!("closed");
-    human["fields_id"] = json!(af_store::canonical::blob_content_id(b"human edit"));
+    human["title"] = json!("Operator title");
+    human["body"] = json!(human["body"].as_str().unwrap().replace(
+        "The configured boundary must be inclusive.",
+        "Operator body"
+    ));
     save(&fake.join("issue.json"), &human);
     fs::write(fake.join("mode"), "normal").unwrap();
     let mut concurrent = receiver
@@ -1280,23 +1318,32 @@ fn portable_backlog_github_reconciles_a_lost_create_without_duplicate_writes() {
     assert_eq!(observed["outcome"]["state"], "closed");
     assert_eq!(observed["outcome"]["approved_fields_match"], false);
     assert_eq!(read(&fake.join("issue.json")), human);
-    let requests = fs::read_to_string(fake.join("requests")).unwrap();
-    let requests: Vec<Value> = requests
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
+    let requests = http_requests(&fake);
+    let writes: Vec<_> = requests
+        .iter()
+        .filter(|call| call["method"] == "POST")
         .collect();
-    assert_eq!(requests.len(), 6);
-    assert_eq!(requests[0]["operation"], "create");
-    assert!(
-        requests[1..]
-            .iter()
-            .all(|request| request["operation"] == "reconcile")
+    assert_eq!(writes.len(), 1);
+    let marker = format!(
+        "<!-- af-backlog-item:{}:{} -->",
+        final_record.project_id, final_record.item_id
     );
     assert!(
-        requests
-            .iter()
-            .all(|request| request["item_id"] == intents[0].item_id
-                && request["revision_id"] == intents[0].revision_id)
+        writes[0]["body"]["body"]
+            .as_str()
+            .unwrap()
+            .ends_with(&marker)
+    );
+    assert_eq!(final_record.project_id, reference["project_id"]);
+    let config = read(&store_path.join(GITHUB_CONFIG));
+    assert_eq!(
+        final_record.destination_id,
+        af_store::canonical::content_id(&config).unwrap()
+    );
+    assert_eq!(
+        ok(receiver.af(&["backlog", "show", "unknown", "--private", "--json"]))["data"]["outcomes"]
+            [0]["disposition"],
+        "needs_evidence"
     );
 
     // A later independently verified revision reconciles the same immutable issue and preserves
@@ -1331,10 +1378,13 @@ fn portable_backlog_github_reconciles_a_lost_create_without_duplicate_writes() {
         "policy_id":audit["pin_id"],
         "high_water":audit["high_water"],
     });
-    start_github_backlog(&receiver, "revised-github-backlog", &revised_reference);
-    let mut revised_resume = resume;
-    revised_resume[2] = "revised-github-backlog";
-    assert_eq!(ok(receiver.af(&revised_resume))["status"], "succeeded");
+    let (_revised_run, revised_result) =
+        start_github_backlog(&receiver, "revised-github-backlog", &revised_reference);
+    assert_eq!(
+        revised_result["status"], "succeeded",
+        "{}",
+        revised_result["failure"]
+    );
     let revised_history = publications();
     let revised = revised_history.last().unwrap();
     assert_eq!(revised.item_id, final_record.item_id);
@@ -1342,15 +1392,31 @@ fn portable_backlog_github_reconciles_a_lost_create_without_duplicate_writes() {
     assert_eq!(revised.remote_id, final_record.remote_id);
     assert!(revised.receipt_id.is_some());
     assert_ne!(revised.receipt_id, final_record.receipt_id);
-    let requests = fs::read_to_string(fake.join("requests")).unwrap();
-    assert_eq!(requests.lines().count(), 7);
-    let request: Value = serde_json::from_str(requests.lines().last().unwrap()).unwrap();
-    assert_eq!(request["operation"], "reconcile");
-    assert_eq!(request["issue"], json!({"id":444, "number":1}));
-    assert_eq!(request["revision_id"], revised.revision_id);
-    assert_eq!(
-        request["marker"],
-        serde_json::from_str::<Value>(requests.lines().next().unwrap()).unwrap()["marker"]
+    assert_eq!(revised.attempt_ids.len(), 1);
+    assert_eq!(state(revised)["operation"], "reconcile");
+    assert_eq!(state(revised)["outcome"]["state"], "closed");
+    assert_eq!(state(revised)["outcome"]["approved_fields_match"], false);
+    let final_requests = http_requests(&fake);
+    let later = &final_requests[requests.len()..];
+    assert_eq!(later.len(), 3);
+    assert!(
+        later
+            .iter()
+            .all(|call| call["method"] == "GET" && call["body"].is_null())
+    );
+    assert_eq!(later[2]["path"], "/repos/fixture/backlog/issues/1");
+    println!(
+        "Project {} item {} destination {} virtual issue {} first revision {} attempts {:?} receipt {}, later revision {} attempts {:?} receipt {}, added visible issues on retry and later revision 0",
+        revised.project_id,
+        revised.item_id,
+        revised.destination_id,
+        revised.remote_id.as_deref().unwrap(),
+        final_record.revision_id,
+        final_record.attempt_ids,
+        final_record.receipt_id.as_deref().unwrap(),
+        revised.revision_id,
+        revised.attempt_ids,
+        revised.receipt_id.as_deref().unwrap(),
     );
     assert_eq!(read(&fake.join("issue.json")), human);
     let visible = ok(receiver.af(&["backlog", "show", &revised.item_id, "--json"]));
@@ -1376,16 +1442,15 @@ fn portable_backlog_github_retains_a_crash_before_the_provider_write_as_pending(
     private_write(&store_path.join(GITHUB_ADAPTER), &executable);
     let fake = receiver.root.join("fake-github");
     fs::write(fake.join("abort-before-write"), "").unwrap();
-    start_github_backlog(&receiver, "before-write", &reference);
+    let (run_id, first) = start_github_backlog(&receiver, "before-write", &reference);
     let resume = [
         "scenario",
         "resume",
-        "before-write",
+        &run_id,
         "--state",
         receiver.scenarios.to_str().unwrap(),
         "--json",
     ];
-    let first = ok(receiver.af(&resume));
     assert_eq!(first["status"], "waiting", "{}", first["failure"]);
     assert!(!fake.join("issue.json").exists());
     fs::remove_file(fake.join("abort-before-write")).unwrap();
@@ -1394,21 +1459,19 @@ fn portable_backlog_github_retains_a_crash_before_the_provider_write_as_pending(
     assert_eq!(second["status"], "waiting", "{}", second["failure"]);
     assert!(!fake.join("issue.json").exists());
 
-    let requests = fs::read_to_string(fake.join("requests")).unwrap();
-    let trace: Vec<Value> = requests
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
-    assert_eq!(trace.len(), 2);
-    assert_eq!(trace[0]["operation"], "create");
-    assert_eq!(trace[1]["operation"], "reconcile");
+    let requests = http_requests(&fake);
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|call| call["method"] == "POST")
+            .count(),
+        1
+    );
+    assert_eq!(requests.last().unwrap()["method"], "GET");
     let database = af_store::EventStore::open_read_only(store_path.join("events.sqlite")).unwrap();
     let events = database.replay("backlog-processing").unwrap();
     let publication = &events.last().unwrap().payload;
-    assert_eq!(
-        publication["attempt_ids"],
-        json!([trace[0]["request_id"], trace[1]["request_id"]])
-    );
+    assert_eq!(publication["attempt_ids"].as_array().unwrap().len(), 2);
     assert!(publication["remote_id"].is_null());
     assert!(publication["receipt_id"].is_null());
 }

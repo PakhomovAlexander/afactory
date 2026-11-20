@@ -340,12 +340,16 @@ the Project Store reported by `af project show --json`.
   Use the lowercase canonical GitHub repository name and its positive numeric repository and
   publisher account IDs.
 - `backlog-github-adapter` holds the trusted standalone executable. AF verifies the exact bytes
-  and stages them in a temporary directory under the private Project Store. The executable must
-  run independently of its installed location and the receiver checkout.
+  and stages them in a temporary directory under the private Project Store. Use the checked-in
+  [standalone Python adapter](../scripts/project-backlog-github.py), which runs with
+  `/usr/bin/python3 -IS` and requires no modules from the checkout.
 - `backlog-github-token` holds the adapter credential as a single token, optionally followed by a
   newline. Keep it in the Project Store and out of the caller's environment and checkout. AF
   passes it to the adapter as `AF_BACKLOG_GITHUB_TOKEN` with a cleared environment and the
-  process supervisor's sanitized `PATH`.
+  process supervisor's sanitized `PATH`. AF also passes `AF_BACKLOG_GITHUB_SCOPE`, a JSON object
+  containing the Project and destination IDs, repository name and numeric repository and
+  publisher IDs from validated receiver authority. The adapter requires stdin to match that scope
+  before opening a connection.
 
 ```json
 {
@@ -365,6 +369,8 @@ after the config contains that identity, its destination pin.
 
 ```bash
 store=$(af project show --json | jq -r .store)
+test ! -e "$store/backlog-github-adapter" && test ! -L "$store/backlog-github-adapter" &&
+  install -m 600 scripts/project-backlog-github.py "$store/backlog-github-adapter"
 python3 - "$store" <<'PYTHON'
 import hashlib
 import json
@@ -391,8 +397,9 @@ destination pin are immutable within this journal.
 ### Executable protocol
 
 One invocation reads one UTF-8 JSON request from stdin through EOF and writes one UTF-8 JSON
-response on stdout. AF passes no arguments, limits responses to 4 KiB and supervises the
-process under the Scenario Action deadline and cancellation. The executable, credential and
+response on stdout. The Python adapter limits requests to 64 KiB and its own wall time to
+24 seconds. AF passes no arguments, limits responses to 4 KiB and supervises the process
+under the Scenario Action deadline and cancellation. The executable, credential and
 config reads are bounded at 8 MiB, 1 KiB and 4 KiB respectively. Adapter stdout, stderr and
 credentials are excluded from logs. An unsuccessful, interrupted or malformed exchange
 leaves the intent pending.
@@ -416,7 +423,8 @@ repository on GitHub.com, checking both its name and numeric ID. A create allows
 issue POST with the approved title and body followed by two newlines and the exact marker.
 A reconcile with a known issue reads that issue and checks both of its IDs. Without a known
 issue, reconciliation looks for the exact marker and original publisher in the exact
-repository, including closed issues. Ambiguous, conflicting, or incompletely observed matches
+repository, including closed issues, up to ten pages of 100 issues. Ambiguous, conflicting,
+or incompletely observed matches
 cannot resolve the intent. Reconciliation uses reads only.
 
 The response repeats the verified `request_id`, `repository`, `repository_id` and
@@ -457,10 +465,11 @@ deferral can have a null attempt or operation. Outcomes include `attempt_prepare
 fields digest and an `approved_fields_match` boolean. The normal `af backlog list` and
 `af backlog show` commands read the verified native projection without invoking the adapter.
 
-The offline proof uses the real receiver Scenario and an executable fixture with no network
-calls. It injects adapter crashes before the write and after remote creation, delayed lookup,
-identity conflicts, revoked authority,
-concurrent resume, human closure and edit, and a later verified revision.
+The offline proof starts the real receiver Scenario through a daily Ant occurrence. It runs
+the checked-in adapter entrypoint with a fake HTTPS connection. It covers adapter crashes
+before the write and after remote creation, delayed lookup, identity conflicts, revoked authority,
+concurrent resume, human closure and edit, and reconciliation of the same issue ID on a later
+verified revision.
 
 ```sh
 cargo nextest run --workspace --locked --profile ci \

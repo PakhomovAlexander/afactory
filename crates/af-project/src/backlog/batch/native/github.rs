@@ -64,6 +64,7 @@ impl Config {
     fn command(
         &self,
         store: &ProjectStore,
+        destination: &str,
     ) -> Result<(tempfile::TempDir, Command, String), String> {
         let bytes = owned_file(&store.directory.join(EXECUTABLE), MAX_EXECUTABLE)?;
         if af_store::canonical::blob_content_id(&bytes) != self.executable_digest {
@@ -99,6 +100,15 @@ impl Config {
             .env_clear()
             .env("PATH", af_process::sanitized_path())
             .env("AF_BACKLOG_GITHUB_TOKEN", token)
+            .env(
+                "AF_BACKLOG_GITHUB_SCOPE",
+                json!({
+                    "project_id": self.project_id, "destination_id": destination,
+                    "repository": self.repository, "repository_id": self.repository_id,
+                    "publisher_id": self.publisher_id,
+                })
+                .to_string(),
+            )
             .current_dir(directory.path());
         Ok((directory, command, token_pin))
     }
@@ -350,7 +360,9 @@ impl ProjectStore {
         let Ok(config) = Config::load(self, &publication.destination_id) else {
             return self.github_pending(batch_id, publication, "authority_unavailable");
         };
-        let Ok((_staged, mut command, token_pin)) = config.command(self) else {
+        let Ok((_staged, mut command, token_pin)) =
+            config.command(self, &publication.destination_id)
+        else {
             return self.github_pending(batch_id, publication, "adapter_unavailable");
         };
         let approved_fields_id = value_id(&(&item.public.title, &item.public.body))?;

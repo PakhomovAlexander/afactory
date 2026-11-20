@@ -1,2 +1,3 @@
-- Add an isolated GitHub Issues destination for approved Project backlog revisions, with durable
-  send claims, bounded reconciliation and offline transport coverage.
+- Ship the receiver's standalone Python GitHub Issues adapter for daily backlog Scenarios.
+  Recover an interrupted create through the same Project/item marker and reconcile later verified
+  revisions against the mapped issue while preserving human edits and closure.
