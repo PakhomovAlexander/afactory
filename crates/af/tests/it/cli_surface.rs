@@ -2387,6 +2387,13 @@ fn help_json_prints_the_generated_command_catalog() {
         serde_json::json!({"tokens": "free", "charges_when": null, "writes": [], "human": []})
     );
     assert_eq!(
+        named("af scenario prepare")["effects"],
+        serde_json::json!({
+            "tokens": "free", "charges_when": null,
+            "writes": [{"state": "store", "when": null}], "human": []
+        })
+    );
+    assert_eq!(
         named("af task start")["effects"]["charges_when"],
         "--execute"
     );
