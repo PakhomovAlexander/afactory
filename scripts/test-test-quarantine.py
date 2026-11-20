@@ -51,8 +51,8 @@ def inventory():
 
 
 def row(task_id, updated, flaky, gate=True):
-    """A list row shaped like af's `af/task-list-entry@4`."""
-    value = {'schema': 'af/task-list-entry@4', 'task_id': task_id, 'kind': 'af/implement@1',
+    """A list row shaped like af's `af/task-list-entry@5`."""
+    value = {'schema': 'af/task-list-entry@5', 'task_id': task_id, 'kind': 'af/implement@1',
              'phase': {'kind': 'finished'}, 'state': {'phase': 'finished', 'outcome': 'verified'},
              'chargeable_tokens': '0', 'derived_snapshot_id': None, 'delivery': None, 'round': 1,
              'updated_unix_ms': updated}
@@ -61,7 +61,7 @@ def row(task_id, updated, flaky, gate=True):
     return value
 
 
-def listing(*rows, schema='af/task-list@4'):
+def listing(*rows, schema='af/task-list@5'):
     return {'schema': schema, 'tasks': list(rows)}
 
 
@@ -251,13 +251,13 @@ class Scan(unittest.TestCase):
                 self.assertUnchanged(before)
 
     def test_both_list_schemas_are_accepted_and_an_unknown_one_is_refused(self):
-        for schema in ('af/task-list@3', 'af/task-list@4'):
+        for schema in ('af/task-list@3', 'af/task-list@5'):
             with self.subTest(schema=schema):
                 facts = self.facts(listing(row('T_A', NOON, [HEAVY]), row('T_B', NOON, [HEAVY]),
                                            schema=schema))
                 self.assertEqual(self.proposed(facts), {HEAVY: ['T_A', 'T_B']})
-        for document, needle in [(listing(row('T_A', NOON, [HEAVY]), schema='af/task-list@5'),
-                                  "unsupported task list schema 'af/task-list@5'"),
+        for document, needle in [(listing(row('T_A', NOON, [HEAVY]), schema='af/task-list@6'),
+                                  "unsupported task list schema 'af/task-list@6'"),
                                  ({'tasks': []}, 'unsupported task list schema None'),
                                  (listing({'task_id': 'T_A'}), 'without a `task_id` and `updated_unix_ms`'),
                                  (listing(dict(row('T_A', NOON, []), gate={'flaky': 'x'})),

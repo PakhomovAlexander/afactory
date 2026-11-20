@@ -1,5 +1,5 @@
 {
-  "schema": "af.perf-cohort/4",
+  "schema": "af.perf-cohort/5",
   "cohort_id": "synthetic_cohort",
   "authority_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
   "policy_digest": "sha256:86dccd07803ed39f5bcdbe48ccc0fa826f537cfbb214e74d612325e36e21c6fa",

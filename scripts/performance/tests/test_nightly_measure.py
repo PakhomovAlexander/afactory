@@ -121,7 +121,7 @@ class Night(TempDir):
                "builds_root": self.builds, "build_image": "sha256:" + "1" * 64,
                "qemu_aarch64": self.path("qemu"), "sign_key": self.path("nightly.key"),
                "public_key": self.path("nightly.pub"), "required_checks": ["check / lint"]}
-        lines = ['schema = "af.nightly-config/1"']
+        lines = ['schema = "af.nightly-config/2"']
         lines += ["%s = %s" % (key, json.dumps(value)) for key, value in top.items()]
         if measure_values:
             lines.append("[measure]")
@@ -450,95 +450,10 @@ def unit(name):
 
 
 class Units(TempDir):
-    STEPS = {"build": ("af-nightly", ["build"]), "measure": ("af-perf-exec", ["submit"]),
-             "report": ("af-perf-exec", ["compose", "--output-root /var/lib/af-nightly/reports"]),
-             "publish": ("af-nightly", ["publish", "--report-root /var/lib/af-nightly/reports"])}
-
-    def test_the_timer_starts_the_build_at_22_05_utc_and_catches_up(self):
-        timer = unit("af-nightly.timer")
-        self.assertEqual(timer["Timer"], {"OnCalendar": ["*-*-* 22:05:00 UTC"],
-                                          "Persistent": ["true"],
-                                          "Unit": ["af-nightly-build.service"]})
-        self.assertEqual(timer["Install"], {"WantedBy": ["timers.target"]})
-
-    def test_each_step_runs_its_script_from_the_installed_control_as_its_account(self):
-        for step, (account, words) in self.STEPS.items():
-            service = unit("af-nightly-%s.service" % step)["Service"]
-            command, options = words[0], words[1:]
-            # Every step works on the night the build unit started, never on a date of its
-            # own: the measurement may end after midnight UTC.
-            self.assertEqual(service["ExecStart"], [
-                "/usr/bin/python3 -I -B /opt/af-perf/control/scripts/nightly/%s.py %s --config "
-                "/etc/af-nightly/nightly.toml --night-of af-nightly-build.service%s" % (
-                    step, command, "".join(" " + option for option in options))], step)
-            self.assertEqual((service["Type"], service["User"], service["Group"]),
-                             (["oneshot"], [account], ["af-perf-readers"]), step)
-            self.assertEqual(service["Environment"], ["PYTHONDONTWRITEBYTECODE=1"], step)
-            self.assertNotIn("--date", service["ExecStart"][0], "the units carry no date")
-            for bound in ("TimeoutStartSec", "KillMode", "MemoryMax", "TasksMax", "LimitNOFILE",
-                          "LogRateLimitIntervalSec", "LogRateLimitBurst"):
-                self.assertIn(bound, service, "%s has no %s" % (step, bound))
-            self.assertEqual(service["KillMode"], ["control-group"], step)
-
-    def test_the_chain_hands_over_by_outcome(self):
-        units = dict((step, unit("af-nightly-%s.service" % step)["Unit"])
-                     for step in self.STEPS)
-        handover = dict((step, (units[step].get("OnSuccess"), units[step].get("OnFailure")))
-                        for step in self.STEPS)
-        self.assertEqual(handover, {
-            "build": (["af-nightly-measure.service"], None),
-            "measure": (["af-nightly-report.service"], ["af-nightly-report.service"]),
-            "report": (["af-nightly-publish.service"], None),
-            "publish": (None, None)})
-        build = unit("af-nightly-build.service")["Service"]
-        self.assertEqual(build["SuccessExitStatus"], ["3"], "a skipped night is a success")
-        self.assertIn("af-perf-source-refresh.service",
-                      unit("af-nightly-measure.service")["Unit"]["After"][0].split())
-
-    def test_build_and_publish_read_nightly_secrets_and_build_keeps_docker_access(self):
-        for step, groups in (("build", ["af-nightly", "docker"]),
-                             ("publish", ["af-nightly"])):
-            with self.subTest(step=step):
-                service = unit("af-nightly-%s.service" % step)["Service"]
-                self.assertEqual((service["User"], service["Group"]),
-                                 (["af-nightly"], ["af-perf-readers"]))
-                self.assertEqual(service.get("SupplementaryGroups"), [" ".join(groups)])
-
-    def test_build_and_measure_share_the_host_tmp_and_mounts(self):
-        for step in ("build", "measure"):
-            service = unit("af-nightly-%s.service" % step)["Service"]
-            for key, value in (("PrivateTmp", "no"), ("PrivateMounts", "no"),
-                               ("ProtectSystem", "no"), ("ProtectHome", "no"),
-                               ("OOMPolicy", "stop")):
-                self.assertEqual(service[key], [value], "%s %s" % (step, key))
-        # The measure unit outlasts the longest deadline the configuration allows plus the one
-        # cycle that may start before it, which the example executor bounds by run_seconds.
-        timeout = unit("af-nightly-measure.service")["Service"]["TimeoutStartSec"]
-        self.assertEqual(timeout, ["18h30min"])
-        example = toml_file.loads(read(os.path.join(SERVICE, "executor.example.toml")),
-                                 "executor.example.toml")
-        self.assertGreater(18 * 3600 + 30 * 60,
-                           DEADLINE_MINUTES_MAX * 60 + example["run_seconds"])
-
-    def test_report_and_publish_measure_nothing_and_are_hardened(self):
-        for step, writes, tmp in (("report", "/var/lib/af-nightly/reports", "no"),
-                                  ("publish", "/var/lib/af-nightly/builds", "yes")):
-            service = unit("af-nightly-%s.service" % step)["Service"]
-            self.assertEqual((service["ProtectSystem"], service["NoNewPrivileges"],
-                              service["ReadWritePaths"], service["PrivateTmp"]),
-                             (["strict"], ["yes"], [writes], [tmp]), step)
-
-    def test_no_unit_carries_a_secret_value(self):
-        for name in ("af-nightly.timer",) + tuple("af-nightly-%s.service" % step
-                                                 for step in self.STEPS):
-            text = read(os.path.join(SERVICE, name)).decode("utf-8")
-            for line in text.splitlines():
-                bare = line.lstrip("#")
-                self.assertFalse(bare.startswith("Environment=AF_NIGHTLY_SIGN_PASSWORD"), name)
-                if bare.startswith(("LoadCredential=", "EnvironmentFile=")):
-                    self.assertRegex(bare.split("=", 1)[1],
-                                     r"^([a-z-]+:)?/etc/af-nightly/[a-z.-]+$")
-        build = read(os.path.join(SERVICE, "af-nightly-build.service")).decode("utf-8")
-        self.assertIn("#LoadCredential=af-nightly-sign-password:/etc/af-nightly/sign-password",
-                      build)
-        self.assertIn("#EnvironmentFile=/etc/af-nightly/sign-password.env", build)
+    def test_retired_chain_has_no_clock_or_handover(self):
+        for name in ("af-nightly.timer", *("af-nightly-" + phase + ".service"
+                      for phase in ("build", "measure", "report", "publish"))):
+            retired = unit(name)
+            self.assertEqual(set(retired), {"Unit"})
+            self.assertEqual(retired["Unit"]["RefuseManualStart"], ["yes"])
+            self.assertFalse(set(retired["Unit"]) & {"OnSuccess", "OnFailure"})

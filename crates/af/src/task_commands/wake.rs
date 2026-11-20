@@ -879,7 +879,7 @@ pub(crate) fn execute(
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(err)?;
             print(
-                &json!({"schema":"af/task-wake-status@1","driver":"no_service_installed_run_drain_explicitly",
+                &json!({"schema":"af/task-wake-status@2","driver":"no_service_installed_run_drain_explicitly",
                 "observed_unix_ms":now(),"subscriptions":journals,"deliveries":store.wake_deliveries().map_err(err)?,
                 "uncertain_session_fences":store.wake_uncertainty().map_err(err)?}),
             )
@@ -1064,7 +1064,10 @@ mod tests {
     #[test]
     fn wake_recorder_snapshot_selects_exact_task_before_private_bounded_validation() {
         let root = tempfile::tempdir().unwrap();
-        let directory = root.path().join("runs");
+        // macOS temporary paths can use the /var alias; authority requires canonical paths.
+        let state = root.path().canonicalize().unwrap();
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let directory = state.join("runs");
         std::fs::create_dir(&directory).unwrap();
         std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
         // Unrelated paths must never be opened or validated as this Task's recorder.
@@ -1077,7 +1080,7 @@ mod tests {
             std::fs::set_permissions(directory.join(name), std::fs::Permissions::from_mode(0o644))
                 .unwrap();
         }
-        assert!(recorder_snapshot(root.path(), "build").unwrap().is_empty());
+        assert!(recorder_snapshot(&state, "build").unwrap().is_empty());
         for name in [
             "build-0.json",
             "build-01.cancel.json",
@@ -1086,7 +1089,7 @@ mod tests {
         ] {
             std::fs::write(directory.join(name), "invalid selected number").unwrap();
             assert!(
-                recorder_snapshot(root.path(), "build")
+                recorder_snapshot(&state, "build")
                     .unwrap_err()
                     .contains("recorder identity")
             );
@@ -1098,9 +1101,22 @@ mod tests {
             std::fs::Permissions::from_mode(0o600),
         )
         .unwrap();
-        let snapshot = recorder_snapshot(root.path(), "build").unwrap();
+        let snapshot = recorder_snapshot(&state, "build").unwrap();
         assert_eq!(snapshot.len(), 1);
         assert!(recorder_facts(&snapshot, "build").is_err());
+        let selected = directory.join("build-1.json");
+        std::fs::set_permissions(&selected, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(
+            recorder_snapshot(&state, "build")
+                .unwrap_err()
+                .contains("canonical owner-private path without links")
+        );
+        std::fs::set_permissions(&selected, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let linked = directory.join("foreign");
+        std::fs::hard_link(&selected, &linked).unwrap();
+        assert!(recorder_snapshot(&state, "build").is_err());
+        std::fs::remove_file(linked).unwrap();
+        assert_eq!(recorder_snapshot(&state, "build").unwrap(), snapshot);
     }
 
     #[test]
@@ -1263,7 +1279,7 @@ mod tests {
     #[test]
     fn wake_executable_digest_refuses_replaceable_ancestry() {
         let root = tempfile::tempdir().unwrap();
-        let outer = root.path().join("outer");
+        let outer = root.path().canonicalize().unwrap().join("outer");
         let inner = outer.join("inner");
         std::fs::create_dir_all(&inner).unwrap();
         let binary = inner.join("native");
@@ -1273,7 +1289,9 @@ mod tests {
             std::fs::set_permissions(unsafe_directory, std::fs::Permissions::from_mode(0o777))
                 .unwrap();
             assert!(
-                digest_file(&binary).is_err(),
+                digest_file(&binary)
+                    .unwrap_err()
+                    .contains("replaceable or foreign directory ancestry"),
                 "{}",
                 unsafe_directory.display()
             );
@@ -1300,13 +1318,13 @@ mod tests {
             event_id: task.opening_event_id.clone(),
         };
         let packet = WakeEnvelopeV1 {
-            schema: WAKE_ENVELOPE_V1.into(),
+            schema: WAKE_ENVELOPE_V2.into(),
             subscription_id: digest.clone(),
             delivery_id: digest.clone(),
             payload_digest: digest.clone(),
             expires_unix_ms: 1000,
             observation: WakeObservationV1 {
-                schema: WAKE_OBSERVATION_V1.into(),
+                schema: WAKE_OBSERVATION_V2.into(),
                 task: task.clone(),
                 observation_id: digest.clone(),
                 causal: boundary.clone(),

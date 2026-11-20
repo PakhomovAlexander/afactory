@@ -1,5 +1,6 @@
 //! Independent public-writer histories with explicit observation clocks and expected boundaries.
 use super::*;
+#[cfg(target_os = "linux")]
 use af_contracts::task::event::TaskChangeV1;
 use af_contracts::task::wake::*;
 use af_runtime::wake::{envelope, project};
@@ -510,6 +511,7 @@ fn wake_derived_waiting_uses_the_shared_checked_state_and_recorded_cancellation(
         .take_task_lease(&f.cas, &f.task.task_id, "wake-resumed", 60000)
         .unwrap();
     f.store.begin_task_execution(&f.cas, &next).unwrap();
+    let current_started = stamp(&f);
     let diagnostic = f
         .cas
         .put_artifact(
@@ -561,6 +563,7 @@ fn wake_derived_waiting_uses_the_shared_checked_state_and_recorded_cancellation(
         .unwrap()
         .0;
     f.store.record_task_run_report(&f.cas, &next, &id).unwrap();
+    let current_cancelled = stamp(&f);
     finish(
         &f.cas,
         &mut f.store,
@@ -569,6 +572,27 @@ fn wake_derived_waiting_uses_the_shared_checked_state_and_recorded_cancellation(
         &next,
         &authority,
     );
+    // The previous lease's cancellation cannot classify this later failed run.
+    let old_only = project_with_run_facts(&f.store, &f.cas, &sub, None, stamp(&f), &facts)
+        .unwrap()
+        .observations;
+    assert_eq!(
+        old_only.last().unwrap().state.outcome,
+        Some(af_contracts::task::state::TaskOutcomeV1::ExecutionFailed)
+    );
+    let mut current_process = facts[0].process.clone();
+    current_process.run = 2;
+    current_process.writer = "wake-resumed".into();
+    current_process.started_unix_ms = current_started;
+    let mut current_cancel = facts[0].cancellation.clone().unwrap();
+    current_cancel.run = current_process.run;
+    current_cancel.writer = current_process.writer.clone();
+    current_cancel.epoch = next.epoch();
+    current_cancel.requested_unix_ms = current_cancelled;
+    facts.push(RecordedRunFacts {
+        process: current_process,
+        cancellation: Some(current_cancel),
+    });
     let final_observations =
         project_with_run_facts(&f.store, &f.cas, &sub, None, stamp(&f), &facts)
             .unwrap()
@@ -1139,7 +1163,7 @@ fn wake_journal_registration_atomic_replay_and_collection_barrier_use_real_store
     );
     let checkpoint: serde_json::Value =
         serde_json::from_str(before.checkpoint.as_ref().unwrap()).unwrap();
-    assert!(schema_registry::validator("task-wake-checkpoint-v1.json").is_valid(&checkpoint));
+    assert!(schema_registry::validator("task-wake-checkpoint-v2.json").is_valid(&checkpoint));
     f.store = EventStore::open(f._directory.path().join("events.sqlite")).unwrap();
     assert!(reconcile(&f.store, &f.cas, id, stamp(&f)).unwrap());
     assert_eq!(

@@ -154,24 +154,132 @@ pub struct WorkerContract {
 /// Contracts are local captured data. External schema resolution would add undeclared
 /// filesystem/network inputs while validating a supposedly immutable Worker package.
 pub fn schema_validator(schema: &Value) -> Result<jsonschema::Validator, String> {
-    fn local(value: &Value, depth: usize, nodes: &mut usize) -> bool {
+    // Match referencing::ResourceRef::pointer: percent-decode UTF-8 before splitting
+    // segments and unescaping tildes. Malformed URI escapes remain literal here and
+    // are refused by the library's URI parser below; opaque anchors stay forbidden.
+    fn local_reference_target<'a>(root: &'a Value, reference: &str) -> Option<&'a Value> {
+        let bytes = reference.strip_prefix("#/")?.as_bytes();
+        let mut decoded = Vec::with_capacity(bytes.len());
+        let mut index = 0;
+        while index < bytes.len() {
+            if bytes[index] == b'%'
+                && let Some(pair) = bytes.get(index + 1..index + 3)
+                && let (Some(high), Some(low)) = (
+                    (pair[0] as char).to_digit(16),
+                    (pair[1] as char).to_digit(16),
+                )
+            {
+                decoded.push((high * 16 + low) as u8);
+                index += 3;
+            } else {
+                decoded.push(bytes[index]);
+                index += 1;
+            }
+        }
+        let pointer = std::str::from_utf8(&decoded).ok()?;
+        let mut target = root;
+        for segment in pointer.split('/') {
+            target = if let Some(array) = target.as_array() {
+                array.get(segment.parse::<usize>().ok()?)?
+            } else {
+                target
+                    .as_object()?
+                    .get(&segment.replace("~1", "/").replace("~0", "~"))?
+            };
+        }
+        Some(target)
+    }
+    fn local(
+        value: &Value,
+        root: &Value,
+        depth: usize,
+        nodes: &mut usize,
+        active: &mut std::collections::BTreeSet<usize>,
+    ) -> bool {
+        let identity = value as *const Value as usize;
+        if active.contains(&identity) {
+            return true;
+        }
         *nodes += 1;
         if depth > 64 || *nodes > 16384 {
             return false;
         }
-        match value {
-            Value::Object(map) => map.iter().all(|(key, value)| {
-                !matches!(
-                    key.as_str(),
-                    "$id" | "$schema" | "$dynamicRef" | "$recursiveRef"
-                ) && (key != "$ref" || value.as_str().is_some_and(|s| s.starts_with("#/")))
-                    && local(value, depth + 1, nodes)
-            }),
-            Value::Array(values) => values.iter().all(|v| local(v, depth + 1, nodes)),
-            _ => true,
+        let Some(map) = value.as_object() else {
+            return true;
+        };
+        if map.keys().any(|key| {
+            matches!(
+                key.as_str(),
+                "$id" | "$schema" | "$dynamicRef" | "$recursiveRef"
+            )
+        }) || map
+            .get("$ref")
+            .is_some_and(|v| !v.as_str().is_some_and(|s| s.starts_with("#/")))
+        {
+            return false;
         }
+        active.insert(identity);
+        if let Some(reference) = map.get("$ref").and_then(Value::as_str) {
+            let Some(target) = local_reference_target(root, reference) else {
+                return false;
+            };
+            if !local(target, root, depth + 1, nodes, active) {
+                return false;
+            }
+        }
+        for key in [
+            "properties",
+            "$defs",
+            "definitions",
+            "patternProperties",
+            "dependentSchemas",
+        ] {
+            if let Some(children) = map.get(key).and_then(Value::as_object)
+                && !children
+                    .values()
+                    .all(|v| local(v, root, depth + 1, nodes, active))
+            {
+                return false;
+            }
+        }
+        for key in [
+            "items",
+            "additionalProperties",
+            "unevaluatedProperties",
+            "unevaluatedItems",
+            "not",
+            "if",
+            "then",
+            "else",
+            "contains",
+            "propertyNames",
+            "contentSchema",
+        ] {
+            if let Some(child) = map.get(key)
+                && !local(child, root, depth + 1, nodes, active)
+            {
+                return false;
+            }
+        }
+        for key in ["allOf", "anyOf", "oneOf", "prefixItems"] {
+            if let Some(children) = map.get(key).and_then(Value::as_array)
+                && !children
+                    .iter()
+                    .all(|v| local(v, root, depth + 1, nodes, active))
+            {
+                return false;
+            }
+        }
+        active.remove(&identity);
+        true
     }
-    if !local(schema, 0, &mut 0) {
+    if !local(
+        schema,
+        schema,
+        0,
+        &mut 0,
+        &mut std::collections::BTreeSet::new(),
+    ) {
         return Err("Worker schema exceeds local resolution bounds".into());
     }
     jsonschema::draft202012::options()

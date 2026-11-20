@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:implementation-pr-live:1",
+  "title": "implementation-pr-live v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "request_digest",
+    "scope_id",
+    "execution_id",
+    "pin_id"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/implementation-pr-live@1"
+    },
+    "request_digest": {
+      "$ref": "urn:af:schema:scenario:10#/$defs/digest"
+    },
+    "scope_id": {
+      "$ref": "urn:af:schema:scenario:10#/$defs/digest"
+    },
+    "execution_id": {
+      "$ref": "urn:af:schema:scenario:10#/$defs/digest"
+    },
+    "pin_id": {
+      "$ref": "urn:af:schema:scenario:10#/$defs/digest"
+    }
+  }
+}

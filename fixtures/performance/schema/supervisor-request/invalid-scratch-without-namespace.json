@@ -1,5 +1,5 @@
 {
-  "schema": "af.perf-supervisor-request/4",
+  "schema": "af.perf-supervisor-request/5",
   "argv": [
     "/perf/bin/perf-probe"
   ],
@@ -20,5 +20,6 @@
   "scratch": "/perf/scratch",
   "setup": null,
   "stdout_patterns": [],
-  "stdout_json": []
+  "stdout_json": [],
+  "evidence_paths": []
 }

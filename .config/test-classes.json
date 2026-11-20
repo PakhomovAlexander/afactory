@@ -7,7 +7,8 @@
     "test-changelog-notes.py",
     "test-gate-owner.py",
     "test-test-quarantine.py",
-    "test-dev-release.py"
+    "test-dev-release.py",
+    "test-contract-inventory.py"
   ],
   "binaries": {
     "af::bin/af": "functional",
@@ -63,7 +64,8 @@
     "af-source-issue::sources": "e2e",
     "af-source-issue::transport": "e2e",
     "af-store": "functional",
-    "af-telemetry": "functional"
+    "af-telemetry": "functional",
+    "af-runner::contract_inventory": "functional"
   },
   "exact": {
     "af::bin/af self_optimizer::optimization_adapters::tests::codex_continued_range_adopts_its_first_named_session_as_unverified": "functional",
@@ -369,7 +371,8 @@
     "test-workspace-fixture-benchmark.py": "perf",
     "test-scenario-merge-watch.py": "e2e",
     "test-task-wake-probe.py": "functional",
-    "test-dev-release.py": "e2e"
+    "test-dev-release.py": "e2e",
+    "test-contract-inventory.py": "functional"
   },
   "utilities": [
     "test-classes.py",

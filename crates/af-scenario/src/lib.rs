@@ -6,7 +6,10 @@
 pub mod adapter;
 pub mod checks;
 pub mod contract;
+pub mod driver;
 pub mod host;
+pub mod implementation;
+pub mod nightly;
 pub mod performance;
 pub mod presentation;
 pub mod retention;
@@ -32,3 +35,5 @@ use {
     contract::*, schedule::*, state::*, std::collections::BTreeMap, std::path::PathBuf,
     store::Store,
 };
+
+pub mod task_outcome;

@@ -897,6 +897,87 @@ impl TaskPlanCompiler {
         Ok(())
     }
 
+    /// Token-free effective Worker pool, including every conditional child. The ordinary
+    /// native planner subsequently proves contracts and resources before startup admission.
+    pub fn startup_workers(&self, root: &str) -> Result<BTreeSet<String>, String> {
+        fn visit(
+            compiler: &TaskPlanCompiler,
+            name: &str,
+            scope: &str,
+            mapping: &BTreeMap<String, String>,
+            workers: &mut BTreeMap<String, String>,
+            depth: usize,
+        ) -> Result<(), String> {
+            if depth >= 4 {
+                return Err("Startup Pipeline expansion depth exceeded".into());
+            }
+            let pipeline = compiler
+                .pipelines
+                .get(name)
+                .ok_or("Startup Pipeline missing from captured authority")?;
+            pipeline.validate()?;
+            let mut slots = BTreeMap::new();
+            for (local, slot) in &pipeline.slots {
+                let physical = mapping
+                    .get(local)
+                    .cloned()
+                    .unwrap_or_else(|| format!("{scope}.slots.{local}"));
+                let worker = workers.entry(physical.clone()).or_insert_with(|| {
+                    compiler
+                        .slot_workers
+                        .get(&physical)
+                        .unwrap_or(&slot.worker)
+                        .clone()
+                });
+                if worker != &slot.worker && !slot.allow_local_replacement {
+                    return Err("Startup slot forbids Worker replacement".into());
+                }
+                slots.insert(local.clone(), physical);
+            }
+            for node in &pipeline.nodes {
+                match &node.operator {
+                    TaskOperatorV1::Call { pipeline, bindings } => {
+                        let mapped = bindings
+                            .iter()
+                            .map(|(child, parent)| {
+                                Ok((
+                                    child.clone(),
+                                    slots
+                                        .get(parent)
+                                        .ok_or("Startup parent slot missing")?
+                                        .clone(),
+                                ))
+                            })
+                            .collect::<Result<BTreeMap<_, _>, String>>()?;
+                        visit(
+                            compiler,
+                            pipeline,
+                            &format!("{scope}.nodes.{}", node.id),
+                            &mapped,
+                            workers,
+                            depth + 1,
+                        )?;
+                    }
+                    TaskOperatorV1::Check { remote_checks, .. } if !remote_checks.is_empty() => {
+                        return Err("Implementation startup requires local gates only".into());
+                    }
+                    _ => {}
+                }
+            }
+            Ok(())
+        }
+        let mut workers = BTreeMap::new();
+        visit(self, root, "root", &BTreeMap::new(), &mut workers, 0)?;
+        if self
+            .slot_workers
+            .keys()
+            .any(|slot| !workers.contains_key(slot))
+        {
+            return Err("Startup replacement names an absent physical slot".into());
+        }
+        Ok(workers.into_values().collect())
+    }
+
     pub fn pipelines(&self) -> &BTreeMap<String, PipelineDefinition> {
         &self.pipelines
     }
@@ -970,7 +1051,7 @@ impl TaskPlanCompiler {
             .flat_map(|request| request.caches.values())
             .filter_map(|policy| policy.output.clone())
             .collect();
-        worker
+        let outputs = worker
             .signature
             .contract
             .outputs
@@ -980,7 +1061,13 @@ impl TaskPlanCompiler {
                 let schema = self.worker_schema(name, &format!("outputs/{port}.schema.json"))?;
                 Ok((port.clone(), schema))
             })
-            .collect()
+            .collect::<Result<BTreeMap<_, _>, String>>()?;
+        if matches!(&worker.runner, TaskWorkerRunner::Model { provider_kind, .. } if provider_kind == "codex")
+        {
+            af_runner::task::reply_schema::strict_outputs(&outputs)
+                .map_err(|error| format!("Worker {name}: {error}"))?;
+        }
+        Ok(outputs)
     }
 
     pub(super) fn worker_schema(
@@ -1036,6 +1123,7 @@ impl TaskPlanCompiler {
         )?;
         self.validate_requirements_inputs(&graph)?;
         self.validate_replacement_schemas(&graph)?;
+        self.validate_provider_schemas(&graph)?;
         self.validate_structured(cas, &normalized, &graph)?;
         if let Err(reason) = graph.budget(task.limits.clone()) {
             resources.push(reason);
@@ -1162,6 +1250,30 @@ impl TaskPlanCompiler {
         self.compile_inner(cas, task_revision_id, root, None)
     }
 
+    fn validate_provider_schemas(&self, graph: &CompiledTask) -> Result<(), String> {
+        for slot in graph.slots.values() {
+            let name = &slot.worker;
+            let worker = self.worker(name).ok_or("Missing captured Worker")?;
+            if matches!(&worker.runner, TaskWorkerRunner::Model { provider_kind, .. } if provider_kind == "codex")
+            {
+                let kernel = worker
+                    .signature
+                    .contract
+                    .outputs
+                    .iter()
+                    .filter(|(port, contract)| {
+                        port.as_str() == "candidate"
+                            && contract.artifact_type == "af/CandidateTree@1"
+                            && worker.signature.effects.contains("write-source")
+                    })
+                    .map(|(port, _)| port.clone())
+                    .collect();
+                self.worker_output_schemas(name, &kernel)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Pure preflight for the selected definition, before any account probes. Unused catalog
     /// Workers must not make an otherwise fitting Pipeline require unrelated credentials.
     pub fn required_worker_packages(
@@ -1185,6 +1297,7 @@ impl TaskPlanCompiler {
         }
         let graph = self.compile_graph(&task, root)?;
         self.validate_replacement_schemas(&graph)?;
+        self.validate_provider_schemas(&graph)?;
         self.validate_structured(cas, &task, &graph)?;
         Ok(graph
             .slots
@@ -1219,6 +1332,7 @@ impl TaskPlanCompiler {
         graph.experimental_slots = self.experimental_slots.clone();
         graph.validate_experimental_slots()?;
         self.validate_replacement_schemas(&graph)?;
+        self.validate_provider_schemas(&graph)?;
         self.validate_structured(cas, &task, &graph)?;
         remote_check_authority(root, &task, &graph)?;
         let bindings = self.effective_bindings(cas, &graph)?;

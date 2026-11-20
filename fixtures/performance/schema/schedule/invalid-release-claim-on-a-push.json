@@ -1,5 +1,5 @@
 {
-  "schema": "af.perf-schedule/2",
+  "schema": "af.perf-schedule/3",
   "actions": {
     "repository": "owner/af",
     "run_id": 9100,

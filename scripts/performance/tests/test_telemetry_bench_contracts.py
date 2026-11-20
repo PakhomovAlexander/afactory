@@ -168,7 +168,7 @@ class FixtureContracts(TempDir):
         from types import SimpleNamespace
         repo = pathlib.Path(self.path('fixture/pristine'))
         repo.mkdir(parents=True)
-        ready = {'schema':'af/task-inspection@20', 'attempts':0, 'phase':{'kind':'ready'},
+        ready = {'schema':'af/task-inspection@21', 'attempts':0, 'phase':{'kind':'ready'},
                  'task_id':'telemetry-bench-concurrent', 'plan_id':'sha256:'+'1'*64}
         documents = [ready, {}, dict(ready, schema='af/task-inspection@18'),
                      dict(ready, attempts=1), dict(ready, attempts=False),
@@ -615,7 +615,8 @@ print(json.dumps({
         home = pathlib.Path(self.path('home'))
         home.mkdir(mode=0o700)
         command = ['/usr/bin/python3', '-I', 'telemetry-overhead.py', '--af', '/private/release-af']
-        with account_isolation.namespace_argv(str(home), command) as argv:
+        with mock.patch.object(account_isolation.sys, 'platform', 'linux'), \
+                account_isolation.namespace_argv(str(home), command) as argv:
             mounts = [(argv[i + 1], argv[i + 2]) for i, word in enumerate(argv) if word == '--ro-bind']
             passwd, nss = [pathlib.Path(source).read_text() for source, target in mounts]
         self.assertEqual(argv[:2], ['bwrap', '--unshare-user'])
@@ -636,6 +637,31 @@ print(json.dumps({
             called = popen.call_args.args[0]
             self.assertEqual(called[0], 'bwrap')
             self.assertEqual(called[called.index('--') + 1:], command)
+
+
+    def test_darwin_release_launcher_preserves_command_without_linux_account_files(self):
+        from unittest import mock
+        from perflab import account_isolation, telemetry_exec
+        home = pathlib.Path(self.path('home'))
+        home.mkdir(mode=0o700)
+        command = [sys.executable, '-I', 'telemetry-overhead.py', '--af', '/private/release-af']
+        execution = type('Execution', (), dict(argv=command, cwd=str(home),
+            env={'HOME': str(home), account_isolation.FIXTURE: str(home)}, file_bytes=1 << 30,
+            readable=[], writable=[str(home)], capture=str(home)))()
+        with mock.patch.object(account_isolation.sys, 'platform', 'darwin'), mock.patch.object(
+                account_isolation, 'account_files', side_effect=AssertionError('Linux account files')), \
+                mock.patch.object(account_isolation, 'namespace_directories',
+                                  side_effect=AssertionError('Linux mount preparation')):
+            with account_isolation.namespace_argv(str(home), command) as argv:
+                self.assertEqual(argv, command)
+            with mock.patch.object(telemetry_exec.subprocess, 'Popen',
+                                   side_effect=OSError('recorded')) as popen:
+                with self.assertRaisesRegex(OSError, 'recorded'):
+                    telemetry_exec.TrustedLocal(sys.executable).launch(execution, None, None)
+                self.assertEqual(popen.call_args.args[0], command)
+                self.assertEqual(popen.call_args.kwargs['env'], execution.env)
+                self.assertEqual(popen.call_args.kwargs['cwd'], str(home))
+        self.assertEqual(list(home.iterdir()), [])
 
 
 if __name__ == "__main__":

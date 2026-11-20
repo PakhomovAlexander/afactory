@@ -103,6 +103,31 @@ pub fn instantiate(
             serde_json::json!({"task":receipt.task_id,"port":binding.port}),
         );
     }
+    if let Some(Datum::TaskOutcome(outcome)) = d.inputs.get("repair") {
+        outcome.validate()?;
+        require(
+            outcome.repairable(),
+            "Native outcome does not authorize repair",
+        )?;
+        host.check_repair(template, outcome)?;
+        document["continue"] = serde_json::json!({"task":outcome.receipt.task_id});
+        let requirements = document
+            .as_object_mut()
+            .ok_or("Template must be an object")?
+            .entry("requirements")
+            .or_insert_with(|| serde_json::json!({}));
+        let requirements = requirements
+            .as_object_mut()
+            .ok_or("Template requirements must be an object")?;
+        require(
+            !requirements.contains_key("scenario_native_outcome"),
+            "Template cannot prefill native outcome",
+        )?;
+        requirements.insert(
+            "scenario_native_outcome".into(),
+            serde_json::to_value(outcome).map_err(|e| e.to_string())?,
+        );
+    }
     if !references.is_empty() {
         document["inputs"] = references.into();
     }

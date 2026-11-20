@@ -1661,7 +1661,7 @@ fn assert_late_usage(
             a.reservation.node.ends_with(".bugs") || a.reservation.node.ends_with(".correctness")
         })
         .collect();
-    assert_eq!(attempts.len(), 2);
+    assert_eq!(attempts.len(), 2, "{report:?}");
     let amount = u128::from(u64::MAX) + 17;
     for attempt in &attempts {
         let usage = TaskTokenUsageV3::charge_only(amount);
@@ -1751,6 +1751,42 @@ fn assert_late_usage(
         .unwrap()
         .0;
     runtime.finish(&id).unwrap();
+    // A run's explicit Store must stay outside its repository, even when it already ended.
+    let repo = tempfile::tempdir().unwrap();
+    let shown = crate::common::af()
+        .current_dir(repo.path())
+        .args(["task", "show", &state.task_id, "--json", "--state"])
+        .arg(directory)
+        .output()
+        .unwrap();
+    assert!(
+        shown.status.success(),
+        "{}",
+        String::from_utf8_lossy(&shown.stderr)
+    );
+    let shown: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    assert_eq!(shown["state"]["outcome"], "exhausted");
+    assert_eq!(shown["state"]["cause"], "budget");
+    assert!(
+        shown["state"]["next_action"]
+            .as_str()
+            .unwrap()
+            .contains("--fit")
+    );
+    let run = crate::common::af()
+        .current_dir(repo.path())
+        .args(["task", "run", &state.task_id, "--state"])
+        .arg(directory)
+        .output()
+        .unwrap();
+    assert_eq!(
+        run.status.code(),
+        Some(4),
+        "{}\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(String::from_utf8_lossy(&run.stdout).contains("finished/exhausted/budget"));
     let reopened = EventStore::open_read_only(directory.join("events.sqlite")).unwrap();
     assert_eq!(
         reopened
@@ -2048,8 +2084,8 @@ pub(super) fn assert_current_plan_schemas(
         assert!(!validator.is_valid(&old));
         if file.starts_with("compiled") {
             for reference in [
-                "urn:af:schema:task-inspection:20#/properties/graph",
-                "urn:af:schema:task-plan-inspection:6#/properties/graph",
+                "urn:af:schema:task-inspection:21#/properties/graph",
+                "urn:af:schema:task-plan-inspection:7#/properties/graph",
             ] {
                 let enclosing = schema_registry::validator(reference);
                 assert!(enclosing.is_valid(&value), "{reference}");

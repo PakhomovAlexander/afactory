@@ -162,6 +162,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn wake_seal_key_is_private_durable_and_never_recreated_after_admission() {
         let directory = tempfile::tempdir().unwrap();
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -194,6 +195,33 @@ mod tests {
             !file.exists(),
             "key loss cannot mint replacement provenance"
         );
+    }
+
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn wake_seal_admission_refuses_unsupported_machine_identity_without_creating_authority() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = root.join("events.sqlite");
+        for _ in 0..2 {
+            let store = EventStore::open(&path).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            for result in [store.admit_wake_incarnation(), store.wake_incarnation()] {
+                assert!(result.unwrap_err().to_string().contains(
+                    "Wake Store incarnation admission currently requires Linux machine identity"
+                ));
+            }
+            let admitted: i64 = store
+                .conn
+                .query_row("SELECT count(*) FROM wake_incarnation_v1", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(admitted, 0);
+            assert!(!root.join(KEY).exists());
+            assert!(!root.join(PENDING).exists());
+        }
     }
 
     #[test]

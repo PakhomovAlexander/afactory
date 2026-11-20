@@ -28,7 +28,7 @@ def declare(config, cohort_id, groups, start_date, minimum_days=7, preparation_m
 
 def collect(journal, cohort, sealed=None):
     contracts.validate_cohort(cohort)
-    require(cohort["schema"] == "af.perf-local-cohort/1", "local admission refuses hosted cohorts")
+    require(cohort["schema"] == "af.perf-local-cohort/2", "local admission refuses hosted cohorts")
     digest = canonical_digest(cohort)
     dispatch = cohort["dispatch"]
     require(dispatch["journal_id"] == journal.config["journal_id"], "wrong original local journal")
@@ -99,7 +99,7 @@ def collect(journal, cohort, sealed=None):
 def dispatch_due(journal, cohort, sealed=None):
     """Submit due originals once. Busy before claim may wait; a claim is never retried."""
     contracts.validate_cohort(cohort)
-    require(cohort["schema"] == "af.perf-local-cohort/1", "local dispatch refuses hosted cohorts")
+    require(cohort["schema"] == "af.perf-local-cohort/2", "local dispatch refuses hosted cohorts")
     digest = canonical_digest(cohort)
     now = int(time.time() * 1000)
     originals = {journal.request(i)["member_id"] for i in journal.names()

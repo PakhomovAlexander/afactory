@@ -33,7 +33,11 @@ pub(crate) fn validate_document(
         || document
             .get("requirements")
             .and_then(|v| v.as_object())
-            .is_some_and(|r| r.contains_key("scenario_evidence") || r.contains_key("scenario_goal"))
+            .is_some_and(|r| {
+                r.contains_key("scenario_evidence")
+                    || r.contains_key("scenario_goal")
+                    || r.contains_key("scenario_native_outcome")
+            })
         || file.inputs.is_some()
         || file.continue_from.is_some()
         || file.issue.is_some()
@@ -102,6 +106,92 @@ fn capture(template: &Template) -> Result<(String, String, TaskKindProfile), Str
     let profile = selected_profile(&compiler, &settings, &file.kind, file.verification)?;
     Ok((source.repository_id, source.content_digest, profile))
 }
+/// Restore actual sealed native authority before any Task dispatch. No model admission Attempt, inference or publication occurs here; native
+/// planning and account prerequisite probes are token-free.
+pub(crate) fn preflight_implementation(
+    template: &Template,
+    expected: &BTreeMap<String, af_scenario::implementation::ModelBinding>,
+) -> Result<(), String> {
+    template.validate(&crate::scenario::host::AfHost)?;
+    let (repository, content, _) = capture(template)?;
+    if repository != template.repository_id || content != template.source_content_digest {
+        return Err("Startup template source differs from native capture".into());
+    }
+    let cas = Cas::open(template.state.join("cas")).map_err(|e| e.to_string())?;
+    let settings: RunAuthority = serde_json::from_value(
+        cas.get_json(&template.authority_id)
+            .map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let compiler = restore_compiler(&cas, &template.authority_id, &settings)?;
+    let file: TaskFile =
+        serde_json::from_value(template.document.clone()).map_err(|e| e.to_string())?;
+    let root = &file
+        .pipeline
+        .ok_or("Startup template needs a public Pipeline")?
+        .name;
+    let workers = compiler.startup_workers(root)?;
+    let mut actual = BTreeMap::new();
+    for name in workers {
+        let worker = compiler.worker(&name).ok_or("Startup Worker missing")?;
+        if file.kind == "verification" && worker.signature.effects.contains("write-source") {
+            return Err("Startup verification must be read-only".into());
+        }
+        let TaskWorkerRunner::Model {
+            provider_kind,
+            model,
+            effort,
+        } = &worker.runner
+        else {
+            return Err("Startup refuses command Workers".into());
+        };
+        let provider = settings
+            .providers
+            .get(&name)
+            .ok_or("Startup Worker lacks Provider binding")?;
+        crate::model_check::static_rules(&crate::model_check::Binding {
+            owner: name.clone(),
+            label: &name,
+            provider: Some(provider),
+            kind: provider_kind,
+            model,
+            effort,
+        })?;
+        actual.insert(
+            name,
+            af_scenario::implementation::ModelBinding {
+                provider: provider.clone(),
+                provider_kind: provider_kind.clone(),
+                model: model.clone(),
+                effort: effort.clone(),
+            },
+        );
+    }
+    if &actual != expected {
+        return Err("Startup effective Pipeline/provider/model pool differs".into());
+    }
+    for binding in actual.values() {
+        if binding.provider != "codex-personal" || binding.provider_kind != "codex" {
+            return Err("Startup requires codex-personal".into());
+        }
+    }
+    // Probe only after the entire closure has passed static and owner-scope checks.
+    let identity = crate::providers::task::TaskProviderIdentity::probe("codex-personal", "codex")?;
+    for binding in actual.values() {
+        identity.execution(&binding.model, &binding.effort)?;
+    }
+    // Exercise the ordinary native planner as well as the static closure. This is an
+    // unpaid, never-executed Task with a deterministic identity, not a fabricated plan or
+    // receipt. It proves contracts, resource feasibility, local check configuration and
+    // required native constructors using the template's actual captured source. Future
+    // predecessor content remains checked at dispatch by the ordinary native resolver.
+    let mut document = template.document.clone();
+    document["task_id"] =
+        format!("startup-{}", template.id()?.trim_start_matches("sha256:")).into();
+    plan(template, document, false, &BTreeMap::new())?;
+    Ok(())
+}
+
 fn validate_pin(store: &EventStore, cas: &Cas, template: &Template) -> Result<(), String> {
     let run = format!(
         "scenario-template-{}",
@@ -418,7 +508,7 @@ pub(crate) fn plan(
         }
     }
     let opened = open_task(&id, &template.repo, Some(&template.state))?;
-    validate_recorded_plan(template, &opened, predecessors)?;
+    validate_recorded_plan(template, &opened, predecessors, &document)?;
     if performance
         && matches!(
             profile,
@@ -472,6 +562,7 @@ fn validate_recorded_plan(
     template: &Template,
     opened: &OpenedTask,
     predecessors: &BTreeMap<String, (TaskReceipt, String)>,
+    document: &serde_json::Value,
 ) -> Result<(), String> {
     if opened.task.revision.authority.policy_id != template.authority_id {
         return Err("Recorded fresh Task widens pinned template authority".into());
@@ -523,7 +614,27 @@ fn validate_recorded_plan(
             return Err("Recorded binding names a different predecessor artifact".into());
         }
     }
-    if !predecessors.contains_key("source")
+    if let Some(reference) = document.get("continue") {
+        let (findings_id, findings) = continuation::recorded(&opened.cas, revision)?
+            .ok_or("Native repair lost its recorded continuation")?;
+        if Some(findings.continues.task_id.as_str()) != reference["task"].as_str() {
+            return Err("Native repair continued another Task".into());
+        }
+        continuation::verify_findings(&opened.cas, &opened.store, &findings)?;
+        let evidence: af_scenario::task_outcome::TaskOutcome =
+            serde_json::from_value(document["requirements"]["scenario_native_outcome"].clone())
+                .map_err(|e| e.to_string())?;
+        let repair = evidence
+            .repair
+            .as_ref()
+            .ok_or("Missing exact repair evidence")?;
+        if findings_id != repair.findings_id
+            || findings.continues.result_id != evidence.receipt.result_id
+            || findings.continues.snapshot_id != repair.snapshot_id
+        {
+            return Err("Native repair continuation differs from exact outcome".into());
+        }
+    } else if !predecessors.contains_key("source")
         && let Some(source) = opened.task.revision.inputs.get("source")
     {
         let snapshot = source
@@ -619,6 +730,116 @@ fn performance_executions<'a>(
             "Performance loops require bugs, correctness and evaluator; no default-light fallback"
                 .into(),
         );
+    }
+    Ok(())
+}
+
+/// Capture only checked native evidence; a missing continuation remains non-repairable.
+pub(crate) fn terminal_outcome(
+    opened: &OpenedTask,
+    receipt: TaskReceipt,
+    unknown_usage: bool,
+) -> Result<af_scenario::task_outcome::TaskOutcome, String> {
+    use af_scenario::task_outcome::{RepairEvidence, TaskOutcome};
+    let actual = opened.task.execution.as_ref().map_or(Ok(0), |execution| {
+        u64::try_from(execution.budget.committed_tokens()).map_err(|_| "Native charge overflow")
+    })?;
+    let unknown = opened.task.execution.as_ref().is_some_and(|execution| {
+        execution
+            .attempt_accounting()
+            .iter()
+            .any(|a| a.unknown_usage.is_some())
+    });
+    if actual != receipt.charged_tokens || unknown != unknown_usage {
+        return Err("Native accounting differs from outcome".into());
+    }
+    let (_, view) = opened.view()?;
+    let repair = match continuation::resolve(
+        &opened.cas,
+        &opened.store,
+        &continuation::ContinueRefV1 {
+            task: receipt.task_id.clone(),
+            round: None,
+        },
+    ) {
+        Ok(continued) => match continued.lineage {
+            continuation::Lineage::Reviewed { findings_id } => {
+                let record: af_contracts::task::findings::TaskReviewFindingsV1 = artifact(
+                    &opened.cas,
+                    &findings_id,
+                    af_contracts::task::findings::TASK_REVIEW_FINDINGS_V1,
+                )?;
+                Some(RepairEvidence {
+                    findings_id,
+                    round_id: record.continues.round_id,
+                    snapshot_id: record.continues.snapshot_id,
+                })
+            }
+            _ => None,
+        },
+        Err(_) => None,
+    };
+    let candidate_snapshot_id = repair
+        .as_ref()
+        .map(|r| r.snapshot_id.clone())
+        .or_else(|| {
+            continuation::partial_candidate(&opened.cas, &opened.task)
+                .map(|(_, _, _, partial)| partial.snapshot_id)
+        })
+        .or_else(|| {
+            receipt
+                .result
+                .outputs
+                .get("snapshot")
+                .and_then(|p| p.snapshot_id.clone())
+        });
+    let value = TaskOutcome {
+        schema: "af/scenario-task-outcome@2".into(),
+        receipt,
+        outcome: view
+            .state
+            .outcome
+            .ok_or("Finished native Task has no outcome")?,
+        cause: view.state.cause,
+        unknown_usage,
+        candidate_snapshot_id,
+        checks_id: view.checks.map(|c| c.receipt_id),
+        repair,
+    };
+    value.validate()?;
+    Ok(value)
+}
+
+/// A Scenario continuation may name only the exact checked, terminal native Task in its Store.
+pub(crate) fn check_repair(
+    template: &Template,
+    outcome: &af_scenario::task_outcome::TaskOutcome,
+) -> Result<(), String> {
+    outcome.validate()?;
+    if !outcome.repairable() {
+        return Err("Native outcome is not repairable".into());
+    }
+    let receipt = &outcome.receipt;
+    let opened = open_task(&receipt.task_id, &template.repo, Some(&template.state))?;
+    let (result, _) = opened.view()?;
+    if opened.task.revision_id != receipt.revision_id
+        || opened.task.plan_id.as_deref() != Some(&receipt.plan_id)
+        || !matches!(&opened.task.phase, TaskPhaseV1::Finished { result_id } if result_id == &receipt.result_id)
+        || result.as_ref() != Some(&receipt.result)
+    {
+        return Err("Native repair outcome differs from recorded Task".into());
+    }
+    if terminal_outcome(&opened, receipt.clone(), outcome.unknown_usage)? != *outcome {
+        return Err("Native repair evidence differs from recorded Task".into());
+    }
+    let repair = outcome
+        .repair
+        .as_ref()
+        .ok_or("Missing native repair evidence")?;
+    let (snapshot, _) = af_source_git::task::read_snapshot(&opened.cas, &repair.snapshot_id)?;
+    let origin = af_source_git::task::read_origin(&opened.cas, &snapshot.origin_id)?;
+    if origin.repository_id() != template.repository_id {
+        return Err("Native repair belongs to another repository".into());
     }
     Ok(())
 }

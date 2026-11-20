@@ -103,6 +103,8 @@ telemetry-gate:
 # exercise the test quarantine scan on test-local task lists (ADR-0268),
 # and keep this repository's own .af/af.lock on the newest release (ADR-0138).
 release-check:
+	$(CI_STEP) --stage release contract-inventory python3 -I scripts/contract-inventory.py
+	$(CI_STEP) --stage release contract-inventory-tests python3 scripts/test-class-python.py test-contract-inventory.py "$(BASE_EVIDENCE)/test-contract-inventory.py.xml"
 	$(CI_STEP) --stage release release-harness python3 scripts/performance/cli.py harness-digest --check
 	$(CI_STEP) --stage release release-contract python3 scripts/release-contract.py
 	$(CI_STEP) --stage release release-contract-tests python3 scripts/test-class-python.py test-release-contract.py "$(BASE_EVIDENCE)/test-release-contract.py.xml"
@@ -194,3 +196,16 @@ check-classes: base-check fmt lint
 .PHONY: test-labels
 test-labels:
 	python3 scripts/test-labels.py $(if $(filter 1,$(APPLY)),--apply,)
+
+# Fixture-only namespace probe; the production sample container keeps all capabilities dropped.
+perf-dev-flow-probe:
+	cargo build --locked --example perf-supervisor
+	python3 -I scripts/performance/tests/contained_flow_probe.py --supervisor target/debug/examples/perf-supervisor
+
+# Cheap hermetic contracts only; normal fast/full validation also runs this coverage through
+# the audited functional test catalog. Build time and the warm nextest receipt stay separate.
+.PHONY: contract-check
+contract-check:
+	python3 -I scripts/contract-inventory.py
+	python3 -I scripts/test-contract-inventory.py
+	cargo nextest run --workspace --locked --profile ci -E 'binary_id(=af-runner::contract_inventory) | binary_id(=af-contracts::schema_parity) | binary_id(=af-check::schema_parity) | (binary_id(=af-runner) & (test(task::reply_schema::) | test(native_failure::))) | (binary_id(=af-runner-codex::it) & test(task_worker::)) | (binary_id(=af-store) & test(contract_gate_)) | (binary_id(=af-pipeline-config) & test(provider_schema_preflight_))'

@@ -17,7 +17,8 @@ pub enum NativeFailureKind {
     ModelUnavailable,
     Network,
     /// The installed CLI refused af's own arguments (`unknown option`, `unexpected argument`, a
-    /// usage block): it is older than, or otherwise different from, what af invokes.
+    /// usage block), or the provider rejected its output schema (`invalid_json_schema`).
+    /// Both are deterministic refusals of the captured invocation.
     UnsupportedInvocation,
     /// The bound model's safety classifier flagged the request and the model refused it: the
     /// result reports `safety_stops` above zero or `stop_reason` `refusal`, or the client's
@@ -168,7 +169,7 @@ impl NativeFailureKind {
     /// Whether the Provider refused this exact input, so that the same input sent again is
     /// refused again: such an Attempt is not retried automatically (ADR-0147).
     pub fn refuses_input(self) -> bool {
-        self == Self::ModelRefused
+        matches!(self, Self::ModelRefused | Self::UnsupportedInvocation)
     }
 
     /// Why an Attempt that ended with this failure and no usage report has unknown usage
@@ -311,6 +312,23 @@ pub fn classify_native_failure(message: &str) -> NativeFailureKind {
     use NativeFailureKind::*;
     let text = message.to_ascii_lowercase();
     let contains = |patterns: &[&str]| patterns.iter().any(|pattern| text.contains(pattern));
+    // This classifier is called only on native failure channels, never agent messages.
+    // A schema rejection is a deterministic refusal of our invocation, not a model reply.
+    if contains(&["invalid_json_schema"]) {
+        return UnsupportedInvocation;
+    }
+    classify_native_diagnostic(message, false)
+}
+
+/// Authentication sensitivity is independent of schema-rejection retry precedence.
+pub fn native_auth_seen(message: &str) -> bool {
+    classify_native_diagnostic(message, true).is_auth()
+}
+
+fn classify_native_diagnostic(message: &str, auth_only: bool) -> NativeFailureKind {
+    use NativeFailureKind::*;
+    let text = message.to_ascii_lowercase();
+    let contains = |patterns: &[&str]| patterns.iter().any(|pattern| text.contains(pattern));
     let refresh = contains(&[
         "refresh token",
         "refresh_token",
@@ -368,6 +386,38 @@ pub fn classify_native_failure(message: &str) -> NativeFailureKind {
     ]) || credentials && contains(&["not found", "missing", "not configured"])
     {
         return AuthMissing;
+    }
+    let explicit_rejection = contains(&[
+        "auth_rejected",
+        "authentication_error",
+        "invalid_api_key",
+        "invalid api key",
+        "invalid_token",
+        "invalid token",
+        "invalid_grant",
+        "authentication failed",
+        "unauthorized",
+        "unauthorised",
+        "http 401",
+        "status 401",
+        "refresh_token_reused",
+    ]);
+    // The request error code is not a statement that credentials are invalid.
+    let rejected = explicit_rejection
+        || credentials
+            && (text
+                .split("invalid_json_schema")
+                .any(|part| part.contains("invalid"))
+                || contains(&["rejected", "already used"]));
+    // Explicit authentication signals remain sensitive alongside transport/schema errors.
+    // An inferred refresh failure must still yield to the underlying non-auth cause.
+    if auth_only {
+        if contains(&["auth_refresh_failed"]) {
+            return AuthRefreshFailed;
+        }
+        if rejected {
+            return AuthRejected;
+        }
     }
     // Claude Code's own words when the bound model's safety classifier flagged a request and no
     // fallback model answered: "<Model>'s safeguards flagged this message (…/aup). This
@@ -438,22 +488,7 @@ pub fn classify_native_failure(message: &str) -> NativeFailureKind {
     {
         return AuthRefreshFailed;
     }
-    if contains(&[
-        "auth_rejected",
-        "authentication_error",
-        "invalid_api_key",
-        "invalid api key",
-        "invalid_token",
-        "invalid token",
-        "invalid_grant",
-        "authentication failed",
-        "unauthorized",
-        "unauthorised",
-        "http 401",
-        "status 401",
-        "refresh_token_reused",
-    ]) || credentials && contains(&["invalid", "rejected", "already used"])
-    {
+    if rejected {
         return AuthRejected;
     }
     Unknown
@@ -462,6 +497,67 @@ pub fn classify_native_failure(message: &str) -> NativeFailureKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn authentication_sensitivity_survives_schema_rejection_precedence() {
+        for auth in [
+            "HTTP 401 authentication_error for alice@example.com",
+            "auth_expired",
+            "auth_revoked",
+            "auth_refresh_contended",
+            "auth_refresh_failed",
+            "Your API key is invalid",
+        ] {
+            for message in [
+                format!("{auth} connection reset"),
+                format!("{auth} invalid_json_schema"),
+                format!("invalid_json_schema connection reset {auth}"),
+            ] {
+                if message.contains("invalid_json_schema") {
+                    assert_eq!(
+                        classify_native_failure(&message),
+                        NativeFailureKind::UnsupportedInvocation
+                    );
+                }
+
+                assert!(native_auth_seen(&message));
+            }
+        }
+        assert!(!native_auth_seen(
+            "invalid_json_schema: schema must specify a type"
+        ));
+    }
+
+    #[test]
+    fn inferred_refresh_failures_keep_underlying_non_auth_evidence() {
+        use NativeFailureKind::*;
+        for (cause, expected) in [
+            ("connection refused", Network),
+            ("HTTP 429 rate limit", Quota),
+            ("at capacity", Capacity),
+            ("model_not_found", ModelUnavailable),
+        ] {
+            for suffix in ["", " invalid_json_schema: schema must specify a type"] {
+                let message = format!("Failed to refresh OAuth token: {cause}{suffix}");
+                assert!(!native_auth_seen(&message), "{message}");
+                let kind = classify_native_failure(&message);
+                assert_eq!(
+                    kind,
+                    if suffix.is_empty() {
+                        expected
+                    } else {
+                        UnsupportedInvocation
+                    }
+                );
+                let mut stdout = message.as_bytes().to_vec();
+                let mut stderr = b"native diagnostic".to_vec();
+                kind.redact_capture(native_auth_seen(&message), &mut stdout, &mut stderr);
+                assert_eq!(stdout, message.as_bytes());
+                assert_eq!(stderr, b"native diagnostic");
+            }
+        }
+        assert!(native_auth_seen("Failed to refresh OAuth token"));
+    }
 
     #[test]
     fn native_failure_evidence_schema_and_reader_agree_and_old_versions_fail_closed() {

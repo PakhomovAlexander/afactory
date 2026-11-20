@@ -93,7 +93,7 @@ def passing_verdict(verdict):
 
 
 def report_of(verdict, plan):
-    """A valid af.perf-report/3 of `verdict` on the partial-scope fixture's template."""
+    """A valid af.perf-report/4 of `verdict` on the partial-scope fixture's template."""
     doc = fixture("report/valid-partial-scope.json")
     template = doc["cases"][0]
     doc["run_id"], doc["plan_digest"], doc["verdict"] = (verdict["run_id"],
@@ -529,7 +529,7 @@ class Night(TempDir):
         values = {"executor_config": self.executor_config, "history_nights": 14,
                   "headline_instances": HEADLINE}
         values.update(report)
-        doc = {"schema": "af.nightly-config/1", "repository": "owner/af",
+        doc = {"schema": "af.nightly-config/2", "repository": "owner/af",
                "mirror": self.path("mirror.git"), "builds_root": self.builds,
                "build_image": "sha256:" + "1" * 64, "qemu_aarch64": "/usr/bin/qemu-aarch64-static",
                "sign_key": self.path("sign.key"), "public_key": self.path("sign.pub"),

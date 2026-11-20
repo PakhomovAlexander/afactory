@@ -20,11 +20,13 @@ fn lit(value: Datum) -> Binding {
 pub fn simple() -> (Bundle, Policy) {
     let key = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
     let policy = Policy {
-        schema: "af/scenario-policy@5".into(),
+        schema: "af/scenario-policy@8".into(),
         adapters: BTreeMap::new(),
         task_plans: Default::default(),
         task_templates: Default::default(),
         performance_publications: Default::default(),
+        implementation_startup: None,
+        nightly_releases: Default::default(),
         decision_keys: BTreeMap::from([("owner".into(), key.pk.to_box().unwrap().into_string())]),
         file_roots: Default::default(),
     };
@@ -44,7 +46,7 @@ pub fn simple() -> (Bundle, Policy) {
         },
     };
     let def = Scenario {
-        schema: "af/scenario@6".into(),
+        schema: "af/scenario@10".into(),
         inputs: BTreeMap::new(),
         outputs: BTreeMap::from([("ok".into(), Port::Boolean)]),
         steps: vec![step],
@@ -61,7 +63,7 @@ pub fn simple() -> (Bundle, Policy) {
     };
     (
         Bundle {
-            schema: "af/scenario-bundle@6".into(),
+            schema: "af/scenario-bundle@10".into(),
             root: "main".into(),
             definitions: BTreeMap::from([("main".into(), def)]),
         },
@@ -124,10 +126,11 @@ fn publication() -> (Bundle, Policy) {
 pub fn ant(timezone: &str, hour: u8, minute: u8) -> AntState {
     let (scenario, policy) = simple();
     let definition = Ant {
-        schema: "af/ant@7".into(),
+        schema: "af/ant@11".into(),
         id: "daily".into(),
         scenario,
         inputs: BTreeMap::new(),
+        occurrence_inputs: BTreeMap::new(),
         schedule: Schedule::Daily {
             timezone: timezone.into(),
             hour,
@@ -161,7 +164,9 @@ pub fn schema(name: &str) -> jsonschema::Validator {
         .join("schemas");
     let mut registry = jsonschema::Registry::new();
     for file in [
-        "scenario-v6.json",
+        "scenario-v10.json",
+        "scenario-driver-v2.json",
+        "implementation-startup-scope-v2.json",
         "task-contracts-v4.json",
         "scenario-roadmap-proposal-v2.json",
         "scenario-roadmap-v3.json",
@@ -210,7 +215,7 @@ fn scenario_task_receipts_resolve_current_task_contracts_and_keep_closed_results
     }))
     .unwrap();
     Datum::Task(receipt.clone()).validate().unwrap();
-    let validator = schema("scenario-v6.json#/$defs/TaskReceipt");
+    let validator = schema("scenario-v10.json#/$defs/TaskReceipt");
     let mut wire = serde_json::to_value(&receipt).unwrap();
     let errors: Vec<_> = validator
         .iter_errors(&wire)
@@ -245,60 +250,66 @@ fn contracts_roundtrip_schemas_and_old_versions_fail_closed() {
     let ant = ant("UTC", 12, 0);
     for (file, value) in [
         (
-            "scenario-v6.json",
+            "scenario-v10.json",
             serde_json::to_value(&bundle.definitions["main"]).unwrap(),
         ),
-        ("scenario-bundle-v6.json", json!(bundle)),
-        ("scenario-policy-v5.json", json!(policy)),
-        ("scenario-pin-v6.json", json!(pin)),
-        ("scenario-run-v6.json", json!(run)),
-        ("ant-v7.json", json!(ant.pin.definition)),
-        ("ant-pin-v7.json", json!(ant.pin)),
-        ("ant-state-v8.json", json!(ant)),
+        ("scenario-bundle-v10.json", json!(bundle)),
+        ("scenario-policy-v8.json", json!(policy)),
+        ("scenario-pin-v11.json", json!(pin)),
+        ("scenario-run-v11.json", json!(run)),
+        ("ant-v11.json", json!(ant.pin.definition)),
+        ("ant-pin-v12.json", json!(ant.pin)),
+        ("ant-state-v13.json", json!(ant)),
         (
-            "scenario-list-v6.json",
-            json!({"schema":"af/scenario-list@6","runs":{"run":run}}),
+            "scenario-list-v11.json",
+            json!({"schema":"af/scenario-list@11","runs":{"run":run}}),
         ),
         (
-            "ant-list-v8.json",
-            json!({"schema":"af/ant-list@8","ants":{"daily":{
-                "schema":"af/ant-inspection@3", "pin":ant.pin,"state":ant.state,"changes":ant.changes,"next_day":ant.next_day,"last_tick_unix_ms":ant.last_tick_unix_ms,"occurrences":ant.occurrences,"retention":ant.retention,
+            "ant-list-v13.json",
+            json!({"schema":"af/ant-list@13","ants":{"daily":{
+                "schema":"af/ant-inspection@8", "pin":ant.pin,"state":ant.state,"changes":ant.changes,"next_day":ant.next_day,"last_tick_unix_ms":ant.last_tick_unix_ms,"occurrences":ant.occurrences,"retention":ant.retention,
                 "scheduler":{"schema":"af/ant-scheduler@1","running":false,"started_unix_ms":null,"heartbeat_unix_ms":null,"stop_requested":false,"error":null},"next_due_unix_ms":START,"next_due_error":null,"active_run":null,"last_lateness_ms":null
             }}}),
         ),
         (
-            "ant-tick-v7.json",
-            json!({"schema":"af/ant-tick@7","now_unix_ms":START,"started":[],"busy":[],"refused":{},"runs":{}}),
+            "ant-tick-v12.json",
+            json!({"schema":"af/ant-tick@12","now_unix_ms":START,"started":[],"busy":[],"refused":{},"runs":{}}),
         ),
     ] {
         valid(file, &value);
         let mut old = value.clone();
         let current = value["schema"].as_str().unwrap();
         let (kind, version) = current.rsplit_once('@').unwrap();
-        old["schema"] = json!(format!("{kind}@{}", version.parse::<u32>().unwrap() - 1));
-        assert!(!schema(file).is_valid(&old), "{file} admitted old version");
+        // Neither independently versioned parent, nor any earlier generation, is admitted.
+        for retired in 0..version.parse::<u32>().unwrap() {
+            old["schema"] = json!(format!("{kind}@{retired}"));
+            assert!(
+                !schema(file).is_valid(&old),
+                "{file} admitted {kind}@{retired}"
+            );
+        }
     }
     let host = TestHost::default();
     let mut previous_bundle = bundle.clone();
-    previous_bundle.schema = "af/scenario-bundle@5".into();
+    previous_bundle.schema = "af/scenario-bundle@6".into();
     assert!(previous_bundle.validate(&host).is_err());
     previous_bundle = bundle.clone();
-    previous_bundle.definitions.get_mut("main").unwrap().schema = "af/scenario@5".into();
+    previous_bundle.definitions.get_mut("main").unwrap().schema = "af/scenario@6".into();
     assert!(previous_bundle.validate(&host).is_err());
     let mut previous_pin = pin.clone();
-    previous_pin.schema = "af/scenario-pin@5".into();
+    previous_pin.schema = "af/scenario-pin@7".into();
     assert!(previous_pin.validate(&host).is_err());
     let text = serde_json::to_string(&run).unwrap();
     let replay: Run = serde_json::from_str(&text).unwrap();
     assert_eq!(run, replay);
     let mut old = run.clone();
-    old.schema = "af/scenario-run@5".into();
+    old.schema = "af/scenario-run@7".into();
     assert!(old.validate(&TestHost::default()).is_err());
     let mut wrong = json!(bundle);
     wrong["extra"] = json!(true);
     assert!(serde_json::from_value::<Bundle>(wrong).is_err());
     let request = Request {
-        schema: "af/scenario-adapter-request@4".into(),
+        schema: "af/scenario-adapter-request@8".into(),
         method: Method::Reconcile,
         intent_id: digest(b"intent"),
         input_digest: digest(b"inputs"),
@@ -307,15 +318,18 @@ fn contracts_roundtrip_schemas_and_old_versions_fail_closed() {
         inputs: BTreeMap::new(),
     };
     let response = Response {
-        schema: "af/scenario-adapter-response@1".into(),
+        schema: "af/scenario-adapter-response@3".into(),
         intent_id: request.intent_id.clone(),
         input_digest: request.input_digest.clone(),
         outcome: Outcome::Absent,
         evidence: "no prior effect".into(),
         observation: None,
     };
-    valid("scenario-adapter-request-v4.json", &request);
-    valid("scenario-adapter-response-v1.json", &response);
+    valid("scenario-adapter-request-v8.json", &request);
+    valid("scenario-adapter-response-v3.json", &response);
+    let mut retired = json!(response);
+    retired["schema"] = json!("af/scenario-adapter-response@1");
+    assert!(!schema("scenario-adapter-response-v3.json").is_valid(&retired));
     valid(
         "scenario-owned-file-v1.json",
         &OwnedDocument {
@@ -1229,7 +1243,7 @@ fn simultaneous_scheduler_transactions_admit_one_occurrence_and_locks_exclude_tw
     let id = world.runs.keys().next().unwrap();
     let _held = store.lock_run(id).unwrap();
     assert!(store.lock_run(id).is_err());
-    valid("scenario-store-v10.json", &world);
+    valid("scenario-store-v17.json", &world);
 }
 
 #[test]
@@ -1739,7 +1753,7 @@ fn inert_performance_bundles_have_native_typed_ports_feasible_whole_loop_bounds_
             &std::fs::read(root.join("fixtures/scenarios").join(file)).unwrap(),
         )
         .unwrap();
-        valid("scenario-bundle-v6.json", &value);
+        valid("scenario-bundle-v10.json", &value);
         let bundle: Bundle = serde_json::from_value(value).unwrap();
         bundle.validate(&TestHost::default()).unwrap();
         let definition = &bundle.definitions["performance"];
@@ -1782,7 +1796,7 @@ fn typed_selection_is_lazy_across_skips_and_keeps_decision_ownership_static() {
     def.result.insert("ok".into(), selection.clone());
     def.completion = vec![selection];
     bundle.validate(&TestHost::default()).unwrap();
-    valid("scenario-bundle-v6.json", &bundle);
+    valid("scenario-bundle-v10.json", &bundle);
     let mut run = Run::new(
         &TestHost::default(),
         "selection".into(),
@@ -1849,14 +1863,53 @@ fn typed_selection_is_lazy_across_skips_and_keeps_decision_ownership_static() {
 /// native work here is a test failure, rather than a call into the operator's machine state.
 #[derive(Default)]
 pub(super) struct TestHost {
+    pub live_clock: bool,
     pub planned_tasks: Option<std::sync::Mutex<Vec<TaskTarget>>>,
+    pub settle_all_planned: bool,
     pub reject_templates: std::sync::atomic::AtomicBool,
+    pub startup_time: std::sync::atomic::AtomicU64,
+    pub startup_templates: std::sync::Mutex<Vec<String>>,
+    pub startup_reject: Option<String>,
+    pub startup_adapter: Option<std::sync::Mutex<implementation::PreflightResult>>,
+    pub expire_startup_on_plan: bool,
+    pub native_dispatches: std::sync::atomic::AtomicUsize,
     pub charge: Option<(u64, bool)>,
     pub task_settlement: Option<super::adapter::Settlement>,
     pub task_settlements: BTreeMap<String, Result<super::adapter::Settlement>>,
     pub task_charges: BTreeMap<String, (u64, bool)>,
 }
 impl crate::Host for TestHost {
+    fn authorization_time(&self) -> Result<u64> {
+        if self.live_clock {
+            return crate::runtime::now();
+        }
+        let value = self.startup_time.load(std::sync::atomic::Ordering::Relaxed);
+        Ok(if value == 0 { START } else { value })
+    }
+    fn preflight_implementation_template(
+        &self,
+        template: &template::Template,
+        _: &BTreeMap<String, implementation::ModelBinding>,
+    ) -> Result<()> {
+        let id = template.id()?;
+        self.startup_templates.lock().unwrap().push(id.clone());
+        require(
+            self.startup_reject.as_ref() != Some(&id),
+            "native startup refused",
+        )
+    }
+
+    fn preflight_implementation_adapter(
+        &self,
+        _: &Adapter,
+        _: &implementation::Scope,
+    ) -> implementation::PreflightResult {
+        self.startup_adapter
+            .as_ref()
+            .map(|result| result.lock().unwrap().clone())
+            .unwrap_or_else(|| Err("Host does not support implementation adapter preflight".into()))
+    }
+
     fn validate_template(&self, _: &Value, _: Option<&Value>, _: u64) -> Result<()> {
         require(
             !self
@@ -1904,6 +1957,10 @@ impl crate::Host for TestHost {
             max_tokens: template.max_tokens,
         };
         tasks.lock().unwrap().push(target.clone());
+        if self.expire_startup_on_plan {
+            self.startup_time
+                .store(START + DAY, std::sync::atomic::Ordering::Relaxed);
+        }
         Ok(target)
     }
     fn run_task(
@@ -1912,8 +1969,10 @@ impl crate::Host for TestHost {
         _: u64,
         _: &std::sync::atomic::AtomicBool,
     ) -> Result<adapter::Settlement> {
+        self.native_dispatches
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if let Some(tasks) = &self.planned_tasks {
-            if tasks.lock().unwrap().len() == 1 {
+            if self.settle_all_planned || tasks.lock().unwrap().len() == 1 {
                 let receipt: TaskReceipt = serde_json::from_value(serde_json::json!({
                     "task_id":target.task_id, "plan_id":target.plan_id,
                     "revision_id":target.revision_id, "result_id":digest(b"first-result"),

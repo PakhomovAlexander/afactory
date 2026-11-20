@@ -1,0 +1,6 @@
+[workspace]
+members = ["crates/smoke-app", "crates/smoke-logic", "crates/smoke-support"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"

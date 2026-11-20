@@ -5,8 +5,8 @@ use crate::is_digest;
 use serde::{Deserialize, Serialize};
 
 pub const WAKE_SUBSCRIPTION_V1: &str = "af/TaskWakeSubscription@1";
-pub const WAKE_OBSERVATION_V1: &str = "af/TaskWakeObservation@1";
-pub const WAKE_ENVELOPE_V1: &str = "af/TaskWakeEnvelope@1";
+pub const WAKE_OBSERVATION_V2: &str = "af/TaskWakeObservation@2";
+pub const WAKE_ENVELOPE_V2: &str = "af/TaskWakeEnvelope@2";
 pub const WAKE_RECEIPT_V1: &str = "af/TaskWakeReceipt@1";
 pub const MAX_WAKE_BYTES: usize = 16384;
 
@@ -174,7 +174,7 @@ impl WakeObservationV1 {
         self.checked_prefix.validate()?;
         self.state.validate()?;
         require(
-            self.schema == WAKE_OBSERVATION_V1
+            self.schema == WAKE_OBSERVATION_V2
                 && is_digest(&self.observation_id)
                 && is_digest(&self.revision_id)
                 && positive(self.episode)
@@ -227,7 +227,7 @@ impl WakeEnvelopeV1 {
     pub fn validate(&self) -> Result<(), String> {
         self.observation.validate()?;
         require(
-            self.schema == WAKE_ENVELOPE_V1
+            self.schema == WAKE_ENVELOPE_V2
                 && [
                     &self.subscription_id,
                     &self.delivery_id,
@@ -371,7 +371,7 @@ impl WakeCheckpointV1 {
             )?;
         }
         require(
-            self.schema == "af/task-wake-checkpoint@1"
+            self.schema == "af/task-wake-checkpoint@2"
                 && is_digest(&self.configuration_digest)
                 && is_digest(&self.run_facts_digest)
                 && is_digest(&self.prefix_digest)

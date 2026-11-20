@@ -58,13 +58,13 @@ class SourceCapture(unittest.TestCase):
             baseline_sha="2" * 40, candidate_sha="3" * 40,
             repository=os.path.join(self.path, "source/repository.git"))
         schema = json.loads((ROOT / "schemas/scenario-experiment-source-v1.json").read_text())
-        scenario = json.loads((ROOT / "schemas/scenario-v6.json").read_text())
+        scenario = json.loads((ROOT / "schemas/scenario-v10.json").read_text())
         # The existing subset validator accepts local refs: inline the shipped digest
         # definition without changing any receipt assertions or requiring a new dependency.
         schema["$defs"] = dict(digest=scenario["$defs"]["digest"])
         for node in schema["properties"].values():
             if "$ref" in node:
-                self.assertEqual(node["$ref"], "urn:af:schema:scenario:6#/$defs/digest")
+                self.assertEqual(node["$ref"], "urn:af:schema:scenario:10#/$defs/digest")
                 node["$ref"] = "#/$defs/digest"
         return json_subset.Schema(schema, "scenario-experiment-source-v1.json").validate(receipt)
 
@@ -300,6 +300,9 @@ class SourceCaptureFence(ExecutorFixture):
 class ScenarioLab(ExecutorFixture):
     def setUp(self):
         super().setUp()
+        # This one-shard orchestration fixture retains the 45-minute build allowance and
+        # 60-minute total: 45 + 10 + the 30-second finish reserve fits without relaxing either.
+        self.c["core"]["windows"] = dict(shard_sampling_minutes=10, run_total_minutes=60)
         os.mkdir(self.c["root"], 0o700)
         self.spool = os.path.join(self.c["root"], "scenario-spool")
         self.evidence = os.path.join(self.c["root"], "scenario-evidence")
@@ -323,7 +326,7 @@ class ScenarioLab(ExecutorFixture):
         self.adapter = scenario_adapter.Adapter(self.config)
         self.experiment = dict(schema="af.perf-scenario-experiment/1", work="core",
             configuration_digest=canonical_digest(self.c), producer_digest=PRODUCER)
-        self.request = dict(schema="af/scenario-adapter-request@4", method="execute", intent_id=D,
+        self.request = dict(schema="af/scenario-adapter-request@8", method="execute", intent_id=D,
             input_digest=BASE, operation="experiment_submit_v1", destination="native:claw",
             inputs=dict(subject=datum(D), revision=datum(HEAD),
                         body=datum(document_bytes(self.experiment).decode()),
@@ -371,6 +374,9 @@ class ScenarioLab(ExecutorFixture):
         (installed / "scenario.py").chmod(0o444)
         output = installed / "launcher"
         module.launcher(str(config), str(output))
+        # The frozen source line is large and includes Unicode. System Python must read
+        # complete escapes, independently of its buffered UTF-8 line boundaries.
+        output.read_bytes().decode("ascii")
         (installed / "fractions.py").write_text("raise RuntimeError('SHADOW-MUST-NOT-RUN')")
         poison = installed / "poison.py"
         poison.write_text("raise RuntimeError('BYTECODE-MUST-NOT-RUN')")

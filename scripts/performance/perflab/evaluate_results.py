@@ -582,6 +582,7 @@ def _case(plan, case, evidence, health_entry, reasons):
     primary = case["primary_metric"]["key"]
     entry = {
         "instance_id": case["instance_id"], "criticality": case["criticality"],
+        "execution_class": case["execution_class"],
         "exploratory": case["exploratory"], "shard": case["shard"], "pairs": case["pairs"],
         "rank": case["rank"], "alpha": case["alpha"], "metric": case["primary_metric"],
         "tolerance": {"relative": case["tolerance"]["relative"],

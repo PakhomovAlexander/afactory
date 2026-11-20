@@ -1,5 +1,5 @@
 {
-  "schema": "af.perf-verdict/2",
+  "schema": "af.perf-verdict/3",
   "run_id": "schema_fixture_run",
   "plan_digest": "sha256:3acc9f4b48cf0410ba69e2f5274a8722eb342be9baaeb1a30f14820757c15dbf",
   "scope": "bootstrap",
@@ -101,7 +101,8 @@
       },
       "missing_records": 0,
       "failures": [],
-      "budgets": []
+      "budgets": [],
+      "execution_class": "standard"
     },
     {
       "instance_id": "synthetic_fast",
@@ -143,7 +144,8 @@
       },
       "missing_records": 0,
       "failures": [],
-      "budgets": []
+      "budgets": [],
+      "execution_class": "standard"
     },
     {
       "instance_id": "synthetic_process__size_1",
@@ -194,7 +196,8 @@
           "result": "not_applicable",
           "observed_max": "20"
         }
-      ]
+      ],
+      "execution_class": "standard"
     }
   ],
   "aggregate": {

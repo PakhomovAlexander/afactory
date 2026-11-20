@@ -1347,3 +1347,33 @@ fn an_adr_file_is_named_by_its_four_digit_number() {
         assert_eq!(adr_number(other), None, "{other}");
     }
 }
+
+#[test]
+fn dated_adr_identity_and_warning_are_safe() {
+    let first = "docs/adr/2026-11-05-first.md";
+    let second = "docs/adr/2026-11-05-second.md";
+    assert_ne!(adr_number(first), adr_number(second));
+    assert_eq!(adr_number(first).as_deref(), Some("2026-11-05-first"));
+    let mut identities = BTreeMap::new();
+    for (task, suffix) in [
+        ("one", "\x1b[31mred\nforged\tend"),
+        ("two", "\x1b[31mred\nforged\tend"),
+        ("one", "same\x01"),
+        ("two", "same\x02"),
+    ] {
+        let path = format!("docs/adr/2026-11-05-{suffix}.md");
+        let encoded = af_contracts::encode_path(path.as_bytes());
+        assert_eq!(encoded, path);
+        identities
+            .entry(adr_number(&encoded).unwrap())
+            .or_insert_with(Vec::new)
+            .push((task.to_owned(), encoded));
+    }
+    let warning = render_adr_collisions(identities).join(" ");
+    assert!(
+        warning.contains("2026-11-05-?[31mred?forged?end"),
+        "{warning:?}"
+    );
+    assert!(!warning.chars().any(char::is_control), "{warning:?}");
+    assert!(!warning.contains("2026-11-05-same?"), "{warning:?}");
+}

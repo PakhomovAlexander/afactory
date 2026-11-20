@@ -60,7 +60,7 @@ def launcher(config_path, output):
                (str(p), p.read_text()) for p in sorted((HERE / "perflab").rglob("*.py"))}
     # Execute only the pinned sources, never adjacent shadow modules or cached bytecode.
     frozen = ("import importlib.abc, importlib.util\n"
-        "_sources = " + repr(modules) + "\n"
+        "_sources = " + ascii(modules) + "\n"
         "class _Pinned(importlib.abc.MetaPathFinder, importlib.abc.Loader):\n"
         "    def find_spec(self, name, path=None, target=None):\n"
         "        if name == 'perflab' or name.startswith('perflab.'):\n"
@@ -83,7 +83,7 @@ def launcher(config_path, output):
         "        if hashlib.sha256(held.read(8388609)).hexdigest() != expected:\n"
         "            raise SystemExit('installed adapter closure changed')\n"
         + frozen + "sys.argv = [" + repr(str(pathlib.Path(__file__).resolve())) + ", 'adapter', '--config', "
-        + repr(str(config)) + "]\nexec(compile(" + repr(pathlib.Path(__file__).read_text())
+        + repr(str(config)) + "]\nexec(compile(" + ascii(pathlib.Path(__file__).read_text())
         + ", sys.argv[0], 'exec'), {'__name__': '__main__', '__file__': sys.argv[0]})\n")
     with open(output, "x") as stream:
         stream.write(source)

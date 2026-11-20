@@ -9,7 +9,7 @@ request = json.load(sys.stdin)
 inputs = {k: v["value"] for k, v in request["inputs"].items()}
 state_path = root / "effects.json"
 state = json.loads(state_path.read_text()) if state_path.exists() else {"publications": [], "posts": 0}
-response = dict(schema="af/scenario-adapter-response@1", intent_id=request["intent_id"],
+response = dict(schema="af/scenario-adapter-response@3", intent_id=request["intent_id"],
                 input_digest=request["input_digest"], outcome="done", evidence="inert", observation=None)
 operation = request["operation"]
 if request["method"] == "reconcile":

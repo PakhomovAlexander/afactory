@@ -273,7 +273,7 @@ impl EventStore {
             r
         } else {
             WakeDeliveryV1 {
-                schema: "af/task-wake-delivery@1".into(),
+                schema: "af/task-wake-delivery@2".into(),
                 envelope: envelope.clone(),
                 route_id: retained.registration.subscription.recipient_ref,
                 attempts: 0,

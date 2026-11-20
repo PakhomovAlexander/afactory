@@ -8,7 +8,7 @@ on:
       - scripts/benchmark-workspace-fixtures.py
       - scripts/test-workspace-fixtures.py
       - scripts/test-workspace-fixture-benchmark.py
-      - schemas/workspace-fixture-benchmark-v1.json
+      - schemas/workspace-fixture-benchmark-v2.json
       - schemas/workspace-fixture-suite-v1.json
       - .github/workflows/workspace-fixture-benchmark.yml
 

@@ -1,4 +1,4 @@
-# The owner's nightly build configuration (af.nightly-config/1, ADR-0265).
+# The owner's nightly build configuration (af.nightly-config/2, ADR-0265).
 #
 # An example for the owner's Linux VM; nothing installs it. Copy it outside the repository, set
 # the paths, and run one night by hand first (docs/nightly.md):
@@ -13,7 +13,7 @@
 # The report reads the night's record, the nightly executor's journal, GitHub and three host
 # facts, and writes only the new --output directory (ADR-0270).
 
-schema = "af.nightly-config/1"
+schema = "af.nightly-config/2"
 # The repository whose check runs decide which main commit is green.
 repository = "PakhomovAlexander/afactory"
 # A bare mirror of that repository (`git clone --mirror`) the host keeps fetched; the night
