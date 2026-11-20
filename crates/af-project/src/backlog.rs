@@ -14,6 +14,7 @@ use serde::Serialize;
 
 use crate::{Checkout, Git, ProjectStore, now_unix_ms, workspace_id};
 
+pub mod batch;
 mod intake;
 
 const REPORT_PREFIX: &str = "backlog-report/";

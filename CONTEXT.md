@@ -240,7 +240,8 @@ producer's observed fact and bounded evidence in one local capture. A **Backlog 
 binds a material claim and proposed public fields to its Reports and evidence. A Batch freezes
 membership, a Decision records its disposition, and a Publication records the separately
 authorized destination write. A local capture receipt and a designated authority receipt attest
-to different commits.
+to different commits. A daily Batch pins the committed authority cutoff and carries forward
+capacity-deferred work. [Daily batch decision](docs/adr/2026-11-20-freeze-project-backlog-at-authority-cutoff.md).
 [Project backlog decision](docs/adr/2026-11-20-store-project-backlog-reports-privately.md).
 
 **Workspace**:

@@ -5114,3 +5114,340 @@ fn backlog_offline_intake_commits_before_ack_and_replays_exactly_once() {
             .success()
     );
 }
+
+#[test]
+fn backlog_daily_batch_replays_frozen_intake_and_accounts_for_every_report() {
+    use serde_json::json;
+
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    let authority = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+    let producer = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+    let write_key = |name: &str, key: &minisign::SecretKey| {
+        use std::io::Write as _;
+        let path = machine.root().join(name);
+        af_store::local_fs::private_file_options()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap()
+            .write_all(key.to_box(None).unwrap().into_string().as_bytes())
+            .unwrap();
+        path
+    };
+    let authority_key = write_key("authority.key", &authority.sk);
+    let producer_key = write_key("producer.key", &producer.sk);
+    let evidence = machine.root().join("private.txt");
+    std::fs::write(&evidence, "early private evidence").unwrap();
+    let capture = |id| {
+        machine.json(
+            &repo,
+            &[
+                "backlog",
+                "record",
+                "--report-id",
+                id,
+                "--title",
+                "Observed issue",
+                "--observed",
+                "Observed condition",
+                "--evidence-file",
+                evidence.to_str().unwrap(),
+                "--json",
+            ],
+        )
+    };
+    for id in ["first", "capacity", "competing"] {
+        capture(id);
+    }
+    std::fs::write(&evidence, "late private evidence").unwrap();
+    for id in ["late", "local-only"] {
+        capture(id);
+    }
+    let project = machine.json(&repo, &["project", "show", "--json"]);
+    let project_id = project["project_id"].as_str().unwrap();
+    let store = Path::new(project["store"].as_str().unwrap());
+    write_backlog_policy(
+        store,
+        project_id,
+        &authority.pk,
+        Some(&producer.pk),
+        &[&producer.pk],
+    );
+    let digest = |ch: char| format!("sha256:{}", ch.to_string().repeat(64));
+    let (item, other_item) = (digest('a'), digest('b'));
+    // 02:30 America/New_York, March 6 and 7 EST. March 8 has no 02:30.
+    const FIRST: &str = "1772782200000";
+    const BUSY: &str = "1772868600000";
+    const BUDGET: &str = "1773124200000"; // March 10 at 02:30 EDT.
+    const NEXT: &str = "1773297000000"; // March 12 at 02:30 EDT.
+    let policy = json!({
+        "schema": "af/backlog-batch-policy@1",
+        "project_id": project_id,
+        "authority_id": af_store::canonical::blob_content_id(&authority.pk.to_bytes()),
+        "scenario_id": digest('c'),
+        "destination_id": digest('d'),
+        "timezone": "America/New_York",
+        "hour": 2, "minute": 30, "start_unix_ms": FIRST.parse::<u64>().unwrap(),
+        "lateness_ms": 60000, "run_tokens": 5, "run_wall_ms": 30000, "run_dispatches": 1,
+        "rolling_tokens": 5, "rolling_window_ms": 4 * 86_400_000u64, "publication_limit": 1,
+        "evidence_access": "evidence_ids", "hold_policy": "allow_local_reservations",
+    });
+    let policy_file = store.join("backlog-batch-policy-v1.json");
+    let put_policy = |value: &Value| std::fs::write(&policy_file, value.to_string()).unwrap();
+    put_policy(&policy);
+
+    let accept = |id| {
+        let packet = machine.json(
+            &repo,
+            &[
+                "backlog",
+                "export",
+                id,
+                "--key",
+                producer_key.to_str().unwrap(),
+            ],
+        );
+        let submission = machine.root().join("packet.json");
+        std::fs::write(&submission, packet.to_string()).unwrap();
+        machine.json(
+            &repo,
+            &[
+                "backlog",
+                "accept",
+                submission.to_str().unwrap(),
+                "--key",
+                authority_key.to_str().unwrap(),
+            ],
+        )
+    };
+    let receipt = accept("first");
+    assert_eq!(accept("first"), receipt);
+    accept("capacity");
+    accept("competing");
+
+    let audit = || machine.json(&repo, &["backlog", "batch", "audit"]);
+    let tick = |time| machine.json(&repo, &["backlog", "batch", "tick", "--at-unix-ms", time]);
+    let refuse = |args: &[&str], reason: &str| {
+        let output = machine.af(&repo, args);
+        assert!(
+            !output.status.success() && text(&output).1.contains(reason),
+            "{:?}",
+            text(&output)
+        );
+    };
+    let initial = std::thread::scope(|scope| {
+        let competing_tick = scope.spawn(|| tick(FIRST));
+        let initial = tick(FIRST);
+        assert_eq!(competing_tick.join().unwrap(), initial);
+        initial
+    });
+    let audit_schema = schemas::validator("backlog-batch-audit-v1.json");
+    schemas::valid(&audit_schema, &initial);
+    let batch = initial["active_batch_id"].as_str().unwrap();
+    assert_eq!(initial["high_water"], "3");
+    assert_eq!(initial["closed_high_water"], "0");
+    assert_eq!(initial["occurrences"].as_array().unwrap().len(), 1);
+    assert_eq!(initial["occurrences"][0]["outcome"]["reserved_tokens"], 5);
+    assert_eq!(
+        initial["batches"][batch]["members"]
+            .as_object()
+            .unwrap()
+            .len(),
+        3
+    );
+    let reserve = |batch, member, item| {
+        machine.json(
+            &repo,
+            &[
+                "backlog",
+                "batch",
+                "settle",
+                batch,
+                member,
+                "reserve-publication",
+                "--item-id",
+                item,
+            ],
+        )
+    };
+    let close = |batch, time| {
+        machine.json(
+            &repo,
+            &["backlog", "batch", "close", batch, "--at-unix-ms", time],
+        )
+    };
+
+    // Kill the local driver after AF emits its first committed disposition and before the
+    // driver can close the batch. The next invocation must reload the claim from SQLite.
+    let af = crate::common::af();
+    let mut driver = Command::new("/bin/sh");
+    driver
+        .args(["-c", r#""$@" && read -r ignored"#, "batch-driver"])
+        .arg(af.get_program())
+        .args([
+            "backlog",
+            "batch",
+            "settle",
+            batch,
+            "first",
+            "reserve-publication",
+            "--item-id",
+            &item,
+        ])
+        .current_dir(&repo)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped());
+    for (key, value) in af.get_envs() {
+        if let Some(value) = value {
+            driver.env(key, value);
+        } else {
+            driver.env_remove(key);
+        }
+    }
+    let mut driver = driver
+        .env("XDG_STATE_HOME", machine.state_home())
+        .spawn()
+        .unwrap();
+    let partial = serde_json::Deserializer::from_reader(driver.stdout.take().unwrap())
+        .into_iter::<Value>()
+        .next()
+        .unwrap()
+        .unwrap();
+    driver.kill().unwrap();
+    assert!(!driver.wait().unwrap().success());
+    assert_eq!(audit(), partial);
+    assert_eq!(reserve(batch, "first", &item), partial);
+    assert_eq!(
+        partial["batches"][batch]["publication_reservations"],
+        json!([item])
+    );
+    refuse(
+        &["backlog", "batch", "close", batch, "--at-unix-ms", FIRST],
+        "all members",
+    );
+    let late = accept("late");
+    assert_eq!(late["body"]["sequence"], "4");
+    assert_eq!(accept("late"), late);
+    let resumed = tick(FIRST);
+    assert_eq!(resumed["pending_member_ids"], json!(["late"]));
+    assert_eq!(resumed["batches"][batch], partial["batches"][batch]);
+    assert!(!resumed.to_string().contains("late private evidence"));
+    let late_digest = af_store::canonical::blob_content_id(b"late private evidence");
+    assert!(!resumed["batches"][batch].to_string().contains(&late_digest));
+    let overlap = tick(BUSY);
+    assert_eq!(overlap["occurrences"][1]["outcome"]["kind"], "skipped_busy");
+    assert_eq!(overlap["high_water"], "3");
+    refuse(
+        &["backlog", "batch", "settle", batch, "late", "held"],
+        "outside the frozen",
+    );
+
+    let conflict = reserve(batch, "competing", &item);
+    assert_eq!(
+        conflict["batches"][batch]["members"]["competing"]["disposition"],
+        "deferred_item_claim"
+    );
+    let capacity = reserve(batch, "capacity", &other_item);
+    assert_eq!(
+        capacity["batches"][batch]["members"]["capacity"]["disposition"],
+        "deferred_publication_cap"
+    );
+    let closed = close(batch, BUSY);
+    assert_eq!(close(batch, BUSY), closed);
+    assert_eq!(closed["closed_high_water"], "3");
+    assert_eq!(
+        closed["pending_member_ids"],
+        json!(["capacity", "competing", "late"])
+    );
+
+    let request = [
+        "backlog",
+        "batch",
+        "reconsider",
+        "--item-id",
+        &item,
+        "--report-id",
+        "first",
+        "--evidence-report-id",
+        "late",
+        "--eligible-unix-ms",
+        NEXT,
+    ];
+    let reconsidered = machine.json(&repo, &request);
+    assert_eq!(machine.json(&repo, &request), reconsidered);
+    let reconsider_id = reconsidered["reconsiderations"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .next()
+        .unwrap();
+    assert!(reconsidered["reconsiderations"][reconsider_id]["admitted_batch_id"].is_null());
+
+    let skipped = tick(BUDGET);
+    let occurrences = skipped["occurrences"].as_array().unwrap();
+    assert_eq!(occurrences[2]["outcome"]["kind"], "skipped_missing_time");
+    assert_eq!(occurrences[2]["due_unix_ms"], 1_772_953_200_000u64);
+    assert_eq!(occurrences[3]["outcome"]["kind"], "skipped_missed");
+    assert_eq!(occurrences[3]["due_unix_ms"], 1_773_037_800_000u64);
+    assert_eq!(occurrences[4]["outcome"]["kind"], "skipped_budget");
+    assert_eq!(skipped["high_water"], "3");
+
+    let mut changed = policy.clone();
+    changed["publication_limit"] = json!(2);
+    put_policy(&changed);
+    refuse(
+        &["backlog", "batch", "tick", "--at-unix-ms", NEXT],
+        "differs from its pinned revision",
+    );
+    assert_eq!(audit(), skipped);
+    put_policy(&policy);
+    let next = tick(NEXT);
+    let next_batch = next["active_batch_id"].as_str().unwrap();
+    assert_ne!(next_batch, batch);
+    let members = next["batches"][next_batch]["members"].as_object().unwrap();
+    assert_eq!(members.len(), 4);
+    assert_eq!(members["capacity"]["item_id"], other_item);
+    assert_eq!(members[reconsider_id]["evidence_report_id"], "late");
+    assert_eq!(members["late"]["evidence_ids"], json!([late_digest]));
+    assert_eq!(
+        members[reconsider_id]["evidence_ids"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        next["reconsiderations"][reconsider_id]["admitted_batch_id"],
+        next_batch
+    );
+    assert_eq!(
+        next["intake"][0]["report_digest"],
+        receipt["body"]["report_digest"]
+    );
+    assert_eq!(
+        next["intake"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["report_id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["first", "capacity", "competing", "late"]
+    );
+    schemas::valid(&audit_schema, &next);
+    for id in ["capacity", "competing", "late", reconsider_id] {
+        machine.json(
+            &repo,
+            &["backlog", "batch", "settle", next_batch, id, "accounted"],
+        );
+    }
+    let complete = close(next_batch, NEXT);
+    assert_eq!(complete["closed_high_water"], "4");
+    assert_eq!(complete["pending_member_ids"], json!([]));
+    assert!(complete["active_batch_id"].is_null());
+    assert_eq!(complete, audit());
+    assert_eq!(
+        machine.json(&repo, &["backlog", "list", "--json"])["data"]["items"],
+        json!([])
+    );
+}

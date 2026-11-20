@@ -146,6 +146,7 @@ dependencies = [
  "af-runner",
  "af-runtime",
  "af-sandbox",
+ "af-scenario",
  "af-source-git",
  "af-store",
  "minisign",
