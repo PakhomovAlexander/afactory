@@ -722,6 +722,26 @@ impl ProjectStore {
         })
     }
 
+    /// Resolve the action destination from receiver-owned batch authority.
+    pub fn backlog_action_destination(&self, reference: &BatchReference) -> Result<String, String> {
+        let (state, _) = self.batch_state()?;
+        let pin = state.pin.as_ref().ok_or("no pinned backlog batch policy")?;
+        let pin = self.check_native_batch(
+            &state,
+            reference,
+            &pin.policy.scenario_id,
+            &pin.execution.per_run,
+        )?;
+        if pin.policy.destination_id == local_destination(&self.project_id)? {
+            Ok(format!("local-backlog:{}", self.project_id))
+        } else {
+            Ok(format!(
+                "github-backlog:{}:{}",
+                self.project_id, pin.policy.destination_id
+            ))
+        }
+    }
+
     fn check_native_batch<'a>(
         &self,
         state: &'a State,
@@ -739,7 +759,7 @@ impl ProjectStore {
             || reference.policy_id != pin.id
             || current != pin.policy
             || scenario_id != pin.policy.scenario_id
-            || pin.policy.destination_id != local_destination(&self.project_id)?
+            || self.backlog_authority_id()?.as_deref() != Some(&pin.policy.authority_id)
             || !limits.within(&pin.execution.per_run)
         {
             return Err("backlog Scenario differs from the Project batch policy".into());

@@ -12,6 +12,8 @@ use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
+mod github;
+
 pub fn local_destination(project_id: &str) -> Result<String, String> {
     value_id(&("af/backlog-local-sink@1", project_id))
 }
@@ -41,8 +43,16 @@ impl ProjectStore {
             .into_iter()
             .map(|record| {
                 record.validate()?;
+                let refs = match &record {
+                    BacklogRecordV1::Publication(publication) => {
+                        publication.provider_state_id.iter().cloned().collect()
+                    }
+                    _ => Vec::new(),
+                };
                 let payload = serde_json::to_value(record).map_err(|e| e.to_string())?;
-                Ok(NewEvent::new(EventType::BacklogRecordStoredV1, payload).correlating(batch_id))
+                Ok(NewEvent::new(EventType::BacklogRecordStoredV1, payload)
+                    .correlating(batch_id)
+                    .referencing(refs))
             })
             .collect::<Result<Vec<_>, String>>()?;
         self.events
@@ -258,11 +268,10 @@ impl ProjectStore {
         let pin =
             self.check_native_batch(&state, &batch.reference, &batch.scenario_id, proof.limits)?;
         let events = self.processing()?;
-        let destination = local_destination(&self.project_id)?;
-        if settlement_id(proof)? != settlement || pin.policy.destination_id != destination {
-            return Err(
-                "backlog dispatch differs from native settlement or local destination".into(),
-            );
+        let destination = &pin.policy.destination_id;
+        let local = *destination == local_destination(&self.project_id)?;
+        if settlement_id(proof)? != settlement {
+            return Err("Backlog dispatch differs from the native settlement".into());
         }
         check_settlement(&self.project_id, &events, proof)?;
         if state.batches[batch_id]
@@ -280,19 +289,27 @@ impl ProjectStore {
         let mut published_or_reserved = BTreeSet::new();
         let mut eligible = BTreeMap::new();
         let mut source_revisions = BTreeSet::new();
+        let mut authorized_batches = BTreeSet::new();
         let mut admitted = BTreeMap::new();
+        let mut mapped_items = BTreeMap::new();
+        let mut other_pending = BTreeMap::new();
         for (position, event) in events.iter().enumerate() {
             if event.correlation_id.is_none() {
                 continue;
             }
             match read_record(&self.project_id, event)? {
+                BacklogRecordV1::Batch(record) if record.policy_id == batch.reference.policy_id => {
+                    authorized_batches.insert(value_id(&BacklogRecordV1::Batch(record))?);
+                }
                 BacklogRecordV1::ItemRevision(item)
                     if item.source_revision == batch.source_revision =>
                 {
                     source_revisions.insert(value_id(&BacklogRecordV1::ItemRevision(item))?);
                 }
                 BacklogRecordV1::Decision(decision)
-                    if decision.disposition == Verdict::Verified =>
+                    if decision.disposition == Verdict::Verified
+                        && decision.independent_verification_id.is_some()
+                        && authorized_batches.contains(&decision.batch_id) =>
                 {
                     if let Some(item) = items.get(&decision.revision_id)
                         && source_revisions.contains(&item.revision_id)
@@ -304,41 +321,70 @@ impl ProjectStore {
                     }
                 }
                 BacklogRecordV1::Publication(publication)
-                    if publication.destination_id == destination =>
+                    if publication.destination_id == *destination =>
                 {
                     if event.correlation_id.as_deref() == Some(batch_id) {
                         admitted.insert(publication.intent_id.clone(), publication.clone());
+                    } else {
+                        other_pending.insert(
+                            publication.item_id.clone(),
+                            publication.receipt_id.is_none(),
+                        );
+                    }
+                    if let Some(remote) = publication.remote_id
+                        && mapped_items
+                            .insert(publication.item_id, remote.clone())
+                            .is_some_and(|mapped| mapped != remote)
+                        && !local
+                    {
+                        return Err("Conflicting GitHub issue identities in Project history".into());
                     }
                     published_or_reserved.insert(publication.revision_id);
                 }
                 _ => {}
             }
         }
+        let reservations = state.batches[batch_id].publication_reservations.len();
+        let slots = (pin.policy.publication_limit as usize)
+            .checked_sub(admitted.len().saturating_add(reservations))
+            .ok_or("Backlog publication intents exceed the pinned batch cap")?;
         if state.batches[batch_id].closed_unix_ms.is_none()
             && pin.policy.hold_policy == HoldPolicy::AllowLocalReservations
         {
-            let slots = (pin.policy.publication_limit as usize).saturating_sub(admitted.len());
-            let mut eligible = eligible.into_iter().collect::<Vec<_>>();
+            let mut eligible = eligible.iter().collect::<Vec<_>>();
             eligible.sort_by_key(|(_, (position, _))| *position);
             let mut intents = Vec::new();
             for (revision, (_, decision_id)) in eligible {
                 if intents.len() == slots {
                     break;
                 }
-                if published_or_reserved.contains(revision) {
+                if published_or_reserved.contains(*revision) {
                     continue;
                 }
-                let item = &items[revision];
-                let intent_id = value_id(&("af/backlog-local-intent@1", &destination, revision))?;
-                let attempt = value_id(&("af/backlog-local-attempt@1", &intent_id))?;
+                let item = &items[*revision];
+                if !local && other_pending.get(&item.item_id) == Some(&true) {
+                    return Ok(None);
+                }
+                let domain = if local {
+                    "af/backlog-local-intent@1"
+                } else {
+                    "af/backlog-github-intent@1"
+                };
+                let intent_id = value_id(&(domain, destination, revision))?;
+                let attempt_ids = if local {
+                    vec![value_id(&("af/backlog-local-attempt@1", &intent_id))?]
+                } else {
+                    github::check_fields(&item.public)?;
+                    Vec::new()
+                };
                 let intent = Publication {
                     project_id: self.project_id.clone(),
                     item_id: item.item_id.clone(),
                     revision_id: item.revision_id.clone(),
-                    decision_id,
+                    decision_id: decision_id.clone(),
                     destination_id: destination.clone(),
                     intent_id: intent_id.clone(),
-                    attempt_ids: vec![attempt],
+                    attempt_ids,
                     remote_id: None,
                     provider_state_id: None,
                     receipt_id: None,
@@ -347,6 +393,15 @@ impl ProjectStore {
                 intents.push(BacklogRecordV1::Publication(intent));
             }
             if !intents.is_empty() {
+                self.check_native_batch(
+                    &state,
+                    &batch.reference,
+                    &batch.scenario_id,
+                    proof.limits,
+                )?;
+                if !local && !github::check_destination(self, destination) {
+                    return Ok(None);
+                }
                 running(cancellation, proof.deadline)?;
                 self.append_processing(batch_id, intents)?;
             }
@@ -355,6 +410,14 @@ impl ProjectStore {
         for mut publication in admitted.into_values() {
             if publication.receipt_id.is_none() {
                 running(cancellation, proof.deadline)?;
+                if eligible
+                    .get(&publication.revision_id)
+                    .is_none_or(|(_, decision)| decision != &publication.decision_id)
+                {
+                    return Err(
+                        "Backlog delivery lacks the current verified revision and decision".into(),
+                    );
+                }
                 let live = self.check_native_batch(
                     &state,
                     &batch.reference,
@@ -367,6 +430,26 @@ impl ProjectStore {
                 let item = items
                     .get(&publication.revision_id)
                     .ok_or("Backlog delivery revision is no longer current")?;
+                if !local {
+                    if !self.publish_github_backlog(
+                        proof,
+                        &state,
+                        &mut publication,
+                        item,
+                        &mapped_items,
+                        cancellation,
+                    )? {
+                        return Ok(None);
+                    }
+                    if let Some(remote) = &publication.remote_id {
+                        mapped_items.insert(publication.item_id.clone(), remote.clone());
+                    }
+                    receipts.insert(
+                        publication.intent_id,
+                        publication.receipt_id.ok_or("Missing GitHub receipt")?,
+                    );
+                    continue;
+                }
                 let Ok(receipt) = self.deliver_local(item, &publication.intent_id) else {
                     // Keep the exact durable intent pending when the local sink cannot confirm.
                     return Ok(None);

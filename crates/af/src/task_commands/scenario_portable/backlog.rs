@@ -57,7 +57,6 @@ pub(crate) fn run_backlog_action(
     let checkout = af_project::require_checkout(&template.repo)?;
     require(
         grant.adapter == "builtin"
-            && grant.destination == format!("local-backlog:{}", checkout.project_id)
             && collection.reference.project_id == checkout.project_id
             && collection.reference.batch_id == dispatch.inputs["subject"].as_text()?
             && collection.reference.policy_id == dispatch.inputs["revision"].as_text()?
@@ -158,6 +157,10 @@ pub(crate) fn run_backlog_action(
         af_project::Wait::Until(deadline),
     )
     .map_err(af_project::Unopened::message)?;
+    require(
+        grant.destination == store.backlog_action_destination(&collection.reference)?,
+        "Backlog action destination differs from the receiving Project policy",
+    )?;
     match grant.operation {
         Operation::BacklogSettleV1 => store.settle_native_backlog(&proof, cancellation).map(Some),
         Operation::BacklogDispatchV1 => {

@@ -138,7 +138,8 @@
         "crates/af-contracts/src/backlog/batch.rs",
         "crates/af-contracts/src/backlog/batch/assessment.rs",
         "crates/af-contracts/src/backlog/intake.rs",
-        "crates/af/src/task_commands/scenario_portable/backlog.rs"
+        "crates/af/src/task_commands/scenario_portable/backlog.rs",
+        "crates/af-project/src/backlog/batch/native/github.rs"
       ],
       "semantic_owner": [
         "crates/af-project/src/backlog.rs",
@@ -161,6 +162,7 @@
         "schemas/backlog-batch-record-v1.json",
         "schemas/backlog-batch-reference-v1.json",
         "schemas/backlog-collected-batch-v1.json",
+        "schemas/backlog-github-state-v1.json",
         "schemas/backlog-intake-policy-v1.json",
         "schemas/backlog-intake-record-v1.json",
         "schemas/backlog-record-v1.json",

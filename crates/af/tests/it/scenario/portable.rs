@@ -38,14 +38,16 @@ else:
     sources = inputs['sources']['payload']['sources']
     if 'backlog-batch' in sources:
         batch = json.loads(sources['backlog-batch']['text'])
-        assert batch['reference']['high_water'] == '6'
-        assert len(batch['members']) == 6
+        reconsidering = batch['reference']['high_water'] == '7'
+        assert batch['reference']['high_water'] in ('6', '7')
+        assert len(batch['members']) == (2 if reconsidering else 6)
+        assert 'AF_BACKLOG_GITHUB_TOKEN' not in os.environ
         assert 'private-attachment' not in request
         assert 'mismatched-attachment' not in request
         ids_by_evidence = {}
         for member in batch['members']:
             for evidence in member['evidence_ids']:
-                ids_by_evidence.setdefault(evidence, []).append(member['report_id'])
+                ids_by_evidence.setdefault(evidence, []).append(member['member_id'])
         def identity(data):
             return 'sha256:'+hashlib.sha256(b'review.kernel/content-id/v1\x00'+data).hexdigest()
         def decision(members, evidence, disposition, claim, citation=None, proposed=None):
@@ -55,7 +57,12 @@ else:
                         tracked_id=None, proposed=proposed)
         decisions = []
         citations = []
-        for color, boundary, members in [('blue', 3, ['blue-a', 'blue-b']), ('green', 7, ['green'])]:
+        groups = [('blue', 3, ['blue-a', 'blue-b']), ('green', 7, ['green'])]
+        if reconsidering:
+            member = next(member for member in batch['members'] if member['report_id'] == 'blue-a')
+            assert member['item_id']
+            groups = [('blue', 3, [member['member_id']])]
+        for color, boundary, members in groups:
             path = color+'-boundary.py'
             # Observe the exact committed program. The boundary is excluded and the next value is accepted.
             assert subprocess.check_output([sys.executable, path, str(boundary)]).strip() == b'False'
@@ -66,18 +73,24 @@ else:
             citation = {'path':path, 'line':2}
             citations.append(citation)
             claim = color.title()+' excludes its required boundary.'
+            public_body = ('The boundary should be accepted alongside higher values.' if reconsidering
+                           else 'The configured boundary must be inclusive.')
             decisions.append(decision(members, [evidence], 'verified', claim, citation,
-                                      {'title':claim, 'body':'The configured boundary must be inclusive.'}))
-        decisions.append(decision(['unknown'], [], 'needs_evidence', 'The reported behavior is unknown.'))
-        decisions.append(decision(['hold'], [], 'held', 'The evidence is unavailable for release.'))
-        # Exercise the kernel's digest guard even if the mock independent verifier passes this group.
-        mismatch = identity(b'mismatched-attachment')
-        decisions.append(decision(['mismatch'], [mismatch], 'verified', 'An unrelated claim.',
-                                  citations[0], {'title':'Unrelated claim', 'body':'Do not publish.'}))
+                                      {'title':claim, 'body':public_body}))
+        if reconsidering:
+            decisions.append(decision(['late'], [], 'needs_evidence', 'The reported behavior is unknown.'))
+        else:
+            decisions.append(decision(['unknown'], [], 'needs_evidence', 'The reported behavior is unknown.'))
+            decisions.append(decision(['hold'], [], 'held', 'The evidence is unavailable for release.'))
+            # Exercise the kernel's digest guard even if the mock independent verifier passes this group.
+            mismatch = identity(b'mismatched-attachment')
+            decisions.append(decision(['mismatch'], [mismatch], 'verified', 'An unrelated claim.',
+                                      citations[0], {'title':'Unrelated claim', 'body':'Do not publish.'}))
         assessment = dict(schema='af/backlog-assessment@1', batch_id=batch['reference']['batch_id'],
                           source_revision=batch['source_revision'], decisions=decisions)
         body = '```json\n' + json.dumps(assessment) + '\n```'
-        block = 'Blue: blue-a, blue-b. Green: green. Needs evidence: unknown. Held: hold.'
+        block = ('Blue was reconsidered. Needs evidence: late.' if reconsidering else
+                 'Blue: blue-a, blue-b. Green: green. Needs evidence: unknown. Held: hold.')
         issue = sources['backlog-batch']
         if 'document' in inputs:
             stage = 'verifier'
@@ -581,7 +594,30 @@ fn portable_prepare_rejects_package_bindings_before_inspecting_package_paths() {
     assert!(!receiver.provider_home.join("calls").exists());
 }
 
-fn capture_backlog_batch(receiver: &Receiver) -> Value {
+const GITHUB_ADAPTER: &str = "backlog-github-adapter";
+const GITHUB_CONFIG: &str = "backlog-github-destination-v1.json";
+
+fn private_write(path: &Path, bytes: impl AsRef<[u8]>) {
+    use std::io::Write as _;
+    af_store::local_fs::private_file_options()
+        .create_new(true)
+        .write(true)
+        .open(path)
+        .unwrap()
+        .write_all(bytes.as_ref())
+        .unwrap();
+}
+
+fn github_fixture(receiver: &Receiver) -> String {
+    let state = receiver.root.join("fake-github");
+    fs::create_dir(&state).unwrap();
+    include_str!("../../../../../fixtures/project-backlog/fake-github-adapter.py").replace(
+        "__AF_BACKLOG_FIXTURE_STATE__",
+        &serde_json::to_string(&state).unwrap(),
+    )
+}
+
+fn capture_backlog_batch(receiver: &Receiver, github: Option<&str>) -> Value {
     let producer_repo = receiver.root.join("another producer");
     git(
         &receiver.repo,
@@ -654,16 +690,36 @@ fn capture_backlog_batch(receiver: &Receiver) -> Value {
         }),
     );
     let artifact = fs::read(receiver.repo.join(BACKLOG)).unwrap();
+    let definition: Value = serde_json::from_slice(&artifact).unwrap();
+    let dispatches = &definition["definition"]["limits"]["max_dispatches"];
+    let destination = if let Some(executable) = github {
+        let config = json!({
+            "schema": "af/backlog-github-destination@1",
+            "project_id": project_id,
+            "repository": "fixture/backlog",
+            "repository_id": 23,
+            "publisher_id": 42,
+            "executable_digest": af_store::canonical::blob_content_id(executable.as_bytes()),
+        });
+        private_write(
+            &store.join(GITHUB_CONFIG),
+            serde_json::to_vec(&config).unwrap(),
+        );
+        private_write(&store.join("backlog-github-token"), "fixture_token\n");
+        af_store::canonical::content_id(&config).unwrap()
+    } else {
+        af_project::backlog::batch::local_destination(project_id).unwrap()
+    };
     save(
         &store.join("backlog-batch-policy-v1.json"),
         &json!({
             "schema":"af/backlog-batch-policy@1", "project_id":project_id,
             "authority_id":af_store::canonical::blob_content_id(&authority.pk.to_bytes()),
             "scenario_id":af_scenario::contract::digest(&artifact),
-            "destination_id":af_project::backlog::batch::local_destination(project_id).unwrap(),
+            "destination_id":destination,
             "timezone":"UTC", "hour":0, "minute":0,
             "start_unix_ms":1772755200000_u64, "lateness_ms":60000,
-            "run_tokens":150000, "run_wall_ms":1230000, "run_dispatches":5,
+            "run_tokens":150000, "run_wall_ms":1230000, "run_dispatches":dispatches,
             "rolling_tokens":150000, "rolling_window_ms":86400000,
             "publication_limit":1, "evidence_access":"evidence_ids", "hold_policy":"allow_local_reservations"
         }),
@@ -711,7 +767,7 @@ fn portable_backlog_settles_and_dispatches_the_frozen_batch_in_two_receivers() {
     );
     for issue in [303, 404] {
         let receiver = Receiver::for_artifact(parent.join(issue.to_string()), issue, BACKLOG);
-        let reference = capture_backlog_batch(&receiver);
+        let reference = capture_backlog_batch(&receiver, None);
         schemas::valid(
             &schemas::validator("backlog-batch-reference-v1.json"),
             &reference,
@@ -1024,4 +1080,335 @@ fn portable_backlog_settles_and_dispatches_the_frozen_batch_in_two_receivers() {
         receipts.push(task["result_id"].clone());
     }
     assert_ne!(receipts[0], receipts[1]);
+}
+
+fn start_github_backlog(receiver: &Receiver, id: &str, batch: &Value) {
+    let bundle_path = receiver.root.join("prepared.json");
+    let policy_path = receiver.root.join("policy.json");
+    if !policy_path.exists() {
+        private_write(&policy_path, "{}");
+    }
+    let empty = receiver.root.join("empty.json");
+    fs::write(&empty, "{}").unwrap();
+    let paths = [
+        "--file",
+        bundle_path.to_str().unwrap(),
+        "--authority",
+        policy_path.to_str().unwrap(),
+        "--state",
+        receiver.scenarios.to_str().unwrap(),
+        "--json",
+    ];
+    save(&receiver.input, batch);
+    let bundle = ok(receiver.prepare_artifact(BACKLOG, None));
+    let root = &bundle["definitions"]["daily-backlog"];
+    save(&bundle_path, &bundle);
+    save(
+        &policy_path,
+        &json!({
+            "schema":"af/scenario-policy@8",
+            "task_plans":[], "task_templates":root["authority"]["task_templates"],
+            "adapters":{}, "decision_keys":{}, "file_roots":[]
+        }),
+    );
+    let pin = ok(receiver.af(&[&["scenario", "validate"][..], &paths].concat()));
+    let start = [
+        &[
+            "scenario",
+            "start",
+            id,
+            "--inputs",
+            empty.to_str().unwrap(),
+            "--confirm-pin",
+            pin["revision"].as_str().unwrap(),
+        ][..],
+        &paths,
+    ]
+    .concat();
+    ok(receiver.af(&start));
+}
+
+fn configure_github_fixture_bounds(receiver: &Receiver) {
+    // Give this test-only artifact one dispatch per scripted fault and recovery. The
+    // shipped artifact and synthetic-sink tests keep their ordinary five-dispatch limit.
+    let artifact = receiver.repo.join(BACKLOG);
+    let mut definition = read(&artifact);
+    definition["definition"]["limits"]["max_dispatches"] = json!(11);
+    save(&artifact, &definition);
+    capture(&receiver.repo);
+}
+
+#[test]
+fn portable_backlog_github_reconciles_a_lost_create_without_duplicate_writes() {
+    use af_contracts::backlog::{BacklogRecordV1, Publication};
+
+    let directory = tempfile::tempdir().unwrap();
+    let receiver = Receiver::for_artifact(
+        directory.path().canonicalize().unwrap().join("receiver"),
+        505,
+        BACKLOG,
+    );
+    configure_github_fixture_bounds(&receiver);
+    let executable = github_fixture(&receiver);
+    let reference = capture_backlog_batch(&receiver, Some(&executable));
+    start_github_backlog(&receiver, "github-backlog", &reference);
+    let resume = [
+        "scenario",
+        "resume",
+        "github-backlog",
+        "--state",
+        receiver.scenarios.to_str().unwrap(),
+        "--json",
+    ];
+    let project = ok(receiver.af(&["project", "show", "--json"]));
+    let store_path = Path::new(project["store"].as_str().unwrap());
+    let database = af_store::EventStore::open_read_only(store_path.join("events.sqlite")).unwrap();
+    let cas = Cas::open_existing(store_path.join("cas")).unwrap();
+    let publications = || {
+        database
+            .replay("backlog-processing")
+            .unwrap()
+            .into_iter()
+            .filter_map(|event| {
+                match serde_json::from_value::<BacklogRecordV1>(event.payload).unwrap() {
+                    BacklogRecordV1::Publication(value) => {
+                        assert_eq!(event.artifact_refs, value.provider_state_id.as_slice());
+                        Some(value)
+                    }
+                    _ => None,
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+    let state_schema = schemas::validator("backlog-github-state-v1.json");
+    let state = |publication: &Publication| {
+        let state = cas
+            .get_json(publication.provider_state_id.as_deref().unwrap())
+            .unwrap();
+        schemas::valid(&state_schema, &state);
+        state
+    };
+    #[track_caller]
+    fn check_pending(output: Output) {
+        let run = ok(output);
+        assert_eq!(run["status"], "waiting", "{}", run["failure"]);
+    }
+    let pending = || receiver.af(&resume);
+    let fake = receiver.root.join("fake-github");
+
+    // The native assessment and intent survive an interruption before any executable can send.
+    check_pending(pending());
+    let intents = publications();
+    assert_eq!(intents.len(), 2);
+    assert_eq!(state(&intents[1])["outcome"]["kind"], "adapter_unavailable");
+    assert!(intents[0].attempt_ids.is_empty());
+    assert!(intents[0].receipt_id.is_none());
+    assert!(!fake.join("requests").exists());
+    let visible = ok(receiver.af(&["backlog", "list", "--json"]));
+    assert_eq!(visible["data"]["items"].as_array().unwrap().len(), 2);
+    assert!(!visible.to_string().contains("private-attachment"));
+    assert!(!store_path.join("backlog-local-sink").exists());
+
+    // A changed executable cannot launch. The pinned executable then creates an issue and
+    // exits without a response.
+    let adapter = store_path.join(GITHUB_ADAPTER);
+    private_write(&adapter, "unpinned bytes");
+    check_pending(pending());
+    assert!(!fake.join("requests").exists());
+    fs::remove_file(&adapter).unwrap();
+    private_write(&adapter, &executable);
+    check_pending(pending());
+    assert_eq!(
+        state(publications().last().unwrap())["outcome"]["kind"],
+        "transport_unavailable"
+    );
+    let issue = read(&fake.join("issue.json"));
+
+    // Receiver authority can be removed while an intent is waiting.
+    let config = store_path.join(GITHUB_CONFIG);
+    let saved = fs::read(&config).unwrap();
+    fs::remove_file(&config).unwrap();
+    let before = publications();
+    check_pending(pending());
+    let revoked = publications();
+    assert_eq!(revoked.len(), before.len() + 1);
+    assert_eq!(
+        state(revoked.last().unwrap())["outcome"]["kind"],
+        "authority_unavailable"
+    );
+    assert_eq!(
+        revoked.last().unwrap().attempt_ids,
+        before.last().unwrap().attempt_ids
+    );
+    private_write(&config, saved);
+
+    for (mode, expected) in [
+        ("delayed", "not_observed"),
+        ("conflict", "identity_conflict"),
+        ("wrong_marker", "identity_conflict"),
+        ("wrong_repository", "identity_conflict"),
+    ] {
+        fs::write(fake.join("mode"), mode).unwrap();
+        check_pending(pending());
+        let history = publications();
+        assert_eq!(state(history.last().unwrap())["outcome"]["kind"], expected);
+        assert!(history.last().unwrap().receipt_id.is_none());
+    }
+
+    let mut human = issue;
+    human["state"] = json!("closed");
+    human["fields_id"] = json!(af_store::canonical::blob_content_id(b"human edit"));
+    save(&fake.join("issue.json"), &human);
+    fs::write(fake.join("mode"), "normal").unwrap();
+    let mut concurrent = receiver
+        .command(&receiver.repo, &resume)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let _ = receiver.af(&resume);
+    concurrent.wait().unwrap();
+    assert_eq!(ok(receiver.af(&resume))["status"], "succeeded");
+
+    let history = publications();
+    let final_record = history.last().unwrap();
+    assert_eq!(final_record.intent_id, intents[0].intent_id);
+    assert_eq!(final_record.remote_id.as_deref(), Some("444:1"));
+    assert!(final_record.receipt_id.is_some());
+    assert_eq!(final_record.attempt_ids.len(), 6);
+    let observed = state(final_record);
+    assert_eq!(observed["outcome"]["state"], "closed");
+    assert_eq!(observed["outcome"]["approved_fields_match"], false);
+    assert_eq!(read(&fake.join("issue.json")), human);
+    let requests = fs::read_to_string(fake.join("requests")).unwrap();
+    let requests: Vec<Value> = requests
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(requests.len(), 6);
+    assert_eq!(requests[0]["operation"], "create");
+    assert!(
+        requests[1..]
+            .iter()
+            .all(|request| request["operation"] == "reconcile")
+    );
+    assert!(
+        requests
+            .iter()
+            .all(|request| request["item_id"] == intents[0].item_id
+                && request["revision_id"] == intents[0].revision_id)
+    );
+
+    // A later independently verified revision reconciles the same immutable issue and preserves
+    // the operator's edit and closure. Move to a new source so the deferred green item needs proof.
+    let audit = ok(receiver.af(&["backlog", "batch", "audit"]));
+    let closed = audit["batches"][reference["batch_id"].as_str().unwrap()]["closed_unix_ms"]
+        .as_u64()
+        .unwrap();
+    let due = ((closed / 86_400_000 + 2) * 86_400_000).to_string();
+    ok(receiver.af(&[
+        "backlog",
+        "batch",
+        "reconsider",
+        "--item-id",
+        &final_record.item_id,
+        "--report-id",
+        "blue-a",
+        "--eligible-unix-ms",
+        &due,
+    ]));
+    fs::write(
+        receiver.repo.join("CONTRIBUTING.md"),
+        "# New source revision\n",
+    )
+    .unwrap();
+    capture(&receiver.repo);
+    let audit = ok(receiver.af(&["backlog", "batch", "tick", "--at-unix-ms", &due]));
+    let revised_reference = json!({
+        "schema":"af/backlog-batch-reference@1",
+        "project_id":reference["project_id"],
+        "batch_id":audit["active_batch_id"],
+        "policy_id":audit["pin_id"],
+        "high_water":audit["high_water"],
+    });
+    start_github_backlog(&receiver, "revised-github-backlog", &revised_reference);
+    let mut revised_resume = resume;
+    revised_resume[2] = "revised-github-backlog";
+    assert_eq!(ok(receiver.af(&revised_resume))["status"], "succeeded");
+    let revised_history = publications();
+    let revised = revised_history.last().unwrap();
+    assert_eq!(revised.item_id, final_record.item_id);
+    assert_ne!(revised.revision_id, final_record.revision_id);
+    assert_eq!(revised.remote_id, final_record.remote_id);
+    assert!(revised.receipt_id.is_some());
+    assert_ne!(revised.receipt_id, final_record.receipt_id);
+    let requests = fs::read_to_string(fake.join("requests")).unwrap();
+    assert_eq!(requests.lines().count(), 7);
+    let request: Value = serde_json::from_str(requests.lines().last().unwrap()).unwrap();
+    assert_eq!(request["operation"], "reconcile");
+    assert_eq!(request["issue"], json!({"id":444, "number":1}));
+    assert_eq!(request["revision_id"], revised.revision_id);
+    assert_eq!(
+        request["marker"],
+        serde_json::from_str::<Value>(requests.lines().next().unwrap()).unwrap()["marker"]
+    );
+    assert_eq!(read(&fake.join("issue.json")), human);
+    let visible = ok(receiver.af(&["backlog", "show", &revised.item_id, "--json"]));
+    assert_eq!(visible["data"]["revision_id"], revised.revision_id);
+    assert_eq!(
+        visible["data"]["public"]["body"],
+        "The boundary should be accepted alongside higher values."
+    );
+}
+
+#[test]
+fn portable_backlog_github_retains_a_crash_before_the_provider_write_as_pending() {
+    let directory = tempfile::tempdir().unwrap();
+    let receiver = Receiver::for_artifact(
+        directory.path().canonicalize().unwrap().join("receiver"),
+        506,
+        BACKLOG,
+    );
+    let executable = github_fixture(&receiver);
+    let reference = capture_backlog_batch(&receiver, Some(&executable));
+    let project = ok(receiver.af(&["project", "show", "--json"]));
+    let store_path = Path::new(project["store"].as_str().unwrap());
+    private_write(&store_path.join(GITHUB_ADAPTER), &executable);
+    let fake = receiver.root.join("fake-github");
+    fs::write(fake.join("abort-before-write"), "").unwrap();
+    start_github_backlog(&receiver, "before-write", &reference);
+    let resume = [
+        "scenario",
+        "resume",
+        "before-write",
+        "--state",
+        receiver.scenarios.to_str().unwrap(),
+        "--json",
+    ];
+    let first = ok(receiver.af(&resume));
+    assert_eq!(first["status"], "waiting", "{}", first["failure"]);
+    assert!(!fake.join("issue.json").exists());
+    fs::remove_file(fake.join("abort-before-write")).unwrap();
+    fs::write(fake.join("mode"), "delayed").unwrap();
+    let second = ok(receiver.af(&resume));
+    assert_eq!(second["status"], "waiting", "{}", second["failure"]);
+    assert!(!fake.join("issue.json").exists());
+
+    let requests = fs::read_to_string(fake.join("requests")).unwrap();
+    let trace: Vec<Value> = requests
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(trace.len(), 2);
+    assert_eq!(trace[0]["operation"], "create");
+    assert_eq!(trace[1]["operation"], "reconcile");
+    let database = af_store::EventStore::open_read_only(store_path.join("events.sqlite")).unwrap();
+    let events = database.replay("backlog-processing").unwrap();
+    let publication = &events.last().unwrap().payload;
+    assert_eq!(
+        publication["attempt_ids"],
+        json!([trace[0]["request_id"], trace[1]["request_id"]])
+    );
+    assert!(publication["remote_id"].is_null());
+    assert!(publication["receipt_id"].is_null());
 }

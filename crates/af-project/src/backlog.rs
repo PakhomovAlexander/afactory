@@ -113,12 +113,19 @@ pub fn prepare_report(
 }
 
 fn read_record(project_id: &str, event: &RunEvent) -> Result<BacklogRecordV1, String> {
-    if event.event_type != EventType::BacklogRecordStoredV1 || !event.artifact_refs.is_empty() {
+    if event.event_type != EventType::BacklogRecordStoredV1 {
         return Err("invalid backlog stream event".into());
     }
     let record: BacklogRecordV1 =
         serde_json::from_value(event.payload.clone()).map_err(|_| "invalid backlog record")?;
     record.validate()?;
+    let state = match &record {
+        BacklogRecordV1::Publication(publication) => publication.provider_state_id.as_slice(),
+        _ => &[],
+    };
+    if event.artifact_refs != state {
+        return Err("Invalid backlog event references".into());
+    }
     if record.project_id() != project_id {
         return Err("backlog record belongs to a different Project".into());
     }

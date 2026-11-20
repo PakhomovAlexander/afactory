@@ -1222,13 +1222,19 @@ impl Policy {
                     "Scoped implementation publication needs admitted startup authority",
                 )?;
                 if grant.operation.backlog() {
+                    let local = grant.destination.strip_prefix("local-backlog:");
+                    let github = grant
+                        .destination
+                        .strip_prefix("github-backlog:")
+                        .and_then(|scope| scope.split_once(":sha256:"));
                     require(
                         grant.adapter == "builtin"
-                            && grant
-                                .destination
-                                .strip_prefix("local-backlog:")
-                                .is_some_and(af_contracts::is_digest),
-                        "Backlog actions require the builtin local Project destination",
+                            && (local.is_some_and(af_contracts::is_digest)
+                                || github.is_some_and(|(project, destination)| {
+                                    af_contracts::is_digest(project)
+                                        && af_contracts::is_digest(&format!("sha256:{destination}"))
+                                })),
+                        "Backlog actions require a builtin Project destination",
                     )?;
                 } else if matches!(
                     grant.operation,

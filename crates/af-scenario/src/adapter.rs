@@ -215,7 +215,7 @@ pub(crate) fn dispatch(
             let Some(evidence) = host.run_backlog_action(run, dispatch, grant, cancellation)?
             else {
                 return Ok(Settlement::Uncertain(
-                    "Local backlog sink has a pending delivery intent".into(),
+                    "Project backlog delivery is pending under the receiver policy".into(),
                 ));
             };
             Ok(Settlement::Done(BTreeMap::from([(

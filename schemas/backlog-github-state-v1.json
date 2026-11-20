@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:backlog-github-state:1",
+  "title": "Private GitHub backlog adapter state",
+  "type": "object",
+  "required": ["schema", "attempt_id", "operation", "outcome"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "af/backlog-github-state@1" },
+    "attempt_id": { "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
+    "operation": { "enum": ["create", "reconcile", null] },
+    "outcome": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": [
+                "attempt_prepared", "adapter_unavailable", "authority_unavailable",
+                "transport_unavailable", "invalid_response", "identity_conflict",
+                "not_observed", "attempt_limit"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "issue", "state", "fields_id", "approved_fields_match"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "observed" },
+            "issue": {
+              "type": "object",
+              "required": ["id", "number"],
+              "additionalProperties": false,
+              "properties": {
+                "id": { "$ref": "#/$defs/positiveId" },
+                "number": { "$ref": "#/$defs/positiveId" }
+              }
+            },
+            "state": { "enum": ["open", "closed"] },
+            "fields_id": { "$ref": "#/$defs/digest" },
+            "approved_fields_match": { "type": "boolean" }
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "positiveId": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }
+  }
+}

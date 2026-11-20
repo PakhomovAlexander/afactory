@@ -362,6 +362,11 @@ pub(crate) fn prepare(
             .ok_or("Missing frozen backlog batch")?;
         let batch: af_contracts::backlog::batch::assessment::CollectedBatch =
             serde_json::from_str(&source.text).map_err(|e| e.to_string())?;
+        let store = af_project::ProjectStore::open_read_only(
+            &crate::xdg_state_root()?,
+            &batch.reference.project_id,
+        )?;
+        let destination = store.backlog_action_destination(&batch.reference)?;
         let inputs = BTreeMap::from([
             ("assessment".into(), assessment),
             ("subject".into(), literal(batch.reference.batch_id)),
@@ -378,7 +383,7 @@ pub(crate) fn prepare(
             let grant = Grant {
                 adapter: "builtin".into(),
                 operation,
-                destination: format!("local-backlog:{}", batch.reference.project_id),
+                destination: destination.clone(),
             };
             scenario.authority.grants.insert(grant.clone());
             scenario.outputs.insert(id.into(), Port::Action);

@@ -278,8 +278,8 @@ identities, source revisions and the evidence digests allowed by policy. Raw Rep
 their attachments, late arrivals and local-only Reports remain outside the prepared bundle.
 
 After reviewing the prepared template, grant it in the receiver's machine policy. The builtin
-backlog Actions use the installed Project policy and require no executable adapter. Validate
-with that policy and review the resulting revision. Set `pin` to the approved revision before
+backlog Actions use the installed Project policy. The synthetic destination needs no executable.
+Validate with that policy and review the resulting revision. Set `pin` to the approved revision before
 starting. Start and resume use the same Scenario Store.
 
 ```bash
@@ -325,3 +325,146 @@ cargo nextest run --workspace --locked --profile ci \
 ```
 
 [Native settlement and delivery decision](adr/2026-11-20-settle-and-dispatch-verified-backlog-locally.md)
+
+## GitHub Issues destination
+
+The same daily Scenario can dispatch to a receiver-owned GitHub Issues destination. The
+prepared Action grants show `github-backlog:<project_id>:<destination_id>`. The receiver
+rechecks that scope against the frozen batch and the current machine policy. Use one designated
+receiver and Project Store for a destination.
+
+Before the first tick pins the batch policy, place these private, owner-only regular files in
+the Project Store reported by `af project show --json`.
+
+- `backlog-github-destination-v1.json` pins the exact receiver configuration shown below.
+  Use the lowercase canonical GitHub repository name and its positive numeric repository and
+  publisher account IDs.
+- `backlog-github-adapter` holds the trusted standalone executable. AF verifies the exact bytes
+  and stages them in a temporary directory under the private Project Store. The executable must
+  run independently of its installed location and the receiver checkout.
+- `backlog-github-token` holds the adapter credential as a single token, optionally followed by a
+  newline. Keep it in the Project Store and out of the caller's environment and checkout. AF
+  passes it to the adapter as `AF_BACKLOG_GITHUB_TOKEN` with a cleared environment and the
+  process supervisor's sanitized `PATH`.
+
+```json
+{
+  "schema": "af/backlog-github-destination@1",
+  "project_id": "sha256:<Project ID>",
+  "repository": "example/backlog",
+  "repository_id": 23,
+  "publisher_id": 42,
+  "executable_digest": "sha256:<content identity of executable bytes>"
+}
+```
+
+Use the config's canonical content identity as the batch policy's `destination_id`. Set
+`hold_policy` to `allow_local_reservations` to admit publication, and set `publication_limit`
+to bound the revisions admitted per batch. The following prints the executable identity and,
+after the config contains that identity, its destination pin.
+
+```bash
+store=$(af project show --json | jq -r .store)
+python3 - "$store" <<'PYTHON'
+import hashlib
+import json
+import pathlib
+import sys
+
+store = pathlib.Path(sys.argv[1])
+def identity(data):
+    return "sha256:" + hashlib.sha256(b"review.kernel/content-id/v1\0" + data).hexdigest()
+
+print(identity((store / "backlog-github-adapter").read_bytes()))
+config = json.loads((store / "backlog-github-destination-v1.json").read_bytes())
+print(identity(json.dumps(config, sort_keys=True, ensure_ascii=False,
+                          separators=(",", ":")).encode("utf-8")))
+PYTHON
+```
+
+Review the prepared Scenario grant before confirming its pin. Removing the receiver
+configuration, executable or credential prevents a new adapter call. A missing or changed
+batch policy, hold, cancellation or expired deadline prevents dispatch. Restoring the exact
+authority permits reconciliation within the admitted bounds. The batch policy and its
+destination pin are immutable within this journal.
+
+### Executable protocol
+
+One invocation reads one UTF-8 JSON request from stdin through EOF and writes one UTF-8 JSON
+response on stdout. AF passes no arguments, limits responses to 4 KiB and supervises the
+process under the Scenario Action deadline and cancellation. The executable, credential and
+config reads are bounded at 8 MiB, 1 KiB and 4 KiB respectively. Adapter stdout, stderr and
+credentials are excluded from logs. An unsuccessful, interrupted or malformed exchange
+leaves the intent pending.
+
+The request fields and types are as follows. IDs described as digests are lowercase
+`sha256:` strings with 64 hex digits. Numeric IDs and issue numbers are positive JSON integers up to 9,007,199,254,740,991.
+
+| Field | Value |
+| --- | --- |
+| `schema` | `af/backlog-github-request@1` |
+| `request_id` | Unique durable AF attempt digest |
+| `operation` | `create` or `reconcile` |
+| `project_id`, `destination_id`, `item_id`, `revision_id` | Exact AF scope digests |
+| `repository`, `repository_id`, `publisher_id` | The configured lower-case GitHub repository, repository ID and authenticated publisher ID |
+| `marker` | The exact line `<!-- af-backlog-item:<project_id>:<item_id> -->`, stable across revisions |
+| `issue` | `null` or the known object `{"id":444,"number":1}`, with the immutable issue ID and repository-local issue number |
+| `fields` | `{"title":"…","body":"…"}` for `create`; `null` for `reconcile` |
+
+Before any write the adapter verifies the authenticated principal and resolves the exact
+repository on GitHub.com, checking both its name and numeric ID. A create allows at most one
+issue POST with the approved title and body followed by two newlines and the exact marker.
+A reconcile with a known issue reads that issue and checks both of its IDs. Without a known
+issue, reconciliation looks for the exact marker and original publisher in the exact
+repository, including closed issues. Ambiguous, conflicting, or incompletely observed matches
+cannot resolve the intent. Reconciliation uses reads only.
+
+The response repeats the verified `request_id`, `repository`, `repository_id` and
+`publisher_id`, sets `schema` to `af/backlog-github-response@1`, and includes one `outcome`:
+
+| Outcome object | Meaning |
+| --- | --- |
+| `{"kind":"observed","issue":{"id":444,"number":1},"marker":"…","author_id":42,"state":"open","fields_id":"sha256:…"}` | One observed issue, its actual marker, original author, `open` or `closed` state, and current public field digest |
+| `{"kind":"absent"}` | The lookup did not observe a match |
+| `{"kind":"conflict"}` | Multiple matches or contradictory identity evidence |
+| `{"kind":"unavailable"}` | A bounded lookup or response could not establish the outcome |
+
+Compute `fields_id` over the canonical UTF-8 JSON array `[title,body]` using the same
+content-identity function above. Remove the transport's trailing two newlines and marker
+before hashing the observed body. Return only identities and state. AF verifies the echoed
+scope, the original author and exact marker, and requires the confirmed create fields to
+match their approved digest. Reconciliation retains any human edit or closure and records
+whether the observed fields match the approved revision.
+
+### Recovery and local view
+
+The native Project publication journal commits the revision and decision intent before an
+attempt, and commits the attempt before launching its adapter. Once any attempt exists,
+an unresolved create only reconciles. An empty search, including delayed indexing, leaves
+the Scenario waiting. Each revision intent has at most 16 adapter attempts, further bounded
+by the Scenario. Existing item mappings allow read-only checks for later verified revisions.
+The `publication_limit` counts admitted intents, including unresolved ones.
+
+Publication rows in the Project Store's `backlog-processing` stream retain the destination,
+item, revision, decision, intent, attempts, remote ID and receipt. The `remote_id` is
+`<issue-id>:<issue-number>`. Its `provider_state_id` references a private CAS JSON record
+[`af/backlog-github-state@1`](../schemas/backlog-github-state-v1.json) with `attempt_id`,
+`operation` and `outcome`. A preflight
+deferral can have a null attempt or operation. Outcomes include `attempt_prepared`,
+`adapter_unavailable`, `authority_unavailable`, `transport_unavailable`,
+`invalid_response`, `identity_conflict`, `not_observed`, `attempt_limit` and
+`observed`. The recorded observation includes issue identity, open or closed state, public
+fields digest and an `approved_fields_match` boolean. The normal `af backlog list` and
+`af backlog show` commands read the verified native projection without invoking the adapter.
+
+The offline proof uses the real receiver Scenario and an executable fixture with no network
+calls. It injects adapter crashes before the write and after remote creation, delayed lookup,
+identity conflicts, revoked authority,
+concurrent resume, human closure and edit, and a later verified revision.
+
+```sh
+cargo nextest run --workspace --locked --profile ci \
+  -E 'binary_id(af::it) & test(portable_backlog_github_)'
+```
+
+[GitHub publication decision](adr/2026-11-20-coordinate-github-backlog-publication.md)
