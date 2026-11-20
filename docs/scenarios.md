@@ -20,7 +20,7 @@ path they reference. Review and grant the template through
 the owner-only machine policy, then approve the exact native Scenario revision. See the
 [local triage walkthrough](../fixtures/issue-triage/README.md#run-portable-triage-locally)
 and [the portability decision](adr/2026-11-19-prepare-portable-scenario-artifacts.md).
-For a frozen Project batch, the [portable backlog runbook](project-backlog.md#prepare-and-run-the-portable-daily-scenario)
+For a frozen Project batch, the [Project backlog runbook](project-backlog.md)
 uses a typed batch reference and the receiver’s Project Store. The native Actions bind settlement
 to the accepted assessment and dispatch to the configured synthetic local sink.
 

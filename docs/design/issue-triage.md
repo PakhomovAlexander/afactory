@@ -4,6 +4,10 @@ Status: accepted by the owner on 2026-10-30, revision 3. Decisions 1 to 8 in §2
 owner's; revision 2 folded the 19 findings of the af review `triage-design-1` (Codex
 gpt-6-astra, medium); revision 3 closes the last two open questions.
 
+AF-managed development now captures defects in the private [Project backlog](../project-backlog.md).
+The issue templates and the triage design below describe the separate process for issues
+already on GitHub and submissions from external reporters.
+
 ## Current staged single-model flow
 
 On 2026-11-03 the owner selected a reusable custom structured Task capability for the next
@@ -70,18 +74,21 @@ feature template keeps its fields. Both existing templates also apply `triage/pe
 The `bug` and `enhancement` labels those templates apply are queue hints that the runner is
 authorized to replace (§6.5).
 
-### 3.2 Filing from a session
+### 3.2 Capture from a development session
 
-An agent or the owner files from the shell with the same shape:
+As soon as you observe a defect or gap, choose a unique producer Report ID and record the
+fact in your Project Workspace.
 
 ```sh
-gh issue create -R PakhomovAlexander/afactory -l triage/pending -t "<one sentence>" -F body.md
+af backlog record --report-id "$report_id" --title "$title" --observed "$fact" --json
 ```
 
-`body.md` has the three headings of the raw template. The rule, added to `AGENTS.md` and the
-session `CLAUDE.md`: when you meet a defect or a gap during work, file it raw with the evidence
-you have and continue; never classify, estimate or search for duplicates yourself. The triage
-process does that, and it is the only process that does.
+Attach private UTF-8 evidence with `--evidence-file` and reproduction steps with `--repro`.
+Keep the receipt. If its delivery is interrupted, repeat the identical command from the
+same Workspace and source revision. Resume the current Task after local capture.
+Leave classification, estimation, deduplication and publication to the backlog process.
+The supervising developer records observations from Workers whose isolated source trees
+have no access to the Project Store.
 
 ### 3.3 Evidence conventions
 

@@ -254,6 +254,7 @@ impl CodexTaskAdapter {
             }
         };
         let mut runner = ModelRunner::new(workdir, timeout)
+            .isolating_ticket_auth()
             .with_env("HOME", home)
             .with_harness("openai", self.model_settings().map(|(model, _)| model))
             .with_activity(activity);

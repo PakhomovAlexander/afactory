@@ -1,14 +1,18 @@
 # Project backlog operator runbook
 
-This runbook covers private Report capture and inspection, signed authority intake and
-manual daily batch admission in a local Project Store. See
-[authority intake configuration](project.md#capture-and-inspect-the-project-backlog) to set up the signed exchange.
+Record a private Report from a Project Workspace and continue the current Task as soon as
+AF returns its local receipt. The designated authority receives Reports through signed file
+transfer, freezes daily batches, and prepares an independently verified Scenario. A daily Ant
+can run the prepared Scenario. Publication to GitHub Issues requires a separately configured
+receiver, destination and credential.
 
 The privacy and receipt boundaries are fixed by
 [ADR-2026-11-20](adr/2026-11-20-store-project-backlog-reports-privately.md). Project and Workspace
 identity and the Store location are defined in [Projects and Workspaces](project.md).
 
 ## Offline local capture and inspection
+
+For a copyable development-session command, see the [Kimi capture runbook](project-backlog-kimi.md).
 
 `af backlog record` requires a nonblank `--title` and `--observed` fact. `--report-id` is optional;
 supplying a stable producer ID lets an identical retry recover a lost receipt without duplicating
@@ -97,15 +101,15 @@ these two Reports. Reusing an old scratch directory is not a fresh-workspace run
 The block above (SHA-256
 `0c05d174dc56ae03f45a7052072cfd20cb17f44e8a25f5ea69f54571e3bce961`) was executed unchanged
 with `/bin/bash` against the built AF CLI (binary SHA-256
-`a268d42be418c04ebd85610aaaee7defbf293a77f55ad529a3902d93825ff3ab`). Each run used a new
+`b5088f9370b57417a232efbed3fd12952a6e9c951b56a16d376a2b33b557b9cb`). Each run used a new
 temporary repository, two clean worktrees, and private XDG state. The command-exit columns below
 follow the block's order: producer A's `record`, producer B's `record`, `inbox`, private `show`,
 and `list`.
 
 | Run | Project ID | Overall exit | Record A | Record B | Inbox | Private show | List | Wall seconds |
 |---|---|---|---:|---:|---:|---:|---:|---:|
-| 1 | `sha256:983728c7134e59d9c3496a449e74c7ed871e4ebf230d84e11f958c5ed2803500` | 0 | 0 | 0 | 0 | 0 | 0 | 2.233 |
-| 2 | `sha256:b0971b7c13448d60eb002928cf9bf585398b3b4aca6827768ef8266a59b3beb9` | 0 | 0 | 0 | 0 | 0 | 0 | 0.414 |
+| 1 | `sha256:9b8133a24591715685914f67fb654375b1775704078358c32a20147403dc1807` | 0 | 0 | 0 | 0 | 0 | 0 | 1.30 |
+| 2 | `sha256:5e7827ec0a07a189249ebd5acd082356c1552b7cbb8e1df25853b99cb9da8777` | 0 | 0 | 0 | 0 | 0 | 0 | 0.46 |
 
 The distinct Project IDs record the two fresh repositories. In both runs the observed views were
 `capture`, `capture`, `inbox`, `report`, and `list`, and the Report IDs were `producer-a` and
@@ -160,13 +164,39 @@ covers blank facts, invalid UTF-8, oversized evidence, and symlink refusal. The 
 defined by [`backlog-v1.json`](../schemas/backlog-v1.json) and
 [`backlog-record-v1.json`](../schemas/backlog-record-v1.json).
 
+## Transfer a Report to the designated authority
+
+[Enroll the producer and authority keys](project.md#enroll-a-producer-for-offline-transfer)
+before exchanging files. Keep private keys on their owning machines and use a private file
+channel for the submission and receipt. Run each command from a Workspace of the same Project.
+
+```bash
+# Producer checkout
+umask 077
+af backlog outbox --json
+af backlog export "$report_id" --key "$producer_key" > "$exchange/submission.json"
+
+# Authority checkout, after receiving submission.json
+umask 077
+af backlog accept "$exchange/submission.json" --key "$authority_key" > "$exchange/receipt.json"
+
+# Producer checkout, after receiving receipt.json
+af backlog ack "$exchange/receipt.json" --json
+af backlog outbox --json
+```
+
+A lost authority receipt is recovered by accepting the same signed submission again. Successful
+acknowledgement removes the Report ID from the producer's pending view. Intake and transfer can
+continue while the Ant or publisher is paused. The offline acceptance fixture exercises this
+exchange with generated Minisign keys, including an accept retry and acknowledgement.
+
 ## Manually admit a daily batch
 
 Use a disposable authority Store with a signed intake policy and accepted sample Reports.
 Save a machine-local `backlog-batch-policy-v1.json` in the Project Store shown by
 `af project show --json`. The policy uses the same Project ID and the receipt's
-`body.authority_id`. Use opaque digest identities for the Scenario and destination. These
-are local fixtures for this checkpoint. The first tick pins the policy and timezone transition
+`body.authority_id`. For a manual accounting exercise, the sample Scenario and destination digests suffice.
+For a prepared Scenario, bind the actual artifact and destination identities as shown below. The first tick pins the policy and timezone transition
 table. Subsequent ticks require the same policy. The policy lives outside the checkout.
 
 ```json
@@ -277,8 +307,17 @@ Store. It collects at most 128 frozen members. The collected input contains acce
 identities, source revisions and the evidence digests allowed by policy. Raw Report text,
 their attachments, late arrivals and local-only Reports remain outside the prepared bundle.
 
-After reviewing the prepared template, grant it in the receiver's machine policy. The builtin
+After reviewing the prepared template, grant it in the receiver's machine policy. In a fresh
+disposable Store, construct a policy containing just that Task template grant. The builtin
 backlog Actions use the installed Project policy. The synthetic destination needs no executable.
+
+```bash
+jq '.definitions["daily-backlog"].authority.task_templates | {
+  schema: "af/scenario-policy@8",
+  task_plans: [], task_templates: ., adapters: {}, decision_keys: {}, file_roots: []
+}' "$scratch/prepared.json" > "$scratch/policy.json"
+```
+
 Validate with that policy and review the resulting revision. Set `pin` to the approved revision before
 starting. Start and resume use the same Scenario Store.
 
@@ -325,6 +364,57 @@ cargo nextest run --workspace --locked --profile ci \
 ```
 
 [Native settlement and delivery decision](adr/2026-11-20-settle-and-dispatch-verified-backlog-locally.md)
+
+## Schedule a prepared batch with an Ant
+
+This example uses Bash and `jq`. The batch policy tick freezes a batch and produces the batch
+reference. The Ant runs that **prepared batch**. The package binds its source, members, and policy,
+so an existing Ant never silently switches to a later batch. For each later cutoff, create a
+fresh batch reference, prepare it, and register a new reviewed Ant binding for that batch.
+
+Use the `prepared.json` and `policy.json` from preparation above. Set `start_ms` to a Unix time
+in milliseconds at or before the chosen daily UTC slot and set `hour` and `minute` to that slot.
+Use an operator-selected owner and local notification route.
+
+```bash
+jq -n --slurpfile scenario "$scratch/prepared.json" \
+  --arg id "$ant_id" --arg owner "$owner" --arg route "$notification" \
+  --argjson start "$start_ms" --argjson hour "$hour" --argjson minute "$minute" '
+  $scenario[0] as $bundle |
+  $bundle.definitions["daily-backlog"].limits as $limits |
+  {
+    schema: "af/ant@12", id: $id, scenario: $bundle, inputs: {},
+    schedule: {kind: "daily", timezone: "UTC", hour: $hour, minute: $minute,
+               start_unix_ms: $start},
+    owner: $owner, notification: $route,
+    execution: {overlap: "skip", missed: "skip", lateness_ms: 120000,
+                per_run: $limits, rolling_tokens: 150000, rolling_window_ms: 86400000}
+  }
+' > "$scratch/ant.json"
+
+af ant validate --file "$scratch/ant.json" --authority "$scratch/policy.json" \
+  --state "$scratch/scenarios" --json
+```
+
+Review the validated grant and set `ant_pin` to the returned `revision`. Before the next due slot,
+register and enable it. Tick at the due slot, or run the foreground scheduler on the same Store.
+Use `show` to retrieve the occurrence and its Run ID. To drive ticks continuously,
+run `af ant scheduler run --state "$scratch/scenarios"` in the foreground.
+
+```bash
+af ant add --file "$scratch/ant.json" --authority "$scratch/policy.json" \
+  --state "$scratch/scenarios" --confirm-pin "$ant_pin" --json
+af ant enable "$ant_id" --state "$scratch/scenarios" --json
+af ant tick --state "$scratch/scenarios" --json
+af ant show "$ant_id" --state "$scratch/scenarios" --json
+```
+
+`af ant pause "$ant_id" --state "$scratch/scenarios"` pauses future launches. An existing
+Run can still dispatch on a tick or resume. For a maintenance pause use
+`af ant scheduler stop --state "$scratch/scenarios"` where a foreground scheduler is active
+and refrain from manually ticking or resuming. Use `af scenario cancel RUN_ID --reason REASON`
+with the same state path when the existing Run itself must stop. Cancellation preserves receipts
+and effects already committed.
 
 ## GitHub Issues destination
 
@@ -393,6 +483,27 @@ configuration, executable or credential prevents a new adapter call. A missing o
 batch policy, hold, cancellation or expired deadline prevents dispatch. Restoring the exact
 authority permits reconciliation within the admitted bounds. The batch policy and its
 destination pin are immutable within this journal.
+
+### Separate operator accounts
+
+Use a dedicated receiver operating-system account and private Project Store for ticket
+publication. Grant its destination principal Issues write for the pinned repository only.
+Transfer the private submissions with the signed exchange. For an external agent launcher,
+run it under a producer account without the publisher's file access, keychain session, CLI
+login, credential-helper socket or environment. Keep developer and model Provider accounts
+available under their existing approved bindings. Move any operator-managed write token out of
+the agent's launch environment and auth configuration. Keep any separate read-only issue
+observer under a principal with Issues read, as in the
+[read-only index runbook](issue-triage-runner.md#read-only-open-issue-index).
+
+Shell-capable Task Workers start with ambient GitHub CLI variables removed and Git credential
+helper lookup disabled. These defaults are process controls. Use filesystem and account
+isolation for the receiver's token file. If the receiver executes a Worker that can read
+arbitrary files under the receiver UID, leave the token file absent during assessment.
+After the Run waits on the publication intent, provision the receiver token privately and
+resume that same Run. Keep it inaccessible to Workers while the file exists. Confinement
+must cover alternate access such as the OS keychain and any exported auth helper.
+Offline capture needs neither the receiver token nor a Provider login.
 
 ### Executable protocol
 
@@ -466,14 +577,59 @@ fields digest and an `approved_fields_match` boolean. The normal `af backlog lis
 `af backlog show` commands read the verified native projection without invoking the adapter.
 
 The offline proof starts the real receiver Scenario through a daily Ant occurrence. It runs
-the checked-in adapter entrypoint with a fake HTTPS connection. It covers adapter crashes
+the checked-in adapter entrypoint with a fake HTTPS connection. From a fresh checkout with
+the pinned Rust toolchain, nextest, Git and Python 3, run the following copyable fixture.
+The fixture creates disposable Workspaces, Stores, fake Provider credentials and a fake
+destination. Its `Private captures` and `Offline cutover proof` lines contain the actual
+fixture IDs and accounting. It covers adapter crashes
 before the write and after remote creation, delayed lookup, identity conflicts, revoked authority,
 concurrent resume, human closure and edit, and reconciliation of the same issue ID on a later
 verified revision.
 
 ```sh
-cargo nextest run --workspace --locked --profile ci \
+python3 -I scripts/test-backlog-open-issues.py --example
+cargo nextest run --workspace --locked --profile ci --success-output immediate \
   -E 'binary_id(af::it) & test(portable_backlog_github_)'
 ```
+
+### Recorded offline dispatch evidence
+
+In one fresh fixture Run, the signed exchange accepted seven Reports. Six were frozen for
+the first daily occurrence. The Project recorded two verified items, zero already tracked,
+two holds (`hold`, `mismatch`) and one insufficient Report (`unknown`). The `late` Report
+arrived after the cutoff. Both `blue-a` and `blue-b` had durable local receipts from distinct
+Workspaces before verification. They resolved to the same item and revision. `green` was
+verified and accounted, with no publication intent under the one-item cap.
+
+The fixture kept the receiver credential file absent while the assessment ran. The synthetic
+Provider retained its approved auth directory, while its Git helper lookup could not retrieve
+the synthetic write credential. Before independent verification the fake provider received zero
+requests. Once the receiver credential was installed, the pinned adapter sent one POST.
+The fake transport killed the adapter immediately after recording the issue. A fresh
+`af scenario resume` reconciled it by reading. The later revision reused the same issue
+and preserved its simulated human edit and closure.
+
+| Identity | Value from the fixture |
+| --- | --- |
+| Daily Ant Run | `ant-ded9899c25b183f9e018a684f78412c108b7ff695334c785dde5df726d24b54e` |
+| Frozen batch | `sha256:b17a267a52d2e30d3b9a7da97c9e649c151b3c928680b9c5ff2951cbf2b50047` |
+| Verified item | `sha256:ffa2f0bfd4a31f9443ce41aebdcb412f96acd9cfe12d02cfa0fe91754fa0c5b7` |
+| Accepted revision | `sha256:e9742c9a6e953313e40611ec8a91394efc74220975e2b7c4e518183bb8c78483` |
+| Publication intent | `sha256:64647b8387b0bd7510ae0527496a6bf6bb4a6f93d239f844293b5642ca0480d8` |
+| Publication receipt | `sha256:1c44c5fa4b23accae74b388a66202c01ee8e8dd2106f1a6e1ecfe648134e4137` |
+| Fake issue ID and number | `444:1` |
+| Independent verification receipt | `sha256:a8c035a12b74e8186fb33d201b0935ef2d659e5e0aad281f3f4834c5f2ab3f77` |
+| Deferred verified item | `sha256:486d6613e653de9631112447b285ae95472071da9a126454f5a817a3e661c4ea` |
+
+The assessment charged 12 synthetic Provider tokens. The private `unknown` Report retained
+its reproduction text and `needs_evidence` disposition. Its reproduction appeared in neither
+the assessment input nor the outgoing ticket. Fixture identities change with each fresh
+repository and batch.
+
+The index example observes two existing fake provider issues and refuses an incomplete read.
+Use a read-only index to nominate duplicate candidates and verify an exact issue identity
+before linking it. The index does not import issues into the Project Store. The packaged
+daily Scenario in this fixture takes the local frozen batch reference. The index example
+is separate read-only evidence and the fake publication leaves existing remote issues alone.
 
 [GitHub publication decision](adr/2026-11-20-coordinate-github-backlog-publication.md)

@@ -5,6 +5,8 @@ body:
   - type: markdown
     attributes:
       value: |
+        This form is for external reporters. AF-managed development sessions record a
+        private Report with `af backlog record` from the Project checkout.
         File it raw: no class, size or duplicate search needed. Triage runs asynchronously and
         labels the issue later (`docs/design/issue-triage.md`). The best evidence is, in order, an
         af Task id with its workstream, a commit sha or PR number on `main`, or the exact command

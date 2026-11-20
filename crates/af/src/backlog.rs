@@ -108,16 +108,16 @@ pub(crate) enum BatchCommand {
     /// Queue an accounted Report for reconsideration in a future batch
     Reconsider {
         /// Existing item to reconsider
-        #[arg(long)]
+        #[arg(long, value_name = "ID")]
         item_id: String,
         /// Previously accounted authority Report ID
-        #[arg(long)]
+        #[arg(long, value_name = "ID")]
         report_id: String,
         /// Later accepted Report supplying new evidence
         #[arg(long)]
         evidence_report_id: Option<String>,
         /// Earliest eligible occurrence time in Unix milliseconds
-        #[arg(long)]
+        #[arg(long, value_name = "MS")]
         eligible_unix_ms: u64,
     },
     /// Record a local disposition for a frozen member

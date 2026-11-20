@@ -17,7 +17,7 @@ const ARTIFACT: &str = "fixtures/issue-triage/scenario.json";
 const STAGED: &str = "fixtures/issue-triage";
 const BACKLOG: &str = "fixtures/project-backlog/scenario.json";
 const FAKE_CODEX: &str = r#"#!/usr/bin/python3 -B
-import hashlib, json, os, re, subprocess, sys
+import glob, hashlib, json, os, re, subprocess, sys
 
 if sys.argv[1:2] == ['app-server']:
     for line in sys.stdin:
@@ -41,7 +41,18 @@ else:
         reconsidering = batch['reference']['high_water'] == '7'
         assert batch['reference']['high_water'] in ('6', '7')
         assert len(batch['members']) == (2 if reconsidering else 6)
-        assert 'AF_BACKLOG_GITHUB_TOKEN' not in os.environ
+        assert not {'AF_BACKLOG_GITHUB_TOKEN', 'AF_BACKLOG_GITHUB_SCOPE', 'GH_TOKEN',
+                    'GITHUB_TOKEN', 'SSH_AUTH_SOCK'} & os.environ.keys()
+        assert os.environ['GH_CONFIG_DIR'] == '/dev/null'
+        provider_home = os.environ['CODEX_HOME']
+        assert os.path.isdir(provider_home)
+        assert not glob.glob(os.path.join(os.path.dirname(provider_home),
+            'state/af/project/*/backlog-github-token'))
+        # Exercise Git's actual external credential helper lookup with synthetic input.
+        credentials = subprocess.run(['git', 'credential', 'fill'],
+            input=b'protocol=https\nhost=fixture.invalid\n\n', capture_output=True)
+        assert credentials.returncode != 0 and not credentials.stdout
+        assert 'private-insufficient-repro' not in request
         assert 'private-attachment' not in request
         assert 'mismatched-attachment' not in request
         ids_by_evidence = {}
@@ -296,6 +307,14 @@ distinct_models = true
 
     fn command(&self, repo: &Path, args: &[&str]) -> Command {
         let mut command = crate::common::af();
+        let ambient = self.root.join("fake-github/ambient-gitconfig");
+        if ambient.exists() {
+            command
+                .env("GH_CONFIG_DIR", ambient.parent().unwrap())
+                .env("GH_TOKEN", "fixture_token")
+                .env("AF_BACKLOG_GITHUB_TOKEN", "ambient_wrong_token")
+                .env("GIT_CONFIG_GLOBAL", &ambient);
+        }
         command
             .current_dir(repo)
             .env("XDG_STATE_HOME", self.root.join("state"))
@@ -611,6 +630,14 @@ fn private_write(path: &Path, bytes: impl AsRef<[u8]>) {
 fn github_fixture(receiver: &Receiver) -> String {
     let state = receiver.root.join("fake-github");
     fs::create_dir(&state).unwrap();
+    private_write(
+        &state.join("hosts.yml"),
+        "github.com:\n  oauth_token: fixture_token\n",
+    );
+    private_write(
+        &state.join("ambient-gitconfig"),
+        "[credential]\n helper = !echo username=fixture && echo password=fixture_token && :\n",
+    );
     let adapter = include_str!("../../../../../scripts/project-backlog-github.py");
     let http = include_str!("../../../../../fixtures/project-backlog/fake-github-http.py").replace(
         "__AF_BACKLOG_FIXTURE_STATE__",
@@ -668,12 +695,32 @@ fn capture_backlog_batch(receiver: &Receiver, github: Option<&str>) -> Value {
             fs::write(&evidence, text).unwrap();
             args.extend(["--evidence-file", evidence.to_str().unwrap()]);
         }
-        ok(receiver.af_in(repo, &args));
+        if id == "unknown" {
+            args.extend(["--repro", "private-insufficient-repro"]);
+        }
+        ok(receiver.af_in(repo, &args))
     };
     let blue = fs::read_to_string(receiver.repo.join("blue-boundary.py")).unwrap();
     let green = fs::read_to_string(receiver.repo.join("green-boundary.py")).unwrap();
-    record(&receiver.repo, "blue-a", Some(&blue));
-    record(&producer_repo, "blue-b", Some(&blue));
+    let blue_a = record(&receiver.repo, "blue-a", Some(&blue));
+    let blue_b = record(&producer_repo, "blue-b", Some(&blue));
+    assert_eq!(record(&producer_repo, "blue-b", Some(&blue)), blue_b);
+    for receipt in [&blue_a, &blue_b] {
+        assert_eq!(receipt["view"], "capture");
+        assert_eq!(receipt["data"]["local_capture"], true);
+        assert!(receipt["data"]["authority_receipt"].is_null());
+    }
+    assert_eq!(blue_a["data"]["project_id"], blue_b["data"]["project_id"]);
+    let private_report = |id| ok(receiver.af(&["backlog", "show", id, "--private", "--json"]));
+    let a = private_report("blue-a");
+    let b = private_report("blue-b");
+    assert_ne!(a["data"]["workspace_id"], b["data"]["workspace_id"]);
+    assert_eq!(a["data"]["evidence"], b["data"]["evidence"]);
+    assert_eq!(a["data"]["privacy"], "private");
+    assert_eq!(b["data"]["privacy"], "private");
+    if github.is_some() {
+        eprintln!("Private captures: {blue_a} {blue_b}");
+    }
     record(&receiver.repo, "green", Some(&green));
     record(&producer_repo, "hold", Some("private-attachment"));
     record(&receiver.repo, "unknown", None);
@@ -708,7 +755,6 @@ fn capture_backlog_batch(receiver: &Receiver, github: Option<&str>) -> Value {
             &store.join(GITHUB_CONFIG),
             serde_json::to_vec(&config).unwrap(),
         );
-        private_write(&store.join("backlog-github-token"), "fixture_token\n");
         af_store::canonical::content_id(&config).unwrap()
     } else {
         af_project::backlog::batch::local_destination(project_id).unwrap()
@@ -742,10 +788,24 @@ fn capture_backlog_batch(receiver: &Receiver, github: Option<&str>) -> Value {
             submission.to_str().unwrap(),
             "--key",
             authority_key.to_str().unwrap(),
-        ]));
+        ]))
     };
-    for id in ["blue-a", "blue-b", "green", "unknown", "hold", "mismatch"] {
+    let accepted = accept("blue-a");
+    assert_eq!(accept("blue-a"), accepted);
+    let receipt_file = receiver.root.join("authority-receipt.json");
+    save(&receipt_file, &accepted);
+    let ack = ok(receiver.af(&["backlog", "ack", receipt_file.to_str().unwrap(), "--json"]));
+    assert_eq!(ack["view"], "acknowledged");
+    assert!(ack["data"]["authority_receipt"].is_string());
+    for id in ["blue-b", "green", "unknown", "hold", "mismatch"] {
         accept(id);
+    }
+    assert_eq!(
+        ok(receiver.af(&["backlog", "list", "--json"]))["data"]["items"],
+        json!([])
+    );
+    if github.is_some() {
+        assert!(!receiver.root.join("fake-github/requests").exists());
     }
     let audit = ok(receiver.af(&["backlog", "batch", "tick", "--at-unix-ms", "1772755200000"]));
     assert_eq!(audit["high_water"], "6");
@@ -1246,11 +1306,14 @@ fn portable_backlog_github_reconciles_a_lost_create_without_duplicate_writes() {
     // A changed executable cannot launch. The pinned executable then creates an issue and
     // exits without a response.
     let adapter = store_path.join(GITHUB_ADAPTER);
+    let credential = store_path.join("backlog-github-token");
+    assert!(!credential.exists());
     private_write(&adapter, "unpinned bytes");
     check_pending(pending());
     assert!(!fake.join("requests").exists());
     fs::remove_file(&adapter).unwrap();
     private_write(&adapter, &executable);
+    private_write(&credential, "fixture_token\n");
     check_pending(pending());
     assert_eq!(
         state(publications().last().unwrap())["outcome"]["kind"],
@@ -1306,7 +1369,8 @@ fn portable_backlog_github_reconciles_a_lost_create_without_duplicate_writes() {
         .unwrap();
     let _ = receiver.af(&resume);
     concurrent.wait().unwrap();
-    assert_eq!(ok(receiver.af(&resume))["status"], "succeeded");
+    let run = ok(receiver.af(&resume));
+    assert_eq!(run["status"], "succeeded");
 
     let history = publications();
     let final_record = history.last().unwrap();
@@ -1349,6 +1413,60 @@ fn portable_backlog_github_reconciles_a_lost_create_without_duplicate_writes() {
     // A later independently verified revision reconciles the same immutable issue and preserves
     // the operator's edit and closure. Move to a new source so the deferred green item needs proof.
     let audit = ok(receiver.af(&["backlog", "batch", "audit"]));
+    assert_eq!(audit["intake"].as_array().unwrap().len(), 7);
+    assert_eq!(audit["closed_high_water"], "6");
+    assert_eq!(audit["pending_member_ids"], json!(["late"]));
+    let member = |id| ok(receiver.af(&["backlog", "show", id, "--private", "--json"]));
+    let blue_a = member("blue-a");
+    let blue_b = member("blue-b");
+    assert_eq!(blue_a["data"]["outcomes"], blue_b["data"]["outcomes"]);
+    assert_eq!(
+        blue_a["data"]["outcomes"][0]["item_id"],
+        final_record.item_id
+    );
+    assert_eq!(
+        blue_a["data"]["outcomes"][0]["revision_id"],
+        final_record.revision_id
+    );
+    let insufficient = member("unknown");
+    assert_eq!(
+        insufficient["data"]["report"]["repro"],
+        "private-insufficient-repro"
+    );
+    assert!(!human.to_string().contains("private-insufficient-repro"));
+    let held = member("hold");
+    assert_eq!(held["data"]["outcomes"][0]["disposition"], "held");
+    let mismatch = member("mismatch");
+    assert_eq!(mismatch["data"]["outcomes"][0]["disposition"], "held");
+    let batch = &audit["batches"][reference["batch_id"].as_str().unwrap()];
+    assert_eq!(batch["members"]["green"]["disposition"], "accounted");
+    let green = member("green");
+    let green_outcome = &green["data"]["outcomes"][0];
+    assert_eq!(green_outcome["disposition"], "verified");
+    assert!(
+        history
+            .iter()
+            .all(|record| record.item_id != green_outcome["item_id"])
+    );
+    let assessment = &run["frames"]["root"]["outputs"]["assessment"]["value"];
+    assert_eq!(assessment["result"]["acceptance"], "satisfied");
+    eprintln!(
+        "Offline cutover proof: {}",
+        json!({
+            "run_id": run_id, "batch_id": reference["batch_id"],
+            "reports": ["blue-a", "blue-b"], "frozen_reports": 6, "verified_items": 2,
+            "already_tracked": 0, "tickets_before_verification": 0,
+            "ticket_writes": writes.len(), "item_id": final_record.item_id,
+            "revision_id": final_record.revision_id, "intent_id": final_record.intent_id,
+            "receipt_id": final_record.receipt_id, "remote_id": final_record.remote_id,
+            "assessment_task": assessment["task_id"],
+            "charged_tokens": assessment["charged_tokens"],
+            "verification": assessment["result"]["outputs"]["verification"]["artifact_ids"],
+            "held": ["hold", "mismatch"], "insufficient": "unknown",
+            "deferred_publication": green_outcome["item_id"],
+            "after_cutoff": audit["pending_member_ids"], "accounting": batch["members"],
+        })
+    );
     let closed = audit["batches"][reference["batch_id"].as_str().unwrap()]["closed_unix_ms"]
         .as_u64()
         .unwrap();
@@ -1378,8 +1496,20 @@ fn portable_backlog_github_reconciles_a_lost_create_without_duplicate_writes() {
         "policy_id":audit["pin_id"],
         "high_water":audit["high_water"],
     });
-    let (_revised_run, revised_result) =
+    fs::remove_file(&credential).unwrap();
+    let (revised_run, waiting) =
         start_github_backlog(&receiver, "revised-github-backlog", &revised_reference);
+    assert_eq!(waiting["status"], "waiting");
+    assert_eq!(http_requests(&fake), requests);
+    private_write(&credential, "fixture_token\n");
+    let revised_result = ok(receiver.af(&[
+        "scenario",
+        "resume",
+        &revised_run,
+        "--state",
+        receiver.scenarios.to_str().unwrap(),
+        "--json",
+    ]));
     assert_eq!(
         revised_result["status"], "succeeded",
         "{}",
@@ -1452,6 +1582,14 @@ fn portable_backlog_github_retains_a_crash_before_the_provider_write_as_pending(
         "--json",
     ];
     assert_eq!(first["status"], "waiting", "{}", first["failure"]);
+    assert!(!fake.join("requests").exists());
+    private_write(&store_path.join("backlog-github-token"), "fixture_token\n");
+    let interrupted = ok(receiver.af(&resume));
+    assert_eq!(
+        interrupted["status"], "waiting",
+        "{}",
+        interrupted["failure"]
+    );
     assert!(!fake.join("issue.json").exists());
     fs::remove_file(fake.join("abort-before-write")).unwrap();
     fs::write(fake.join("mode"), "delayed").unwrap();

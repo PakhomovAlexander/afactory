@@ -1,5 +1,6 @@
 """Offline HTTPSConnection fixture inserted before the real adapter entrypoint."""
 
+import signal
 from pathlib import Path
 
 fixture_state = Path(__AF_BACKLOG_FIXTURE_STATE__)
@@ -29,7 +30,8 @@ class FixtureConnection:
         assert method in ("GET", "POST")
         data = json.loads(body) if body is not None else None
         if body is not None:
-            assert b"private-attachment" not in body and b"Different behavior" not in body
+            for private_text in (b"private-attachment", b"Different behavior", b"private-insufficient-repro"):
+                assert private_text not in body
         with (fixture_state / "requests").open("a") as trace:
             trace.write(json.dumps({"method": method, "path": path, "body": data}) + "\n")
 
@@ -54,7 +56,7 @@ class FixtureConnection:
             if mode == "lost_reply":
                 raise http.client.RemoteDisconnected()
             if not (fixture_state / "respond").exists():
-                os._exit(17)
+                os.kill(os.getpid(), signal.SIGKILL)
             self.response = FixtureResponse(201, issue)
             return
 
