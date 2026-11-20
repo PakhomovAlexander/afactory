@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Hermetic subprocess release lifecycle against local Git and a fake GitHub server."""
 import copy
+import codecs
 from contextlib import contextmanager
 import hashlib
 import inspect
@@ -15,6 +16,9 @@ import sys
 import tempfile
 import time
 import signal
+import secrets
+import textwrap
+import threading
 import unittest
 from unittest import mock
 
@@ -45,14 +49,139 @@ def publish_fixture_db(path, value):
             temporary.unlink(missing_ok=True)
 
 
-# Both generated executables use the same standalone fixture publisher.
-FIXTURE_DB_HELPER = inspect.getsource(publish_fixture_db)
-FAKE = '#!/usr/bin/env python3\n' + FIXTURE_DB_HELPER + r'''
-import hashlib,json,os,subprocess,sys,time
-from pathlib import Path
-name=Path(sys.argv[0]).name
-a=sys.argv[1:]
-f=Path(os.environ['FAKE_DB']); d=json.loads(f.read_text()); ci_run_id=d.get('ci_run_id',10)
+def fixture_db_lock(path):
+    """Serialize fixture read/modify/write transactions, not just JSON replacement."""
+    import fcntl
+    lock = open(str(path) + '.lock', 'a')
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+    except BaseException:
+        lock.close()
+        raise
+    return lock
+
+
+@contextmanager
+def fixture_transaction(path):
+    """Serialize every admitted read/modify/publish on a stable lock inode."""
+    import fcntl
+    import json
+    import os
+    import time
+    from pathlib import Path
+
+    path = Path(path)
+    with fixture_db_lock(path) as lock:
+        try:
+            value = json.loads(path.read_text())
+            marker = os.environ.get('FIXTURE_TRANSACTION_READY')
+            if marker:
+                Path(marker).touch()
+                while not Path(marker + '.release').exists():
+                    time.sleep(.01)
+            yield value
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def fixture_barrier(path, args, command='git'):
+    """Hold a read-only request or observe a response, then wait outside the lock."""
+    import json
+    import os
+    import time
+    from pathlib import Path
+
+    driver = os.getppid()
+    if not os.environ.get('FIXTURE_RUN_STATE'):
+        return
+    path = Path(path)
+    state_path = Path(os.environ['FIXTURE_RUN_STATE'])
+    if not state_path.exists():
+        return
+    state = json.loads(state_path.read_text())
+    data = json.loads(path.read_text())
+    stage = data.get('barrier_stage')
+    generation = data.get('control_generation', 0)
+    validation = stage == 'validation'
+    if validation:
+        # execute(): validate -> remote_branch -> find_pr -> branch intent/push.
+        # Hold find_pr BEFORE running it, never claim its response was consumed.
+        expected = ['pr', 'list', '--head', state.get('plan', {}).get('branch'),
+                    '--state', 'all', '--json',
+                    'number,url,state,headRefOid,baseRefName,mergeCommit,isCrossRepository,labels',
+                    '--repo', state.get('plan', {}).get('repo')]
+        if (command != 'gh' or args != expected or state.get('stage') != 'validation'
+                or state.get('status') != 'complete'
+                or state.get('receipts', {}).get('validation', {}).get('status') != 'complete'
+                or any(k in state.get('receipts', {})
+                       for k in ('branch', 'pr', 'checks', 'merge', 'publication'))):
+            return
+        # Reserve fresh evidence from current fixture state, without fabricating
+        # a completed response. The parent-controlled wait is below this lock.
+        with fixture_transaction(path) as current:
+            if (current.get('barrier_stage') != stage
+                    or current.get('control_generation', 0) != generation):
+                return
+            sequence = current.get('observation_sequence', 0) + 1
+            current['observation_sequence'] = sequence
+            publish_fixture_db(path, current)
+        events = [{'sequence': sequence}]
+        observed = True
+    elif not (command == 'git' and 'show' in args
+              and args[-1].endswith(':scripts/release-observation.py')):
+        return
+    if not validation:
+        events = [e for e in data.get('observations', [])
+                  if e['driver'] == driver and e['generation'] == generation
+                  and e.get('candidate') == state.get('candidate')
+                  and e.get('token') == os.environ.get('FIXTURE_DRIVER_TOKEN')]
+    if validation:
+        pass
+    elif state.get('status') != 'waiting' or state.get('stage') != stage:
+        return
+    elif stage == 'checks':
+        control = data.get('barrier_check', 'pending')
+        observed = any(
+            (control == 'pending' and e['kind'] == 'ci' and e['checks'] == 'pending')
+            or (control == 'fast' and e['kind'] == 'plan' and e.get('profile') == 'fast'
+                and e.get('labels') == [] and e.get('run_id') == 10)
+            or (control == 'missing' and e['kind'] == 'artifacts' and e.get('missing')
+                and e.get('run_id') == 20)
+            for e in events)
+    elif stage == 'merge':
+        observed = (data.get('effects', []).count('merge') == 1
+                    and any(e['kind'] == 'pr' and e['pr'] == 'OPEN' for e in events))
+    elif stage == 'publication' and data.get('barrier_publication') == 'untagged':
+        observed = any(e['kind'] == 'signing' for e in events)
+    elif stage == 'publication':
+        observed = (any(e['kind'] == 'signing' and e['signing'] is None for e in events)
+                    and any(e['kind'] == 'releases' and e['assets'] > 0 for e in events))
+    else:
+        observed = False
+    if not observed:
+        return
+    # For other stages this next command proves consumption of the response.
+    # Validation instead holds the first post-validation PR request unfinished.
+    marker = Path(str(path) + '.barrier-' + str(driver) + '-' + stage + '-' + str(generation))
+    evidence = {'identity': state['identity'], 'sequence': events[-1]['sequence'],
+                'token': os.environ.get('FIXTURE_DRIVER_TOKEN'),
+                'driver': driver, 'generation': generation,
+                'candidate': state.get('candidate')}
+    if validation:
+        evidence.update(kind='held-request', command=[command, *args],
+                        validation=state['receipts']['validation'])
+    publish_fixture_db(marker, evidence)
+    # Parent exit also releases a marker published after cleanup's enumeration.
+    while (os.getppid() == driver
+           and not Path(str(marker) + '.release').exists()):
+        time.sleep(.01)
+
+
+# Every writer shares the same locked transaction and atomic publisher.
+FIXTURE_DB_HELPER = ('from contextlib import contextmanager\n' + inspect.getsource(publish_fixture_db)
+                     + inspect.getsource(fixture_db_lock) + inspect.getsource(fixture_transaction) + inspect.getsource(fixture_barrier))
+FAKE_COMMAND = r'''
+ci_run_id=d.get('ci_run_id',10)
 def save():
  publish_fixture_db(f,d)
 def crash(effect,when):
@@ -60,12 +189,40 @@ def crash(effect,when):
   d['crash']=''; save(); sys.exit(55)
 def effect(key,action):
  crash(key,'before'); action(); d.setdefault('effects',[]).append(key); save(); crash(key,'after')
-def out(value): print(json.dumps(value)); sys.exit(0)
+def record(value, kind=None):
+ if os.environ.get('FIXTURE_RUN_STATE'):
+  kind=kind or ('pr' if a[:2]==['pr','list'] and a[a.index('--head')+1].startswith('release/v') else
+        'ci' if a[0]=='api' and any(x in a[1] for x in ('actions/runs/10', 'actions/runs/20', 'actions/workflows/ci.yml/runs')) else
+        'signing' if a[0]=='api' and a[1].startswith('repos/o/r/actions/runs/1/jobs?') else
+        'releases' if a[0]=='api' and 'releases?' in a[1] else 'other')
+  if kind != 'other':
+   state_path=Path(os.environ['FIXTURE_RUN_STATE'])
+   candidate=d.get('pr',{}).get('headRefOid')
+   if candidate is None and state_path.exists(): candidate=json.loads(state_path.read_text()).get('candidate')
+   rows=(value.get('workflow_runs',[]) if isinstance(value,dict) else [])
+   pending=any(r.get('status')=='in_progress' for r in rows)
+   events=d.setdefault('observations',[])
+   events.append({'sequence':d.get('observation_sequence',0)+1,'driver':os.getppid(),
+                  'generation':d.get('control_generation',0),'kind':kind,
+                  'token':os.environ.get('FIXTURE_DRIVER_TOKEN'),
+                  'candidate':candidate,
+                  'run_id':globals().get('observed_run_id'),
+                  'attempt':globals().get('attempt'),
+                  'profile':value.get('profile') if kind=='plan' else None,
+                  'labels':globals().get('labels') if kind=='plan' else None,
+                  'missing':not value.get('artifacts') if kind=='artifacts' else None,
+                  'checks':'pending' if pending else 'complete',
+                  'pr':value[0].get('state') if kind=='pr' and value else None,
+                  'signing':next((j.get('conclusion') for j in value.get('jobs',[]) if j['name']=='sign and publish'),None) if kind=='signing' else None,
+                  'assets':sum(len(r.get('assets',[])) for r in value) if kind=='releases' else 0})
+   d['observation_sequence']=events[-1]['sequence'];d['observations']=events[-64:];save()
+def out(value, kind=None):
+ record(value, kind)
+ print(json.dumps(value)); sys.exit(0)
 if name=='git':
  if ('ls-remote' in a and a[-1].startswith('refs/heads/release/v')
      and d.get('fail_branch_lookup_after_validation') and d.get('gate_runs')):
   print('fixture branch lookup failed after validation',file=sys.stderr);sys.exit(56)
- if 'fetch' in a and 'origin' in a: time.sleep(float(os.environ.get('FAKE_GIT_FETCH_DELAY','0')))
  key = 'push' if 'push' in a else ('prepare' if 'commit-tree' in a else '')
  if key: crash(key,'before')
  p=subprocess.run([os.environ['REAL_GIT'],*a],capture_output=True)
@@ -82,8 +239,6 @@ if name=='rustc': print('rustc 1.88.0 test');sys.exit(0)
 if name=='minisign': sys.exit(1 if d.get('bad_signature') else 0)
 if name in ('npx','make'): sys.exit(98)
 if name!='gh': sys.exit(99)
-Path(str(f)+'.controller-'+str(os.getppid())).touch()
-if os.environ.get('FAKE_DELAY'): time.sleep(float(os.environ['FAKE_DELAY']))
 if a[0]=='api':
  request=a[1].replace('{owner}/{repo}','o/r')
  d.setdefault('api_requests',[]).append(request);save()
@@ -156,10 +311,12 @@ if a[0]=='api':
   with zipfile.ZipFile(buf,'w') as z:
    info=zipfile.ZipInfo('plan.json');z.writestr(info,json.dumps(plan))
   archive=buf.getvalue()
-  if endpoint.startswith('actions/artifacts/'): sys.stdout.buffer.write(archive);sys.exit(0)
+  if endpoint.startswith('actions/artifacts/'):
+   record(plan, 'plan');sys.stdout.buffer.write(archive);sys.exit(0)
   if '/artifacts?' in endpoint:
    rows=[] if d.get('ci_plan_missing') else [{'id':observed_run_id*1000+d.get('artifact_attempt',attempt),'name':'validation-plan-'+str(d.get('artifact_attempt',attempt)),'expired':False,'digest':(d.get('plan_digest') or 'sha256:'+hashlib.sha256(archive).hexdigest()),'workflow_run':{'id':observed_run_id,'head_sha':head}}]
-   out({'total_count':len(rows)+(1 if d.get('ci_artifacts_partial_page') else 0),'artifacts':rows})
+   d.setdefault('ci_plan_reads',[]).append({'run_id':observed_run_id,'profile':plan['profile'],'missing':not rows});save()
+   out({'total_count':len(rows)+(1 if d.get('ci_artifacts_partial_page') else 0),'artifacts':rows}, 'artifacts')
   state='pass' if observed_run_id==10 and d.get('ci_superseded') else d.get('checks','pass')
   status='in_progress' if state=='pending' else 'completed'
   row={'id':observed_run_id,'workflow_id':339965080,'run_attempt':attempt,'head_sha':head,'head_branch':d['pr_branch'],'path':'.github/workflows/ci.yml','event':'pull_request','status':status,'conclusion':{'pass':'success','fail':'failure','cancel':'cancelled'}.get(state),'pull_requests':[{'number':pr['number'],'head':{'sha':head},'base':{'ref':'main','sha':base}}]}
@@ -198,8 +355,6 @@ if a[:2]==['run','download']:
 if a[:2]==['pr','list']:
  head=a[a.index('--head')+1]
  if head.startswith('release/pin-'): out(d.get('pins',[]))
- if d.get('pause_after_validation') and d.get('metadata_check_runs'):
-  d['paused']=True;save();time.sleep(30)
  out([d['pr']] if d.get('pr') and d.get('pr_branch') == head else [])
 if a[:2]==['pr','create']:
  def create():
@@ -249,6 +404,22 @@ print('unsupported fake request '+str(a),file=sys.stderr);sys.exit(98)
 '''
 
 
+FAKE = ('#!/usr/bin/env python3\n' + FIXTURE_DB_HELPER + r'''
+import hashlib,json,os,subprocess,sys,time
+from pathlib import Path
+name=Path(sys.argv[0]).name
+a=sys.argv[1:]
+f=Path(os.environ['FAKE_DB'])
+if name=='gh':
+ if a[:2]==['pr','list']: fixture_barrier(f,a,command='gh')
+ if os.environ.get('FAKE_DELAY'): time.sleep(float(os.environ['FAKE_DELAY']))
+if name=='git':
+ fixture_barrier(f,a)
+ if 'fetch' in a and 'origin' in a: time.sleep(float(os.environ.get('FAKE_GIT_FETCH_DELAY','0')))
+with fixture_transaction(f) as d:
+''' + textwrap.indent(FAKE_COMMAND, ' '))
+
+
 def write_fixture_executables(directory):
     directory.mkdir()
     for name in ('git', 'gh', 'cargo', 'rustc', 'minisign', 'npx', 'make'):
@@ -260,8 +431,9 @@ def write_fixture_executables(directory):
 def write_fixture_gate(path):
     path.write_text('#!' + sys.executable + '\n' + FIXTURE_DB_HELPER +
                     'import json,os,sys\nfrom pathlib import Path\n'
-                    'p=os.environ["FAKE_DB"];d=json.loads(Path(p).read_text());'
-                    'd["gate_runs"]=d.get("gate_runs",0)+1;publish_fixture_db(p,d);'
+                    'p=os.environ["FAKE_DB"]\n'
+                    'with fixture_transaction(p) as d:\n'
+                    ' d["gate_runs"]=d.get("gate_runs",0)+1;publish_fixture_db(p,d)\n'
                     'import subprocess\n'
                     'subprocess.run([sys.executable,"-I","scripts/release-contract.py"],check=True)\n'
                     'sys.exit(9 if d.get("gate_fail") else 0)\n')
@@ -269,11 +441,14 @@ def write_fixture_gate(path):
 
 
 def fixture_data(path, **changes):
-    value = json.loads(path.read_text())
-    if changes:
+    if not changes:
+        return json.loads(path.read_text())
+    with fixture_transaction(path) as value:
         value.update(changes)
+        if 'barrier_stage' in value:
+            value['control_generation'] = value.get('control_generation', 0) + 1
         publish_fixture_db(path, value)
-    return value
+        return value
 
 
 class FixtureDatabase(unittest.TestCase):
@@ -325,6 +500,87 @@ class FixtureDatabase(unittest.TestCase):
                 fixture_data(self.db)
             json.dump(old, stream)
         self.assertEqual(fixture_data(self.db), old)
+
+    def test_controller_update_waits_for_fake_read_modify_write(self):
+        # Force the controller to update after gh read the old snapshot but
+        # before its API observation is saved. Atomic replacement alone loses
+        # that update; the transaction lock must retain both writers' evidence.
+        attempted = threading.Event()
+        finished = threading.Event()
+        errors = []
+        original_lock = fixture_db_lock
+        original_replace = os.replace
+        controller = None
+
+        def controller_lock(path):
+            attempted.set()
+            return original_lock(path)
+
+        def update():
+            try:
+                fixture_data(self.db, ci_plan_missing=False, ci_run_id=20)
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                finished.set()
+
+        def replace(source, destination):
+            nonlocal controller
+            if threading.current_thread() is threading.main_thread():
+                controller = threading.Thread(target=update)
+                controller.start()
+                self.assertTrue(attempted.wait(5), 'controller never attempted its transaction')
+                import fcntl
+                with open(str(self.db) + '.lock', 'a') as probe:
+                    with self.assertRaises(BlockingIOError):
+                        fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.assertFalse(finished.is_set())
+            return original_replace(source, destination)
+
+        try:
+            with mock.patch.dict(os.environ, self.env), \
+                    mock.patch.object(sys, 'argv', [str(self.bin / 'gh'), 'api', 'repos/o/r']), \
+                    mock.patch(__name__ + '.fixture_db_lock', side_effect=controller_lock), \
+                    mock.patch('os.replace', side_effect=replace), mock.patch('sys.stdout'):
+                with self.assertRaises(SystemExit) as stopped:
+                    runpy.run_path(str(self.bin / 'gh'), run_name='__main__')
+                self.assertEqual(stopped.exception.code, 0)
+        finally:
+            if controller is not None:
+                controller.join(timeout=5)
+        self.assertTrue(finished.is_set(), 'controller remained blocked after fake exit')
+        self.assertEqual(errors, [])
+        value = fixture_data(self.db)
+        self.assertEqual(value['api_requests'], ['repos/o/r'])
+        self.assertEqual(value['ci_run_id'], 20)
+        self.assertFalse(value['ci_plan_missing'])
+
+    def test_stage_failure_reports_persisted_state_and_driver_status(self):
+        observer = ReleaseCLI(methodName='runTest')
+        observer.state = self.base / 'state'
+        observer.state.mkdir()
+        observer.db = self.db
+        persisted = {'stage': 'checks', 'status': 'waiting', 'receipts': {'checks': {'next': 'plan'}}}
+        (observer.state / 'run.json').write_text(json.dumps(persisted))
+        process = mock.Mock(pid=123)
+        for returncode in (3, None):
+            with self.subTest(returncode=returncode):
+                process.reset_mock()
+                process.poll.return_value = returncode
+                process.communicate.return_value = ('output', 'diagnostic')
+                with mock.patch('time.monotonic', side_effect=[0, 0, 26]), \
+                        mock.patch('time.sleep'):
+                    with self.assertRaises(AssertionError) as failed:
+                        observer.await_stage(process, 'publication')
+                message = str(failed.exception)
+                self.assertIn('returncode=' + repr(returncode), message)
+                self.assertIn('persisted_state=' + json.dumps(persisted), message)
+                self.assertIn('controller_marker=False', message)
+                if returncode is None:
+                    process.communicate.assert_not_called()
+                    self.assertIn('driver still running', message)
+                else:
+                    self.assertIn('diagnostic', message)
 
     def test_fixture_writers_publish_complete_documents_atomically(self):
         original_file = tempfile.NamedTemporaryFile
@@ -407,6 +663,623 @@ class FixtureDatabase(unittest.TestCase):
                 self.assertEqual(list(self.base.glob('github.json.*.tmp')), [])
 
 
+class FixtureHandshake(unittest.TestCase):
+    def test_barrier_requires_current_driver_generation_candidate_and_completed_response(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            db, state = root / 'github.json', root / 'run.json'
+            publish_fixture_db(state, {'identity': 'exact-run', 'candidate': 'head',
+                                       'stage': 'checks', 'status': 'waiting'})
+            event = {'driver': 123, 'generation': 7, 'candidate': 'head', 'token': 'fresh',
+                     'sequence': 20, 'kind': 'ci', 'checks': 'pending'}
+            marker = Path(str(db) + '.barrier-123-checks-7')
+            env = {'FIXTURE_RUN_STATE': str(state), 'FIXTURE_DRIVER_TOKEN': 'fresh'}
+            args = ['show', 'source:scripts/release-observation.py']
+            for changed in ({'driver': 456}, {'generation': 6}, {'candidate': 'foreign'},
+                            {'token': 'old'}, {'kind': 'other'}, {'checks': 'complete'}):
+                with self.subTest(changed=changed):
+                    publish_fixture_db(db, {'barrier_stage': 'checks', 'control_generation': 7,
+                                            'observations': [{**event, **changed}]})
+                    with mock.patch.dict(os.environ, env), mock.patch('os.getppid', return_value=123):
+                        fixture_barrier(db, args)
+                    self.assertFalse(marker.exists())
+            publish_fixture_db(db, {'barrier_stage': 'checks', 'control_generation': 7,
+                                    'observations': [event]})
+            Path(str(db) + '.controller-123').touch()
+            with mock.patch.dict(os.environ, env), mock.patch('os.getppid', return_value=123):
+                fixture_barrier(db, ['status'])
+                self.assertFalse(marker.exists())
+                def release(_):
+                    self.assertEqual(json.loads(marker.read_text()),
+                                     {'identity': 'exact-run', 'sequence': 20, 'token': 'fresh',
+                                      'driver': 123, 'generation': 7, 'candidate': 'head'})
+                    Path(str(marker) + '.release').touch()
+                with mock.patch('time.sleep', side_effect=release):
+                    fixture_barrier(db, args)
+            self.assertEqual(json.loads(state.read_text())['status'], 'waiting')
+            self.assertEqual(fixture_data(db)['observations'], [event])
+
+    def test_validation_barrier_holds_only_prepublication_lookup_not_postmerge_fetch(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            db, state_path = root / 'github.json', root / 'run.json'
+            receipt = {'status': 'complete', 'key': 'exact-check', 'commands': [{'exit': 0}]}
+            state = {'identity': 'exact-run', 'candidate': 'head', 'stage': 'validation', 'status': 'complete',
+                     'plan': {'branch': 'release/v1', 'repo': 'o/r'}, 'receipts': {'validation': receipt}}
+            data = {'barrier_stage': 'validation', 'control_generation': 7,
+                    'observation_sequence': 20, 'observations': [
+                        {'driver': 123, 'generation': 7, 'candidate': 'head',
+                         'token': 'fresh', 'sequence': 20, 'kind': 'pr', 'pr': 'MERGED'}]}
+            args = ['pr', 'list', '--head', 'release/v1', '--state', 'all', '--json',
+                    'number,url,state,headRefOid,baseRefName,mergeCommit,isCrossRepository,labels',
+                    '--repo', 'o/r']
+            marker = Path(str(db) + '.barrier-123-validation-7')
+            env = {'FIXTURE_RUN_STATE': str(state_path), 'FIXTURE_DRIVER_TOKEN': 'fresh'}
+            with mock.patch.dict(os.environ, env), mock.patch('os.getppid', return_value=123):
+                for changed in ({}, {'stage': 'publication', 'receipts': {
+                        'validation': receipt, 'merge': {'status': 'complete'}}}):
+                    publish_fixture_db(state_path, {**state, **changed})
+                    publish_fixture_db(db, data)
+                    fixture_barrier(db, ['fetch', 'origin'])
+                    self.assertFalse(marker.exists())
+                # A late PR lookup cannot substitute for the immediate boundary either.
+                fixture_barrier(db, args, command='gh')
+                self.assertFalse(marker.exists())
+                for changed in ({'stage': 'checks'}, {'receipts': {'validation': {'status': 'intent'}}},
+                                {'receipts': {'validation': receipt, 'branch': {'status': 'intent'}}}):
+                    publish_fixture_db(state_path, {**state, **changed})
+                    fixture_barrier(db, args, command='gh')
+                    self.assertFalse(marker.exists())
+                publish_fixture_db(state_path, state)
+                # No fabricated PR response is needed to hold an unfinished lookup.
+                publish_fixture_db(db, {**data, 'observations': []})
+                def release(_):
+                    observed = json.loads(marker.read_text())
+                    self.assertEqual(observed, {
+                        'identity': 'exact-run', 'candidate': 'head', 'driver': 123,
+                        'generation': 7, 'token': 'fresh', 'sequence': 21,
+                        'kind': 'held-request', 'command': ['gh', *args], 'validation': receipt})
+                    # This transaction would deadlock if the wait still held the lock.
+                    fixture_data(db, parent_acknowledged=True)
+                    Path(str(marker) + '.release').touch()
+                with mock.patch('time.sleep', side_effect=release):
+                    fixture_barrier(db, args, command='gh')
+                self.assertEqual(fixture_data(db)['observations'], [])
+                self.assertEqual(json.loads(state_path.read_text()), state)
+
+    def test_full_profile_barrier_distinguishes_delivered_fast_plan_and_missing_current_plan(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            db, state = root / 'github.json', root / 'run.json'
+            publish_fixture_db(state, {'identity': 'exact-run', 'candidate': 'head',
+                                       'stage': 'checks', 'status': 'waiting'})
+            common = {'driver': 123, 'generation': 7, 'candidate': 'head',
+                      'token': 'fresh', 'sequence': 20}
+            fast = {**common, 'kind': 'plan', 'profile': 'fast', 'labels': [], 'run_id': 10}
+            missing = {**common, 'kind': 'artifacts', 'missing': True, 'run_id': 20}
+            marker = Path(str(db) + '.barrier-123-checks-7')
+            for control, event, invalid in (
+                    ('fast', fast, [missing, {**fast, 'profile': 'full'},
+                                    {**fast, 'labels': ['release:full']}, {**fast, 'run_id': 20}]),
+                    ('missing', missing, [fast, {**missing, 'run_id': 10},
+                                         {**missing, 'missing': False}])):
+                with self.subTest(control=control):
+                    env = {'FIXTURE_RUN_STATE': str(state), 'FIXTURE_DRIVER_TOKEN': 'fresh'}
+                    for stale in invalid:
+                        publish_fixture_db(db, {'barrier_stage': 'checks', 'barrier_check': control,
+                                                'control_generation': 7, 'observations': [stale]})
+                        with mock.patch.dict(os.environ, env), mock.patch('os.getppid', return_value=123):
+                            fixture_barrier(db, ['show', 'source:scripts/release-observation.py'])
+                        self.assertFalse(marker.exists())
+                    publish_fixture_db(db, {'barrier_stage': 'checks', 'barrier_check': control,
+                                            'control_generation': 7, 'observations': [event]})
+                    def release(_):
+                        self.assertEqual(json.loads(marker.read_text())['sequence'], 20)
+                        Path(str(marker) + '.release').touch()
+                    with mock.patch.dict(os.environ, env), mock.patch('os.getppid', return_value=123), \
+                            mock.patch('time.sleep', side_effect=release):
+                        fixture_barrier(db, ['show', 'source:scripts/release-observation.py'])
+                    self.assertTrue(marker.exists())
+                    marker.unlink()
+                    Path(str(marker) + '.release').unlink()
+
+    def test_parent_rejects_stale_markers_and_uses_each_drivers_own_token(self):
+        with tempfile.TemporaryDirectory() as name:
+            case = ReleaseCLI()
+            case.base = Path(name)
+            case.db = case.base / 'github.json'
+            case.state = case.base / 'state'
+            case.state.mkdir()
+            state = {'identity': 'exact-run', 'candidate': 'head',
+                     'stage': 'checks', 'status': 'waiting'}
+            publish_fixture_db(case.state / 'run.json', state)
+            publish_fixture_db(case.db, {'control_generation': 7})
+            # A later driver's start must not change the token accepted for this one.
+            case.env = {'FIXTURE_DRIVER_TOKEN': 'later-driver'}
+            process = mock.Mock(pid=123, driver_token='own-token', barrier_sequence=19)
+            process.poll.return_value = None
+            marker = case.barrier_path(process, 'checks', 7)
+            current = {'identity': 'exact-run', 'candidate': 'head', 'driver': 123,
+                       'generation': 7, 'token': 'own-token', 'sequence': 20}
+            for changed in ({'identity': 'old-run'}, {'driver': 456}, {'generation': 6},
+                            {'candidate': 'foreign'}, {'token': 'later-driver'}, {'sequence': 19}):
+                with self.subTest(changed=changed):
+                    process.barrier_sequence = 19
+                    publish_fixture_db(marker, {**current, **changed})
+                    def publish_current(_):
+                        self.assertEqual(process.barrier_sequence, 19)
+                        publish_fixture_db(marker, current)
+                    with mock.patch('time.sleep', side_effect=publish_current) as wait:
+                        self.assertEqual(case.await_stage(process, 'checks'), state)
+                    wait.assert_called_once()
+                    self.assertEqual(process.barrier_sequence, 20)
+
+    def test_barrier_publication_is_whole_or_absent_even_when_interrupted(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            db, state = root / 'github.json', root / 'run.json'
+            publish_fixture_db(state, {'identity': 'exact-run', 'candidate': 'head',
+                                       'stage': 'checks', 'status': 'waiting'})
+            event = {'driver': 123, 'generation': 7, 'candidate': 'head', 'token': 'fresh',
+                     'sequence': 20, 'kind': 'ci', 'checks': 'pending'}
+            publish_fixture_db(db, {'barrier_stage': 'checks', 'control_generation': 7,
+                                    'observations': [event]})
+            marker = Path(str(db) + '.barrier-123-checks-7')
+            expected = {'identity': 'exact-run', 'sequence': 20, 'token': 'fresh',
+                        'driver': 123, 'generation': 7, 'candidate': 'head'}
+            original = tempfile.NamedTemporaryFile
+            for interrupted in (True, False):
+                with self.subTest(interrupted=interrupted):
+                    @contextmanager
+                    def partial_file(*args, **kwargs):
+                        with original(*args, **kwargs) as stream:
+                            def write(document):
+                                split = len(document) // 2
+                                stream.write(document[:split])
+                                stream.flush()
+                                self.assertFalse(marker.exists())
+                                self.assertEqual(Path(stream.name).read_text(), document[:split])
+                                if interrupted:
+                                    raise InterruptedError('controlled partial marker interruption')
+                                stream.write(document[split:])
+                                stream.flush()
+                                self.assertFalse(marker.exists())
+                                self.assertEqual(json.loads(Path(stream.name).read_text()), expected)
+                            wrapped = mock.Mock(wraps=stream)
+                            wrapped.name = stream.name
+                            wrapped.write.side_effect = write
+                            yield wrapped
+                    def release(_):
+                        self.assertEqual(json.loads(marker.read_text()), expected)
+                        Path(str(marker) + '.release').touch()
+                    with mock.patch.dict(os.environ, {'FIXTURE_RUN_STATE': str(state),
+                                                       'FIXTURE_DRIVER_TOKEN': 'fresh'}), \
+                            mock.patch('os.getppid', return_value=123), \
+                            mock.patch('tempfile.NamedTemporaryFile', partial_file), \
+                            mock.patch('time.sleep', side_effect=release):
+                        if interrupted:
+                            with self.assertRaises(InterruptedError):
+                                fixture_barrier(db, ['show', 'source:scripts/release-observation.py'])
+                            self.assertFalse(marker.exists())
+                        else:
+                            fixture_barrier(db, ['show', 'source:scripts/release-observation.py'])
+                            self.assertEqual(json.loads(marker.read_text()), expected)
+                    self.assertEqual(list(root.glob(marker.name + '.*.tmp')), [])
+
+    def test_driver_wait_and_each_drain_share_one_deadline(self):
+        process = FixtureDriver.__new__(FixtureDriver)
+        process.process = mock.Mock(args=['owned-driver'], returncode=7)
+        process.threads = [mock.Mock(), mock.Mock()]
+        process.threads[0].is_alive.return_value = False
+        process.threads[1].is_alive.return_value = True
+        process.tails = ['captured stdout', 'captured stderr']
+        with mock.patch('time.monotonic', side_effect=[10, 11, 13, 15]), \
+                self.assertRaises(subprocess.TimeoutExpired) as caught:
+            process.communicate(timeout=5)
+        process.process.wait.assert_called_once_with(timeout=4)
+        process.threads[0].join.assert_called_once_with(timeout=2)
+        process.threads[1].join.assert_called_once_with(timeout=0)
+        self.assertEqual(caught.exception.timeout, 5)
+        self.assertEqual(caught.exception.output, 'captured stdout')
+        self.assertEqual(caught.exception.stderr, 'captured stderr')
+        self.assertEqual(process.returncode, 7)
+
+    def test_driver_deadline_includes_both_retained_pipes_and_preserves_output(self):
+        for retained in ('stdout', 'stderr'):
+            with self.subTest(retained=retained):
+                read_out, write_out = os.pipe()
+                read_err, write_err = os.pipe()
+                holder = subprocess.Popen(
+                    [sys.executable, '-c', 'import sys;sys.stdin.read();print("holder-tail", flush=True)'],
+                    stdin=subprocess.PIPE, stdout=write_out if retained == 'stdout' else write_err,
+                    stderr=subprocess.DEVNULL, text=True)
+                leader = subprocess.Popen(
+                    [sys.executable, '-c', 'import sys;print("leader-out", flush=True);'
+                     'print("leader-err", file=sys.stderr, flush=True);sys.exit(7)'],
+                    stdout=write_out, stderr=write_err)
+                os.close(write_out)
+                os.close(write_err)
+                leader.stdout = os.fdopen(read_out, 'r')
+                leader.stderr = os.fdopen(read_err, 'r')
+                process = FixtureDriver(leader)
+                try:
+                    leader.wait(timeout=5)
+                    started = time.monotonic()
+                    with self.assertRaises(subprocess.TimeoutExpired) as caught:
+                        process.communicate(timeout=.5)
+                    self.assertLess(time.monotonic() - started, 2)
+                    self.assertEqual(process.returncode, 7)
+                    self.assertIn('leader-out', caught.exception.output)
+                    self.assertIn('leader-err', caught.exception.stderr)
+                    self.assertTrue(any(t.is_alive() for t in process.threads))
+                finally:
+                    holder.communicate(timeout=5)
+                    if leader.poll() is None:
+                        leader.kill()
+                    out, err = process.communicate(timeout=5)
+                self.assertEqual(process.returncode, 7)
+                self.assertIn('leader-out', out)
+                self.assertIn('leader-err', err)
+                self.assertIn('holder-tail', out if retained == 'stdout' else err)
+                self.assertFalse(any(t.is_alive() for t in process.threads))
+
+    def test_bounded_diagnostics_preserve_exit_and_actual_state_or_absence(self):
+        with tempfile.TemporaryDirectory() as name:
+            case = ReleaseCLI()
+            case.base = Path(name)
+            case.state = case.base / 'state'
+            case.state.mkdir()
+            case.db = case.base / 'github.json'
+            publish_fixture_db(case.db, {'effects': ['merge'],
+                                        'observations': [{'sequence': 9, 'kind': 'signing',
+                                                          'token': 'private-correlation', 'driver': 987}]})
+            process = mock.Mock()
+            process.poll.return_value = 124
+            process.truncated = [True, False]
+            process.tails = [str(case.base) + 'x' * 10000, 'driver timed out']
+            missing = json.loads(case.driver_diagnostics(process, 'checks'))
+            self.assertEqual(missing['state'], 'missing or malformed')
+            self.assertEqual(missing['returncode'], 124)
+            for malformed in ('null', '[]', '{broken'):
+                (case.state / 'run.json').write_text(malformed)
+                self.assertEqual(json.loads(case.driver_diagnostics(process, 'checks'))['state'],
+                                 'missing or malformed')
+            (case.state / 'run.json').write_text(json.dumps({
+                'stage': 'publication', 'status': 'intent',
+                'receipts': {'publication': {'next': 'waiting for signed readback'}}}))
+            diagnostic = case.driver_diagnostics(process, 'ready')
+            self.assertLess(len(diagnostic), 8192)
+            self.assertNotIn(str(case.base), diagnostic)
+            self.assertNotIn('private-correlation', diagnostic)
+            self.assertNotIn('987', diagnostic)
+            value = json.loads(diagnostic)
+            self.assertEqual((value['stage'], value['status'], value['returncode']),
+                             ('publication', 'intent', 124))
+            self.assertEqual(value['next'], 'waiting for signed readback')
+            self.assertTrue(value['output_truncated'][0])
+
+    def test_split_utf8_on_both_real_pipes_preserves_json_and_timeout_diagnostics(self):
+        from types import SimpleNamespace
+
+        document = json.dumps({'result': '€雪🙂'}, ensure_ascii=False) + '\n'
+        diagnostic = 'stderr: €雪🙂\n'
+        for timeout_capture in (False, True):
+            with self.subTest(timeout_capture=timeout_capture):
+                child = subprocess.Popen(
+                    [sys.executable, '-c',
+                     'import os,sys;os.write(1,sys.argv[1].encode());'
+                     'os.write(2,sys.argv[2].encode());sys.stdin.read()', document, diagnostic],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                # Force every multibyte character across real pipe reads, independently
+                # of how the kernel batches the writes or schedules either drain.
+                for name in ('stdout', 'stderr'):
+                    stream = getattr(child, name)
+                    buffer = SimpleNamespace(read1=lambda _, stream=stream: stream.buffer.read1(1))
+                    setattr(child, name, SimpleNamespace(buffer=buffer, close=stream.close))
+                process = FixtureDriver(child)
+                try:
+                    deadline = time.monotonic() + 5
+                    while process.tails != [document, diagnostic] and time.monotonic() < deadline:
+                        time.sleep(.01)
+                    self.assertEqual(process.tails, [document, diagnostic])
+                    if timeout_capture:
+                        with self.assertRaises(subprocess.TimeoutExpired) as caught:
+                            process.communicate(timeout=.1)
+                        self.assertEqual(caught.exception.output, document)
+                        self.assertEqual(caught.exception.stderr, diagnostic)
+                        self.assertIsNone(process.returncode)
+                    child.stdin.close()
+                    out, err = process.communicate(timeout=5)
+                    self.assertEqual(out, document)
+                    self.assertEqual(json.loads(out), {'result': '€雪🙂'})
+                    self.assertEqual(err, diagnostic)
+                    self.assertEqual(process.truncated, [False, False])
+                    self.assertEqual(process.returncode, 0)
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+                    process.communicate(timeout=5)
+                    child.stdin.close()
+
+    def test_utf8_decoder_flushes_incomplete_character_once_at_eof_on_each_pipe(self):
+        process = FixtureDriver(subprocess.Popen(
+            [sys.executable, '-c',
+             r"import os;os.write(1,b'out:\xe2\x82');os.write(2,b'err:\xf0\x9f')"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True))
+        try:
+            self.assertEqual(process.communicate(timeout=5), ('out:�', 'err:�'))
+            self.assertEqual(process.returncode, 0)
+            self.assertEqual(process.truncated, [False, False])
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.communicate(timeout=5)
+
+    def test_cleanup_releases_real_retained_pipe_child_publishing_after_enumeration(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            db, state = root / 'github.json', root / 'run.json'
+            ready, release, finished = root / 'ready', root / 'release', root / 'finished'
+            publish_fixture_db(state, {'identity': 'exact-run', 'candidate': 'head',
+                                       'stage': 'checks', 'status': 'waiting'})
+            # The child suspends immediately before atomic marker publication.
+            # Its parent owns the driver pipes; cleanup kills that parent before
+            # the test allows publication, reproducing the enumeration race.
+            child_code = FIXTURE_DB_HELPER + r"""
+import sys
+path, state, ready, release, finished = map(Path, sys.argv[1:])
+os.environ.update(FIXTURE_RUN_STATE=str(state), FIXTURE_DRIVER_TOKEN='owned')
+publish_fixture_db(path, {'barrier_stage':'checks', 'control_generation':7,
+    'observations':[{'driver':os.getppid(), 'generation':7, 'candidate':'head',
+        'token':'owned', 'sequence':20, 'kind':'ci', 'checks':'pending'}]})
+original = publish_fixture_db
+def held_publication(path, value):
+    ready.write_text(str(os.getpid()))
+    while not release.exists():
+        time.sleep(.01)
+    original(path, value)
+publish_fixture_db = held_publication
+print('owned child before late marker', flush=True)
+fixture_barrier(path, ['show', 'source:scripts/release-observation.py'])
+finished.touch()
+print('owned child exited barrier', file=sys.stderr, flush=True)
+"""
+            # Imports are outside the copied function bodies in this real child.
+            child_code = 'import os,time\nfrom pathlib import Path\n' + child_code
+            leader_code = ('import subprocess,sys;'
+                           'subprocess.Popen([sys.executable,"-c",sys.argv[1],*sys.argv[2:]]);'
+                           'sys.stdin.read()')
+            leader = subprocess.Popen(
+                [sys.executable, '-c', leader_code, child_code,
+                 *map(str, (db, state, ready, release, finished))], stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            process = FixtureDriver(leader)
+            completed = threading.Event()
+            errors = []
+            def cleanup():
+                try:
+                    cleanup_fixture_driver(process, db)
+                except BaseException as error:
+                    errors.append(error)
+                finally:
+                    completed.set()
+            cleanup_thread = threading.Thread(target=cleanup, daemon=True)
+            try:
+                deadline = time.monotonic() + 5
+                while not ready.exists() and time.monotonic() < deadline:
+                    time.sleep(.01)
+                self.assertTrue(ready.exists(), process.tails)
+                self.assertEqual(list(root.glob('github.json.barrier-*')), [])
+                started = time.monotonic()
+                cleanup_thread.start()
+                leader.wait(timeout=5)
+                # No marker existed when cleanup enumerated. Only now publish it.
+                release.touch()
+                self.assertTrue(completed.wait(5), process.tails)
+                self.assertLess(time.monotonic() - started, 5)
+                self.assertEqual(errors, [])
+                self.assertEqual(process.returncode, -signal.SIGKILL)
+                self.assertTrue(finished.exists(), process.tails)
+                self.assertFalse(any(t.is_alive() for t in process.threads))
+                child_status = subprocess.run(['ps', '-p', ready.read_text(), '-o', 'stat='],
+                                              capture_output=True, text=True, timeout=5)
+                self.assertIn(child_status.returncode, (0, 1), child_status.stderr)
+                self.assertTrue(not child_status.stdout.strip()
+                                or child_status.stdout.strip().startswith('Z'), child_status.stdout)
+                self.assertIn('owned child before late marker', process.tails[0])
+                self.assertIn('owned child exited barrier', process.tails[1])
+                marker = next(root.glob('github.json.barrier-*'))
+                self.assertFalse(Path(str(marker) + '.release').exists())
+                self.assertEqual(json.loads(marker.read_text())['driver'], leader.pid)
+                case = ReleaseCLI()
+                case.base, case.db, case.state = root, db, root
+                diagnostics = json.loads(case.driver_diagnostics(process, 'checks'))
+                self.assertEqual(diagnostics['returncode'], -signal.SIGKILL)
+                self.assertEqual((diagnostics['stage'], diagnostics['status']), ('checks', 'waiting'))
+                self.assertIn('owned child before late marker', diagnostics['output_tails'][0])
+                self.assertIn('owned child exited barrier', diagnostics['output_tails'][1])
+                # EOF on both inherited pipes plus the child's final marker proves
+                # the owned child completed; no process-wide signals are used.
+            finally:
+                release.touch()
+                if process.poll() is None:
+                    process.kill()
+                process.communicate(timeout=5)
+                leader.stdin.close()
+                if cleanup_thread.ident is not None:
+                    cleanup_thread.join(timeout=5)
+
+    def test_driver_capture_drains_large_output_without_losing_exit_status(self):
+        process = FixtureDriver(subprocess.Popen(
+            [sys.executable, '-c', 'import sys;sys.stdout.write("x"*300000);'
+             'sys.stderr.write("y"*300000);sys.exit(7)'],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True))
+        try:
+            out, err = process.communicate(timeout=5)
+            self.assertEqual(process.returncode, 7)
+            self.assertEqual(len(out), 262144)
+            self.assertEqual(len(err), 262144)
+            self.assertEqual(process.truncated, [True, True])
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.communicate(timeout=5)
+
+
+class FixtureConcurrency(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name)
+        self.db = self.base / 'github.json'
+        publish_fixture_db(self.db, {'checks': 'pending', 'jobs': [], 'unrelated': 42})
+        self.bin = self.base / 'bin'
+        write_fixture_executables(self.bin)
+        self.env = {**os.environ, 'FAKE_DB': str(self.db), 'REAL_GIT': GIT}
+
+    def child(self, command, **env):
+        process = subprocess.Popen(command, env={**self.env, **env},
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        def cleanup():
+            if process.poll() is None:
+                process.kill()
+            process.communicate(timeout=20)
+        self.addCleanup(cleanup)
+        return process
+
+    def wait_marker(self, marker, process):
+        deadline = time.monotonic() + 5
+        while not marker.exists():
+            self.assertIsNone(process.poll(), 'child exited before transaction marker')
+            self.assertLess(time.monotonic(), deadline, 'missing transaction marker')
+            time.sleep(.01)
+
+    def test_locked_read_serializes_actual_gh_and_parent_acknowledgement(self):
+        import fcntl
+        for parent_first in (False, True):
+            with self.subTest(parent_first=parent_first):
+                publish_fixture_db(self.db, {'checks': 'pending', 'jobs': [], 'unrelated': 42})
+                success = [{'name': 'sign and publish', 'conclusion': 'success'}]
+                if parent_first:
+                    fixture_data(self.db, checks='pass', jobs=success)
+                marker = self.base / ('read-' + str(parent_first))
+                child = self.child([str(self.bin / 'gh'), 'api', 'repos/o/r'],
+                                   FIXTURE_TRANSACTION_READY=str(marker))
+                self.wait_marker(marker, child)
+                with Path(str(self.db) + '.lock').open('a') as lock:
+                    with self.assertRaises(BlockingIOError):
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                updater = None
+                if not parent_first:
+                    attempted = self.base / 'updater-started'
+                    code = (FIXTURE_DB_HELPER + '\nfrom pathlib import Path\n'
+                            + 'Path(' + repr(str(attempted)) + ').touch()\n'
+                            + 'with fixture_transaction(' + repr(str(self.db)) + ') as d:\n'
+                            + ' d.update(checks="pass",jobs=' + repr(success) + ')\n'
+                            + ' publish_fixture_db(' + repr(str(self.db)) + ',d)\n')
+                    updater = self.child([sys.executable, '-c', code])
+                    self.wait_marker(attempted, updater)
+                Path(str(marker) + '.release').touch()
+                out, err = child.communicate(timeout=5)
+                self.assertEqual(child.returncode, 0, err)
+                self.assertEqual(json.loads(out)['full_name'], 'o/r')
+                if updater:
+                    _, err = updater.communicate(timeout=5)
+                    self.assertEqual(updater.returncode, 0, err)
+                data = fixture_data(self.db)
+                self.assertEqual(data['checks'], 'pass')
+                self.assertEqual(data['jobs'], success)
+                self.assertEqual(data['api_requests'], ['repos/o/r'])
+                self.assertEqual(data['unrelated'], 42)
+
+    def test_competing_counters_effects_and_failure_release_the_transaction(self):
+        gate = self.base / 'verify.sh'
+        write_fixture_gate(gate)
+        gate.write_text(gate.read_text().replace(
+            'subprocess.run([sys.executable,"-I","scripts/release-contract.py"],check=True)',
+            'None'))
+        processes = [self.child([str(self.bin / 'cargo'), 'update', '--workspace', '--offline', '--quiet'])
+                     for _ in range(3)] + [self.child([str(gate)]) for _ in range(3)]
+        fixture_data(self.db, checks='pass')
+        for process in processes:
+            _, err = process.communicate(timeout=5)
+            self.assertEqual(process.returncode, 0, err)
+        data = fixture_data(self.db)
+        self.assertEqual(data['effects'], ['metadata'] * 3)
+        self.assertEqual(data['gate_runs'], 3)
+        self.assertEqual(data['checks'], 'pass')
+        self.assertEqual(data['unrelated'], 42)
+        fixture_data(self.db, crash='metadata:before')
+        child = self.child([str(self.bin / 'cargo'), 'update', '--workspace', '--offline', '--quiet'])
+        child.communicate(timeout=5)
+        self.assertEqual(child.returncode, 55)
+        fixture_data(self.db, checks='pending')
+        self.assertEqual(fixture_data(self.db)['effects'], ['metadata'] * 3)
+        before = fixture_data(self.db)
+        with self.assertRaisesRegex(OSError, 'controlled failure'), \
+                mock.patch('os.replace', side_effect=OSError('controlled failure')):
+            fixture_data(self.db, checks='pass')
+        self.assertEqual(fixture_data(self.db), before)
+        self.assertEqual(list(self.base.glob('github.json.*.tmp')), [])
+        fixture_data(self.db, checks='pass')
+        self.assertEqual(fixture_data(self.db)['checks'], 'pass')
+
+
+class FixtureDriver:
+    """Drain both pipes continuously, retaining bounded tails and the final JSON."""
+
+    def __init__(self, process):
+        self.process = process
+        self.tails = ['', '']
+        self.truncated = [False, False]
+        self.threads = []
+        self.barrier_sequence = 0
+        for index, stream in enumerate((process.stdout, process.stderr)):
+            def drain(index=index, stream=stream):
+                decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
+                while True:
+                    raw = stream.buffer.read1(4096)
+                    chunk = decoder.decode(raw, final=not raw)
+                    value = self.tails[index] + chunk
+                    self.truncated[index] |= len(value) > 262144
+                    self.tails[index] = value[-262144:]
+                    if not raw:
+                        break
+                stream.close()
+            thread = threading.Thread(target=drain, daemon=True)
+            thread.start()
+            self.threads.append(thread)
+
+    def __getattr__(self, name):
+        return getattr(self.process, name)
+
+    def communicate(self, timeout=None):
+        deadline = None if timeout is None else time.monotonic() + timeout
+
+        def remaining():
+            return None if deadline is None else max(0, deadline - time.monotonic())
+
+        try:
+            self.process.wait(timeout=remaining())
+            for thread in self.threads:
+                thread.join(timeout=remaining())
+                if thread.is_alive():
+                    raise subprocess.TimeoutExpired(self.process.args, timeout)
+        except subprocess.TimeoutExpired:
+            raise subprocess.TimeoutExpired(self.process.args, timeout,
+                                            output=self.tails[0], stderr=self.tails[1]) from None
+        return tuple(self.tails)
+
+
+def cleanup_fixture_driver(process, db):
+    for marker in db.parent.glob(db.name + '.barrier-' + str(process.pid) + '-*'):
+        if not marker.name.endswith('.release'):
+            Path(str(marker) + '.release').touch()
+    if process.poll() is None:
+        process.kill()
+    process.communicate(timeout=20)
+
+
 class ReleaseCLI(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -471,8 +1344,9 @@ class ReleaseCLI(unittest.TestCase):
                            'if "--write" in sys.argv:\n p.parent.mkdir(parents=True,exist_ok=True);p.write_text("pin")\n'
                            'elif sys.argv[1:] == ["harness-digest","--check"]:\n'
                            ' if p.exists():\n'
-                           '  f=os.environ["FAKE_DB"];d=json.loads(pathlib.Path(f).read_text())\n'
-                           '  d["metadata_check_runs"]=d.get("metadata_check_runs",0)+1;publish_fixture_db(f,d)\n'
+                           '  f=os.environ["FAKE_DB"]\n'
+                           '  with fixture_transaction(f) as d:\n'
+                           '   d["metadata_check_runs"]=d.get("metadata_check_runs",0)+1;publish_fixture_db(f,d)\n'
                            '  sys.exit(9 if d.get("metadata_check_fail") else 0)\n'
                            'else: sys.exit(98)\n')
         write_fixture_gate(self.source / 'scripts/verify.sh')
@@ -507,60 +1381,161 @@ class ReleaseCLI(unittest.TestCase):
         return json.loads((self.state / 'run.json').read_text())
 
     def start_driver(self, command='rc', timeout=30, profile=None):
+        self.env['FIXTURE_RUN_STATE'] = str(self.state / 'run.json')
+        token = secrets.token_hex(16)
+        self.env['FIXTURE_DRIVER_TOKEN'] = token
+        sequence = self.data().get('observation_sequence', 0)
         process = subprocess.Popen([sys.executable, str(self.source / 'dev'), 'release', command,
                     '--repo', 'o/r', '--remote', str(self.remote), '--state', str(self.state),
                     '--format', 'json', '--poll-interval', '1', '--timeout', str(timeout),
                     *(['--profile', profile] if profile else [])],
                     cwd=self.source, env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     text=True)
-        def cleanup():
-            if process.poll() is None:
-                process.kill()
-            process.communicate()
-        self.addCleanup(cleanup)
+        process = FixtureDriver(process)
+        process.driver_token = token
+        process.barrier_sequence = sequence
+        self.addCleanup(cleanup_fixture_driver, process, self.db)
         return process
+
+    def driver_diagnostics(self, process, requested):
+        result = {'requested': requested, 'returncode': process.poll(),
+                  'output_truncated': process.truncated}
+        try:
+            state = self.state_value()
+            result.update(stage=state.get('stage'), status=state.get('status'),
+                          next=state.get('receipts', {}).get(state.get('stage'), {}).get('next'))
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            result['state'] = 'missing or malformed'
+        try:
+            data = self.data()
+            result['controls'] = {k: data.get(k) for k in ('checks', 'control_generation')}
+            result['effects'] = {k: data.get('effects', []).count(k)
+                                 for k in ('pr', 'merge', 'download')}
+            result['observation'] = [
+                {k: event.get(k) for k in ('sequence', 'generation', 'kind', 'checks',
+                                           'pr', 'signing', 'assets')}
+                for event in data.get('observations', [])[-1:]]
+        except (OSError, ValueError, TypeError, AttributeError):
+            result['controls'] = 'unreadable'
+        result['output_tails'] = [tail[-1024:] for tail in process.tails]
+        return json.dumps(result, default=str).replace(str(self.base), '<fixture>')[:8192]
+
+    def barrier_path(self, process, stage, generation):
+        return Path(str(self.db) + '.barrier-' + str(process.pid) + '-' + stage + '-' + str(generation))
 
     def await_stage(self, process, stage):
         deadline = time.monotonic() + 25
         while time.monotonic() < deadline:
             if process.poll() is not None:
-                self.fail('driver exited early: ' + str(process.communicate()))
+                self.driver_failure(process, 'driver exited before waiting ' + stage,
+                                    deadline=deadline)
             if (self.state / 'run.json').exists():
                 state = self.state_value()
-                if (state['stage'] == stage and state['status'] == 'waiting'
-                        and Path(str(self.db) + '.controller-' + str(process.pid)).exists()):
-                    return state
+                waiting = state['stage'] == stage and state['status'] == 'waiting'
+                validation = (stage == 'validation' and state['stage'] == stage
+                              and state['status'] == 'complete' and
+                              state.get('receipts', {}).get('validation', {}).get('status') == 'complete')
+                if waiting or validation:
+                    generation = self.data()['control_generation']
+                    marker = self.barrier_path(process, stage, generation)
+                    if marker.exists():
+                        observed = json.loads(marker.read_text())
+                        if validation and (observed.get('kind') != 'held-request'
+                                           or observed.get('validation') != state['receipts']['validation']):
+                            time.sleep(.05)
+                            continue
+                        if (observed.get('identity') == state['identity']
+                                and observed.get('driver') == process.pid
+                                and observed.get('generation') == generation
+                                and observed.get('candidate') == state.get('candidate')
+                                and observed.get('token') == process.driver_token
+                                and observed.get('sequence', 0) > process.barrier_sequence):
+                            process.barrier_sequence = observed['sequence']
+                            return state
             time.sleep(.05)
-        self.fail('driver did not reach waiting ' + stage)
+        self.driver_failure(process, 'driver did not reach waiting ' + stage, deadline=deadline)
+
+    def driver_failure(self, process, message, *, deadline):
+        def bounded_file(path, limit):
+            try:
+                with path.open() as stream:
+                    value = stream.read(limit + 1)
+                return value[:limit] + (' <truncated>' if len(value) > limit else '')
+            except OSError:
+                return '<absent or unreadable>'
+
+        persisted = bounded_file(self.state / 'run.json', 4096)
+        fixture = bounded_file(self.db, 2048)
+        returncode = process.poll()
+        marker = Path(str(self.db) + '.controller-' + str(process.pid)).exists()
+        if returncode is None:
+            output = '<driver still running>'
+        else:
+            try:
+                output = process.communicate(timeout=max(0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired as error:
+                output = ('capture deadline expired', error.output, error.stderr)
+        output = repr(output)
+        if len(output) > 1024:
+            output = '<truncated output tail> ' + output[-1024:]
+        self.fail(('%s; returncode=%r; controller_marker=%r; persisted_state=%s; '
+                   'fixture=%s; output=%s' %
+                   (message, returncode, marker, persisted, fixture, output))[:8192])
+
+    def await_publication(self, process):
+        state = self.await_stage(process, 'publication')
+        generation = self.data()['control_generation']
+        self.publish_assets(state)
+        self.data(barrier_stage=None)
+        self.release_barrier(process, 'publication', generation)
+        return state
+
+    def release_barrier(self, process, stage, generation):
+        Path(str(self.barrier_path(process, stage, generation)) + '.release').touch()
 
     def test_one_real_invocation_drives_checks_merge_and_signed_publication(self):
-        self.data(checks='pending')
+        self.data(checks='pending', barrier_stage='checks',
+                  jobs=[{'name': 'sign and publish', 'conclusion': None}])
         process = self.start_driver()
         state = self.await_stage(process, 'checks')
         identity = state['identity']
-        # Read-only status observes the running driver without acquiring its lease.
+        generation = self.data()['control_generation']
+        self.assertNotIn('merge', self.data()['effects'])
+        # The next execute entry is blocked outside the transaction. Status is stable.
         before = (self.state / 'run.json').read_bytes()
         self.cli('status')
         self.assertEqual((self.state / 'run.json').read_bytes(), before)
-        self.data(checks='pass', defer_merge=True)
+        self.data(checks='pass', defer_merge=True, barrier_stage='merge')
+        self.release_barrier(process, 'checks', generation)
         state = self.await_stage(process, 'merge')
-        time.sleep(2)
+        generation = self.data()['control_generation']
         self.assertEqual(self.data()['effects'].count('merge'), 1)
-        data = self.data()
-        pr = data['pr']
+        self.assertIsNone(process.poll(), self.driver_diagnostics(process, 'merge'))
+        # Only this parent acknowledgement changes OPEN to MERGED.
+        pr = self.data()['pr']
+        self.assertEqual(pr['state'], 'OPEN')
         pr.update(state='MERGED', mergeCommit={'oid': state['candidate']})
-        self.data(pr=pr, merged=state['candidate'], defer_merge=False)
+        self.data(pr=pr, merged=state['candidate'], defer_merge=False,
+                  barrier_stage='publication')
         self.git('--git-dir', self.remote, 'update-ref', 'refs/heads/main', state['candidate'])
-        state = self.await_stage(process, 'publication')
-        self.data(jobs=[{'name': 'sign and publish', 'conclusion': None}])
         self.publish_assets(state)
-        time.sleep(2)
-        self.assertIsNone(process.poll())
+        self.release_barrier(process, 'merge', generation)
+        state = self.await_stage(process, 'publication')
+        generation = self.data()['control_generation']
+        self.assertEqual(state['identity'], identity)
+        self.assertIsNone(process.poll(), self.driver_diagnostics(process, 'publication'))
         self.assertNotIn('download', self.data()['effects'])
+        self.assertFalse(state.get('published', False))
         self.data(jobs=[{'name': 'sign and publish', 'conclusion': 'success'},
-                        {'name': 'pin the release in .af/af.lock', 'conclusion': 'failure'}])
-        out, err = process.communicate(timeout=20)
-        self.assertEqual(process.returncode, 0, err)
+                        {'name': 'pin the release in .af/af.lock', 'conclusion': 'failure'}],
+                  barrier_stage=None)
+        self.release_barrier(process, 'publication', generation)
+        try:
+            out, err = process.communicate(timeout=20)
+        except subprocess.TimeoutExpired:
+            self.fail('driver communicate timeout: ' + self.driver_diagnostics(process, 'ready'))
+        self.assertEqual(process.returncode, 0, self.driver_diagnostics(process, 'ready'))
+        self.assertFalse(any(process.truncated), 'driver output exceeded fixture capture bound')
         ready = json.loads(out)
         self.assertEqual(ready['identity'], identity)
         self.assertEqual(ready['status'], 'ready')
@@ -571,16 +1546,20 @@ class ReleaseCLI(unittest.TestCase):
         self.assertEqual(self.data()['metadata_check_runs'], 1)
 
     def test_one_full_invocation_waits_for_labeled_plan_after_opened_fast(self):
-        self.data(ci_plan_labels=[])
+        self.data(ci_plan_labels=[], barrier_stage='checks', barrier_check='fast')
         process = self.start_driver(profile='full', timeout=60)
         self.await_stage(process, 'checks')
-        time.sleep(2)
+        generation = self.data()['control_generation']
         self.assertNotIn('merge', self.data()['effects'])
-        self.data(ci_plan_labels=['release:full'], ci_plan_missing=True, ci_run_id=20, ci_prior_run=True)
-        time.sleep(2)
+        self.data(ci_plan_labels=['release:full'], ci_plan_missing=True, ci_run_id=20,
+                  ci_prior_run=True, barrier_check='missing')
+        self.release_barrier(process, 'checks', generation)
+        self.await_stage(process, 'checks')
+        generation = self.data()['control_generation']
         self.assertNotIn('merge', self.data()['effects'])
-        self.data(ci_plan_missing=False)
-        self.publish_assets(self.await_stage(process, 'publication'))
+        self.data(ci_plan_missing=False, barrier_stage='publication', barrier_publication='untagged')
+        self.release_barrier(process, 'checks', generation)
+        self.await_publication(process)
         out, err = process.communicate(timeout=20)
         self.assertEqual(process.returncode, 0, err)
         ready = json.loads(out)
@@ -593,10 +1572,11 @@ class ReleaseCLI(unittest.TestCase):
         self.assertEqual(self.data()['effects'].count('merge'), 1)
 
     def test_timeout_and_interrupt_resume_same_authorized_run(self):
-        self.data(checks='pending')
+        self.data(checks='pending', barrier_stage='checks')
         self.cli('rc')
         process = self.start_driver('resume', timeout=8)
         self.await_stage(process, 'checks')
+        self.release_barrier(process, 'checks', self.data()['control_generation'])
         _, err = process.communicate(timeout=10)
         self.assertEqual(process.returncode, 124, err)
         state = self.state_value()
@@ -607,14 +1587,15 @@ class ReleaseCLI(unittest.TestCase):
         process = self.start_driver('resume')
         self.await_stage(process, 'checks')
         process.send_signal(signal.SIGTERM)
+        self.release_barrier(process, 'checks', self.data()['control_generation'])
         _, err = process.communicate(timeout=10)
         self.assertEqual(process.returncode, 130, err)
         self.assertIn('operator_interrupted', self.state_value()['receipts']['checks']['next'])
         self.assertEqual(self.state_value()['status'], 'waiting')
         self.assertNotIn('failure', self.state_value())
-        self.data(checks='pass')
+        self.data(checks='pass', barrier_stage='publication', barrier_publication='untagged')
         process = self.start_driver('resume')
-        self.publish_assets(self.await_stage(process, 'publication'))
+        self.await_publication(process)
         out, err = process.communicate(timeout=20)
         self.assertEqual(process.returncode, 0, err)
         self.assertEqual(json.loads(out)['identity'], identity)
@@ -622,25 +1603,70 @@ class ReleaseCLI(unittest.TestCase):
         self.assertEqual(self.data()['effects'].count('merge'), 1)
 
     def test_interrupt_between_stages_keeps_successful_validation_receipt(self):
-        self.data(pause_after_validation=True)
+        self.data(barrier_stage='validation')
         process = self.start_driver()
-        deadline = time.monotonic() + 25
-        while not self.data().get('paused') and time.monotonic() < deadline:
-            self.assertIsNone(process.poll())
-            time.sleep(.05)
-        self.assertTrue(self.data().get('paused'))
-        self.assertEqual(self.state_value()['receipts']['validation']['status'], 'complete')
+        state = self.await_stage(process, 'validation')
+        receipt = copy.deepcopy(state['receipts']['validation'])
+        identity, candidate = state['identity'], state['candidate']
+        self.assertEqual(receipt['status'], 'complete')
+        generation = self.data()['control_generation']
+        marker = json.loads(self.barrier_path(process, 'validation', generation).read_text())
+        self.assertEqual(marker['kind'], 'held-request')
+        self.assertEqual(marker['command'][:4], ['gh', 'pr', 'list', '--head'])
+        self.assertEqual(marker['command'][4], state['plan']['branch'])
+        self.assertEqual(marker['validation'], receipt)
+
+        def assert_before_publication():
+            data = self.data()
+            self.assertFalse(set(data.get('effects', [])) &
+                             {'push', 'pr', 'merge', 'create-release', 'upload', 'publish', 'download'})
+            self.assertIsNone(data.get('pr'))
+            self.assertIsNone(data.get('merged'))
+            self.assertFalse(data.get('releases'))
+            self.assertFalse(data.get('assets'))
+            self.assertFalse((self.state / 'assets').exists())
+            for git_args in (['--git-dir', self.remote], ['-C', self.source]):
+                self.assertEqual(self.git(*git_args, 'for-each-ref', '--format=%(refname)',
+                                          'refs/heads/release/', 'refs/tags/'), '')
+            self.assertEqual(self.git('--git-dir', self.remote, 'rev-parse', 'main'), self.initial)
+            current = self.state_value()
+            self.assertEqual(current['identity'], identity)
+            self.assertEqual(current['candidate'], candidate)
+            self.assertEqual(current['receipts']['validation'], receipt)
+            self.assertFalse(set(current['receipts']) & {'pr', 'checks', 'merge', 'publication'})
+
+        assert_before_publication()
+        # The held lookup has not returned, so there is no current PR response.
+        self.assertFalse([e for e in self.data().get('observations', [])
+                          if e['driver'] == process.pid and e['kind'] == 'pr'
+                          and e.get('candidate') == candidate])
         process.send_signal(signal.SIGINT)
+        self.release_barrier(process, 'validation', generation)
         _, err = process.communicate(timeout=10)
         self.assertEqual(process.returncode, 130, err)
-        self.assertEqual(self.state_value()['status'], 'waiting')
-        self.assertEqual(self.state_value()['receipts']['validation']['status'], 'complete')
-        self.data(pause_after_validation=False)
+        interrupted = self.state_value()
+        self.assertEqual(interrupted['status'], 'waiting')
+        self.assertEqual(interrupted['stage'], 'branch')
+        self.assertIn('operator_interrupted', interrupted['receipts']['branch']['next'])
+        self.assertNotIn('failure', interrupted)
+        assert_before_publication()
+        self.data(barrier_stage='publication', barrier_publication='untagged')
         process = self.start_driver('resume')
-        self.publish_assets(self.await_stage(process, 'publication'))
-        _, err = process.communicate(timeout=20)
+        self.await_publication(process)
+        out, err = process.communicate(timeout=20)
         self.assertEqual(process.returncode, 0, err)
+        ready = json.loads(out)
+        self.assertEqual(ready['identity'], identity)
+        self.assertEqual(ready['candidate'], candidate)
+        self.assertEqual(ready['receipts']['validation'], receipt)
+        self.assertEqual(ready['status'], 'ready')
+        self.assertTrue(ready['published'])
+        self.assertEqual(ready['pin']['state'], 'PENDING')
         self.assertEqual(self.data()['metadata_check_runs'], 1)
+        self.assertEqual(self.data()['effects'].count('metadata'), 1)
+        for effect in ('push', 'pr', 'merge'):
+            self.assertEqual(self.data()['effects'].count(effect), 1, effect)
+        self.assertEqual(self.data()['effects'].count('download'), len(state['plan']['policy']['targets']) + 3)
 
     def test_default_driver_stops_for_validation_and_release_workflow_failures(self):
         self.data(metadata_check_fail=True)
@@ -1221,6 +2247,25 @@ class ReleaseCLI(unittest.TestCase):
         path.write_bytes(original)
         self.assertEqual(path.read_bytes(), original)
 
+    def test_exact_native_and_performance_schema_identities_are_admitted(self):
+        policy = json.loads((ROOT / 'scripts/release-policy.json').read_text())
+        expected = {
+            'schemas/scenario-v10.json': 'af/scenario@10',
+            'schemas/performance-executor-v5.json': 'af.perf-executor/5',
+            'schemas/performance-history-v2.json': 'af.perf-history/2',
+            'schemas/performance-equivalence-v2.json': 'af.perf-equivalence/2',
+            'schemas/performance-schedule-v3.json': 'af.perf-schedule/3',
+        }
+        for name, identity in expected.items():
+            with self.subTest(schema=name):
+                self.assertIn(identity, policy['required_features'][name])
+                document = json.loads((self.source / name).read_text())
+                self.assertEqual(document['properties']['schema']['const'], identity)
+        self.cli('plan')
+        self.assertEqual(self.state_value()['status'], 'planned')
+        self.assertFalse((self.state / 'candidate').exists())
+        self.assertFalse(self.data().get('effects'))
+
     def test_declared_schema_identity_is_required_with_rebound_capabilities(self):
         import importlib.util
         spec = importlib.util.spec_from_file_location('release_contract', ROOT / 'scripts/release-contract.py')
@@ -1232,46 +2277,57 @@ class ReleaseCLI(unittest.TestCase):
         for name, tokens in policy['required_features'].items():
             if not name.startswith('schemas/'):
                 continue
-            with self.subTest(schema=name):
-                path = self.source / name
-                original = path.read_bytes()
-                document = json.loads(original)
-                expected = document['properties']['schema']['const']
-                document['properties']['schema']['const'] = 'af/foreign@1'
-                document['description'] = 'Retains expected identity: ' + expected
-                path.write_text(json.dumps(document))
-                self.assertTrue(all(token in path.read_text() for token in tokens))
-                declaration = json.loads(original_declaration)
-                declaration['capabilities'] = contract.capabilities(self.source)
-                declaration_path.write_text(json.dumps(declaration))
-                # Exact-byte preflight accepts these explicitly reviewed bytes;
-                # fetched-source identity admission must independently refuse them.
-                self.assertEqual(contract.check(self.source), '0.15.1-rc.3')
-                self.commit('foreign declared identity with reviewed capabilities')
-                self.git('-C', self.source, 'push', str(self.remote), 'main')
-                result = self.cli('plan', ok=False)
-                self.assertIn('source_inclusion: foreign required schema identity ' + name, result.stderr)
-                self.assertFalse((self.state / 'candidate').exists())
-                self.assertFalse(self.data().get('effects'))
-                path.write_bytes(original)
-                declaration_path.write_bytes(original_declaration)
+            expected = json.loads((self.source / name).read_bytes())['properties']['schema']['const']
+            for declared in ('af/foreign@1', 'af.perf-foreign/1', expected.rstrip('0123456789') + '0'):
+                with self.subTest(schema=name, declared=declared):
+                    path = self.source / name
+                    original = path.read_bytes()
+                    document = json.loads(original)
+                    expected = document['properties']['schema']['const']
+                    document['properties']['schema']['const'] = declared
+                    document['description'] = 'Retains expected identity: ' + expected
+                    path.write_text(json.dumps(document))
+                    self.assertTrue(all(token in path.read_text() for token in tokens))
+                    declaration = json.loads(original_declaration)
+                    declaration['capabilities'] = contract.capabilities(self.source)
+                    declaration_path.write_text(json.dumps(declaration))
+                    # Rebinding bytes does not bypass generated performance schema parity.
+                    # Controller identity admission must independently refuse both families.
+                    if name.startswith('schemas/performance-'):
+                        with self.assertRaisesRegex(ValueError, 'is stale'):
+                            contract.check(self.source)
+                    else:
+                        self.assertEqual(contract.check(self.source), '0.15.1-rc.3')
+                    self.commit('foreign declared identity with reviewed capabilities')
+                    self.git('-C', self.source, 'push', str(self.remote), 'main')
+                    result = self.cli('plan', ok=False)
+                    self.assertIn('source_inclusion: foreign required schema identity ' + name, result.stderr)
+                    self.assertFalse((self.state / 'candidate').exists())
+                    self.assertFalse(self.data().get('effects'))
+                    path.write_bytes(original)
+                    declaration_path.write_bytes(original_declaration)
         self.commit('restore reviewed schemas')
         self.git('-C', self.source, 'push', str(self.remote), 'main')
         self.cli('plan')
 
     def test_malformed_required_schema_identity_is_refused(self):
-        name = 'schemas/scenario-v6.json'
-        path = self.source / name
-        for content in ('null', '{}', '{"properties": []}',
-                        '{"properties": {"schema": {}}}', '{invalid json'):
-            with self.subTest(content=content):
-                path.write_text(content)
-                self.commit('malformed required schema')
-                self.git('-C', self.source, 'push', str(self.remote), 'main')
-                result = self.cli('plan', ok=False)
-                self.assertIn('source_inclusion: invalid required schema ' + name, result.stderr)
-                self.assertFalse((self.state / 'candidate').exists())
-                self.assertFalse(self.data().get('effects'))
+        for name in ('schemas/scenario-v10.json', 'schemas/performance-executor-v5.json'):
+            path = self.source / name
+            original = path.read_bytes()
+            for content in ('null', '{}', '{"properties": []}',
+                            '{"properties": {"schema": {}}}', '{invalid json'):
+                with self.subTest(schema=name, content=content):
+                    path.write_text(content)
+                    self.commit('malformed required schema')
+                    self.git('-C', self.source, 'push', str(self.remote), 'main')
+                    result = self.cli('plan', ok=False)
+                    self.assertIn('source_inclusion: invalid required schema ' + name, result.stderr)
+                    self.assertFalse((self.state / 'candidate').exists())
+                    self.assertFalse(self.data().get('effects'))
+            path.write_bytes(original)
+        self.commit('restore required schemas')
+        self.git('-C', self.source, 'push', str(self.remote), 'main')
+        self.cli('plan')
 
     def test_release_pr_profile_drift_and_fork_are_refused(self):
         self.data(checks='pending')
@@ -1353,10 +2409,64 @@ class ReleaseCLI(unittest.TestCase):
         self.assertEqual(state['receipts']['checks']['status'], 'complete')
         self.assertEqual(state['receipts']['validation']['status'], 'complete')
 
+    def test_resolver_policy_uses_normalized_source_and_refuses_raw_digest(self):
+        resolver = self.source / 'scripts/test-classes.py'
+        policy_path = self.source / 'scripts/release-policy.json'
+        policy = json.loads(policy_path.read_text())
+        raw = hashlib.sha256(resolver.read_bytes()).hexdigest()
+        normalized = hashlib.sha256(resolver.read_text().strip().encode()).hexdigest()
+        self.assertNotEqual(raw, normalized)
+        self.assertEqual(policy['pr_validation']['source_files']['scripts/test-classes.py'],
+                         normalized)
+        self.cli('plan')
+        self.assertEqual(self.data().get('effects', []), [])
+        for checksum, state, accepted in [(raw, 'raw-digest', False),
+                                          (normalized, 'normalized-digest', True)]:
+            policy['pr_validation']['source_files']['scripts/test-classes.py'] = checksum
+            policy_path.write_text(json.dumps(policy))
+            self.state = self.base / state
+            self.commit('fixture ' + state)
+            self.git('-C', self.source, 'push', str(self.remote), 'main')
+            result = self.cli('plan', ok=accepted)
+            if not accepted:
+                self.assertIn('validation_policy: workflow semantics changed; review '
+                              'scripts/test-classes.py', result.stderr)
+            self.assertEqual(self.data().get('effects', []), [])
+        resolver.write_text(resolver.read_text() + '\nUNREVIEWED_RESOLVER_CHANGE = True\n')
+        self.state = self.base / 'semantic-change-state'
+        self.commit('fixture unreviewed resolver change')
+        self.git('-C', self.source, 'push', str(self.remote), 'main')
+        refusal = self.cli('plan', ok=False)
+        self.assertIn('validation_policy: workflow semantics changed; review scripts/test-classes.py',
+                      refusal.stderr)
+        self.assertEqual(self.data().get('effects', []), [])
+
     def test_missing_workflow_policy_fails_preflight(self):
         self.data(ci_disabled=True)
         self.assertIn('validation_policy', self.cli('plan', ok=False).stderr)
         self.assertEqual(self.data().get('effects', []), [])
+
+    def test_reviewed_validation_sources_admit_exact_bytes_and_refuse_drift(self):
+        # Exercise the real fetched-source path, including the catalog's contract
+        # coverage, rather than accepting a self-consistent fixture-only digest.
+        self.cli('plan')
+        self.assertEqual(self.data().get('effects', []), [])
+        policy = json.loads((ROOT / 'scripts/release-policy.json').read_text())
+        for index, name in enumerate(policy['pr_validation']['source_files']):
+            with self.subTest(source=name):
+                self.state = self.base / ('drift-state-' + str(index))
+                path = self.source / name
+                original = path.read_text()
+                # A blank line preserves workflow/resolver/catalog semantics but
+                # still changes the exact bytes requiring renewed review.
+                path.write_text(original.replace('\n', '\n\n', 1))
+                self.commit('change unreviewed validation source')
+                self.git('-C', self.source, 'push', str(self.remote), 'main')
+                error = self.cli('plan', ok=False).stderr
+                self.assertIn('validation_policy: workflow semantics changed; review ' + name, error)
+                self.assertEqual(self.data().get('effects', []), [])
+                path.write_text(original)
+                self.commit('restore reviewed validation source')
 
     def test_main_racing_merge_is_refused_by_server(self):
         self.data(race_merge=True)

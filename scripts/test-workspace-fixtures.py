@@ -39,7 +39,8 @@ def sample_report():
     return dict(schema=B.KIND, suite=B.SUITE, pairs=3, platform='test',
                 interpreter=dict(path='/selected/python', version='test', sha256='e' * 64),
                 sources=dict(base=identity, head=identity), runs=runs,
-                valid=True, errors=errors, comparison=comparison)
+                valid=True, errors=errors, comparison=comparison,
+                timing_comparability=B.timing_comparability(errors, comparison))
 
 
 class FixtureInterpreterTests(unittest.TestCase):
@@ -176,7 +177,7 @@ class FixtureInterpreterTests(unittest.TestCase):
 
 class EvidenceTests(unittest.TestCase):
     def test_versioned_schema_parity_roundtrip_and_median_calculation(self):
-        schema = json.loads((ROOT / 'schemas/workspace-fixture-benchmark-v1.json').read_text())
+        schema = json.loads((ROOT / 'schemas/workspace-fixture-benchmark-v2.json').read_text())
         self.assertEqual(schema, B.report_schema())
         suite_schema = json.loads((ROOT / 'schemas/workspace-fixture-suite-v1.json').read_text())
         self.assertEqual(suite_schema, dict(B.suite_schema(), **{
@@ -195,7 +196,7 @@ class EvidenceTests(unittest.TestCase):
             for change in ('version', 'comparison', 'validity', 'extra', 'incomplete', 'type'):
                 bad = copy.deepcopy(report)
                 if change == 'version':
-                    bad['schema'] = 'af/workspace-fixture-benchmark@0'
+                    bad['schema'] = 'af/workspace-fixture-benchmark@1'
                 elif change == 'comparison':
                     bad['comparison']['head_median_seconds'] = 0
                 elif change == 'validity':
@@ -206,6 +207,34 @@ class EvidenceTests(unittest.TestCase):
                     bad['runs'].pop()
                 else:
                     bad['runs'][0]['counts']['tests'] = True
+                path.write_text(json.dumps(bad))
+                with self.subTest(change=change), self.assertRaises(ValueError):
+                    B.read_report(path)
+
+    def test_added_tests_roundtrip_and_tampered_comparability_are_refused(self):
+        report = sample_report()
+        equal_comparison = report['comparison']
+        for run in report['runs']:
+            if run['side'] == 'head':
+                run['counts'].update(tests=3, expected=3)
+        report['errors'], report['comparison'] = B.evaluate(report['runs'], 3)
+        report['timing_comparability'] = B.timing_comparability(report['errors'], report['comparison'])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'report.json'
+            path.write_text(json.dumps(report))
+            self.assertEqual(B.read_report(path), report)
+            for change in ('comparison', 'status', 'reason', 'count', 'source_error'):
+                bad = copy.deepcopy(report)
+                if change == 'comparison':
+                    bad['comparison'] = equal_comparison
+                elif change == 'status':
+                    bad['timing_comparability']['status'] = 'comparable'
+                elif change == 'reason':
+                    bad['timing_comparability']['reason'] = 'equal_test_counts'
+                elif change == 'count':
+                    bad['runs'][1]['counts'].update(tests=4, expected=4)
+                else:
+                    bad['errors'] = ['head source export changed during benchmark']
                 path.write_text(json.dumps(bad))
                 with self.subTest(change=change), self.assertRaises(ValueError):
                     B.read_report(path)
@@ -223,7 +252,7 @@ class EvidenceTests(unittest.TestCase):
                 self.assertEqual(receipt.read_text(), content)
 
     def test_refuses_failure_missing_receipts_unequal_counts_and_incomplete_pairs(self):
-        for change in ('exit', 'timeout', 'missing', 'failure', 'skip', 'partial', 'unequal', 'order', 'missing_run', 'receipt_version'):
+        for change in ('exit', 'timeout', 'missing', 'failure', 'skip', 'partial', 'unequal', 'order', 'missing_run', 'receipt_version', 'errors', 'expected_failures', 'unexpected_successes', 'nan', 'zero'):
             runs = sample_report()['runs']
             if change == 'exit':
                 runs[0]['exit_code'] = 1
@@ -233,6 +262,10 @@ class EvidenceTests(unittest.TestCase):
                 runs[0]['counts'] = None
             elif change in ('failure', 'skip'):
                 runs[0]['counts']['failures' if change == 'failure' else 'skipped'] = 1
+            elif change in ('errors', 'expected_failures', 'unexpected_successes'):
+                runs[0]['counts'][change] = 1
+            elif change in ('nan', 'zero'):
+                runs[0]['wall_seconds'] = float('nan') if change == 'nan' else 0
             elif change == 'partial':
                 runs[0]['counts']['tests'] = 1
             elif change == 'unequal':

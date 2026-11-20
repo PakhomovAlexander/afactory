@@ -357,7 +357,7 @@ class Authority(History):
         health = dict((key, value) for key, value in loaded.doc["health"].items()
                       if key != "description")
         health["unit"] = "ms"
-        doc = {"schema": "af.perf-cohort/4", "cohort_id": "first_cohort",
+        doc = {"schema": "af.perf-cohort/5", "cohort_id": "first_cohort",
                "authority_sha": self.root, "policy_digest": loaded.policy_digest,
                "tier": "quick", "environment_id": "linux_x86_64_gnu_hosted",
                "recipe_id": "linux_gnu_native_release", "cases": cases,
@@ -638,7 +638,7 @@ class Frozen(History):
         refused(lambda p: p["cases"][0].update(seed={
             "seed_id": "x", "case_id": "x", "contract_id": "x_v1",
             "parameters": {"package": "issue_255_medium"}}), "a subset of the instance")
-        refused(lambda p: p.update(schema="af.perf-run/5"), "expected 'af.perf-run/7'")
+        refused(lambda p: p.update(schema="af.perf-run/5"), "expected 'af.perf-run/8'")
 
     def test_expected_slots_cover_sentinels_warmups_and_pairs(self):
         plan = self.plan(scope="partial_scope", base=self.c2, head=self.c3,

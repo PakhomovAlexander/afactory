@@ -1,1 +1,0 @@
-- Correct the production Scenario planning test to require canonical bindings with no local packages.

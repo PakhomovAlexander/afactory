@@ -1,4 +1,4 @@
-"""The reviewed registry `fixtures/performance/suite.toml` (`af.perf-suite/4`).
+"""The reviewed registry `fixtures/performance/suite.toml` (`af.perf-suite/6`).
 
 It separates workload (cases, parameters, oracles, timing and cache scope), policy
 (criticality, tolerances, budgets, samples), recipe (build and instrument) and environment
@@ -8,6 +8,7 @@ each library case's probe contract (ADR-0163). Version 3 names the seed a librar
 reads, speaks `af.perf-probe-request/2`, and lets a recipe pin its build image by either
 canonical digest form (ADR-0170); earlier versions are refused.
 Version 4 admits a reviewed driver-reported process interval for the browser frame (ADR-0263).
+Version 6 scopes a reviewed cold-build allowance to the opt-in long-running tier.
 """
 from fractions import Fraction
 import itertools
@@ -21,17 +22,17 @@ from .values import (ContractError, ID_PATTERN, canonical_digest, is_id, parse_d
                      require, sha256_bytes)
 from . import toml_file
 
-SCHEMA = "af.perf-suite/4"
+SCHEMA = "af.perf-suite/6"
 PROBE_REQUEST_SCHEMA = "af.perf-probe-request/2"
 PROBE_MESSAGE_SCHEMA = "af.perf-probe/1"
-TIERS = ("quick", "nightly", "release")
+TIERS = ("quick", "nightly", "release", "e2e_long_running")
 CAPABILITY_STATES = ("supported", "not_yet_executable")
 DEFAULT_RELATIVE = Fraction(5, 100)
 DEFAULT_ABSOLUTE_MS = Fraction(1)
 TASK_LEASE_MS = 60000
 ARTIFACT_ENVELOPE_CAP_BYTES = 8 * 1024 * 1024
 
-_TIER_KEY = r"^(?:quick|nightly|release)$"
+_TIER_KEY = r"^(?:quick|nightly|release|e2e_long_running)$"
 _AF_ENV_KEY = r"^AF_[A-Z0-9_]{1,62}$"
 
 CAPABILITY = Str(enum=CAPABILITY_STATES)
@@ -120,6 +121,7 @@ ENVIRONMENT = Obj(
 PROFILE = Obj(Field("environment", ID), Field("recipe", ID))
 
 TIER = Obj(
+    Field("build_minutes", Int(1, limits.BUILD_MINUTES_MAX), required=False),
     Field("profiles", Arr(PROFILE, 1, 8)),
     Field("shards", Int(1, limits.SHARDS_MAX)),
     Field("concurrent_jobs", Int(1, limits.CONCURRENT_JOBS_MAX)),
@@ -201,6 +203,7 @@ PROBE = Obj(
 CASE = Obj(
     Field("family", ID),
     Field("description", TEXT),
+    Field("execution_class", Str(enum=("standard", "long_running")), required=False),
     Field("kind", Str(enum=("process", "library"))),
     Field("requires_linux_containment", Bool()),
     Field("timing", TIMING),
@@ -210,12 +213,12 @@ CASE = Obj(
     Field("parameters", Map(ID_PATTERN, PARAMETER, 0, 4), required=False),
     Field("tier_parameters", Map(_TIER_KEY, Map(ID_PATTERN, Arr(
         AnyOf(ID, Int(0, 10 ** 12)), 1, 32, unique=True), 1, 4), 1, 3), required=False),
-    Field("tiers", Arr(Str(enum=TIERS), 1, 3, unique=True)),
+    Field("tiers", Arr(Str(enum=TIERS), 1, 4, unique=True)),
     Field("criticality", Str(enum=("critical", "advisory"))),
     Field("primary_metric", ID),
     Field("optional_metrics", Arr(ID, 0, 16, unique=True)),
     Field("policy", ID),
-    Field("pairs", Map(_TIER_KEY, Int(limits.PAIRS_MIN, limits.PAIRS_MAX), 1, 3)),
+    Field("pairs", Map(_TIER_KEY, Int(1, limits.PAIRS_MAX), 1, 4)),
     Field("warmup_pairs", Int(0, limits.WARMUP_PAIRS_MAX)),
     Field("sample_timeout_seconds", Int(1, limits.SAMPLE_TIMEOUT_SECONDS_MAX)),
     Field("budgets", Arr(ID, 0, 8, unique=True)),
@@ -265,7 +268,7 @@ SUITE = Obj(
     Field("fixtures", Map(ID_PATTERN, FIXTURE, 1, 64)),
     Field("recipes", Map(ID_PATTERN, RECIPE, 1, 16)),
     Field("environments", Map(ID_PATTERN, ENVIRONMENT, 1, 16)),
-    Field("tiers", Map(_TIER_KEY, TIER, 1, 3)),
+    Field("tiers", Map(_TIER_KEY, TIER, 1, 4)),
     Field("cases", Map(ID_PATTERN, CASE, 1, 64)),
 )
 
@@ -386,6 +389,8 @@ def validate(doc, where="suite"):
     tiers = doc["tiers"]
     for tier_id, tier in tiers.items():
         at = where + ".tiers." + tier_id
+        require("build_minutes" not in tier or tier_id == "e2e_long_running",
+                at + ".build_minutes: only e2e_long_running may override the build allowance")
         sampling_max = (limits.QUICK_SHARD_SAMPLING_MINUTES_MAX if tier_id == "quick"
                         else limits.LONG_SHARD_SAMPLING_MINUTES_MAX)
         total_max = (limits.QUICK_RUN_TOTAL_MINUTES_MAX if tier_id == "quick"
@@ -502,8 +507,15 @@ def _validate_case(doc, case_id, case, at):
             at + ".policy: governs a different metric than the primary metric")
     require(sorted(case["pairs"]) == sorted(case["tiers"]),
             at + ".pairs: declares pairs for exactly the case's tiers")
+    # The long-running registry also describes one-pair laboratory diagnostics. Planning
+    # still enforces its statistical minimum and balanced measured schedule.
     for tier_id, pairs in case["pairs"].items():
-        require(pairs % 2 == 0, at + ".pairs.%s: measured pairs come in AB/BA blocks; "
+        if tier_id != "e2e_long_running":
+            require(limits.PAIRS_MIN <= pairs <= limits.PAIRS_MAX,
+                    at + ".pairs.%s: must be within %d..%d" %
+                    (tier_id, limits.PAIRS_MIN, limits.PAIRS_MAX))
+        require(pairs % 2 == 0 or (tier_id == "e2e_long_running" and pairs == 1),
+                at + ".pairs.%s: measured pairs come in AB/BA blocks; "
                 "use an even count" % tier_id)
     require(case["warmup_pairs"] % 2 == 0,
             at + ".warmup_pairs: warmups come in AB/BA blocks; use an even count")

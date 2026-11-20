@@ -175,7 +175,7 @@ Current contracts are Provider registry **4**, `af/pi-provider-setup@4`,
 `af/provider-status@6`, `af/provider-models@4`, `af/provider-doctor@5`,
 `af/ExecutionPlan@4`, `af/TaskProviderAdmission@4`, `af/TaskProviderContext@3`,
 `af/LegacyReviewTaskPolicy@7`, `af/LegacyReviewInvocationPolicy@4`,
-`af/task-plan-inspection@6`, `af/task-inspection@20`, `af.pi-host/7`,
+`af/task-plan-inspection@7`, `af/task-inspection@21`, `af.pi-host/7`,
 `af/pi-inference-evidence@2` and `af.pi-context/1`. Writers, readers, closed schemas and parity
 fixtures change together; incompatible earlier versions fail closed without migration.
 

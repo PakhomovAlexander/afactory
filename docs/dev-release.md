@@ -130,6 +130,9 @@ digest. Preparation changes its version and captured source SHA only after valid
 capabilities. New compatible RCs need no Python list edit. Changed or unknown capabilities require
 reviewing the declaration and actual schemas/fixtures together; never copy a digest to suppress an
 incompatibility. Source and prepared harness checks are executable receipts, including fast releases.
+Required schema declarations must have exactly the policy's one expected native `af/...@N` or
+performance `af.perf-.../N` identity in `properties.schema.const`; retaining that identity only
+in descriptive text does not admit a foreign declaration.
 
 Both profiles run only cheap release metadata checks locally: prospective AF-pin/version checks,
 source and prepared release-contract and harness-digest checks, plus metadata-only

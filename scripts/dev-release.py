@@ -472,7 +472,7 @@ class Controller:
         for path, tokens in policy['required_features'].items():
             content = self.blob(source, path)
             if path.startswith('schemas/') and path.endswith('.json'):
-                identities = [token for token in tokens if token.startswith('af/')]
+                identities = [token for token in tokens if token.startswith(('af/', 'af.perf-'))]
                 try:
                     declared = json.loads(content)['properties']['schema']['const']
                 except (ValueError, KeyError, TypeError) as error:

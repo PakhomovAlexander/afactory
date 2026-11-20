@@ -1146,6 +1146,16 @@ The performance laboratory runs these three scripts as advisory telemetry experi
 baseline and a candidate binary, and records CLI cases' telemetry in its diagnostic child runs
 ([`performance-telemetry.md`](performance-telemetry.md)).
 
+Linux local measurements require `bwrap` (Bubblewrap) with working unprivileged user namespaces.
+The three measurement scripts isolate their outer process using a private OS account database,
+so release AF children inventory only private account authority even when production ignores
+fixture settings. Namespace setup precedes measured AF intervals; the executable, child lifetime,
+`wait4` counters and production accounting remain unchanged. Setup failure refuses the measurement
+without an unisolated fallback. The local laboratory executor and release smoke use the same
+account boundary. Contained telemetry mounts its private passwd/NSS files read-only at the existing
+container boundary, preserving its limits and avoiding a nested namespace. Other container
+measurements retain their separate OS/account filesystem; macOS has no AF OS-account wake authority. Debug fixture markers alone are never release isolation.
+
 **The overhead protocol.** `scripts/telemetry-overhead.py` runs the three credential-free bench
 fixtures of [`fixtures/telemetry-bench/`](../fixtures/telemetry-bench/README.md) through the Task
 runtime with scripted harnesses: `telemetry-bench-concurrent` (four concurrent Attempts),

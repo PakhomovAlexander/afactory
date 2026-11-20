@@ -13,6 +13,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from perflab import cli_cases
 from perflab.values import ContractError
@@ -254,30 +255,76 @@ class TuiOpen(unittest.TestCase):
         return process.returncode, stdout, stderr
 
     def pids(self, process):
-        """The pids the browser wrote to the readiness FIFO, within 10 s and while the driver
-        runs; each is killed at cleanup if it is still there."""
+        """The complete pids record the browser wrote within 10 s, including one buffered
+        before the driver exited; each pid is killed at cleanup if it is still there."""
         fifo = os.open(self.fifo, os.O_RDONLY | os.O_NONBLOCK)
         line = b""
         deadline = time.monotonic() + 10
         try:
             while b"\n" not in line:
-                if process.poll() is not None:
-                    self.fail("the driver exited %d before the browser was ready: %s"
-                              % (process.returncode, self.stderr_so_far(process)))
+                # Observe exit before reading: a writer can finish readiness and the driver
+                # can exit before we run again. Drain its buffered record before refusing.
+                exited = process.poll() is not None
                 if time.monotonic() >= deadline:
                     self.fail("the browser was not ready within 10 s")
-                ready, _, _ = select.select([fifo], [], [], 0.05)
+                ready, _, _ = select.select([fifo], [], [], 0 if exited else 0.05)
                 data = os.read(fifo, 4096) if ready else b""
-                if data:
-                    line += data
-                else:
+                line += data
+                if b"\n" in line:
+                    break
+                if exited:
+                    self.fail("the driver exited %d before the browser was ready: %s"
+                              % (process.returncode, self.stderr_so_far(process)))
+                if not data:
                     time.sleep(0.02)  # no writer has opened the FIFO yet
         finally:
             os.close(fifo)
-        pids = [int(pid) for pid in line.split()]
+        try:
+            pids = [int(pid) for pid in line.split()]
+        except ValueError:
+            self.fail("the browser readiness record has invalid pids: %r" % line)
+        if not pids or any(pid <= 0 for pid in pids):
+            self.fail("the browser readiness record has invalid pids: %r" % line)
         for pid in pids:
             self.addCleanup(self.release, pid)
         return pids
+
+    def test_readiness_consumes_a_complete_record_buffered_before_driver_exit(self):
+        # Hold a reader so the real FIFO retains the record after the writer closes,
+        # before pids observes driver exit. Never schedule signals for synthetic pids.
+        fifo = os.open(self.fifo, os.O_RDONLY | os.O_NONBLOCK)
+        self.addCleanup(os.close, fifo)
+        writer = os.open(self.fifo, os.O_WRONLY | os.O_NONBLOCK)
+        try:
+            os.write(writer, b"101 202\n")
+        finally:
+            os.close(writer)
+        process = mock.Mock(returncode=3)
+        process.poll.return_value = 3
+        with mock.patch.object(self, "addCleanup") as cleanup:
+            self.assertEqual(self.pids(process), [101, 202])
+        process.poll.assert_called_once_with()
+        self.assertEqual(cleanup.call_args_list,
+                         [mock.call(self.release, 101), mock.call(self.release, 202)])
+
+    def test_readiness_refuses_exited_driver_without_a_complete_valid_record(self):
+        fifo = os.open(self.fifo, os.O_RDONLY | os.O_NONBLOCK)
+        self.addCleanup(os.close, fifo)
+        process = mock.Mock(returncode=3)
+        process.poll.return_value = 3
+        for record in (b"", b"101 202", b"invalid\n", b"\n", b"0\n", b"-1\n"):
+            with self.subTest(record=record):
+                writer = os.open(self.fifo, os.O_WRONLY | os.O_NONBLOCK)
+                try:
+                    os.write(writer, record)
+                finally:
+                    os.close(writer)
+                # Intercept cleanup even on failure: no synthetic pid can be signalled.
+                with mock.patch.object(self, "addCleanup") as cleanup, \
+                        mock.patch.object(self, "stderr_so_far", return_value="fixture exit"):
+                    with self.assertRaisesRegex(AssertionError, "exited 3|invalid pids"):
+                        self.pids(process)
+                cleanup.assert_not_called()
 
     PS = ["ps", "-o", "stat=", "-p"]
 

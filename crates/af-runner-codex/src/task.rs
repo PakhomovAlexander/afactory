@@ -4,7 +4,7 @@ use af_runner::cli::{
     WorkerStderr, classify_without_result, ended_without_result, startup_failure,
     strongest_native_failure, transient_ending,
 };
-use af_runner::native_failure::{NativeFailureKind, classify_native_failure};
+use af_runner::native_failure::{NativeFailureKind, classify_native_failure, native_auth_seen};
 use af_runner::task::reply_schema::ReplyContract;
 use af_runner::task::{
     MAX_WORKER_BYTES, ModelWorkerReturn, Unstarted, WorkerAccess, WorkerModelAdapter,
@@ -213,7 +213,7 @@ impl CodexTaskAdapter {
                     message: Err(format!("Codex Worker request refused: {error}")),
                     usage: Some(af_contracts::task::usage::TaskTokenUsageV3::charge_only(0)),
                     raw_artifact_ids: vec![],
-                    native_failure: None,
+                    native_failure: Some(NativeFailureKind::UnsupportedInvocation),
                     notes: Default::default(),
                 });
             }
@@ -320,6 +320,10 @@ impl CodexTaskAdapter {
                         String::from_utf8_lossy(stderr),
                         events.error.as_deref().unwrap_or_default()
                     );
+                    // Only native diagnostic channels count; framed model prose was removed.
+                    events.schema_rejected |= String::from_utf8_lossy(stderr)
+                        .contains("invalid_json_schema")
+                        || native_stdout.contains("invalid_json_schema");
                     let candidates = [
                         events
                             .upstream_failure
@@ -327,16 +331,20 @@ impl CodexTaskAdapter {
                         classify_native_failure(&String::from_utf8_lossy(stderr)),
                         classify_native_failure(&native_stdout),
                     ];
-                    let kind = classify_without_result(stderr, &native_stdout, &candidates);
+                    let kind = if events.schema_rejected {
+                        NativeFailureKind::UnsupportedInvocation
+                    } else {
+                        classify_without_result(stderr, &native_stdout, &candidates)
+                    };
                     failure = (kind != NativeFailureKind::Unknown).then_some(kind);
                     // Any recognized auth error makes both streams sensitive, even if an earlier
                     // error concerned another failure, stdout was not valid JSONL, or an argument
                     // error took the classification.
-                    kind.redact_capture(
-                        strongest_native_failure(&candidates).is_auth(),
-                        stdout,
-                        stderr,
-                    );
+                    let auth_seen = strongest_native_failure(&candidates).is_auth()
+                        || events.auth_seen
+                        || native_auth_seen(&ending_text);
+                    said.redact_auth(auth_seen);
+                    kind.redact_capture(auth_seen, stdout, stderr);
                 }
                 // The raw-output rule: the Store keeps the event lines accounting and failure
                 // classification read, whatever came of them above, or the adapter's
@@ -389,51 +397,54 @@ impl CodexTaskAdapter {
                 returned.native_failure = failure.or(events.upstream_failure);
                 let ended = ended_without_result(&capture.status, &said);
                 let kind = failure.unwrap_or(NativeFailureKind::Unknown);
-                Err(
-                    if kind == NativeFailureKind::UnsupportedInvocation
-                        || !delivered && !events.framed
-                    {
-                        // A refused invocation, whatever events came first, or no event at all:
-                        // the process's exit and its own last words are all there is.
-                        startup_failure(
-                            "Codex Worker",
-                            &CODEX_INVOCATION,
-                            &capture.status,
-                            &said,
-                            kind,
-                        )
-                    } else if let Some(kind) =
-                        failure.or(events.upstream_failure.filter(|_| !events.malformed_usage))
-                    {
-                        let mut message =
-                            format!("Codex Worker failed: {}; it {ended}", kind.diagnostic());
-                        if events.malformed_usage {
-                            message.push_str("; Codex Worker returned malformed native usage");
-                        }
-                        message
-                    } else if events.malformed_usage {
-                        format!(
-                            "Codex Worker returned malformed native usage: {:?}; it {ended}",
-                            events.error
-                        )
-                    } else if let Some(read) = reply {
-                        // Exit 0 without a failure event: the `-o` file is the only final
-                        // message, and an absent or empty file is no reply.
-                        let error = read
-                            .err()
-                            .unwrap_or_else(|| "Codex Worker returned no final message".into());
-                        format!("{error}; it {ended}")
-                    } else {
-                        // Only events that carry no failure, such as `thread.started`.
-                        startup_failure(
-                            "Codex Worker",
-                            &CODEX_INVOCATION,
-                            &capture.status,
-                            &said,
-                            kind,
-                        )
-                    },
-                )
+                Err(if events.schema_rejected {
+                    format!(
+                        "Codex Worker request rejected: invalid_json_schema; check the captured output-port strict schema; native evidence: {}",
+                        returned.raw_artifact_ids.join(", ")
+                    )
+                } else if kind == NativeFailureKind::UnsupportedInvocation
+                    || !delivered && !events.framed
+                {
+                    // A refused invocation, whatever events came first, or no event at all:
+                    // the process's exit and its own last words are all there is.
+                    startup_failure(
+                        "Codex Worker",
+                        &CODEX_INVOCATION,
+                        &capture.status,
+                        &said,
+                        kind,
+                    )
+                } else if let Some(kind) =
+                    failure.or(events.upstream_failure.filter(|_| !events.malformed_usage))
+                {
+                    let mut message =
+                        format!("Codex Worker failed: {}; it {ended}", kind.diagnostic());
+                    if events.malformed_usage {
+                        message.push_str("; Codex Worker returned malformed native usage");
+                    }
+                    message
+                } else if events.malformed_usage {
+                    format!(
+                        "Codex Worker returned malformed native usage: {:?}; it {ended}",
+                        events.error
+                    )
+                } else if let Some(read) = reply {
+                    // Exit 0 without a failure event: the `-o` file is the only final
+                    // message, and an absent or empty file is no reply.
+                    let error = read
+                        .err()
+                        .unwrap_or_else(|| "Codex Worker returned no final message".into());
+                    format!("{error}; it {ended}")
+                } else {
+                    // Only events that carry no failure, such as `thread.started`.
+                    startup_failure(
+                        "Codex Worker",
+                        &CODEX_INVOCATION,
+                        &capture.status,
+                        &said,
+                        kind,
+                    )
+                })
             }
         };
         if returned.message.is_err() {
@@ -490,6 +501,8 @@ struct TaskEvents {
     usage: af_contracts::task::usage::TaskTokenUsageV3,
     error: Option<String>,
     upstream_failure: Option<NativeFailureKind>,
+    schema_rejected: bool,
+    auth_seen: bool,
     incomplete_charge: bool,
     malformed_usage: bool,
     /// Whether stdout held any JSONL event at all: a CLI that refused its arguments frames none.
@@ -574,9 +587,23 @@ impl TaskEvents {
                         .get("message")
                         .or_else(|| value.get("error").and_then(|e| e.get("message")))
                         .and_then(|m| m.as_str());
-                    let kind = message
-                        .map(classify_native_failure)
-                        .unwrap_or(NativeFailureKind::Unknown);
+                    let schema_rejected = message
+                        .is_some_and(|message| message.contains("invalid_json_schema"))
+                        || value.get("code").and_then(serde_json::Value::as_str)
+                            == Some("invalid_json_schema")
+                        || value
+                            .pointer("/error/code")
+                            .and_then(serde_json::Value::as_str)
+                            == Some("invalid_json_schema");
+                    events.schema_rejected |= schema_rejected;
+                    events.auth_seen |= message.is_some_and(native_auth_seen);
+                    let kind = if schema_rejected {
+                        NativeFailureKind::UnsupportedInvocation
+                    } else {
+                        message
+                            .map(classify_native_failure)
+                            .unwrap_or(NativeFailureKind::Unknown)
+                    };
                     // Preserve the upstream cause independently of later usage diagnostics.
                     // No raw provider error becomes an ordinary diagnostic.
                     if events.upstream_failure.is_none_or(|prior| {
@@ -596,15 +623,21 @@ impl TaskEvents {
 /// The raw-output rule for Codex (design §7.3): of an Attempt's JSONL stdout, what the Store
 /// keeps — the `turn.completed`, `turn.failed` and `error` lines the accounting and failure
 /// classification read, each as it was, and nothing else: no other event, and no native text
-/// outside the event framing, which classification reads from the complete in-memory capture
-/// ([`unframed`]).
+/// outside the event framing except recognized native schema-rejection diagnostics. Those
+/// bounded lines preserve deterministic rejection evidence after whole-capture privacy filtering.
 pub fn kept_output(stdout: &[u8]) -> Vec<u8> {
     use af_runner::stream::{lines, message_type};
     lines(stdout)
         .filter(|line| {
-            message_type(line).is_some_and(|kind| {
-                matches!(kind.as_str(), "turn.completed" | "turn.failed" | "error")
-            })
+            message_type(line).map_or_else(
+                || {
+                    // A JSONL model event never becomes native diagnostic evidence.
+                    !serde_json::from_slice::<serde_json::Value>(line).is_ok_and(|value| {
+                        value.get("type").is_some_and(serde_json::Value::is_string)
+                    }) && String::from_utf8_lossy(line).contains("invalid_json_schema")
+                },
+                |kind| matches!(kind.as_str(), "turn.completed" | "turn.failed" | "error"),
+            )
         })
         .flatten()
         .copied()

@@ -65,6 +65,17 @@ pub(crate) enum ScenarioCommand {
         #[command(flatten)]
         inspect: Inspect,
     },
+    /// Check scoped publication against a retained Run and native accepted Task evidence
+    ImplementationProof {
+        /// Exact scoped adapter request; authority comes from the retained native Run
+        #[arg(long)]
+        file: PathBuf,
+        /// Recheck live authorization without repeating immutable accepted-candidate validation
+        #[arg(long)]
+        live_only: bool,
+        #[command(flatten)]
+        inspect: Inspect,
+    },
     /// Validate native performance publication Tasks and render their exact report block
     #[command(
         long_about = "Read exact accepted implementation, independent verification and final report Tasks, check their source and measured comparison bindings, and render native publication reports. This read-only command grants no publication authority; the installed publication Action additionally re-observes the pinned native lab and enforces machine scope."
@@ -88,7 +99,7 @@ pub(crate) enum ScenarioCommand {
         after_long_help = "Examples:\n  # needs: an exact accepted Task receipt in a versioned request\n  af scenario candidate-source --file request.json --repo /project \\\n    --task-state /private/tasks --into /private/captures/candidate --json"
     )]
     CandidateSource {
-        /// af/git-candidate-source-request@1 JSON containing the exact accepted Task receipt
+        /// af/git-candidate-source-request@2 JSON containing the exact accepted Task receipt
         #[arg(long)]
         file: PathBuf,
         /// Repository whose Git history anchors the Task source
@@ -181,9 +192,15 @@ af scenario experiment-source --file source.json --repo /project \\\n    --task-
         /// Exact revision printed by validate; confirms the full definition and machine policy
         #[arg(long)]
         confirm_pin: String,
+        /// Refuse startup unless the confirmed machine policy carries implementation scope
+        #[arg(long)]
+        require_startup_scope: bool,
         /// Drive the recorded Run immediately until it settles or waits
         #[arg(long)]
         execute: bool,
+        /// Retained idle polling cadence; validated against the complete publication tree
+        #[arg(long, default_value_t = af_scenario::driver::DEFAULT_POLL_MS)]
+        poll_ms: u64,
         #[command(flatten)]
         inspect: Inspect,
     },
@@ -201,6 +218,23 @@ af scenario experiment-source --file source.json --repo /project \\\n    --task-
     },
     /// Resume the pinned Run, reconciling any uncertain effects before retrying
     Resume {
+        /// Local Run label in the selected Scenario Store
+        run_id: String,
+        #[command(flatten)]
+        inspect: Inspect,
+    },
+    /// Drive a recorded Run continuously under its retained startup schedule
+    Drive {
+        /// Local Run label in the selected Scenario Store
+        run_id: String,
+        /// Reserve and perform at most one due resume, then return
+        #[arg(long)]
+        once: bool,
+        #[command(flatten)]
+        inspect: Inspect,
+    },
+    /// Inspect the retained cadence, consumed checkpoints, reservations and blocker
+    DriverStatus {
         /// Local Run label in the selected Scenario Store
         run_id: String,
         #[command(flatten)]
@@ -578,6 +612,33 @@ fn at(inspect: &Inspect) -> Result<u64> {
 pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
     match command {
         ScenarioCommand::Output { id, view, inspect } => output(&id, false, &view, &inspect),
+        ScenarioCommand::ImplementationProof {
+            file,
+            live_only,
+            inspect,
+        } => {
+            let request: af_scenario::adapter::Request =
+                serde_json::from_slice(&store::read(&file, MAX_BYTES)?)
+                    .map_err(|e| e.to_string())?;
+            let native = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?;
+            let world = native.read()?;
+            let (run, scope) = af_scenario::implementation::authorize(
+                &world,
+                &request,
+                runtime::now()?,
+                live_only,
+            )?;
+            if live_only {
+                print(
+                    &serde_json::json!({"schema":"af/implementation-pr-live@1", "request_digest":hash(&request)?, "scope_id":hash(scope)?, "execution_id":run.execution_id, "pin_id":run.pin.revision}),
+                    &inspect,
+                )
+            } else {
+                let proof =
+                    crate::task_commands::candidate::implementation::proof(&request, run, scope)?;
+                print(&proof, &inspect)
+            }
+        }
         ScenarioCommand::PerformanceProof {
             file,
             repo,
@@ -683,7 +744,9 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
             definition,
             inputs,
             confirm_pin,
+            require_startup_scope,
             execute,
+            poll_ms,
             inspect,
         } => {
             let pin = pin(&definition)?;
@@ -691,6 +754,11 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
                 pin.revision == confirm_pin,
                 "Scenario pin confirmation differs; validate and review it again",
             )?;
+            require(
+                !require_startup_scope || pin.policy.implementation_startup.is_some(),
+                "Implementation startup scope is required but absent",
+            )?;
+            af_scenario::driver::validate_schedule(&pin, poll_ms)?;
             let limits = pin.bundle.definitions[&pin.bundle.root].limits.clone();
             let run = Run::new(
                 &AfHost,
@@ -703,9 +771,20 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
             )?;
             let store = Store::open(Arc::new(AfHost), inspect.state.as_deref(), true)?;
             runtime::reconcile_pending(&store, run.created_unix_ms)?;
-            let run = store.update(|world| world.admit_run(run))?;
+            let run = store.update(|world| {
+                let run = world.admit_run(run)?;
+                world.drivers.insert(
+                    run_id.clone(),
+                    af_scenario::driver::Driver::new(&run, poll_ms)?,
+                );
+                Ok(run)
+            })?;
             let run = if execute {
-                runtime::resume(&store, &run_id, inspect.now)?
+                if run.pin.policy.implementation_startup.is_some() {
+                    af_scenario::driver::once(&store, &run_id)?
+                } else {
+                    runtime::resume(&store, &run_id, inspect.now)?
+                }
             } else {
                 run
             };
@@ -721,13 +800,57 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
         ScenarioCommand::List { inspect } => {
             let world = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?.read()?;
             print(
-                &serde_json::json!({"schema":"af/scenario-list@6","runs":world.runs}),
+                &serde_json::json!({"schema":"af/scenario-list@11","runs":world.runs}),
                 &inspect,
             )
         }
         ScenarioCommand::Resume { run_id, inspect } => {
             let store = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?;
-            print(&runtime::resume(&store, &run_id, inspect.now)?, &inspect)
+            let scoped = store
+                .read()?
+                .runs
+                .get(&run_id)
+                .ok_or("Scenario Run not found")?
+                .pin
+                .policy
+                .implementation_startup
+                .is_some();
+            let run = if scoped {
+                af_scenario::driver::once(&store, &run_id)?
+            } else {
+                runtime::resume(&store, &run_id, inspect.now)?
+            };
+            print(&run, &inspect)
+        }
+        ScenarioCommand::Drive {
+            run_id,
+            once,
+            inspect,
+        } => {
+            require(
+                inspect.now.is_none(),
+                "Scenario driver uses live time; --now is not supported",
+            )?;
+            let store = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?;
+            let run = if once {
+                af_scenario::driver::once(&store, &run_id)?
+            } else {
+                af_scenario::driver::drive_until(&store, &run_id, || {
+                    crate::interrupt::received().is_some()
+                })?
+            };
+            print(&run, &inspect)
+        }
+        ScenarioCommand::DriverStatus { run_id, inspect } => {
+            let store = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?;
+            print(
+                store
+                    .read()?
+                    .drivers
+                    .get(&run_id)
+                    .ok_or("Scenario driver not found")?,
+                &inspect,
+            )
         }
         ScenarioCommand::Cancel {
             run_id,
@@ -838,7 +961,7 @@ pub(crate) fn ant(command: AntCommand) -> Result<i32> {
                 .map(|(id, ant)| Ok((id.clone(), ant_inspection(ant, &world, &scheduler)?)))
                 .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
             print(
-                &serde_json::json!({"schema":"af/ant-list@8","ants":ants}),
+                &serde_json::json!({"schema":"af/ant-list@13","ants":ants}),
                 &inspect,
             )
         }
@@ -855,7 +978,7 @@ pub(crate) fn ant(command: AntCommand) -> Result<i32> {
                 runs: results,
             } = runtime::tick(&store, now, inspect.now)?;
             print(
-                &serde_json::json!({"schema":"af/ant-tick@7","now_unix_ms":now,"started":started,"busy":busy,"refused":refused,"runs":results}),
+                &serde_json::json!({"schema":"af/ant-tick@12","now_unix_ms":now,"started":started,"busy":busy,"refused":refused,"runs":results}),
                 &inspect,
             )
         }
@@ -867,7 +990,7 @@ fn ant_inspection(
     scheduler: &serde_json::Value,
 ) -> Result<serde_json::Value> {
     let mut value = serde_json::to_value(ant).map_err(|e| e.to_string())?;
-    value["schema"] = serde_json::json!("af/ant-inspection@3");
+    value["schema"] = serde_json::json!("af/ant-inspection@8");
     value["scheduler"] = scheduler.clone();
     let next_due = ant.next_due_unix_ms();
     value["next_due_unix_ms"] = serde_json::json!(next_due.as_ref().ok().copied().flatten());

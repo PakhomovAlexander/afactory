@@ -4,7 +4,9 @@ mod head_delta;
 pub mod scatter;
 pub mod storage;
 pub mod task;
+pub mod task_lifecycle;
 pub mod telemetry;
+pub mod wake;
 use af_contracts::{ReviewerResultRejection, ReviewerStageOutput};
 use std::collections::BTreeSet;
 

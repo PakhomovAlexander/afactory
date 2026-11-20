@@ -561,6 +561,25 @@ class ContainedBase(TempDir):
 
 class Contained(ContainedBase):
 
+    def test_live_smoke_home_is_private_under_ordinary_ci_umask(self):
+        from tests.telemetry_measurement_smoke import execution_directories
+
+        previous = os.umask(0o022)
+        try:
+            work, _ = execution_directories(self.executor)
+        finally:
+            os.umask(previous)
+        self.assertEqual(work.stat().st_mode & 0o777, 0o700)
+        doc = execution(self, [sys.executable, "-I", "-c", "print('private home')"],
+                        cwd=str(work))
+        result = self.executor.run(doc)
+        self.assertEqual((result.code, result.stdout), (0, b"private home\n"))
+        self.assertEqual(result.cleanup, "confirmed")
+        passwd = next(work.glob("account-*/passwd"))
+        self.assertIn(":%s:/bin/false" % work, passwd.read_text())
+        self.assertTrue(any("dst=/etc/passwd,readonly" in arg
+                            for call in self.calls() for arg in call))
+
     def test_volume_admission_refuses_before_any_candidate_launch(self):
         with mock.patch.object(self.executor.image, "refuse_implicit_volumes",
                                side_effect=ContractError("implicit writable volumes")):
@@ -604,8 +623,23 @@ class Contained(ContainedBase):
         mounts = [argv[index + 1] for index, item in enumerate(argv) if item == "--mount"]
         writable = [item for item in mounts if not item.endswith(",readonly")]
         self.assertEqual(writable, ["type=bind,src=%s,dst=%s" % (self.run_dir, self.run_dir)])
+        account_mounts = [item for item in mounts
+                          if item.endswith(('dst=/etc/passwd,readonly', 'dst=/etc/nsswitch.conf,readonly'))]
+        self.assertEqual(len(account_mounts), 2)
         self.assertEqual(sorted(item.split(",")[1][4:] for item in mounts
-                                if item.endswith(",readonly")), sorted([candidate, script]))
+                                if item.endswith(",readonly") and item not in account_mounts),
+                         sorted([candidate, script]))
+        for item in account_mounts:
+            source = item.split(",")[1][4:]
+            self.assertTrue(source.startswith(self.run_dir + os.sep))
+            with open(source) as stream:
+                data = stream.read()
+            if 'dst=/etc/passwd,' in item:
+                self.assertIn(':%d:%d:AF measurement:%s:' %
+                              (os.getuid(), os.getgid(), self.run_dir), data)
+                self.assertIn('PERFLAB_ACCOUNT_FILE=' + source, argv)
+            else:
+                self.assertIn('passwd: files\n', data)
         self.assertNotIn(self.path("capture"), joined, "the capture files are never bound")
         self.assertEqual(argv[argv.index("--entrypoint") + 1:argv.index("--entrypoint") + 4],
                          ["/usr/bin/env", Image.reference, "-i"])

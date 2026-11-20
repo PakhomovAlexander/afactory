@@ -296,7 +296,7 @@ fn scratch_path(name: &str) -> PathBuf {
 
 fn request(script: &str, timeout_ms: u64) -> Value {
     json!({
-        "schema": "af.perf-supervisor-request/4",
+        "schema": "af.perf-supervisor-request/5",
         "argv": ["/bin/sh", "-c", script],
         "environment": {"PATH": "/usr/bin:/bin"},
         "cwd": std::env::temp_dir().canonicalize().unwrap().to_str().unwrap(),
@@ -310,6 +310,7 @@ fn request(script: &str, timeout_ms: u64) -> Value {
         "setup": null,
         "stdout_patterns": [],
         "stdout_json": [],
+        "evidence_paths": [],
     })
 }
 
@@ -397,7 +398,7 @@ fn a_sample_is_timed_from_launch_to_observed_exit_and_framed() {
     let reply = run(&request("cat; printf err >&2; exit 3", LOAD_SAFE_WALL_MS));
     assert_eq!(reply.code, Some(0), "{}", reply.diagnostics);
     let result = &reply.result;
-    assert_eq!(result["schema"], "af.perf-supervisor-result/5");
+    assert_eq!(result["schema"], "af.perf-supervisor-result/6");
     assert!(result["setup"].is_null());
     assert_eq!(result["termination"]["kind"], "exited");
     assert_eq!(result["termination"]["code"], 3);
@@ -1154,4 +1155,68 @@ fn a_failed_setup_launches_no_measured_child() {
         LOAD_SAFE_WALL_MS,
     ));
     assert_eq!(reply.result["setup"]["stderr_tail"], "broken\n");
+}
+
+// Capture is deterministic and needs no host user namespace. The actual namespace/frame
+// regression is provisioned by tests/contained_flow_probe.py in the explicit Docker smoke.
+#[path = "../examples/perf-supervisor/evidence.rs"]
+mod evidence_capture;
+
+#[test]
+fn evidence_handoff_refuses_unsafe_files_and_unconfirmed_cleanup_without_partial_bytes() {
+    use evidence_capture::{capture, check_paths};
+    let root = scratch_path("evidence");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("a"), b"exact bytes").unwrap();
+    let paths = vec!["a".to_owned()];
+    let captured = capture(&root, &paths, true);
+    assert_eq!(captured.report["status"], "complete");
+    assert_eq!(captured.bytes, b"exact bytes");
+    assert_eq!(captured.report["files"][0]["bytes"], 11);
+    assert!(capture(&root, &paths, false).bytes.is_empty());
+    assert_eq!(capture(&root, &paths, false).report["status"], "refused");
+    for path in ["../a", "/a", "a/../b", "a//b", "a/./b"] {
+        assert!(check_paths(&[path.to_owned()]).is_err(), "{path}");
+    }
+    assert!(check_paths(&["a".into(), "a".into()]).is_err());
+    assert!(check_paths(&vec!["a".into(); 65]).is_err());
+    std::os::unix::fs::symlink("a", root.join("b")).unwrap();
+    let refuse = |paths: Vec<String>| {
+        let evidence = capture(&root, &paths, true);
+        assert_eq!(evidence.report["status"], "refused");
+        assert_eq!(evidence.report["files"], json!([]));
+        assert!(evidence.bytes.is_empty());
+    };
+    refuse(vec!["a".into(), "b".into()]);
+    std::fs::remove_file(root.join("b")).unwrap();
+    std::fs::hard_link(root.join("a"), root.join("b")).unwrap();
+    refuse(paths.clone());
+    std::fs::remove_file(root.join("b")).unwrap();
+    refuse(vec!["a".into(), "missing".into()]);
+    let huge = std::fs::File::create(root.join("huge")).unwrap();
+    huge.set_len((evidence_capture::FILE_BYTES_MAX + 1) as u64)
+        .unwrap();
+    refuse(vec!["huge".into()]);
+    let aggregate: Vec<_> = (0..17).map(|i| format!("large-{i:02}")).collect();
+    for name in &aggregate {
+        std::fs::File::create(root.join(name))
+            .unwrap()
+            .set_len(evidence_capture::FILE_BYTES_MAX as u64)
+            .unwrap();
+    }
+    refuse(aggregate);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn evidence_requests_require_namespace_scratch_and_refuse_the_prior_wire_version() {
+    let mut order = request("exit 0", LOAD_SAFE_WALL_MS);
+    order["schema"] = json!("af.perf-supervisor-request/4");
+    let refused = finish(spawn(&canonical(&order)));
+    assert_eq!(refused.code, Some(2));
+    order["schema"] = json!("af.perf-supervisor-request/5");
+    order["evidence_paths"] = json!(["flow.json"]);
+    let refused = finish(spawn(&canonical(&order)));
+    assert_eq!(refused.code, Some(2));
+    assert!(refused.diagnostics.contains("requires PID namespace"));
 }

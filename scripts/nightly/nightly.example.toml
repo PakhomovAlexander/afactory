@@ -1,27 +1,21 @@
-# The owner's nightly build configuration (af.nightly-config/1, ADR-0265).
+# The owner's nightly build configuration (af.nightly-config/2, ADR-0265).
 #
-# An example for the owner's Linux VM; nothing installs it. Copy it to
-# /etc/af-nightly/nightly.toml, set the paths, run one night by hand first, then let the
-# systemd chain run every night (docs/nightly.md, ADR-0273). Each step without --date works on
-# today's UTC date and prints it:
-#
-#   python3 -I -B scripts/nightly/build.py build --config nightly.toml
-#   python3 -I -B scripts/nightly/measure.py submit --config nightly.toml
-#   python3 -I -B scripts/nightly/report.py compose --config nightly.toml
-#   python3 -I -B scripts/nightly/publish.py publish --config nightly.toml
-#
-# The build reads only these files and the GitHub check runs of main's commits; it writes only
-# builds_root/<date>/ and the Cargo cache builds_root/cache/, and never pushes or publishes.
-# The measurement submits the night's two originals to the nightly executor and cycles it.
-# The report reads the night's record, the nightly executor's journal, GitHub and three host
-# facts, and writes only a new directory below reports_root (ADR-0271).
-# Only publish.py writes to GitHub and Telegram, with the [publish] table's tokens (ADR-0272).
+# Reviewed native deployment example for the owner's Linux VM. Copy outside the repository
+# as a same-worker private config and use scripts/nightly/install.py prepare/install.
+# The pinned daily Ant owns 03:00 Europe/Moscow; external tick/worker services drive four
+# async phases with no models (docs/nightly.md). The old systemd chain is retired.
+# Native invocations always carry the occurrence's explicit immutable nightly tag/date.
+# The build writes only builds_root/<date>/ and the Cargo cache. The full native comparison
+# writes through the configured executor; the report uses its verified family. Publication
+# alone writes to GitHub/Telegram with the scoped [publish] authority.
 
-schema = "af.nightly-config/1"
+schema = "af.nightly-config/2"
+# Explicit reviewed comparison baseline for this deployment; omit for highest stable.
+baseline_ref = "v0.15.1-rc.3"
 # The repository whose check runs decide which main commit is green.
 repository = "PakhomovAlexander/afactory"
 # A bare mirror of that repository (`git clone --mirror`) the host keeps fetched; the night
-# reads refs/heads/main and the release tags from it. Nothing in the nightly chain fetches it:
+# reads refs/heads/main and the release tags from it. No native release phase fetches it:
 # the executor's source mirror, which af-perf-source-refresh.timer keeps fetched, can serve
 # (mirror = "/var/lib/af-perf-executor/source.git"), or a mirror of its own you fetch before
 # 22:05 UTC.

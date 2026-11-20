@@ -146,10 +146,24 @@ failure records a failed command and unavailable final tree; confirmed daemon cl
 separate from unavailable filesystem evidence. The exact stdout/stderr returned by the harness
 remain the command receipt's bytes, independently of export success.
 
-A durable `af.worker-storage/1` intent in CheckRuntime is synced before any daemon resource is
+A durable `af.worker-storage/2` intent in CheckRuntime is synced before any daemon resource is
 created. A bounded keeper holds the tmpfs mounted across seed, workload and export, and expires
-at the Attempt deadline. Ordinary cleanup removes exactly that intent's workload/helper/keeper
-names and volume. The existing dead-owner sandbox sweep reads the versioned intent, confirms
+at the Attempt deadline. Container setup uses `create` followed by `start` against the
+acknowledged full daemon ID.
+Creation consumes the command deadline. If cancellation or expiry arrives while creation is
+pending, acknowledgement may settle within the existing shared ten-second cleanup allowance;
+the payload is never started afterwards. Killing a client, successful name removal and an
+empty listing cannot settle an outstanding create request.
+
+Before each workload/helper create, a synced private CID file records pending creation. Only a
+successful bounded acknowledgement replaces it with the full ID. Cleanup removes that ID in
+the same private local daemon context, so a reused name cannot target a foreign container.
+An empty, malformed or unreadable CID file refuses both export and cleanup; the runtime and
+writable roots remain preserved. A pending volume operation is fenced in the same way.
+The version 2 lease owns these fixed companion files; version 1 intents are refused under
+[ADR-0145](../adr/0145-read-only-what-this-release-writes-and-version-every-changed-shape.md).
+Ordinary cleanup removes exactly the acknowledged workload/helper/keeper IDs and private
+volume. The existing dead-owner sandbox sweep reads the versioned intent, confirms
 cleanup in the same private local daemon context, then removes the runtime. Live owners and
 explicitly preserved roots remain untouched; unknown or unconfirmed recovery keeps the intent.
 CheckRuntime drop also refuses to remove a runtime whose resource cleanup is unconfirmed.

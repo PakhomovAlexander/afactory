@@ -269,8 +269,8 @@ fn a_killed_run_is_abandoned_then_resumed_with_one_chargeable_and_one_abandoned_
 
     // Snapshot after the kill: abandoned by a lost writer, and what continues it.
     let shown = abandoned_inspection(&f);
-    schemas::valid(&schemas::validator("task-inspection-v20.json"), &shown);
-    assert_eq!(shown["schema"], "af/task-inspection@20");
+    schemas::valid(&schemas::validator("task-inspection-v21.json"), &shown);
+    assert_eq!(shown["schema"], "af/task-inspection@21");
     assert_eq!(
         shown["phase"]["kind"], "running",
         "the recorded phase stays"
@@ -290,7 +290,7 @@ fn a_killed_run_is_abandoned_then_resumed_with_one_chargeable_and_one_abandoned_
     assert!(text.contains(&format!("\nnext: {resume}\n")), "{text}");
     let listed = json(&af(&f, &["task", "list", "--json"]).output().unwrap());
     let entry = &listed["tasks"][0];
-    schemas::valid(&schemas::validator("task-list-entry-v4.json"), entry);
+    schemas::valid(&schemas::validator("task-list-entry-v5.json"), entry);
     assert_eq!(
         (&entry["state"]["cause"], &entry["state"]["next_action"]),
         (&Value::from("writer_lost"), &Value::from(resume.as_str()))
@@ -531,7 +531,7 @@ fn a_declared_recovery_allowance_dispatches_the_node_again_as_often_as_it_allows
             .output()
             .unwrap(),
     );
-    schemas::valid(&schemas::validator("task-inspection-v20.json"), &planned);
+    schemas::valid(&schemas::validator("task-inspection-v21.json"), &planned);
     assert_eq!(planned["graph"]["schema"], "af.compiled-task/6");
     schemas::valid(
         &schemas::validator("compiled-task-v6.json"),

@@ -177,7 +177,7 @@ python3 scripts/test-quarantine.py scan --state STORE_DIR             # or --lis
 python3 scripts/test-quarantine.py scan --list tasks.json --write    # add them
 ```
 
-It reads one or more `af task list --json` documents (`af/task-list@3` or `af/task-list@4`):
+It reads one or more `af task list --json` documents (`af/task-list@3` or `af/task-list@5`):
 `--list FILE` reads one, `--state DIR` runs `af task list --json --state DIR` (the `af` on `PATH`,
 or `--af PATH`); both repeat, and a Task listed twice counts once. Each row's `task_id`,
 `updated_unix_ms` and `gate.flaky` are read; a row without `gate` adds nothing. A flaky name is

@@ -1,5 +1,5 @@
 {
-  "schema": "af.perf-scenario-completion/1",
+  "schema": "af.perf-scenario-completion/2",
   "request": {
     "backend": "local",
     "cohort_digest": null,
@@ -94,7 +94,8 @@
         "tolerance": {
           "absolute": "1",
           "relative": "0.05"
-        }
+        },
+        "execution_class": "standard"
       }
     ],
     "family_alpha": "1/20",
@@ -124,7 +125,7 @@
     "plan_digest": "sha256:735f1bae4b877bd3ee7eeab5b72584a9e48a4d6f755d711c4e9801d87ab043a3",
     "provenance": "synthetic",
     "run_id": "local_synthetic",
-    "schema": "af.perf-verdict/2",
+    "schema": "af.perf-verdict/3",
     "scope": "partial_scope",
     "shards": [
       {

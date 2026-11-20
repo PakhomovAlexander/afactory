@@ -60,7 +60,7 @@ fn alive(pid: u32) -> bool {
 
 /// The run number a file of `task_id` in `runs/` carries: `<task>-<run>.json`,
 /// `<task>-<run>.log` or `<task>-<run>.cancel.json`, and which of the three it is.
-fn run_of<'a>(task_id: &str, name: &'a str) -> Option<(u64, &'a str)> {
+pub(super) fn run_of<'a>(task_id: &str, name: &'a str) -> Option<(u64, &'a str)> {
     let rest = name.strip_prefix(task_id)?.strip_prefix('-')?;
     let (number, kind) = rest.split_once('.')?;
     if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) || number.starts_with('0') {
@@ -129,28 +129,64 @@ pub(crate) fn cancelled_epoch(state: Option<&Path>, task: &TaskProjection) -> Op
         .map(|request| request.epoch)
 }
 
-/// Write `value` as `name` in `runs/`, only when no file of that name exists: written aside and
-/// linked into place, so a reader never sees half of it and two writers never share a name.
+/// Publish a completed recorder only when its name is absent. On wake-supported Linux a
+/// no-replace rename keeps every visible recorder single-linked, including during publication.
 fn write_new(state: &Path, name: &str, value: &impl Serialize) -> Result<bool, String> {
     let directory = runs_dir(state);
     crate::storage::owned::private_dir(&directory)?;
     let bytes = serde_json::to_vec(value).map_err(|e| e.to_string())?;
-    let aside = directory.join(format!(".{name}.{}.tmp", std::process::id()));
-    af_store::local_fs::private_file_options()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&aside)
-        .and_then(|mut file| std::io::Write::write_all(&mut file, &bytes))
-        .map_err(|e| format!("writing {}: {e}", aside.display()))?;
-    let linked = std::fs::hard_link(&aside, directory.join(name));
-    let _ = std::fs::remove_file(&aside);
-    match linked {
-        Ok(()) => Ok(true),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+    let mut aside = tempfile::Builder::new()
+        .prefix(&format!(".{name}."))
+        .tempfile_in(&directory)
+        .map_err(|e| format!("staging {name}: {e}"))?;
+    std::io::Write::write_all(&mut aside, &bytes)
+        .and_then(|()| aside.as_file().sync_all())
+        .map_err(|e| format!("writing {}: {e}", aside.path().display()))?;
+    let destination = directory.join(name);
+    #[cfg(target_os = "linux")]
+    let published: std::io::Result<()> = rustix::fs::renameat_with(
+        rustix::fs::CWD,
+        aside.path(),
+        rustix::fs::CWD,
+        &destination,
+        rustix::fs::RenameFlags::NOREPLACE,
+    )
+    .map_err(Into::into);
+    // Ordinary run/cancel remains supported elsewhere; automatic wakes require Linux.
+    #[cfg(not(target_os = "linux"))]
+    let published = std::fs::hard_link(aside.path(), &destination);
+    match published {
+        Ok(()) => {
+            #[cfg(target_os = "linux")]
+            aside.disable_cleanup(true);
+            #[cfg(debug_assertions)]
+            observation_barrier(if name.ends_with(".cancel.json") {
+                "cancel-published"
+            } else {
+                "run-published"
+            })?;
+            // On Linux the rename consumed the aside. Elsewhere remove its second link
+            // before returning; TempPath handles cleanup on every error path too.
+            #[cfg(not(target_os = "linux"))]
+            aside
+                .close()
+                .map_err(|e| format!("cleaning recorder stage: {e}"))?;
+            std::fs::File::open(&directory)
+                .and_then(|file| file.sync_all())
+                .map_err(|e| format!("syncing {}: {e}", directory.display()))?;
+            std::fs::File::open(state)
+                .and_then(|file| file.sync_all())
+                .map_err(|e| format!("syncing {}: {e}", state.display()))?;
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            aside
+                .close()
+                .map_err(|e| format!("cleaning recorder collision stage: {e}"))?;
+            Ok(false)
+        }
         Err(error) => Err(format!(
-            "recording {} in {}: {error}",
-            name,
+            "recording {name} in {}: {error}",
             directory.display()
         )),
     }
@@ -247,6 +283,8 @@ pub(crate) fn begin(state: &Path, task_id: &str, writer: &str) -> Result<TaskRun
     record.validate()?;
     for _ in 0..64 {
         if write_new(state, &format!("{task_id}-{}.json", record.run), &record)? {
+            #[cfg(debug_assertions)]
+            observation_barrier("run-recorded")?;
             // A debug build's fixture holds a detached run back before it takes the Task, as a
             // loaded machine can, so its parent's admission window passes first.
             if let Some(delay) = test_duration("AF_TEST_DETACHED_START_DELAY_MS")
@@ -348,7 +386,7 @@ fn status_document(opened: &OpenedTask, state: TaskStateV1) -> TaskStatusV2 {
         .find(|request| request.epoch == task.lease_epoch());
     let budget = task.execution.as_ref().map(|execution| &execution.budget);
     TaskStatusV2 {
-        schema: TASK_STATUS_V2.into(),
+        schema: TASK_STATUS_V3.into(),
         task_id: task.task_id.clone(),
         state,
         node: running
@@ -696,8 +734,19 @@ fn notify_completion(id: &str, code: i32) {
 /// hangup, so it outlives the shell that started it; return once it holds the Task and its plan
 /// is admitted, with its pid and its log. A run that is neither within the admission window is
 /// not claimed to run: the command exits 4 and names `af task status ID`.
-pub(crate) fn detach(id: &str, inspect: &crate::cli::TaskInspectArgs) -> Result<i32, String> {
+pub(crate) fn detach(
+    id: &str,
+    inspect: &crate::cli::TaskInspectArgs,
+    wake_route: Option<&Path>,
+) -> Result<i32, String> {
     let opened = open_task(id, &inspect.repo, inspect.state.as_deref())?;
+    // Parent commits before creating any child. The child receives neither capability nor
+    // registration flag. An interrupted launch remains intent only; no driver can respawn it.
+    if let Some(grant) = wake_route {
+        super::wake::register(id, inspect, grant, true)?;
+        #[cfg(debug_assertions)]
+        observation_barrier("wake-before-launch")?;
+    }
     let state = opened.state.clone();
     crate::storage::owned::private_dir(&runs_dir(&state))?;
     // The log reserves the run number: created only where no file of it exists.
@@ -721,10 +770,12 @@ pub(crate) fn detach(id: &str, inspect: &crate::cli::TaskInspectArgs) -> Result<
         ))
     })()?;
     let exe = std::env::current_exe().map_err(|e| format!("finding the af binary: {e}"))?;
-    let arguments: Vec<std::ffi::OsString> = std::env::args_os()
-        .skip(1)
-        .filter(|word| word != "--detach")
-        .collect();
+    let arguments = super::wake::child_arguments(std::env::args_os().skip(1));
+    let arguments = if wake_route.is_some() {
+        super::wake::pin_child_store(arguments, &state)
+    } else {
+        arguments
+    };
     let mut command = std::process::Command::new(exe);
     command
         .args(&arguments)
@@ -743,6 +794,10 @@ pub(crate) fn detach(id: &str, inspect: &crate::cli::TaskInspectArgs) -> Result<
     let mut child = command
         .spawn()
         .map_err(|e| format!("starting the background run of Task {id}: {e}"))?;
+    #[cfg(debug_assertions)]
+    if wake_route.is_some() {
+        observation_barrier("wake-after-launch")?;
+    }
     let pid = child.id();
     let mut opened = opened;
     let since = std::time::Instant::now();
@@ -792,7 +847,7 @@ pub(crate) fn detach(id: &str, inspect: &crate::cli::TaskInspectArgs) -> Result<
         Admission::Ended => view.state.next_action.clone(),
     };
     let document = TaskDetachedV3 {
-        schema: TASK_DETACHED_V3.into(),
+        schema: TASK_DETACHED_V4.into(),
         task_id: id.into(),
         run,
         pid,
@@ -1048,7 +1103,7 @@ fn cancel_document(
     }
     let (_, view) = opened.view()?;
     let document = TaskCancelledV2 {
-        schema: TASK_CANCELLED_V2.into(),
+        schema: TASK_CANCELLED_V3.into(),
         task_id: id.into(),
         request,
         state: view.state,
@@ -1401,6 +1456,42 @@ mod tests {
     }
 
     #[test]
+    fn completed_recorders_publish_once_under_contention_without_overwrite_or_asides() {
+        use std::os::unix::fs::MetadataExt;
+        let root = tempfile::tempdir().unwrap();
+        let barrier = std::sync::Barrier::new(8);
+        let results = std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..8)
+                .map(|value| {
+                    let barrier = &barrier;
+                    let state = root.path();
+                    scope.spawn(move || {
+                        barrier.wait();
+                        (value, write_new(state, "task-1.json", &value).unwrap())
+                    })
+                })
+                .collect();
+            threads
+                .into_iter()
+                .map(|thread| thread.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let winners: Vec<_> = results.into_iter().filter(|(_, won)| *won).collect();
+        assert_eq!(winners.len(), 1);
+        let path = root.path().join("runs/task-1.json");
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(serde_json::from_slice::<u64>(&bytes).unwrap(), winners[0].0);
+        assert_eq!(std::fs::metadata(&path).unwrap().nlink(), 1);
+        assert_eq!(std::fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
+        assert!(!write_new(root.path(), "task-1.json", &999).unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(
+            std::fs::read_dir(root.path().join("runs")).unwrap().count(),
+            1
+        );
+    }
+
+    #[test]
     fn records_take_the_next_number_and_a_cancel_request_names_its_lease() {
         let directory = tempfile::tempdir().unwrap();
         let state = directory.path();
@@ -1474,7 +1565,7 @@ mod tests {
 
     fn finished(next: &str) -> TaskStatusV2 {
         TaskStatusV2 {
-            schema: TASK_STATUS_V2.into(),
+            schema: TASK_STATUS_V3.into(),
             task_id: "implementation-small".into(),
             state: TaskStateV1::ended(
                 TaskStatePhaseV1::Finished,

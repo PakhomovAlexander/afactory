@@ -34,6 +34,12 @@ impl Machine {
         let root = directory.path().canonicalize().unwrap();
         for name in ["home", "config", "state", "data", "cache", "work"] {
             std::fs::create_dir_all(root.join(name)).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(root.join(name), std::fs::Permissions::from_mode(0o700))
+                    .unwrap();
+            }
         }
         Self {
             _root: directory,
@@ -48,6 +54,7 @@ impl Machine {
             .args(args)
             .current_dir(&self.root)
             .env("HOME", self.root.join("home"))
+            .env("AF_TEST_WAKE_ACCOUNT_HOME", self.root.join("home"))
             .env("XDG_CONFIG_HOME", self.root.join("config"))
             .env("XDG_STATE_HOME", self.root.join("state"))
             .env("XDG_DATA_HOME", self.root.join("data"))
@@ -312,6 +319,7 @@ fn telemetry_overhead_copy_is_writable_from_a_read_only_source() {
         .arg(crate::common::af_binary())
         .current_dir(&machine.root)
         .env("HOME", machine.root.join("home"))
+        .env("AF_TEST_WAKE_ACCOUNT_HOME", machine.root.join("home"))
         .env("XDG_CONFIG_HOME", machine.root.join("config"))
         .env("XDG_STATE_HOME", machine.root.join("state"))
         .env("XDG_DATA_HOME", machine.root.join("data"))
@@ -366,6 +374,7 @@ fn unstarted_check_keeps_its_original_disk_refusal_without_empty_runtime_evidenc
         .arg(crate::common::af_binary())
         .env("TMPDIR", machine.root.join("work"))
         .env("HOME", machine.root.join("home"))
+        .env("AF_TEST_WAKE_ACCOUNT_HOME", machine.root.join("home"))
         .output()
         .unwrap();
     assert!(prepared.status.success(), "{}", text(&prepared));
@@ -393,6 +402,7 @@ fn unstarted_check_keeps_its_original_disk_refusal_without_empty_runtime_evidenc
         text(&output)
     );
     let shown = document(&output);
+    assert_eq!(shown["result"]["execution"], "incomplete", "{shown}");
     assert_eq!(shown["result"]["acceptance"], "inconclusive", "{shown}");
     assert!(shown.get("runtime_observations").is_none(), "{shown}");
     let node = shown["run_reports"][0]["report"]["nodes"]
@@ -467,6 +477,7 @@ fn telemetry_overhead_prepare_runs_no_background_git() {
         .arg(crate::common::af_binary())
         .current_dir(&machine.root)
         .env("HOME", machine.root.join("home"))
+        .env("AF_TEST_WAKE_ACCOUNT_HOME", machine.root.join("home"))
         .env("XDG_CONFIG_HOME", machine.root.join("config"))
         .env("XDG_STATE_HOME", machine.root.join("state"))
         .env("XDG_DATA_HOME", machine.root.join("data"))
@@ -488,6 +499,7 @@ fn telemetry_overhead_prepare_runs_no_background_git() {
                 .args(["config", "--local", "--get", key])
                 .current_dir(&repo)
                 .env("HOME", machine.root.join("home"))
+                .env("AF_TEST_WAKE_ACCOUNT_HOME", machine.root.join("home"))
                 .env("XDG_CONFIG_HOME", machine.root.join("config"))
                 .env("GIT_CONFIG_GLOBAL", "/dev/null")
                 .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -1296,5 +1308,183 @@ fn telemetry_stream_json_cost_gate() {
     assert_eq!(
         judged["gate"]["reasons"][0],
         "drain latency: 1 negative physical duration, kept as measured and not judged"
+    );
+}
+
+/// Exercise the final AF process, including SQLite sidecars, rather than merely checking
+/// an intermediate Python environment dictionary. The libc tripwire's OS account is private
+/// external test state; opening anything there kills the actual final child with exit 94.
+#[test]
+#[cfg(target_os = "linux")]
+fn telemetry_final_child_cannot_open_external_account_authority() {
+    use af_store::{Cas, EventStore};
+    use std::os::unix::fs::PermissionsExt;
+    let machine = Machine::new();
+    let resolver = crate::common::account_resolver(&machine.root);
+    let external = machine.root.join("external-account");
+    let identity =
+        af_store::content_id(&json!({"domain":"af/wake-machine-session-store/1"})).unwrap();
+    let authority = external
+        .join(".local/state/af/task/local")
+        .join(identity.strip_prefix("sha256:").unwrap());
+    af_store::local_fs::create_private_dir_all(&authority).unwrap();
+    std::fs::set_permissions(&external, std::fs::Permissions::from_mode(0o700)).unwrap();
+    Cas::open(authority.join("cas")).unwrap();
+    EventStore::open(authority.join("events.sqlite"))
+        .unwrap()
+        .admit_wake_incarnation()
+        .unwrap();
+    let snapshot = || {
+        let mut files: Vec<_> = std::fs::read_dir(&authority)
+            .unwrap()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                (
+                    path.file_name().unwrap().to_owned(),
+                    if path.is_file() {
+                        std::fs::read(path).unwrap()
+                    } else {
+                        Vec::new()
+                    },
+                )
+            })
+            .collect();
+        files.sort();
+        files
+    };
+    let before = snapshot();
+    // Calibrate the final-child tripwire against the actual production OS-account lookup.
+    let refused = crate::common::af()
+        .env_remove("AF_TEST_WAKE_ACCOUNT_HOME")
+        .env("LD_PRELOAD", &resolver)
+        .env("WAKE_FIXTURE_ACCOUNT_MODE", "home")
+        .env("WAKE_FIXTURE_ACCOUNT_HOME", &external)
+        .env("WAKE_FIXTURE_FORBID_OPEN", &external)
+        .args(["storage", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(refused.status.code(), Some(94), "{}", text(&refused));
+    let program = r#"
+import importlib.util, pathlib, subprocess, sys
+sys.dont_write_bytecode = True
+root, af, work = pathlib.Path(sys.argv[1]), sys.argv[2], pathlib.Path(sys.argv[3])
+for name in ('telemetry-overhead.py', 'telemetry-invocation-cost.py', 'telemetry-corpus.py'):
+    spec = importlib.util.spec_from_file_location('measurement', root / 'scripts' / name)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    if name == 'telemetry-invocation-cost.py':
+        module = module.overhead
+    env = module.private_env(work) if name == 'telemetry-corpus.py' else module.private_env(work, 'off')
+    child = subprocess.run([af, 'storage', '--json'], env=env, capture_output=True)
+    assert child.returncode == 0, (name, child.returncode, child.stderr)
+    assert b'"schema"' in child.stdout, child.stdout
+"#;
+    let output = Command::new("python3")
+        .args(["-I", "-c", program])
+        .arg(workspace())
+        .arg(crate::common::af_binary())
+        .arg(machine.root.join("work"))
+        .env("HOME", machine.root.join("home"))
+        .env("AF_TEST_WAKE_ACCOUNT_HOME", machine.root.join("home"))
+        .env("LD_PRELOAD", &resolver)
+        .env("WAKE_FIXTURE_ACCOUNT_MODE", "home")
+        .env("WAKE_FIXTURE_ACCOUNT_HOME", &external)
+        .env("WAKE_FIXTURE_FORBID_OPEN", &external)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", text(&output));
+    // Release-shaped execution: remove the debug override, use the real libc NSS
+    // resolver inside the namespace and retain the external-account open tripwire.
+    let private_os_home = machine.root.join("os-account");
+    af_store::local_fs::create_private_dir_all(&private_os_home).unwrap();
+    let private_authority = private_os_home
+        .join(".local/state/af/task/local")
+        .join(identity.strip_prefix("sha256:").unwrap());
+    af_store::local_fs::create_private_dir_all(&private_authority).unwrap();
+    Cas::open(private_authority.join("cas")).unwrap();
+    EventStore::open(private_authority.join("events.sqlite"))
+        .unwrap()
+        .admit_wake_incarnation()
+        .unwrap();
+    let isolated = Command::new("python3")
+        .args(["-I", "-B"])
+        .arg(workspace().join("scripts/performance/perflab/account_isolation.py"))
+        .arg(&private_os_home)
+        .arg(crate::common::af_binary())
+        .args(["storage", "--json"])
+        .env_remove("AF_TEST_WAKE_ACCOUNT_HOME")
+        .env("HOME", machine.root.join("home"))
+        .env("XDG_STATE_HOME", machine.root.join("state"))
+        .env("XDG_CONFIG_HOME", machine.root.join("config"))
+        .env("XDG_DATA_HOME", machine.root.join("data"))
+        .env("XDG_CACHE_HOME", machine.root.join("cache"))
+        .env("LD_PRELOAD", &resolver)
+        .env("WAKE_FIXTURE_ACCOUNT_MODE", "passthrough")
+        .env("WAKE_FIXTURE_FORBID_OPEN", &external)
+        .output()
+        .unwrap();
+    assert!(isolated.status.success(), "{}", text(&isolated));
+    assert!(
+        String::from_utf8_lossy(&isolated.stdout).contains(private_authority.to_str().unwrap()),
+        "the actual private OS-account authority must remain inventoried: {}",
+        text(&isolated)
+    );
+    // Required e2e coverage, rather than author-only release-smoke commands. Exercise
+    // actual AF inventory, provider selection and Task planning under both path families,
+    // including search-only foreign ancestry and enough siblings to overflow old argv.
+    for family in ["tmp", "home", "var", "usr-local", "split-tmp"] {
+        for case in ["ordinary", "search-only", "populated"] {
+            let home = machine.root.join(family).join(case).join("os-account");
+            let authority = home
+                .join(".local/state/af/task/local")
+                .join(identity.strip_prefix("sha256:").unwrap());
+            af_store::local_fs::create_private_dir_all(&authority).unwrap();
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+            Cas::open(authority.join("cas")).unwrap();
+            EventStore::open(authority.join("events.sqlite"))
+                .unwrap()
+                .admit_wake_incarnation()
+                .unwrap();
+        }
+    }
+    // Writable measurement work belongs to Cargo's runtime volume, independently of
+    // the sealed source and of a potentially small /tmp filesystem.
+    let work_home = crate::common::private_home_env()
+        .into_iter()
+        .find(|(name, _)| *name == "HOME")
+        .unwrap()
+        .1;
+    let work = tempfile::Builder::new()
+        .prefix("namespace-work-")
+        .tempdir_in(work_home)
+        .unwrap();
+    // The helper prepares each launch outside its one user namespace. It composes
+    // aliases/split filesystems there and maps even a root caller to non-root AF.
+    for family in ["tmp", "home", "var", "usr-local", "split-tmp"] {
+        let native = Command::new("python3")
+            .args(["-I", "-B"])
+            .arg(workspace().join("scripts/performance/tests/account_namespace_smoke.py"))
+            .arg(&machine.root)
+            .arg(crate::common::af_binary())
+            .arg(&resolver)
+            .arg(family)
+            .arg(work.path())
+            .env_remove("AF_TEST_WAKE_ACCOUNT_HOME")
+            .output()
+            .unwrap();
+        assert!(native.status.success(), "{}", text(&native));
+        assert_eq!(
+            String::from_utf8_lossy(&native.stdout)
+                .matches("non-root namespace: inventory, native Provider refusal and ready Task:")
+                .count(),
+            3,
+            "{}",
+            text(&native)
+        );
+    }
+    assert_eq!(
+        snapshot(),
+        before,
+        "external database/key/WAL/SHM must be unchanged"
     );
 }

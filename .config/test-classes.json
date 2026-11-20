@@ -7,7 +7,8 @@
     "test-changelog-notes.py",
     "test-gate-owner.py",
     "test-test-quarantine.py",
-    "test-dev-release.py"
+    "test-dev-release.py",
+    "test-contract-inventory.py"
   ],
   "binaries": {
     "af::bin/af": "functional",
@@ -63,7 +64,8 @@
     "af-source-issue::sources": "e2e",
     "af-source-issue::transport": "e2e",
     "af-store": "functional",
-    "af-telemetry": "functional"
+    "af-telemetry": "functional",
+    "af-runner::contract_inventory": "functional"
   },
   "exact": {
     "af::bin/af self_optimizer::optimization_adapters::tests::codex_continued_range_adopts_its_first_named_session_as_unverified": "functional",
@@ -102,6 +104,7 @@
     "af-sandbox::seal unchanged_large_tree_sandbox_measurement": "perf",
     "af-source-git::it capture::dirty_capture_large_tree_measurement": "perf",
     "af-store cas::tests::bench_put_throughput": "perf",
+    "af::it telemetry_bench::telemetry_final_child_cannot_open_external_account_authority": "e2e",
     "af::it telemetry_bench::unstarted_check_keeps_its_original_disk_refusal_without_empty_runtime_evidence": "e2e"
   },
   "hosted_checks": {
@@ -367,7 +370,9 @@
     "test-workspace-fixtures.py": "functional",
     "test-workspace-fixture-benchmark.py": "perf",
     "test-scenario-merge-watch.py": "e2e",
-    "test-dev-release.py": "e2e"
+    "test-task-wake-probe.py": "functional",
+    "test-dev-release.py": "e2e",
+    "test-contract-inventory.py": "functional"
   },
   "utilities": [
     "test-classes.py",

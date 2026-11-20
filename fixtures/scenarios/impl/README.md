@@ -10,14 +10,19 @@ execution. `team.example.json` demonstrates caller-owned model, Provider, effort
 independence configuration; its packages receive native digest validation but no model is invoked.
 The focused generated recipe lifecycle test uses the inert workspace outcome service, one modeled
 PR identity, exact signed local Decisions and a separate human merge flag to cover zero/one/two
-repairs. The native continuation test executes findings delivery with these command Workers.
+repairs. Each successful implementation passes a separately pinned read-only verification Task,
+which consumes total resources without consuming a repair slot. The verifier rejection fixture
+then fails its first repair's gate before the second repair and its verifier accept.
+The native continuation test executes findings delivery with these command Workers.
 No adapter or private runtime operation is installed by the recipe.
 
 Run the generated recipe tests and the separate installed production adapter regression with:
 
 ```sh
-cargo test --locked -p af --test it generated_impl
-cargo test --locked -p af --test it production_workspace_scenario_repairs_same_pr_and_cleans_only_after_merge
+cargo nextest run --workspace --locked --profile ci \
+  -E 'binary_id(af::it) & test(/scenario::generated_impl/)'
+cargo nextest run --workspace --locked --profile ci \
+  -E 'binary_id(af::it) & test(/production_workspace_scenario_repairs_same_pr_and_cleans_only_after_merge/)'
 ```
 
 `production_workspace_scenario_repairs_same_pr_and_cleans_only_after_merge` uses the reusable

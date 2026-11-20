@@ -132,14 +132,15 @@ fn aggregate_disk_bounds_are_mandatory_finite_exact_and_within_machine_authority
 
 #[test]
 fn worker_storage_recovery_intent_has_strict_versioned_schema_parity() {
-    let schema = validator("worker-storage-v1.json");
-    let valid = json!({"schema":"af.worker-storage/1","runtime":"/usr/bin/docker","name":"af-storage-Ab123"});
-    let lease: WorkerStorageLeaseV1 = serde_json::from_value(valid.clone()).unwrap();
+    let schema = validator("worker-storage-v2.json");
+    let valid = json!({"schema":"af.worker-storage/2","runtime":"/usr/bin/docker","name":"af-storage-Ab123"});
+    let lease: WorkerStorageLeaseV2 = serde_json::from_value(valid.clone()).unwrap();
     lease.validate().unwrap();
     assert!(schema.is_valid(&valid));
     assert_eq!(serde_json::to_value(lease).unwrap(), valid);
     for (field, value) in [
         ("schema", "af.worker-storage/0"),
+        ("schema", "af.worker-storage/1"),
         ("name", "unrelated-volume"),
         ("name", "af-storage-../../host"),
         ("runtime", "relative"),
@@ -148,7 +149,7 @@ fn worker_storage_recovery_intent_has_strict_versioned_schema_parity() {
         invalid[field] = json!(value);
         assert!(!schema.is_valid(&invalid));
         assert!(
-            serde_json::from_value::<WorkerStorageLeaseV1>(invalid)
+            serde_json::from_value::<WorkerStorageLeaseV2>(invalid)
                 .unwrap()
                 .validate()
                 .is_err()
@@ -157,7 +158,7 @@ fn worker_storage_recovery_intent_has_strict_versioned_schema_parity() {
     let mut invalid = valid;
     invalid["worker_path"] = json!("/host");
     assert!(!schema.is_valid(&invalid));
-    assert!(serde_json::from_value::<WorkerStorageLeaseV1>(invalid).is_err());
+    assert!(serde_json::from_value::<WorkerStorageLeaseV2>(invalid).is_err());
 }
 
 #[test]

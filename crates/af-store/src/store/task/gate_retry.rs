@@ -271,6 +271,7 @@ impl TaskProjection {
                 ))
             })?;
         }
+        self.lifecycle_episode += 1;
         self.phase = TaskPhaseV1::Running {};
         self.artifact_refs.extend(retry.artifact_refs());
         self.gate_retries.push(retry.clone());

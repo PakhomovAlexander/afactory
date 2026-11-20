@@ -13,7 +13,8 @@ sys.path.insert(0, LAB)
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--module', choices=['test_telemetry_bench_contracts'])
+    parser.add_argument('--module', choices=['test_telemetry_bench_contracts', 'test_nightly_scenario', 'test_nightly_build',
+        'test_nightly_report', 'test_nightly_measure', 'test_nightly_publish', 'test_release_comparison', 'test_contracts'])
     args = parser.parse_args()
     tests = unittest.defaultTestLoader.discover(os.path.join(LAB, "tests"), top_level_dir=LAB,
                                                   pattern=(args.module + ".py") if args.module else "test*.py")

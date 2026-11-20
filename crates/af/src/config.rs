@@ -516,6 +516,88 @@ pub(crate) fn home() -> Result<PathBuf, String> {
     absolute_env("HOME")?.ok_or_else(|| "HOME is not set or not absolute".to_string())
 }
 
+/// Original-session authority is selected by the OS account, never by per-invocation
+/// HOME/XDG/Store selectors. This is an ordinary bounded Task Store, not a locator.
+pub(crate) fn wake_session_store_path() -> Result<Option<PathBuf>, String> {
+    if !cfg!(target_os = "linux") {
+        return Ok(None);
+    }
+    #[cfg(test)]
+    {
+        Ok(None) // Unit storage layouts inject their own inventory path.
+    }
+    #[cfg(not(test))]
+    {
+        #[cfg(debug_assertions)]
+        let fixture = std::env::var_os("AF_TEST_WAKE_ACCOUNT_HOME").map(PathBuf::from);
+        #[cfg(not(debug_assertions))]
+        let fixture: Option<PathBuf> = None;
+        let home = match fixture {
+            Some(home) => Some(home),
+            None => os_account_home()?,
+        };
+        // Missing/unsuitable account identity is an unavailable optional capability.
+        // Lookup I/O errors still propagate; HOME/XDG never substitute for authority.
+        let Some(home) = home.filter(|home| home.is_absolute() && home != Path::new("/")) else {
+            return Ok(None);
+        };
+        wake_session_store_at(&home).map(Some)
+    }
+}
+
+fn os_account_home() -> Result<Option<PathBuf>, String> {
+    let uid = nix::unistd::geteuid();
+    let Some(user) =
+        nix::unistd::User::from_uid(uid).map_err(|e| format!("Reading wake OS account: {e}"))?
+    else {
+        return Ok(None);
+    };
+    if user.uid != uid {
+        return Err("Wake OS account identity mismatch".into());
+    }
+    Ok(Some(user.dir))
+}
+
+/// Refuse destructive operations overlapping the reserved account authority, even when
+/// it does not exist yet. No existence/empty test can serialize deletion with first grant.
+pub(crate) fn protect_wake_authority(path: &Path) -> Result<(), String> {
+    for authority in wake_authority_paths()? {
+        let path = canonical_root(path);
+        if authority.starts_with(&path) || path.starts_with(&authority) {
+            return Err(format!(
+                "kept {}: reserved OS-account wake authority (including original-session uncertainty)",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn wake_authority_paths() -> Result<Vec<PathBuf>, String> {
+    Ok(wake_session_store_path()?
+        .into_iter()
+        .flat_map(|path| {
+            // Protect both the reserved spelling and its resolved destination. A damaged
+            // symlink must not make ordinary cleanup erase incomplete authority either.
+            [canonical_root(&path), path]
+        })
+        .collect())
+}
+
+fn wake_session_store_at(home: &Path) -> Result<PathBuf, String> {
+    if !home.is_absolute() || home == Path::new("/") {
+        return Err("Wake OS account home must be absolute and non-root".into());
+    }
+    let identity =
+        af_store::content_id(&serde_json::json!({"domain":"af/wake-machine-session-store/1"}))
+            .map_err(|e| e.to_string())?;
+    Ok(home.join(".local/state/af/task/local").join(
+        identity
+            .strip_prefix("sha256:")
+            .ok_or("Invalid machine wake identity")?,
+    ))
+}
+
 fn xdg(name: &str, fallback: &str) -> Result<PathBuf, String> {
     match absolute_env(name)? {
         Some(path) => Ok(path),
@@ -1201,6 +1283,60 @@ pub(crate) fn open_in_editor(path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wake_os_account_lookup_ignores_storage_environment() {
+        const CHILD: &str = "AF_TEST_WAKE_OS_ACCOUNT_LOOKUP_CHILD";
+        if let Some(expected) = std::env::var_os(CHILD) {
+            // Read the OS account record only. Never open or write its real home/state.
+            assert_eq!(
+                serde_json::to_string(&os_account_home().unwrap()).unwrap(),
+                expected.to_str().unwrap()
+            );
+            return;
+        }
+        let expected = serde_json::to_string(&os_account_home().unwrap()).unwrap();
+        for index in 0..2 {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "config::tests::wake_os_account_lookup_ignores_storage_environment",
+                ])
+                .env_clear()
+                .env(CHILD, &expected)
+                .env("HOME", format!("/caller-selected-{index}"))
+                .env("XDG_STATE_HOME", format!("/other-state-{index}"))
+                .env("XDG_CONFIG_HOME", format!("/other-config-{index}"))
+                .env(
+                    "AF_TEST_WAKE_ACCOUNT_HOME",
+                    "/debug-scope-is-not-the-os-account",
+                )
+                .env("USER", "caller-selected-user")
+                .env("LOGNAME", "caller-selected-user")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    #[test]
+    fn wake_authority_has_one_fixed_account_relative_location() {
+        let account = Path::new("/private/account");
+        let authority = wake_session_store_at(account).unwrap();
+        assert_eq!(
+            authority.parent().unwrap(),
+            account.join(".local/state/af/task/local")
+        );
+        assert_eq!(authority, wake_session_store_at(account).unwrap());
+        assert!(wake_session_store_at(Path::new("relative")).is_err());
+        assert!(wake_session_store_at(Path::new("/")).is_err());
+        // Unit builds cannot accidentally inventory the real account.
+        assert_eq!(wake_session_store_path().unwrap(), None);
+    }
 
     #[test]
     fn tables_merge_scalars_replace_arrays_replace() {

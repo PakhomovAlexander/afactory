@@ -61,6 +61,14 @@ commit, a new scoped branch and a normal PR carrying native Task and measurement
 retain their own authority. See the
 [decision](docs/adr/2026-11-06-publish-verified-performance-under-standing-owner-authority.md).
 
+**Implementation publication**:
+The explicit `publish_implementation_pr_v1` Action uses owner-confirmed startup scope for first
+and same-PR publication of an accepted implementation and independent whole-goal verification.
+Native proof binds the original goal, requirements, baseline, candidate and Run/template pool;
+live mutation checks retain cancellation, expiry, actor, source and destination authority.
+Generic signed and performance capabilities remain separate. Human merge remains external; see
+[the C1 decision](docs/adr/2026-11-16-publish-implementation-under-native-startup-scope.md).
+
 **Ant**:
 An accountable owner's scheduled binding of a Scenario pin and typed inputs, with an explicit
 pinned daily timezone or fixed-rate integral-second interval, notification route, overlap and missed-occurrence policies and per-run and
@@ -486,7 +494,7 @@ instrument.
 _Avoid_: **Authority Snapshot** — the Review Kernel's pinned review policy.
 
 **Performance Schedule**:
-The `af.perf-schedule/2` record of one Actions event, resolved once to full SHAs by the trusted
+The `af.perf-schedule/3` record of one Actions event, resolved once to full SHAs by the trusted
 control revision's own scripts: the event and its pull request, whether it is trusted and which
 executor it may use, each comparison it freezes or why that comparison is unavailable or
 refused, and the Release Claim it measures, if any. Enforcement in it is always advisory

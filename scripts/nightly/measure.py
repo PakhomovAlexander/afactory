@@ -82,7 +82,7 @@ def run_command(argv):
 # Configuration and the night ----------------------------------------------------------------
 
 def load_config(path):
-    """The af.nightly-config/1 TOML at `path`, its `[report]` table required (its
+    """The af.nightly-config/2 TOML at `path`, its `[report]` table required (its
     executor_config is the executor measured on) and `[measure]` defaulted."""
     try:
         with open(path, "rb") as stream:
@@ -273,7 +273,7 @@ def parse(argv):
     commands.required = True
     command = commands.add_parser("submit", help="submit the night's core and telemetry "
                                   "originals and cycle the nightly executor until both end")
-    command.add_argument("--config", required=True, help="the af.nightly-config/1 TOML with "
+    command.add_argument("--config", required=True, help="the af.nightly-config/2 TOML with "
                          "its [report] table")
     nightly_chain.add_night_options(command)
     return parser.parse_args(argv)

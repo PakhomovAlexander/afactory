@@ -1867,3 +1867,45 @@ fn worker_cache_toml_ports_are_kernel_constructed_and_cannot_claim_acceptance_au
         "a Worker cannot author a Build Cache without the host capture policy"
     );
 }
+
+#[test]
+fn provider_schema_preflight_covers_document_workers_before_account_admission() {
+    for (schema, valid) in [
+        (json!({"type":"string","const":4}), true),
+        (json!({"type":"bogus"}), false),
+        (json!({"type":"array","items":{"type":"bogus"}}), false),
+        (json!({"const":"document"}), true),
+        (
+            json!({"type":"object","additionalProperties":{"type":"string"}}),
+            true,
+        ),
+    ] {
+        let mut f = Fixture::new();
+        f.compiler
+            .workers
+            .get_mut("builtin/document-author")
+            .unwrap()
+            .runner = TaskWorkerRunner::Model {
+            provider_kind: "codex".into(),
+            model: "fixture".into(),
+            effort: "high".into(),
+        };
+        f.compiler
+            .packages
+            .get_mut("builtin/document-author")
+            .unwrap()
+            .bytes
+            .files
+            .insert(
+                "outputs/output.schema.json".into(),
+                serde_json::to_vec(&schema).unwrap(),
+            );
+        let result =
+            f.compiler
+                .required_worker_packages(&f.cas, &f.revision_id, "builtin/document");
+        assert_eq!(result.is_ok(), valid, "{schema}: {result:?}");
+        if let Err(error) = result {
+            assert!(error.contains("Worker builtin/document-author"), "{error}");
+        }
+    }
+}

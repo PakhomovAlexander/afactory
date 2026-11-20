@@ -1,6 +1,6 @@
 {
   "schema": "af.dev-release-policy/3",
-  "compatibility": "Breaking persisted Ant/Scenario shapes: Scenario Store 10, Scenario definitions/bundles/pins/runs/list 6, Ant definitions/pins/tick 7, Ant state/list 8 and inspection 3. Task templates and template pins are generation 2 and seal captured local Worker authority; restart never reopens original local package paths. Finish or discard prior-release runs and state before upgrading; no migration or replay of retired shapes. Review committed authority and refresh its lock with the published release; pin adoption is a separate reviewed PR.",
+  "compatibility": "Breaking combined Scenario/Ant and publication shapes: Scenario definitions/bundles 10, policy 8, pins/runs/list 11, Store 17 with retained driver 2 and typed bounded preflight waits; Ant definition 11, pin/tick 12, state/list 13, inspection 8; adapter request 8/response 3, workspace config 3/state 6 and GitHub journal 9, native Git candidate request/export 2. Nightly config/publish 2 and native nightly service/job/completion 1 retain separate release scope and external signing permission. Implementation startup scope 2 retains exact native scoped publication, finite progress and bounded repairs. Generic signed and performance authority stay separate. Finish or discard prior-release state; no migration or replay of retired shapes. Review and commit authority and refresh its lock before adoption. Performance executor 5, history 2, equivalence 2 and schedule 3 remain required. Native Task kernel failures are execution_failed/kernel_execution (exit 8); Task state/status/findings 3, inspection 21 and report/checks 4 replace their earlier public formats. Scenario terminal outcome 2 carries that failure without repair or publication authority.",
   "required_features": {
     "crates/af-scenario/src/retention.rs": [
       "settlement",
@@ -10,44 +10,44 @@
       "roadmap"
     ],
     "crates/af-scenario/src/store.rs": [
-      "af/scenario-store@10",
+      "af/scenario-store@17",
       "run_capacity"
     ],
-    "schemas/scenario-store-v10.json": [
-      "af/scenario-store@10"
+    "schemas/scenario-store-v17.json": [
+      "af/scenario-store@17"
     ],
-    "schemas/scenario-v6.json": [
-      "af/scenario@6"
+    "schemas/scenario-v10.json": [
+      "af/scenario@10"
     ],
-    "schemas/scenario-bundle-v6.json": [
-      "af/scenario-bundle@6"
+    "schemas/scenario-bundle-v10.json": [
+      "af/scenario-bundle@10"
     ],
-    "schemas/scenario-pin-v6.json": [
-      "af/scenario-pin@6"
+    "schemas/scenario-pin-v11.json": [
+      "af/scenario-pin@11"
     ],
-    "schemas/scenario-run-v6.json": [
-      "af/scenario-run@6"
+    "schemas/scenario-run-v11.json": [
+      "af/scenario-run@11"
     ],
-    "schemas/scenario-list-v6.json": [
-      "af/scenario-list@6"
+    "schemas/scenario-list-v11.json": [
+      "af/scenario-list@11"
     ],
-    "schemas/ant-v7.json": [
-      "af/ant@7"
+    "schemas/ant-v11.json": [
+      "af/ant@11"
     ],
-    "schemas/ant-pin-v7.json": [
-      "af/ant-pin@7"
+    "schemas/ant-pin-v12.json": [
+      "af/ant-pin@12"
     ],
-    "schemas/ant-tick-v7.json": [
-      "af/ant-tick@7"
+    "schemas/ant-tick-v12.json": [
+      "af/ant-tick@12"
     ],
-    "schemas/ant-state-v8.json": [
-      "af/ant-state@8"
+    "schemas/ant-state-v13.json": [
+      "af/ant-state@13"
     ],
-    "schemas/ant-inspection-v3.json": [
-      "af/ant-inspection@3"
+    "schemas/ant-inspection-v8.json": [
+      "af/ant-inspection@8"
     ],
-    "schemas/ant-list-v8.json": [
-      "af/ant-list@8"
+    "schemas/ant-list-v13.json": [
+      "af/ant-list@13"
     ],
     "schemas/scenario-task-template-v2.json": [
       "af/scenario-task-template@2",
@@ -65,6 +65,77 @@
       "validate_pin(&store, &cas, template)?",
       "restore_compiler(&cas, &authority, &settings)?",
       "recorded_bindings != template.bindings"
+    ],
+    "schemas/performance-executor-v5.json": [
+      "af.perf-executor/5"
+    ],
+    "schemas/performance-history-v2.json": [
+      "af.perf-history/2"
+    ],
+    "schemas/performance-equivalence-v2.json": [
+      "af.perf-equivalence/2"
+    ],
+    "schemas/performance-schedule-v3.json": [
+      "af.perf-schedule/3"
+    ],
+    "schemas/scenario-policy-v8.json": [
+      "af/scenario-policy@8",
+      "implementation_startup"
+    ],
+    "schemas/implementation-startup-scope-v2.json": [
+      "af/implementation-startup-scope@2"
+    ],
+    "schemas/implementation-pr-proof-v1.json": [
+      "af/implementation-pr-proof@1"
+    ],
+    "schemas/implementation-pr-live-v1.json": [
+      "af/implementation-pr-live@1"
+    ],
+    "crates/af/src/task_commands/candidate/implementation.rs": [
+      "af/implementation-pr-proof@1",
+      "TaskBaseV1"
+    ],
+    "scripts/scenario-git-workspace.py": [
+      "publish_implementation_pr_v1",
+      "implementation_live"
+    ],
+    "crates/af-scenario/src/driver.rs": [
+      "af/scenario-driver@2",
+      "DEFAULT_POLL_MS",
+      "MAX_RESUMES"
+    ],
+    "schemas/scenario-driver-v2.json": [
+      "af/scenario-driver@2"
+    ],
+    "schemas/scenario-adapter-response-v3.json": [
+      "af/scenario-adapter-response@3"
+    ],
+    "schemas/github-adapter-state-v9.json": [
+      "af/github-adapter-state@9"
+    ],
+    "schemas/git-candidate-source-request-v2.json": [
+      "af/git-candidate-source-request@2"
+    ],
+    "schemas/git-candidate-source-v2.json": [
+      "af/git-candidate-source@2"
+    ],
+    "schemas/scenario-adapter-request-v8.json": [
+      "af/scenario-adapter-request@8"
+    ],
+    "schemas/git-workspace-state-v6.json": [
+      "af/git-workspace-state@6"
+    ],
+    "schemas/nightly-service-v1.json": [
+      "af/nightly-service@1"
+    ],
+    "schemas/nightly-job-v1.json": [
+      "af/nightly-job@1"
+    ],
+    "schemas/nightly-completion-v1.json": [
+      "af/nightly-completion@1"
+    ],
+    "schemas/implementation-startup-failure-v1.json": [
+      "af/implementation-startup-failure@1"
     ]
   },
   "targets": [
@@ -90,9 +161,9 @@
     "workflow": "ci.yml",
     "source_files": {
       ".github/workflows/ci.yml": "27944b207fc1e97dcde3b3647647b0c6666f0ddaa21ae7c32ce895dba8bcbe6b",
-      ".github/workflows/validate.yml": "72ce2eba5719dbed33bb266b0a24f25ce2ddeda05d7888bcce5df46a053b3a06",
+      ".github/workflows/validate.yml": "03d50c45fbab7fdb6bd508d6fde4fcfd9d823c675ae5a27da53fa8b611982468",
       "scripts/test-classes.py": "1b1b5c4226aebdab601f9222d86fcd58c414ac2bc840434f5dbd67c63423020d",
-      ".config/test-classes.json": "f7e9bd33c6955be1bc494e5bb6996f38bb50d8d9f8b998853081f29a4871eecd"
+      ".config/test-classes.json": "c86cc274d14858f99da80129e60684b5b08c08b4076fc1c07b2e1cb214d13411"
     }
   }
 }

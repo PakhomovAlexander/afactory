@@ -242,8 +242,8 @@ Rules for a coding agent, or a script, that drives af for someone:
   `af config show --json` a document with no `schema`.
 - **Branch on the exit code.** `af review run` exits 0 pass, 3 fail, 4 incomplete. A foreground
   `af task run` exits 0 verified, 3 changes requested, 4 cancelled, exhausted or waiting for a
-  person, 5 gate failed, 6 Provider failed, 7 expired. With `--detach`, 0 only means the run
-  started: `af task wait` returns the outcome, or 124 when its `--timeout` passes. 1 is an error
+  person, 5 gate failed, 6 Provider failed, 7 expired, 8 kernel execution failed. With `--detach`,
+  0 only means the run started: `af task wait` returns the outcome, or 124 when its `--timeout` passes. 1 is an error
   and 2 a usage error (`af help exit-codes`).
 - **Follow `next_action`, with care.** The documents that describe a Task's state
   (`af task show`, `status`, `wait`, `findings` and the others `af help json` lists) carry

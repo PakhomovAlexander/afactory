@@ -385,7 +385,8 @@ pub fn transport_outcome(status: &Result<std::process::ExitStatus, crate::Runner
 /// [`stderr_excerpt`] and the CLI's own upgrade hint. Read before any privacy filter replaces the
 /// captured stream, so a recognized failure keeps the Worker's own last words; every line went
 /// through the credential filter, and when either stream carries challenge or credential material
-/// the excerpt is the marker alone, as the privacy filter then replaces both streams.
+/// the excerpt is the marker alone, as the privacy filter then replaces both streams. Native
+/// adapters also apply [`Self::redact_auth`] after determining authentication sensitivity.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WorkerStderr {
     excerpt: Option<String>,
@@ -393,6 +394,15 @@ pub struct WorkerStderr {
 }
 
 impl WorkerStderr {
+    /// Apply native-channel authentication sensitivity after classification, independently of
+    /// the selected failure kind. Discard both saved text and CLI-supplied fix suggestions.
+    pub fn redact_auth(&mut self, auth_seen: bool) {
+        if auth_seen {
+            self.excerpt = Some(WITHHELD_LINE.to_string());
+            self.fix = None;
+        }
+    }
+
     pub fn read(stderr: &[u8], stdout: &[u8]) -> Self {
         if crate::native_failure::carries_auth_material(stdout) {
             return Self {
@@ -906,6 +916,30 @@ Options:
             fix.as_deref(),
             Some("Run `npm i -g @openai/codex` to repair")
         );
+    }
+
+    #[test]
+    fn native_auth_sensitivity_withholds_saved_excerpt_and_fix_on_every_ending() {
+        use std::os::unix::process::ExitStatusExt;
+        let raw = b"HTTP 401 authentication_error for alice@example.com; invalid_json_schema\nRun `brew upgrade alice@example.com` to upgrade.\n";
+        let mut said = WorkerStderr::read(raw, b"");
+        assert!(said.excerpt.as_ref().unwrap().contains("alice@example.com"));
+        assert!(said.fix.as_ref().unwrap().contains("alice@example.com"));
+        let original = said.clone();
+        said.redact_auth(false);
+        assert_eq!(said, original, "non-authentication evidence stays intact");
+        said.redact_auth(true);
+        assert_eq!(said.excerpt.as_deref(), Some(WITHHELD_LINE));
+        assert!(said.fix.is_none());
+        for status in [
+            Ok(std::process::ExitStatus::from_raw(256)),
+            Err(crate::RunnerError::TimedOut { after_ms: 1000 }),
+            Err(crate::RunnerError::Unavailable("output truncated".into())),
+        ] {
+            let diagnostic = ended_without_result(&status, &said);
+            assert!(diagnostic.contains(WITHHELD_LINE), "{diagnostic}");
+            assert!(!diagnostic.contains("alice@example.com"), "{diagnostic}");
+        }
     }
 
     #[test]

@@ -39,7 +39,7 @@ const EVENT_LOG: [&str; 4] = [
 /// task run` (`runs`, ADR-0211), the owner marker, the run lock ([`super::RUNNING_LOCK`]), and
 /// the Task delivery lock database with its SQLite files (`task.rs`), and disposable Attempt
 /// activity (`activity`). Nothing else af writes there.
-const AF_ENTRIES: [&str; 14] = [
+const AF_ENTRIES: [&str; 16] = [
     EVENT_LOG[0],
     EVENT_LOG[1],
     EVENT_LOG[2],
@@ -48,6 +48,8 @@ const AF_ENTRIES: [&str; 14] = [
     "git-home",
     "runs",
     "activity",
+    "wake-checkpoint-key-v1",
+    "wake-checkpoint-key-v1.pending",
     MARKER,
     super::RUNNING_LOCK,
     "task-delivery-lock.sqlite",
@@ -525,6 +527,31 @@ mod tests {
         if marked {
             std::fs::write(path.join(MARKER), MARKER_TEXT).unwrap();
         }
+    }
+
+    #[test]
+    fn wake_provenance_key_and_crash_stage_are_accounted_and_removed_with_store() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let path = root.join("store");
+        prepare(&path, true).unwrap();
+        let before = af_bytes(&path).unwrap();
+        for name in ["wake-checkpoint-key-v1", "wake-checkpoint-key-v1.pending"] {
+            std::fs::write(path.join(name), [7u8; 32]).unwrap();
+        }
+        let allocated: u64 = ["wake-checkpoint-key-v1", "wake-checkpoint-key-v1.pending"]
+            .iter()
+            .map(|name| {
+                use std::os::unix::fs::MetadataExt;
+                std::fs::metadata(path.join(name)).unwrap().blocks() * 512
+            })
+            .sum();
+        assert_eq!(af_bytes(&path).unwrap(), before + allocated);
+        assert!(admit(&path).is_ok());
+        let identity = af_sandbox::Identity::of(&path).unwrap();
+        let removed = remove_with(&root, &path, identity).unwrap();
+        assert!(removed.left.is_empty());
+        assert!(!path.exists());
     }
 
     /// A removal that stops part way keeps the event log and the owner marker (the next sweep

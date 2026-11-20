@@ -74,6 +74,7 @@ mod structured;
 mod task_file_home;
 mod task_file_shape;
 pub(super) mod task_report;
+pub(crate) mod wake;
 
 #[derive(Clone)]
 pub(crate) struct ReviewSelectors {
@@ -4291,7 +4292,7 @@ pub(super) fn list_common(state: &Path) -> Result<Vec<serde_json::Value>, String
         // The same state `af task show` prints, from the same derivation.
         let cancelled = runs::cancelled_epoch(Some(state), &task);
         let view = selected_view(&cas, &task, result.as_ref(), now, cancelled)?;
-        Ok(json!({"schema":TASK_LIST_ENTRY_V4,"task_id":task.task_id,"kind":task.revision.kind,"phase":task.phase,
+        Ok(json!({"schema":TASK_LIST_ENTRY_V5,"task_id":task.task_id,"kind":task.revision.kind,"phase":task.phase,
             "state":view.state,
             "round":review_round(&task),
             "chargeable_tokens":task.execution.as_ref().map_or(0,|e| e.budget.committed_tokens()).to_string(),
@@ -4333,7 +4334,7 @@ pub(super) fn list_common(state: &Path) -> Result<Vec<serde_json::Value>, String
 }
 
 /// One entry of `af task list --json`.
-pub(crate) const TASK_LIST_ENTRY_V4: &str = "af/task-list-entry@4";
+pub(crate) const TASK_LIST_ENTRY_V5: &str = "af/task-list-entry@5";
 
 /// The review round a Task is in: the rounds it handed off to a successor plan, plus the one its
 /// current execution recorded; 0 before a review recorded a round.
@@ -4517,7 +4518,7 @@ struct Inspection {
 }
 
 /// The document `af task show --json` and `af task explain --json` print.
-pub(crate) const TASK_INSPECTION_V20: &str = "af/task-inspection@20";
+pub(crate) const TASK_INSPECTION_V21: &str = "af/task-inspection@21";
 
 #[allow(clippy::too_many_arguments)]
 fn present_with_format(
@@ -5484,7 +5485,7 @@ fn inspection(
     let store_dir = store.database_path();
     let cancelled = runs::cancelled_epoch(store_dir.as_deref().and_then(Path::parent), &state);
     let view = selected_view(cas, &state, result.as_ref(), clock()?, cancelled)?;
-    let mut value = json!({"schema":TASK_INSPECTION_V20,"task_id":state.task_id,"revision_id":state.revision_id,"phase":state.phase,"state":view.state,"plan_id":state.plan_id,
+    let mut value = json!({"schema":TASK_INSPECTION_V21,"task_id":state.task_id,"revision_id":state.revision_id,"phase":state.phase,"state":view.state,"plan_id":state.plan_id,
         "chargeable_tokens":state.execution.as_ref().map_or(0,|e|e.budget.committed_tokens()).to_string(),"attempts":state.execution.as_ref().map_or(0,|e|e.budget.begun_attempts())});
     // The wall clock starts at the first admission: the wall the Task has, when its clock
     // started, and the deadline it has since.

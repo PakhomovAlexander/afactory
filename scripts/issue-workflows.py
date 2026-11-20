@@ -58,7 +58,7 @@ def invoke(af, repo, state, *args):
     if len(result.stdout) > LIMIT:
         raise ValueError('native inspection exceeds 4 MiB')
     value = json.loads(result.stdout)
-    if result.returncode and (args[0] not in ('explain', 'list') or value.get('schema') not in ('af/task-inspection@20', 'af/task-list@4')):
+    if result.returncode and (args[0] not in ('explain', 'list') or value.get('schema') not in ('af/task-inspection@21', 'af/task-list@5')):
         raise ValueError('native command refused; inspect its recorded Task diagnostics')
     return value
 
@@ -259,7 +259,7 @@ def check_latest_models(af, name):
 
 def inventory(af, repo, state):
     value = invoke(af, repo, state, 'list')
-    if value.get('schema') != 'af/task-list@4':
+    if value.get('schema') != 'af/task-list@5':
         raise ValueError('unsupported native inventory')
     return value['tasks']
 
@@ -332,7 +332,7 @@ def validate_native_projection(value, state):
 
     This is evidence validation only; native exact-plan approval still owns execution.
     """
-    if value.get('schema') != 'af/task-inspection@20':
+    if value.get('schema') != 'af/task-inspection@21':
         raise ValueError('unsupported native inspection')
     plan = recorded(state, value['plan_id'], 'af/ExecutionPlan@4')
     if canonical(plan) != canonical(value['plan']):
@@ -458,7 +458,7 @@ def reconcile(af, repo, state, manifest):
     values, revisions = {}, {}
     for task in all_tasks:
         value = invoke(af, repo, state, 'explain', task)
-        if value.get('schema') != 'af/task-inspection@20' or value['task_id'] != task:
+        if value.get('schema') != 'af/task-inspection@21' or value['task_id'] != task:
             raise ValueError('native Task identity differs')
         revision = recorded(state, value['revision_id'], 'af/TaskRevision@1')
         if revision['task_id'] != task or revision['inputs'] != value['plan']['inputs']:
@@ -751,7 +751,7 @@ def composition(name, pins, facts):
                       'timeout_ms': template['document']['limits']['wall_ms'], 'on_timeout': 'fail'})
     # A Task datum is admitted only for an accepted, completed exact native result. The
     # research_report predecessor additionally authenticates original source and 32 KiB bound.
-    definition = {'schema': 'af/scenario@6', 'admission': None, 'inputs': {},
+    definition = {'schema': 'af/scenario@10', 'admission': None, 'inputs': {},
                   'outputs': {s['id']: 'task' for s in steps}, 'steps': steps,
                   'result': {s['id']: {'source': 'step', 'step': s['id'], 'port': 'result'} for s in steps},
                   'completion': [{'source': 'literal', 'value': {'type': 'boolean', 'value': True}}],
@@ -759,7 +759,7 @@ def composition(name, pins, facts):
                   'limits': {'max_tokens': sum(t['max_tokens'] for t in templates),
                              'max_wall_ms': sum(t['document']['limits']['wall_ms'] for t in templates) + 60000,
                              'max_dispatches': 16}}
-    return {'schema': 'af/scenario-bundle@6', 'root': 'issue-workflow', 'definitions': {'issue-workflow': definition}}
+    return {'schema': 'af/scenario-bundle@10', 'root': 'issue-workflow', 'definitions': {'issue-workflow': definition}}
 
 
 def main():

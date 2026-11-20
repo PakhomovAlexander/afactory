@@ -59,41 +59,56 @@ fn non_auth_native_failures_keep_their_evidence_and_classification() {
             "Failed to refresh OAuth token: connection refused",
             "(network)",
         ),
+        (
+            "Failed to refresh OAuth token: HTTP 429 rate limit",
+            "(quota)",
+        ),
+        ("Failed to refresh OAuth token: at capacity", "(capacity)"),
+        (
+            "Failed to refresh OAuth token: model_not_found",
+            "(model_unavailable)",
+        ),
         ("HTTP 429: rate limit exceeded", "(quota)"),
         ("model_not_found", "(model_unavailable)"),
     ] {
-        let temp = tempfile::tempdir().unwrap();
-        let cas = Cas::open(temp.path().join("cas")).unwrap();
-        let output =
-            serde_json::json!({"type":"turn.failed","error":{"message":native}}).to_string();
-        let script = temp.path().join("provider");
-        std::fs::write(
-            &script,
-            format!(
-                "#!/bin/sh\ncat >/dev/null\nprintf '%s' '{}'\nexit 1\n",
-                output.replace('\'', "'\\''")
-            ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let adapter =
-            CodexTaskAdapter::new(&Command::new(script.to_str().unwrap(), vec![])).unwrap();
-        let returned = adapter.invoke(
-            &cas,
-            temp.path(),
-            b"input".to_vec(),
-            LOAD_SAFE_WALL,
-            WorkerAccess::ReadOnly,
-            None,
-            &[],
-        );
-        let error = returned.message.unwrap_err();
-        assert!(error.contains(expected), "{error}");
-        assert!(!error.contains("(auth_"), "{error}");
-        assert_eq!(
-            cas.get(&returned.raw_artifact_ids[0]).unwrap(),
-            output.as_bytes()
-        );
+        for channel in ["framed", "stderr"] {
+            let temp = tempfile::tempdir().unwrap();
+            let cas = Cas::open(temp.path().join("cas")).unwrap();
+            let output = if channel == "framed" {
+                serde_json::json!({"type":"turn.failed","error":{"message":native}}).to_string()
+            } else {
+                native.to_owned()
+            };
+            let script = temp.path().join("provider");
+            std::fs::write(
+                &script,
+                format!(
+                    "#!/bin/sh\ncat >/dev/null\nprintf '%s' '{}'{}\nexit 1\n",
+                    output.replace('\'', "'\\''"),
+                    if channel == "stderr" { " >&2" } else { "" }
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let adapter =
+                CodexTaskAdapter::new(&Command::new(script.to_str().unwrap(), vec![])).unwrap();
+            let returned = adapter.invoke(
+                &cas,
+                temp.path(),
+                b"input".to_vec(),
+                LOAD_SAFE_WALL,
+                WorkerAccess::ReadOnly,
+                None,
+                &[],
+            );
+            let error = returned.message.unwrap_err();
+            assert!(error.contains(expected), "{error}");
+            assert!(!error.contains("(auth_"), "{error}");
+            assert_eq!(
+                cas.get(&returned.raw_artifact_ids[0]).unwrap(),
+                output.as_bytes()
+            );
+        }
     }
 }
 
@@ -179,6 +194,67 @@ fn network_failure_does_not_publish_device_challenges_from_either_stream() {
             assert_eq!(
                 cas.get(&returned.raw_artifact_ids[0]).unwrap(),
                 b"Provider network request failed (network)"
+            );
+        }
+    }
+}
+
+#[test]
+fn explicit_auth_signals_keep_network_failure_captures_private() {
+    for auth in [
+        "HTTP 401 authentication_error for alice@example.com",
+        "auth_expired for alice@example.com",
+        "auth_refresh_failed for alice@example.com",
+        "Your API key is invalid for alice@example.com",
+    ] {
+        for auth_on_stdout in [true, false] {
+            let temp = tempfile::tempdir().unwrap();
+            let cas = Cas::open(temp.path().join("cas")).unwrap();
+            let native = if auth_on_stdout {
+                format!("network failed: {auth}")
+            } else {
+                "network failed".to_owned()
+            };
+            let output = serde_json::json!({
+                "type": "turn.failed", "error": {"message": native}
+            })
+            .to_string();
+            let stderr = if auth_on_stdout {
+                "native stderr"
+            } else {
+                auth
+            };
+            let script = temp.path().join("provider");
+            std::fs::write(
+                &script,
+                format!(
+                    "#!/bin/sh\ncat >/dev/null\nprintf '%s' '{}'\nprintf '%s' '{}' >&2\nexit 1\n",
+                    output.replace('\'', "'\\''"),
+                    stderr.replace('\'', "'\\''")
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let adapter =
+                CodexTaskAdapter::new(&Command::new(script.to_str().unwrap(), vec![])).unwrap();
+            let returned = adapter.invoke(
+                &cas,
+                temp.path(),
+                b"input".to_vec(),
+                LOAD_SAFE_WALL,
+                WorkerAccess::ReadOnly,
+                None,
+                &[],
+            );
+            let error = returned.message.as_ref().unwrap_err();
+            assert!(!error.contains("alice@example.com"), "{error}");
+            assert!(returned.usage.is_none());
+            let kind = returned.native_failure.unwrap();
+            assert_eq!(returned.raw_artifact_ids.len(), 1, "{auth}");
+            assert_eq!(
+                cas.get(&returned.raw_artifact_ids[0]).unwrap(),
+                kind.diagnostic().as_bytes(),
+                "{auth}; auth_on_stdout={auth_on_stdout}"
             );
         }
     }
@@ -375,7 +451,7 @@ fn a_cli_that_refuses_afs_arguments_is_an_unsupported_invocation_with_its_own_li
 /// Issue #259, round 5: a CLI argument error on stderr outranks every native classification when
 /// there is no parsable result: beside an authentication hint, and after an unrelated framed
 /// event. Each Attempt is `unsupported_invocation` with its exit and the bounded excerpt, never a
-/// credential failure or a generic one; the auth text keeps the raw streams withheld.
+/// credential failure or a generic one; the auth text keeps raw streams and saved excerpts withheld.
 #[test]
 fn an_argument_error_outranks_an_auth_hint_and_framed_events() {
     use af_runner::native_failure::NativeFailureKind;
@@ -383,7 +459,7 @@ fn an_argument_error_outranks_an_auth_hint_and_framed_events() {
         (
             "",
             "error: unexpected argument '--ephemeral' found\nAuthentication required\n",
-            "error: unexpected argument '--ephemeral' found | Authentication required",
+            af_runner::cli::WITHHELD_LINE,
             true,
         ),
         (
@@ -650,7 +726,7 @@ fn an_argument_error_without_a_result_is_an_unsupported_invocation_whatever_the_
             format!("Authentication required\n{refusal}"),
             1,
             false,
-            Some("Authentication required | error: unexpected argument '--ephemeral' found"),
+            Some(af_runner::cli::WITHHELD_LINE),
         ),
         (
             completed,
