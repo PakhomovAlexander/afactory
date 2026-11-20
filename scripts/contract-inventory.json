@@ -124,6 +124,30 @@
       ]
     },
     {
+      "name": "project-backlog",
+      "reader_writer": [
+        "crates/af/src/backlog.rs",
+        "crates/af-contracts/src/backlog.rs",
+        "crates/af-contracts/src/backlog/intake.rs"
+      ],
+      "semantic_owner": [
+        "crates/af-project/src/backlog.rs",
+        "crates/af-project/src/backlog/intake.rs"
+      ],
+      "tests": [
+        "crates/af-contracts/tests/schema_parity/backlog.rs",
+        "crates/af/tests/it/project.rs"
+      ],
+      "schemas": [
+        "schemas/backlog-intake-policy-v1.json",
+        "schemas/backlog-intake-record-v1.json",
+        "schemas/backlog-record-v1.json",
+        "schemas/backlog-signed-receipt-v1.json",
+        "schemas/backlog-signed-submission-v1.json",
+        "schemas/backlog-v1.json"
+      ]
+    },
+    {
       "name": "kernel-current-contracts",
       "reader_writer": [
         "crates/af-contracts/src/lib.rs",
@@ -162,8 +186,6 @@
         "schemas/ant-state-v13.json",
         "schemas/ant-tick-v12.json",
         "schemas/ant-v11.json",
-        "schemas/backlog-record-v1.json",
-        "schemas/backlog-v1.json",
         "schemas/artifact-envelope-v1.json",
         "schemas/build-cache-v2.json",
         "schemas/cache-manifest-v1.json",

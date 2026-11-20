@@ -1245,7 +1245,75 @@ inputs and source revision to recover the first receipt.
 
 Treat inbox output and `show --private` output as private to the machine account that owns
 the Project Store. Report contents are untrusted evidence. `list` and ordinary `show ITEM_ID`
-display only approved fields of the current verified revision. This release provides capture and
-inspection. Cross-machine receipt, verification and publishing need a subsequent authority
-workflow. All four commands support `--json` as `af/backlog@1`.
+display only approved fields of the current verified revision. The backlog capture and
+inspection commands support `--json` as `af/backlog@1`. Daily processing and publication
+remain later checkpoints.
 [Project backlog decision](adr/2026-11-20-store-project-backlog-reports-privately.md).
+
+### Enroll a producer for offline transfer
+
+On each machine, run `af project show --json` from a checkout and read `project_id` and
+`store`. Use the same Project ID across the authority and producer machines. Keep separate
+Minisign keys for the authority and each producer. For example, generate a key pair on its
+own machine in a directory accessible only to its operator.
+
+```sh
+umask 077
+minisign -G -W -p backlog.pub -s backlog.key
+```
+
+Keep `backlog.key` on that machine. Exchange and verify the public keys through a trusted
+channel. The public key value is the Base64 line in `backlog.pub`. Place
+`backlog-intake-v1.json` in the Project Store on each machine, outside the checkout. On the
+authority, fill in `authority_key` and the enrolled producer public keys. On a producer, set
+`producer_key` to its own public key and use an empty `enrolled_keys` list.
+
+```json
+{
+  "schema": "af/backlog-intake-policy@1",
+  "project_id": "PROJECT_ID_FROM_AF_PROJECT_SHOW",
+  "authority_key": "AUTHORITY_PUBLIC_KEY",
+  "producer_key": null,
+  "enrolled_keys": ["FIRST_PRODUCER_PUBLIC_KEY"]
+}
+```
+
+The intake commands read this machine-local policy at the start of each operation. Revoke a
+producer by atomically replacing the authority policy with a copy that omits its public key.
+Finish any running intake command before replacing the policy. Revocation preserves committed
+Reports and their private receipts. Enrollment grants submission only. The authority operator
+keeps the private Store and signing key separate from producer accounts.
+
+### Transfer and retry
+
+Capture while disconnected as above. Run `af backlog outbox` for the pending local Report IDs.
+With a private working directory and `umask 077`, export one Report on the producer machine.
+
+```sh
+af backlog export evaluator-pin-001 --key /private/producer/backlog.key > submission.json
+```
+
+Transfer `submission.json` to the designated authority using a private file channel. The
+signature authenticates the Project, producer and Report contents. The file contains the raw
+evidence in plaintext.
+
+```sh
+af backlog accept submission.json --key /private/authority/backlog.key > receipt.json
+```
+
+Return `receipt.json` to the producer and apply it there.
+
+```sh
+af backlog ack receipt.json --json
+af backlog outbox --json
+```
+
+If the receipt is lost, export the same Report again and repeat acceptance. The authority
+replays the original receipt and sequence for identical content from the same enrolled
+producer. The Report remains in the local outbox until its authenticated receipt commits.
+Retrying `record` with the exact original capture returns the receipt ID after acknowledgment.
+
+Private `show REPORT_ID --private` displays the authority sequence when known and the recorded
+decisions in order, including held and needs-evidence reasons. In JSON, the `report_details`
+view carries that receipt and decision history when present. A local capture without either
+continues to use the `report` view.

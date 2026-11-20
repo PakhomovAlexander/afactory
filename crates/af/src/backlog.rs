@@ -4,9 +4,11 @@ use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 
 use af_contracts::backlog::BacklogRecordV1;
+use af_contracts::backlog::intake::MAX_EXCHANGE_BYTES;
 use af_project::backlog::{prepare_report, read_evidence};
 use af_project::{ProjectStore, require_checkout, store_directory};
 use clap::Subcommand;
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
 #[derive(Debug, Subcommand)]
@@ -38,6 +40,31 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// List locally captured Report IDs awaiting an authority receipt
+    Outbox {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Write a signed private submission to stdout
+    Export {
+        id: String,
+        /// Local producer's Minisign secret key file
+        #[arg(long)]
+        key: PathBuf,
+    },
+    /// Commit a signed submission and write the signed authority receipt to stdout
+    Accept {
+        submission: PathBuf,
+        /// Designated authority's Minisign secret key file
+        #[arg(long)]
+        key: PathBuf,
+    },
+    /// Apply a signed authority receipt to the local outbox
+    Ack {
+        receipt: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
     /// List verified backlog items
     List {
         /// Print verified items as JSON
@@ -65,13 +92,22 @@ fn new_report_id() -> Result<String, String> {
     Ok(format!("r-{}", af_contracts::hex::encode(&bytes)))
 }
 
-fn print_json(view: &str, data: Value) -> Result<i32, String> {
-    let value = json!({"schema": "af/backlog@1", "view": view, "data": data});
+fn print_document(value: &impl Serialize) -> Result<i32, String> {
     println!(
         "{}",
-        serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?
+        serde_json::to_string_pretty(value).map_err(|e| e.to_string())?
     );
     Ok(0)
+}
+
+fn print_json(view: &str, data: Value) -> Result<i32, String> {
+    print_document(&json!({"schema": "af/backlog@1", "view": view, "data": data}))
+}
+
+fn read_exchange<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
+    let bytes = af_store::local_fs::read_bounded(path, MAX_EXCHANGE_BYTES)
+        .map_err(|error| format!("reading backlog exchange: {error}"))?;
+    serde_json::from_slice(&bytes).map_err(|_| "invalid backlog exchange document".into())
 }
 
 pub(crate) fn run(command: Command, repo: Option<&Path>) -> Result<i32, String> {
@@ -93,10 +129,28 @@ pub(crate) fn run(command: Command, repo: Option<&Path>) -> Result<i32, String> 
         if json {
             return print_json("capture", json!(receipt));
         }
+        let authority = receipt.authority_receipt.as_deref().unwrap_or("pending");
         println!(
-            "Captured {} in Project {}. Authority receipt pending.",
-            receipt.report_id, receipt.project_id
+            "Captured {} in Project {}. Authority receipt {}.",
+            receipt.report_id, receipt.project_id, authority
         );
+        return Ok(0);
+    }
+
+    if let Command::Accept { submission, key } = &command {
+        let submission = read_exchange(submission)?;
+        let (mut store, _) = crate::project::adopt(&checkout, None)?;
+        let receipt = store.accept_backlog_submission(submission, key)?;
+        return print_document(&receipt);
+    }
+    if let Command::Ack { receipt, json } = &command {
+        let receipt = read_exchange(receipt)?;
+        let (mut store, _) = crate::project::adopt(&checkout, None)?;
+        let receipt_id = store.acknowledge_backlog_submission(receipt)?;
+        if *json {
+            return print_json("acknowledged", json!({"authority_receipt": receipt_id}));
+        }
+        println!("Acknowledged authority receipt {receipt_id}");
         return Ok(0);
     }
 
@@ -107,7 +161,30 @@ pub(crate) fn run(command: Command, repo: Option<&Path>) -> Result<i32, String> 
     };
     let project_id = checkout.project_id;
     match command {
-        Command::Record { .. } => unreachable!("record handled above"),
+        Command::Record { .. } | Command::Accept { .. } | Command::Ack { .. } => {
+            unreachable!("backlog writes handled above")
+        }
+        Command::Export { id, key } => {
+            let store = store.ok_or("no local Project backlog")?;
+            return print_document(&store.backlog_submission(&id, &key)?);
+        }
+        Command::Outbox { json } => {
+            let pending = store
+                .as_ref()
+                .map(ProjectStore::backlog_outbox)
+                .transpose()?
+                .unwrap_or_default();
+            if json {
+                return print_json(
+                    "outbox",
+                    json!({"project_id": project_id, "report_ids": pending}),
+                );
+            }
+            println!("Pending backlog submissions for {project_id}");
+            for id in pending {
+                println!("{id}");
+            }
+        }
         Command::Inbox { json } => {
             let reports = store
                 .as_ref()
@@ -127,7 +204,7 @@ pub(crate) fn run(command: Command, repo: Option<&Path>) -> Result<i32, String> 
             println!("Private backlog inbox for {project_id}");
             for report in reports {
                 println!(
-                    "{}  {} (captured locally)",
+                    "{}  {}",
                     report.report_id,
                     crate::terminal_text(&report.title)
                 );
@@ -138,21 +215,51 @@ pub(crate) fn run(command: Command, repo: Option<&Path>) -> Result<i32, String> 
             private: true,
             json,
         } => {
-            let report = store
+            let details = store
                 .as_ref()
-                .map(|store| store.backlog_report(&id))
+                .map(|store| store.private_backlog_report(&id))
                 .transpose()?
                 .flatten()
                 .ok_or("no private report with that ID in this Project")?;
+            let report = details.report;
             if json {
-                return print_json("report", json!(BacklogRecordV1::Report(report)));
+                let report = BacklogRecordV1::Report(report);
+                if details.outcomes.is_empty() && details.authority_receipt.is_none() {
+                    return print_json("report", json!(report));
+                }
+                return print_json(
+                    "report_details",
+                    json!({
+                        "report": report,
+                        "authority_receipt": details.authority_receipt,
+                        "outcomes": details.outcomes,
+                    }),
+                );
             }
             println!(
                 "{}  {}",
                 report.report_id,
                 crate::terminal_text(&report.title)
             );
-            println!("Captured locally. Authority receipt pending.");
+            if let Some(receipt) = details.authority_receipt {
+                println!(
+                    "Authority {} received report at sequence {}.",
+                    receipt.authority_id,
+                    receipt.sequence.get()
+                );
+            } else {
+                println!("Captured locally. Authority receipt pending.");
+            }
+            for outcome in details.outcomes {
+                let disposition =
+                    serde_json::to_value(outcome.disposition).map_err(|e| e.to_string())?;
+                println!(
+                    "{}  {}  {}",
+                    outcome.decision_id,
+                    disposition.as_str().unwrap_or_default(),
+                    crate::terminal_lines(&outcome.reason)
+                );
+            }
             println!("Workspace {}", report.workspace_id);
             println!(
                 "Source {}",

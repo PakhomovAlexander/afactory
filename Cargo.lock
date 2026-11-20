@@ -148,6 +148,7 @@ dependencies = [
  "af-sandbox",
  "af-source-git",
  "af-store",
+ "minisign",
  "nix 0.31.3",
  "rustix",
  "serde",

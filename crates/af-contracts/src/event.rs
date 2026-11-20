@@ -69,10 +69,12 @@ pub enum EventType {
     SurveyCollectedV1,
     #[serde(rename = "BacklogRecordStored@1")]
     BacklogRecordStoredV1,
+    #[serde(rename = "BacklogIntakeStored@1")]
+    BacklogIntakeStoredV1,
 }
 
 impl EventType {
-    pub const ALL: [Self; 30] = [
+    pub const ALL: [Self; 31] = [
         Self::TaskTransitionV6,
         Self::TaskExecutionStartedV1,
         Self::TaskGateRetriedV1,
@@ -103,6 +105,7 @@ impl EventType {
         Self::SurveyFailedV1,
         Self::SurveyCollectedV1,
         Self::BacklogRecordStoredV1,
+        Self::BacklogIntakeStoredV1,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -137,6 +140,7 @@ impl EventType {
             Self::SurveyFailedV1 => "SurveyFailed@1",
             Self::SurveyCollectedV1 => "SurveyCollected@1",
             Self::BacklogRecordStoredV1 => "BacklogRecordStored@1",
+            Self::BacklogIntakeStoredV1 => "BacklogIntakeStored@1",
         }
     }
 
@@ -172,6 +176,7 @@ impl EventType {
             Self::SurveyFailedV1 => ("SurveyFailed", 1),
             Self::SurveyCollectedV1 => ("SurveyCollected", 1),
             Self::BacklogRecordStoredV1 => ("BacklogRecordStored", 1),
+            Self::BacklogIntakeStoredV1 => ("BacklogIntakeStored", 1),
         }
     }
 }
@@ -248,6 +253,7 @@ impl std::str::FromStr for EventType {
             "SurveyFailed@1" => Ok(Self::SurveyFailedV1),
             "SurveyCollected@1" => Ok(Self::SurveyCollectedV1),
             "BacklogRecordStored@1" => Ok(Self::BacklogRecordStoredV1),
+            "BacklogIntakeStored@1" => Ok(Self::BacklogIntakeStoredV1),
             other => Err(UnknownEventType(other.to_string())),
         }
     }
@@ -471,6 +477,11 @@ pub fn validate_event_payload(
         EventType::SurveyFailedV1 => {
             serde_json::from_value::<crate::SurveyFailedPayloadV1>(payload.clone())
                 .map_err(|error| format!("SurveyFailed@1: {error}"))?
+                .validate()
+        }
+        EventType::BacklogIntakeStoredV1 => {
+            serde_json::from_value::<crate::backlog::intake::IntakeRecord>(payload.clone())
+                .map_err(|_| "invalid BacklogIntakeStored@1 payload".to_string())?
                 .validate()
         }
         EventType::BacklogRecordStoredV1 => {

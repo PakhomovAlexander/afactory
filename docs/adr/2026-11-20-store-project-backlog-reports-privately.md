@@ -18,6 +18,9 @@ receipt by the designated authority require separate admission.
   duplicate submission or recovery.
 - A Project Store transaction with private Report streams keeps the fact and its evidence
   together, and lets the verified view replay a separate stream.
+- The Task Wake outbox provides a useful commit-before-notify pattern. Its OS account and
+  original-session fences do not identify a producer on another machine. A versioned signed
+  file exchange gives the Project that binding without adding a service or live destination.
 
 ## Decision
 
@@ -48,16 +51,25 @@ receipt by the designated authority require separate admission.
    verification of that exact revision. Supersession or a subsequent hold removes eligibility.
    Duplicate immutable records cannot roll that newer state back. Raw evidence and decision
    reasons stay private. Any later publisher must use the exact verified fields.
-5. This checkpoint writes Reports only. The designated authority is a single independently
-   enrolled identity per Project. Ancestry, a checkout declaration and a local receipt grant no
-   authority. A later authenticated receiver must bind that identity and assign an authority
-   sequence on commit. Intake opens no Provider, runs no Scenario, and performs no external
-   writes. Installed release dispatch still checks pinned bytes. Backlog commands skip
-   on-demand installation and background update checks.
+5. An independently configured, machine-local policy names one authority public key per
+   Project. The opaque blob identity of its decoded Minisign public key is the authority ID.
+   Every processed batch must name that configured identity. Private Report inspection can
+   follow validated decisions to the linked Reports and show dispositions and reasons.
+6. Local Report streams form the durable producer outbox. A signed submission binds the Project,
+   producer, authority and complete Report. The authority checks its enrollment policy and
+   evidence content identities, then commits the Report and signed receipt as one sequenced
+   Store event. The receipt covers the exact Report, Project and producer. The producer removes
+   the Report from its pending view after committing the verified receipt. Replay by an enrolled
+   producer returns the original committed receipt. A conflicting payload or producer cannot
+   replace a Report. Enrollment has no private read or publication effect.
+7. Capture and intake open no Provider, run no Scenario, and perform no external writes.
+   Operators transfer files through a private channel. Installed release dispatch still checks
+   pinned bytes. Backlog commands skip on-demand installation and background update checks.
 
 ## Consequences
 
 The owner can use the offline inbox from either worktree after a lost acknowledgement.
 The verified view starts empty until a later authority workflow records independent
-verification. Cross-machine transfer, batch execution, portable Scenario packaging,
-publication and cutover require subsequent Tasks.
+verification. A disconnected producer can resume transfer after restart or a lost authority
+acknowledgment. Batch execution, portable Scenario packaging, publication and cutover require
+subsequent Tasks.

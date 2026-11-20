@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:backlog-signed-submission:1",
+  "title": "Signed private backlog submission",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "body",
+    "signature"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/backlog-signed-submission@1"
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "authority_id",
+        "producer_id",
+        "report"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af/backlog-submission@1"
+        },
+        "authority_id": {
+          "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+        },
+        "producer_id": {
+          "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+        },
+        "report": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "project_id",
+            "report_id",
+            "workspace_id",
+            "captured_unix_ms",
+            "title",
+            "observed",
+            "privacy",
+            "evidence"
+          ],
+          "properties": {
+            "project_id": {
+              "$ref": "urn:af:schema:backlog-record:1#/$defs/report/properties/project_id"
+            },
+            "report_id": {
+              "$ref": "urn:af:schema:backlog-record:1#/$defs/report/properties/report_id"
+            },
+            "workspace_id": {
+              "$ref": "urn:af:schema:backlog-record:1#/$defs/report/properties/workspace_id"
+            },
+            "captured_unix_ms": {
+              "$ref": "urn:af:schema:backlog-record:1#/$defs/report/properties/captured_unix_ms"
+            },
+            "title": {
+              "$ref": "urn:af:schema:backlog-record:1#/$defs/report/properties/title"
+            },
+            "observed": {
+              "$ref": "urn:af:schema:backlog-record:1#/$defs/report/properties/observed"
+            },
+            "repro": {
+              "$ref": "urn:af:schema:backlog-record:1#/$defs/report/properties/repro"
+            },
+            "task_id": {
+              "$ref": "urn:af:schema:backlog-record:1#/$defs/report/properties/task_id"
+            },
+            "run_id": {
+              "$ref": "urn:af:schema:backlog-record:1#/$defs/report/properties/run_id"
+            },
+            "source_revision": {
+              "$ref": "urn:af:schema:backlog-record:1#/$defs/report/properties/source_revision"
+            },
+            "privacy": {
+              "$ref": "urn:af:schema:backlog-record:1#/$defs/report/properties/privacy"
+            },
+            "evidence": {
+              "$ref": "urn:af:schema:backlog-record:1#/$defs/report/properties/evidence"
+            }
+          }
+        }
+      }
+    },
+    "signature": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    }
+  }
+}

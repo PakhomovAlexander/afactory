@@ -4660,20 +4660,27 @@ fn backlog_verified_cli_prints_only_the_approved_projection() {
     let store = machine
         .projects()
         .join(project_id.trim_start_matches("sha256:"));
-    machine.expect(
-        &repo,
-        &[
-            "backlog",
-            "record",
-            "--report-id",
-            "private",
-            "--title",
-            "Raw title",
-            "--observed",
-            "Raw fact",
-        ],
-        0,
-    );
+    for id in ["private", "held", "needs-evidence"] {
+        machine.expect(
+            &repo,
+            &[
+                "backlog",
+                "record",
+                "--report-id",
+                id,
+                "--title",
+                "Raw title",
+                "--observed",
+                "Raw fact",
+            ],
+            0,
+        );
+    }
+    let authority_key = minisign::KeyPair::generate_unencrypted_keypair()
+        .unwrap()
+        .pk;
+    let authority_id = af_store::canonical::blob_content_id(&authority_key.to_bytes());
+    write_backlog_policy(&store, &project_id, &authority_key, None, &[]);
 
     // These fixtures represent authority records in the private Store. The CLI has no command
     // that appends them.
@@ -4693,34 +4700,75 @@ fn backlog_verified_cli_prints_only_the_approved_projection() {
     };
     let item = digest("1");
     let evidence = vec![digest("2")];
-    let revision = add(json!({
-        "schema": "af/BacklogItemRevision@1", "project_id": project_id, "item_id": item,
-        "report_ids": ["private"], "claim": "raw internal claim", "evidence_ids": evidence,
-        "source_revision": git(&repo, &["rev-parse", "HEAD"]),
-        "proposed": {"title": "Public title", "body": "Approved description"}
-    }));
     let batch = add(json!({
-        "schema": "af/BacklogBatch@1", "project_id": project_id, "authority_id": digest("3"),
-        "first_sequence": "1", "last_sequence": "1", "report_ids": ["private"],
+        "schema": "af/BacklogBatch@1", "project_id": project_id, "authority_id": authority_id,
+        "first_sequence": "1", "last_sequence": "3",
+        "report_ids": ["private", "held", "needs-evidence"],
         "scenario_id": digest("4"), "policy_id": digest("5")
     }));
-    add(json!({
-        "schema": "af/BacklogDecision@1", "project_id": project_id, "batch_id": batch,
-        "revision_id": revision, "task_results": [digest("6")],
-        "independent_verification_id": digest("6"), "disposition": "verified",
-        "reason": "raw decision reason", "evidence_ids": evidence
-    }));
+    let schema = schemas::validator("backlog-v1.json");
+    let mut verified_revision = String::new();
+    for (id, item, disposition, reason) in [
+        (
+            "private",
+            item.clone(),
+            "verified",
+            "raw verification reason",
+        ),
+        ("held", digest("7"), "held", "raw hold reason"),
+        (
+            "needs-evidence",
+            digest("8"),
+            "needs_evidence",
+            "raw evidence request",
+        ),
+    ] {
+        let revision = add(json!({
+            "schema": "af/BacklogItemRevision@1", "project_id": project_id, "item_id": item,
+            "report_ids": [id], "claim": "raw internal claim", "evidence_ids": evidence,
+            "source_revision": git(&repo, &["rev-parse", "HEAD"]),
+            "proposed": {"title": "Public title", "body": "Approved description"}
+        }));
+        let decision = add(json!({
+            "schema": "af/BacklogDecision@1", "project_id": project_id, "batch_id": batch,
+            "revision_id": revision, "task_results": [digest("6")],
+            "independent_verification_id": (disposition == "verified").then(|| digest("6")),
+            "disposition": disposition, "reason": reason, "evidence_ids": evidence
+        }));
+        let shown = machine.json(&repo, &["backlog", "show", id, "--private", "--json"]);
+        schemas::valid(&schema, &shown);
+        assert_eq!(shown["data"]["report"]["observed"], "Raw fact");
+        assert_eq!(
+            shown["data"]["outcomes"],
+            json!([{
+                "decision_id": decision, "batch_id": batch, "revision_id": revision,
+                "item_id": item, "disposition": disposition, "reason": reason
+            }])
+        );
+        let human = machine.expect(&repo, &["backlog", "show", id, "--private"], 0);
+        assert!(human.contains(disposition) && human.contains(reason));
+        assert!(!machine.af(&repo, &["backlog", "show", id]).status.success());
+        if disposition == "verified" {
+            verified_revision = revision;
+        } else {
+            assert!(
+                !machine
+                    .af(&repo, &["backlog", "show", &item])
+                    .status
+                    .success()
+            );
+        }
+    }
     drop(events);
 
     let shown = machine.expect(&repo, &["backlog", "show", &item, "--json"], 0);
     let shown: Value = serde_json::from_str(&shown).unwrap();
-    let schema = schemas::validator("backlog-v1.json");
     schemas::valid(&schema, &shown);
     assert_eq!(
         shown["data"],
         json!({
             "item_id": item,
-            "revision_id": revision,
+            "revision_id": verified_revision,
             "public": {"title": "Public title", "body": "Approved description"}
         })
     );
@@ -4731,4 +4779,338 @@ fn backlog_verified_cli_prints_only_the_approved_projection() {
     let list: Value = serde_json::from_str(&list).unwrap();
     schemas::valid(&schema, &list);
     assert_eq!(list["data"]["items"], json!([shown["data"]]));
+}
+
+fn write_backlog_policy(
+    store: &Path,
+    project_id: &str,
+    authority: &minisign::PublicKey,
+    producer: Option<&minisign::PublicKey>,
+    enrolled: &[&minisign::PublicKey],
+) {
+    let policy = serde_json::json!({
+        "schema": "af/backlog-intake-policy@1",
+        "project_id": project_id,
+        "authority_key": authority.to_base64(),
+        "producer_key": producer.map(minisign::PublicKey::to_base64),
+        "enrolled_keys": enrolled.iter().map(|k| k.to_base64()).collect::<Vec<_>>(),
+    });
+    schemas::valid(
+        &schemas::validator("backlog-intake-policy-v1.json"),
+        &policy,
+    );
+    std::fs::write(store.join("backlog-intake-v1.json"), policy.to_string()).unwrap();
+}
+
+#[test]
+fn backlog_offline_intake_commits_before_ack_and_replays_exactly_once() {
+    use serde_json::json;
+    use std::process::Stdio;
+
+    let machine = Machine::new();
+    let destination = Machine::new();
+    let other_producer = Machine::new();
+    let repo = repository(&machine.root());
+    let destination_repo = destination.root().join("clone");
+    let other_repo = other_producer.root().join("clone");
+    for clone in [&destination_repo, &other_repo] {
+        git(
+            &repo,
+            &[
+                "clone",
+                "-q",
+                repo.to_str().unwrap(),
+                clone.to_str().unwrap(),
+            ],
+        );
+    }
+
+    let evidence = machine.root().join("evidence.txt");
+    std::fs::write(&evidence, "private intake evidence\n").unwrap();
+    let capture = |owner: &Machine, checkout: &Path, id: &str| {
+        owner.json(
+            checkout,
+            &[
+                "backlog",
+                "record",
+                "--report-id",
+                id,
+                "--title",
+                "Observed issue",
+                "--observed",
+                "Observed condition",
+                "--evidence-file",
+                evidence.to_str().unwrap(),
+                "--json",
+            ],
+        )
+    };
+    for id in ["offline-1", "offline-2"] {
+        let captured = capture(&machine, &repo, id);
+        assert!(captured["data"]["authority_receipt"].is_null());
+    }
+    capture(&other_producer, &other_repo, "offline-1");
+    let pending = || machine.json(&repo, &["backlog", "outbox", "--json"]);
+    let command_schema = schemas::validator("backlog-v1.json");
+    schemas::valid(&command_schema, &pending());
+    assert_eq!(
+        pending()["data"]["report_ids"],
+        json!(["offline-1", "offline-2"])
+    );
+
+    let authority = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+    let producer = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+    let second = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+    let key_file = |owner: &Machine, key: &minisign::SecretKey| {
+        use std::io::Write as _;
+        let path = owner.root().join("signing.key");
+        let mut file = af_store::local_fs::private_file_options()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(key.to_box(None).unwrap().into_string().as_bytes())
+            .unwrap();
+        path
+    };
+    let authority_key = key_file(&destination, &authority.sk);
+    let producer_key = key_file(&machine, &producer.sk);
+    let second_key = key_file(&other_producer, &second.sk);
+    let configure =
+        |owner: &Machine, checkout: &Path, producer, enrolled: &[&minisign::PublicKey]| {
+            let data = owner.json(checkout, &["project", "show", "--json"]);
+            write_backlog_policy(
+                Path::new(data["store"].as_str().unwrap()),
+                data["project_id"].as_str().unwrap(),
+                &authority.pk,
+                producer,
+                enrolled,
+            );
+        };
+    configure(&machine, &repo, Some(&producer.pk), &[]);
+    configure(&other_producer, &other_repo, Some(&second.pk), &[]);
+    configure(&destination, &destination_repo, None, &[]);
+
+    let packet = machine.root().join("submission.json");
+    let receipt_path = machine.root().join("receipt.json");
+    let export = |owner: &Machine, checkout: &Path, id: &str, key: &Path| {
+        let value = owner.json(
+            checkout,
+            &["backlog", "export", id, "--key", key.to_str().unwrap()],
+        );
+        schemas::valid(
+            &schemas::validator("backlog-signed-submission-v1.json"),
+            &value,
+        );
+        value
+    };
+    let first = export(&machine, &repo, "offline-1", &producer_key);
+    let write_packet = |packet_value: &Value| {
+        std::fs::write(&packet, packet_value.to_string()).unwrap();
+    };
+    write_packet(&first);
+    let accept = [
+        "backlog",
+        "accept",
+        packet.to_str().unwrap(),
+        "--key",
+        authority_key.to_str().unwrap(),
+    ];
+    let refuse = |args: &[&str], expected: &str| {
+        let result = destination.af(&destination_repo, args);
+        let (stdout, stderr) = text(&result);
+        assert!(
+            !result.status.success() && stdout.is_empty() && stderr.contains(expected),
+            "{stdout} {stderr}"
+        );
+    };
+    refuse(&accept, "producer is not enrolled");
+
+    let unrelated = Machine::new();
+    // Ensure a different root even on filesystems and clocks shared by both fixture checkouts.
+    let other = unrelated.root().join("other");
+    std::fs::create_dir(&other).unwrap();
+    git(&other, &["init", "-q"]);
+    git(
+        &other,
+        &["commit", "--allow-empty", "-qm", "distinct Project"],
+    );
+    assert_ne!(expected_project_id(&repo), expected_project_id(&other));
+    configure(&unrelated, &other, None, &[&producer.pk]);
+    let result = unrelated.af(&other, &accept);
+    assert!(text(&result).1.contains("different Project"));
+    assert_eq!(
+        unrelated.json(&other, &["backlog", "inbox", "--json"])["data"]["reports"],
+        json!([])
+    );
+
+    configure(
+        &destination,
+        &destination_repo,
+        None,
+        &[&producer.pk, &second.pk],
+    );
+    let mut missing = first.clone();
+    missing["body"]["report"]["evidence"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("text");
+    write_packet(&missing);
+    refuse(&accept, "invalid backlog exchange document");
+    let mut altered = first.clone();
+    altered["body"]["report"]["evidence"][0]["text"] = json!("mismatched evidence");
+    write_packet(&altered);
+    refuse(&accept, "authentication failed");
+    altered["signature"] = json!(
+        minisign::sign(
+            Some(&producer.pk),
+            &producer.sk,
+            af_store::canonicalize(&altered["body"]).unwrap().as_slice(),
+            None,
+            None,
+        )
+        .unwrap()
+        .into_string()
+    );
+    write_packet(&altered);
+    refuse(&accept, "differs from its recorded content identity");
+    assert_eq!(
+        destination.json(&destination_repo, &["backlog", "inbox", "--json"])["data"]["reports"],
+        json!([])
+    );
+    write_packet(&first);
+
+    let (reader, writer) = nix::unistd::pipe().unwrap();
+    drop(reader);
+    let status = crate::common::af()
+        .current_dir(&destination_repo)
+        .env("XDG_STATE_HOME", destination.state_home())
+        .env("AF_SELF_OFFLINE", "1")
+        .stdout(Stdio::from(writer))
+        .stderr(Stdio::null())
+        .args(accept)
+        .status()
+        .unwrap();
+    assert!(
+        !status.success(),
+        "the first authority receipt must be lost"
+    );
+    let stored = destination.json(
+        &destination_repo,
+        &["backlog", "show", "offline-1", "--private", "--json"],
+    );
+    assert_eq!(stored["data"]["authority_receipt"]["sequence"], "1");
+    assert_eq!(
+        stored["data"]["report"]["evidence"][0]["text"],
+        "private intake evidence\n"
+    );
+    assert_eq!(
+        pending()["data"]["report_ids"],
+        json!(["offline-1", "offline-2"])
+    );
+
+    let wrong_key = [
+        "backlog",
+        "accept",
+        packet.to_str().unwrap(),
+        "--key",
+        producer_key.to_str().unwrap(),
+    ];
+    refuse(&wrong_key, "does not match configured public key");
+    let ack = ["backlog", "ack", receipt_path.to_str().unwrap(), "--json"];
+    let mut forged = destination.json(&destination_repo, &accept);
+    forged["signature"] = json!(
+        minisign::sign(
+            Some(&producer.pk),
+            &producer.sk,
+            af_store::canonicalize(&forged["body"]).unwrap().as_slice(),
+            None,
+            None,
+        )
+        .unwrap()
+        .into_string()
+    );
+    std::fs::write(&receipt_path, forged.to_string()).unwrap();
+    let refused = machine.af(&repo, &ack);
+    assert!(!refused.status.success());
+    let (stdout, stderr) = text(&refused);
+    assert!(stdout.contains("authentication failed") || stderr.contains("authentication failed"));
+    assert_eq!(
+        pending()["data"]["report_ids"],
+        json!(["offline-1", "offline-2"])
+    );
+
+    let receipt_schema = schemas::validator("backlog-signed-receipt-v1.json");
+    for (id, sequence) in [("offline-1", "1"), ("offline-2", "2")] {
+        write_packet(&export(&machine, &repo, id, &producer_key));
+        let receipt = destination.json(&destination_repo, &accept);
+        schemas::valid(&receipt_schema, &receipt);
+        assert_eq!(receipt["body"]["sequence"], sequence);
+        assert_eq!(receipt["body"]["report_id"], id);
+        assert!(!receipt.to_string().contains("private intake evidence"));
+        assert_eq!(receipt, destination.json(&destination_repo, &accept));
+        std::fs::write(&receipt_path, receipt.to_string()).unwrap();
+        let acked = machine.json(&repo, &ack);
+        schemas::valid(&command_schema, &acked);
+        assert_eq!(acked, machine.json(&repo, &ack));
+        assert_eq!(
+            capture(&machine, &repo, id)["data"]["authority_receipt"],
+            acked["data"]["authority_receipt"]
+        );
+    }
+    assert_eq!(pending()["data"]["report_ids"], json!([]));
+
+    write_packet(&export(
+        &other_producer,
+        &other_repo,
+        "offline-1",
+        &second_key,
+    ));
+    refuse(&accept, "different content or producer");
+    configure(&destination, &destination_repo, None, &[&second.pk]);
+    write_packet(&first);
+    refuse(&accept, "producer is not enrolled");
+    let inbox = destination.json(&destination_repo, &["backlog", "inbox", "--json"]);
+    let reports = inbox["data"]["reports"].as_array().unwrap();
+    assert_eq!(reports.len(), 2);
+    assert_eq!(reports[0]["report_id"], "offline-1");
+    assert_eq!(reports[1]["report_id"], "offline-2");
+
+    capture(&other_producer, &other_repo, "second-producer");
+    write_packet(&export(
+        &other_producer,
+        &other_repo,
+        "second-producer",
+        &second_key,
+    ));
+    let second_receipt = destination.json(&destination_repo, &accept);
+    assert_eq!(second_receipt["body"]["sequence"], "3");
+    std::fs::write(&receipt_path, second_receipt.to_string()).unwrap();
+    other_producer.json(&other_repo, &ack);
+
+    let pruned = crate::common::af()
+        .current_dir(&destination_repo)
+        .env("XDG_STATE_HOME", destination.state_home())
+        .env("AF_STORAGE__MAX_BYTES", "1")
+        .args(["storage", "prune", "--apply", "--json"])
+        .output()
+        .unwrap();
+    assert!(pruned.status.success(), "{}", text(&pruned).1);
+    assert_eq!(
+        stored,
+        destination.json(
+            &destination_repo,
+            &["backlog", "show", "offline-1", "--private", "--json"]
+        )
+    );
+    assert_eq!(
+        destination.json(&destination_repo, &["backlog", "list", "--json"])["data"]["items"],
+        json!([])
+    );
+    assert!(
+        !destination
+            .af(&destination_repo, &["backlog", "show", "offline-1"])
+            .status
+            .success()
+    );
 }

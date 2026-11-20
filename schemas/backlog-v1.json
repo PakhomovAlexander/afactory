@@ -19,7 +19,10 @@
         "inbox",
         "report",
         "list",
-        "item"
+        "item",
+        "report_details",
+        "outbox",
+        "acknowledged"
       ]
     },
     "data": {
@@ -61,7 +64,14 @@
                 "const": true
               },
               "authority_receipt": {
-                "const": null
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+                  }
+                ]
               }
             }
           }
@@ -192,6 +202,135 @@
               },
               "public": {
                 "$ref": "urn:af:schema:backlog-record:1#/$defs/public"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "view": {
+            "const": "report_details"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "report",
+              "authority_receipt",
+              "outcomes"
+            ],
+            "properties": {
+              "report": {
+                "$ref": "urn:af:schema:backlog-record:1#/$defs/report"
+              },
+              "authority_receipt": {
+                "anyOf": [
+                  {
+                    "$ref": "urn:af:schema:backlog-signed-receipt:1#/properties/body"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "outcomes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "decision_id",
+                    "batch_id",
+                    "item_id",
+                    "revision_id",
+                    "disposition",
+                    "reason"
+                  ],
+                  "properties": {
+                    "decision_id": {
+                      "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+                    },
+                    "batch_id": {
+                      "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+                    },
+                    "item_id": {
+                      "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+                    },
+                    "revision_id": {
+                      "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+                    },
+                    "disposition": {
+                      "$ref": "urn:af:schema:backlog-record:1#/$defs/decision/properties/disposition"
+                    },
+                    "reason": {
+                      "$ref": "urn:af:schema:backlog-record:1#/$defs/decision/properties/reason"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "view": {
+            "const": "outbox"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "project_id",
+              "report_ids"
+            ],
+            "properties": {
+              "project_id": {
+                "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+              },
+              "report_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "urn:af:schema:backlog-record:1#/$defs/reportId"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "view": {
+            "const": "acknowledged"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "authority_receipt"
+            ],
+            "properties": {
+              "authority_receipt": {
+                "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
               }
             }
           }

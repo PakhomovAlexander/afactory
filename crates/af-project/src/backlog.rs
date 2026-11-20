@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
+use af_contracts::backlog::intake::Receipt;
 use af_contracts::backlog::{
     BacklogRecordV1, Batch, Decision, Disposition, Evidence, EvidenceType, ItemRevision,
     MAX_EVIDENCE, MAX_EVIDENCE_BYTES, Privacy, PublicFields, Report, is_report_id,
@@ -12,6 +13,8 @@ use af_store::{NewEvent, canonical::blob_content_id, content_id};
 use serde::Serialize;
 
 use crate::{Checkout, Git, ProjectStore, now_unix_ms, workspace_id};
+
+mod intake;
 
 const REPORT_PREFIX: &str = "backlog-report/";
 const PROCESSING: &str = "backlog-processing";
@@ -31,6 +34,22 @@ pub struct VerifiedItem {
     pub item_id: String,
     pub revision_id: String,
     pub public: PublicFields,
+}
+
+#[derive(Serialize)]
+pub struct ReportOutcome {
+    pub decision_id: String,
+    pub batch_id: String,
+    pub item_id: String,
+    pub revision_id: String,
+    pub disposition: Disposition,
+    pub reason: String,
+}
+
+pub struct PrivateReport {
+    pub report: Report,
+    pub authority_receipt: Option<Receipt>,
+    pub outcomes: Vec<ReportOutcome>,
 }
 
 pub fn read_evidence(paths: &[PathBuf]) -> Result<Vec<Evidence>, String> {
@@ -123,7 +142,7 @@ impl ProjectStore {
             return Err("cannot record a report for another Project".into());
         }
         check_evidence(&report)?;
-        if let Some(previous) = self.backlog_report(&report.report_id)? {
+        if let Some(previous) = self.local_backlog_report(&report.report_id)? {
             report.captured_unix_ms = previous.captured_unix_ms;
             if report != previous {
                 return Err(format!(
@@ -132,6 +151,9 @@ impl ProjectStore {
                 ));
             }
         } else {
+            if self.backlog_intake()?.contains_key(&report.report_id) {
+                return Err("backlog report ID already names an authority intake report".into());
+            }
             let payload = serde_json::to_value(BacklogRecordV1::Report(report.clone()))
                 .map_err(|_| "cannot encode backlog report")?;
             let event = NewEvent::new(EventType::BacklogRecordStoredV1, payload).at(
@@ -152,16 +174,20 @@ impl ProjectStore {
                 );
             }
         }
+        let authority_receipt = self
+            .backlog_acknowledgment(&report)?
+            .map(|receipt| intake::value_id(&receipt))
+            .transpose()?;
         Ok(CaptureReceipt {
             project_id: report.project_id,
             report_id: report.report_id,
             captured_unix_ms: report.captured_unix_ms,
             local_capture: true,
-            authority_receipt: None,
+            authority_receipt,
         })
     }
 
-    pub fn backlog_report(&self, id: &str) -> Result<Option<Report>, String> {
+    fn local_backlog_report(&self, id: &str) -> Result<Option<Report>, String> {
         if !is_report_id(id) {
             return Err("invalid backlog report ID".into());
         }
@@ -185,31 +211,97 @@ impl ProjectStore {
         }
     }
 
-    pub fn backlog_inbox(&self) -> Result<Vec<Report>, String> {
+    fn local_backlog_reports(&self) -> Result<Vec<Report>, String> {
         self.events
             .run_ids()
             .map_err(|_| "could not enumerate backlog reports")?
             .iter()
             .filter_map(|run| run.strip_prefix(REPORT_PREFIX))
             .map(|id| {
-                self.backlog_report(id)?
+                self.local_backlog_report(id)?
                     .ok_or_else(|| "missing backlog report".into())
             })
             .collect()
     }
 
+    pub fn backlog_inbox(&self) -> Result<Vec<Report>, String> {
+        let mut reports: BTreeMap<_, _> = self
+            .local_backlog_reports()?
+            .into_iter()
+            .map(|report| (report.report_id.clone(), report))
+            .collect();
+        for (id, accepted) in self.backlog_intake()? {
+            let report = accepted.report;
+            if reports
+                .insert(id, report.clone())
+                .is_some_and(|local| local != report)
+            {
+                return Err("backlog inbox has conflicting reports".into());
+            }
+        }
+        Ok(reports.into_values().collect())
+    }
+
+    pub fn backlog_outbox(&self) -> Result<Vec<String>, String> {
+        let mut pending = Vec::new();
+        for report in self.local_backlog_reports()? {
+            if self.backlog_acknowledgment(&report)?.is_none() {
+                pending.push(report.report_id);
+            }
+        }
+        Ok(pending)
+    }
+
+    pub fn private_backlog_report(&self, id: &str) -> Result<Option<PrivateReport>, String> {
+        let local = self.local_backlog_report(id)?;
+        let accepted = self.backlog_intake()?.remove(id);
+        let (report, authority_receipt) = match (local, accepted) {
+            (Some(local), Some(accepted)) if accepted.report != local => {
+                return Err("backlog inbox has conflicting reports".into());
+            }
+            (_, Some(accepted)) => (accepted.report, Some(accepted.receipt.body)),
+            (Some(report), None) => {
+                let receipt = self.backlog_acknowledgment(&report)?;
+                (report, receipt)
+            }
+            (None, None) => return Ok(None),
+        };
+        let (_, outcomes) = self.backlog_projection(Some(id))?;
+        Ok(Some(PrivateReport {
+            report,
+            authority_receipt,
+            outcomes,
+        }))
+    }
+
     pub fn verified_backlog(&self) -> Result<Vec<VerifiedItem>, String> {
+        self.backlog_projection(None).map(|(items, _)| items)
+    }
+
+    fn backlog_projection(
+        &self,
+        report: Option<&str>,
+    ) -> Result<(Vec<VerifiedItem>, Vec<ReportOutcome>), String> {
         let events = self
             .events
             .replay(PROCESSING)
             .map_err(|_| "could not replay backlog decisions")?;
-        verified(&self.project_id, &events)
+        if events.is_empty() {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let authority = self.backlog_authority_id()?;
+        project_backlog(&self.project_id, authority.as_deref(), &events, report)
     }
 }
 
 /// Fold only the processing stream. Raw Reports are outside this read path.
-fn verified(project: &str, events: &[RunEvent]) -> Result<Vec<VerifiedItem>, String> {
-    let mut authority = None;
+fn project_backlog(
+    project: &str,
+    authority: Option<&str>,
+    events: &[RunEvent],
+    report: Option<&str>,
+) -> Result<(Vec<VerifiedItem>, Vec<ReportOutcome>), String> {
+    let mut outcomes = Vec::new();
     let mut batches: BTreeMap<String, Batch> = BTreeMap::new();
     let mut revisions: BTreeMap<String, ItemRevision> = BTreeMap::new();
     let mut current = BTreeMap::new();
@@ -226,9 +318,9 @@ fn verified(project: &str, events: &[RunEvent]) -> Result<Vec<VerifiedItem>, Str
                 return Err("raw report in backlog processing stream".into());
             }
             BacklogRecordV1::Batch(batch) => {
-                if authority.get_or_insert_with(|| batch.authority_id.clone())
-                    != &batch.authority_id
-                {
+                let authority =
+                    authority.ok_or("no backlog authority configured for Project batches")?;
+                if authority != batch.authority_id {
                     return Err("backlog batch names a different Project authority".into());
                 }
                 batches.insert(id, batch);
@@ -252,12 +344,24 @@ fn verified(project: &str, events: &[RunEvent]) -> Result<Vec<VerifiedItem>, Str
                 {
                     return Err("backlog decision does not cover its revision and evidence".into());
                 }
+                if report
+                    .is_some_and(|id| revision.report_ids.iter().any(|report_id| report_id == id))
+                {
+                    outcomes.push(ReportOutcome {
+                        decision_id: id,
+                        batch_id: decision.batch_id.clone(),
+                        item_id: revision.item_id.clone(),
+                        revision_id: decision.revision_id.clone(),
+                        disposition: decision.disposition,
+                        reason: decision.reason.clone(),
+                    });
+                }
                 decisions.insert(decision.revision_id.clone(), decision);
             }
             BacklogRecordV1::Publication(_) => {}
         }
     }
-    Ok(current
+    let items = current
         .into_iter()
         .filter_map(|(item_id, revision_id)| {
             let decision = decisions.get(&revision_id)?;
@@ -267,7 +371,8 @@ fn verified(project: &str, events: &[RunEvent]) -> Result<Vec<VerifiedItem>, Str
                 revision_id,
             })
         })
-        .collect())
+        .collect();
+    Ok((items, outcomes))
 }
 
 #[cfg(test)]

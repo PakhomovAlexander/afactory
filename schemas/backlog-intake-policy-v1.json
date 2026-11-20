@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:backlog-intake-policy:1",
+  "title": "Machine-local Project backlog intake policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "project_id",
+    "authority_key",
+    "enrolled_keys"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/backlog-intake-policy@1"
+    },
+    "project_id": {
+      "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+    },
+    "authority_key": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9+/]{56}$"
+    },
+    "enrolled_keys": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9+/]{56}$"
+      }
+    },
+    "producer_key": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9+/]{56}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  }
+}

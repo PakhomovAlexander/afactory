@@ -39,11 +39,15 @@ fn verified_projection_exposes_only_current_approved_fields() {
     };
     let revision_id = emit(&mut store, BacklogRecordV1::ItemRevision(revision.clone()));
     assert!(store.verified_backlog().unwrap().is_empty());
+    let key = minisign::KeyPair::generate_unencrypted_keypair()
+        .unwrap()
+        .pk;
+    let authority_id = blob_content_id(&key.to_bytes());
     let batch_id = emit(
         &mut store,
         BacklogRecordV1::Batch(Batch {
             project_id: project_id.clone(),
-            authority_id: digest('e'),
+            authority_id,
             first_sequence: 1.into(),
             last_sequence: 1.into(),
             report_ids: revision.report_ids.clone(),
@@ -51,6 +55,37 @@ fn verified_projection_exposes_only_current_approved_fields() {
             policy_id: digest('1'),
         }),
     );
+    assert!(
+        store
+            .verified_backlog()
+            .unwrap_err()
+            .contains("no backlog authority configured")
+    );
+    let policy = |key: &minisign::PublicKey| {
+        std::fs::write(
+            store.directory.join("backlog-intake-v1.json"),
+            json!({
+                "schema": "af/backlog-intake-policy@1",
+                "project_id": project_id,
+                "authority_key": key.to_base64(),
+                "producer_key": null,
+                "enrolled_keys": [],
+            })
+            .to_string(),
+        )
+        .unwrap();
+    };
+    let other = minisign::KeyPair::generate_unencrypted_keypair()
+        .unwrap()
+        .pk;
+    policy(&other);
+    assert!(
+        store
+            .verified_backlog()
+            .unwrap_err()
+            .contains("different Project authority")
+    );
+    policy(&key);
     let mut decision = Decision {
         project_id,
         batch_id,
