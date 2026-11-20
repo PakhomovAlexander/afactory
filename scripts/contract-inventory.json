@@ -136,22 +136,29 @@
         "crates/af/src/backlog.rs",
         "crates/af-contracts/src/backlog.rs",
         "crates/af-contracts/src/backlog/batch.rs",
+        "crates/af-contracts/src/backlog/batch/assessment.rs",
         "crates/af-contracts/src/backlog/intake.rs"
       ],
       "semantic_owner": [
         "crates/af-project/src/backlog.rs",
         "crates/af-project/src/backlog/batch.rs",
         "crates/af-project/src/backlog/intake.rs",
-        "crates/af-scenario/src/schedule.rs"
+        "crates/af-scenario/src/schedule.rs",
+        "crates/af-runtime/src/task/report_domain.rs"
       ],
       "tests": [
         "crates/af-contracts/tests/schema_parity/backlog.rs",
-        "crates/af/tests/it/project.rs"
+        "crates/af/tests/it/project.rs",
+        "crates/af/tests/it/scenario/portable.rs"
       ],
       "schemas": [
+        "schemas/backlog-assessment-v1.json",
+        "fixtures/project-backlog/assessment.schema.json",
         "schemas/backlog-batch-audit-v1.json",
         "schemas/backlog-batch-policy-v1.json",
         "schemas/backlog-batch-record-v1.json",
+        "schemas/backlog-batch-reference-v1.json",
+        "schemas/backlog-collected-batch-v1.json",
         "schemas/backlog-intake-policy-v1.json",
         "schemas/backlog-intake-record-v1.json",
         "schemas/backlog-record-v1.json",
@@ -326,6 +333,7 @@
         "schemas/scenario-adapter-request-v8.json",
         "schemas/scenario-adapter-response-v3.json",
         "schemas/scenario-artifact-v1.json",
+        "schemas/scenario-artifact-v2.json",
         "schemas/scenario-bundle-v10.json",
         "schemas/scenario-decision-v1.json",
         "schemas/scenario-driver-v2.json",
@@ -452,9 +460,13 @@
         "fixtures/custom-tasks/triage/worker/input.schema.json",
         "fixtures/custom-tasks/triage/worker/outputs/triage.schema.json",
         "fixtures/issue-triage/task-packages/backlog/triage-author/input.schema.json",
+        "fixtures/project-backlog/task-packages/backlog/daily-author/input.schema.json",
         "fixtures/issue-triage/task-packages/backlog/triage-author/outputs/draft.schema.json",
+        "fixtures/project-backlog/task-packages/backlog/daily-author/outputs/draft.schema.json",
         "fixtures/issue-triage/task-packages/backlog/triage-verifier/input.schema.json",
+        "fixtures/project-backlog/task-packages/backlog/daily-verifier/input.schema.json",
         "fixtures/issue-triage/task-packages/backlog/triage-verifier/outputs/result.schema.json",
+        "fixtures/project-backlog/task-packages/backlog/daily-verifier/outputs/result.schema.json",
         "fixtures/issue-workflows/task-packages/backlog/triage-author/input.schema.json",
         "fixtures/issue-workflows/task-packages/backlog/triage-author/outputs/draft.schema.json",
         "fixtures/issue-workflows/task-packages/backlog/triage-verifier/input.schema.json",
@@ -1046,9 +1058,33 @@
       "excluded_outputs": {}
     },
     {
+      "worker": "fixtures/project-backlog/task-packages/backlog/daily-author/worker.toml",
+      "outputs": {
+        "draft": "fixtures/project-backlog/task-packages/backlog/daily-author/outputs/draft.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "draft": "schemas/document-draft-v3.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
       "worker": "fixtures/issue-triage/task-packages/backlog/triage-verifier/worker.toml",
       "outputs": {
         "result": "fixtures/issue-triage/task-packages/backlog/triage-verifier/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "schemas/report-evaluation-v1.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/project-backlog/task-packages/backlog/daily-verifier/worker.toml",
+      "outputs": {
+        "result": "fixtures/project-backlog/task-packages/backlog/daily-verifier/outputs/result.schema.json"
       },
       "strict": true,
       "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",

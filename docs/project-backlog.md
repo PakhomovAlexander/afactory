@@ -225,3 +225,70 @@ ticks record a busy skip, and the batch can still be settled and closed. Missed 
 local times and rolling-budget refusals appear in `occurrences`. The per-run reservation
 remains in the rolling window from close and is distinct from actual Provider spend.
 [Daily batch decision](adr/2026-11-20-freeze-project-backlog-at-authority-cutoff.md)
+
+## Prepare and run a private assessment
+
+The [daily backlog package](../fixtures/project-backlog/scenario.json) uses
+[`af/scenario-artifact@2`](../schemas/scenario-artifact-v2.json). Copy the whole package directory
+to the receiving checkout and commit it. Configure a report policy and Provider bindings for
+`backlog/daily-author` and `backlog/daily-verifier` in the receiver's Task catalog. The Pipeline
+requires independent verification under that catalog's policy. Package paths and package pins
+travel with the artifact. The receiver selects its own private Project, Task and Scenario Stores.
+
+For a disposable daily policy, set `scenario_id` to `sha256:` followed by the SHA-256 of the
+committed artifact file. Give the daily budget at least the limits declared in the package.
+After admitting a nonempty batch, use its audit to write the reference. This example uses
+`jq` and sets restrictive permissions for the captured batch metadata and receipts.
+
+```bash
+umask 077
+af backlog batch audit > "$scratch/audit.json"
+jq '{
+  schema: "af/backlog-batch-reference@1",
+  project_id,
+  batch_id: .active_batch_id,
+  policy_id: .pin_id,
+  high_water: .batches[.active_batch_id].high_water
+}' "$scratch/audit.json" > "$scratch/batch.json"
+
+af scenario prepare --file fixtures/project-backlog/scenario.json \
+  --task-state "$scratch/tasks" --inputs "$scratch/batch.json" \
+  --json > "$scratch/prepared.json"
+```
+
+Prepare checks the reference against the active batch and policy in the receiving Project
+Store. It collects at most 128 frozen members. The collected input contains accepted Report
+identities, source revisions and the evidence digests allowed by policy. Raw Report text,
+their attachments, late arrivals and local-only Reports remain outside the prepared bundle.
+
+After reviewing the prepared template, grant it in the receiver's machine policy. Validate
+with that policy and review the resulting revision. Set `pin` to the approved revision before
+starting. Start and resume use the same Scenario Store.
+
+```bash
+af scenario validate --file "$scratch/prepared.json" \
+  --authority "$scratch/policy.json" --state "$scratch/scenarios" --json
+```
+
+```bash
+printf '{}\n' > "$scratch/empty.json"
+af scenario start daily --file "$scratch/prepared.json" \
+  --authority "$scratch/policy.json" --inputs "$scratch/empty.json" \
+  --state "$scratch/scenarios" --confirm-pin "$pin" --json
+af scenario resume daily --state "$scratch/scenarios" --json
+```
+
+The `assessment` Task receipt identifies the sealed Document, its independent verification
+and the observed Provider charge. The private Document's Decisions section covers each frozen
+member exactly once. Its checks bind the structured assessment to the current source, frozen
+evidence and exact proposed public fields before independent verification.
+
+This assessment workflow ends with the native Report Task receipt. Continue to use the explicit
+batch commands above for local settlement and close. The prepared workflow carries no dispatch
+authority.
+
+The offline regression exercises signed intake and the normal prepare, validate, start and
+resume commands with two fresh receivers and a deterministic Provider. It checks duplicate
+grouping, distinct source defects, held and insufficient evidence and preservation of the
+original receipt on resume. Run it with
+`cargo nextest run --workspace --locked --profile ci -E 'binary_id(af::it) & test(portable_backlog_collects_and_verifies)'`.

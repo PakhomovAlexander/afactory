@@ -3,8 +3,12 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use af_contracts::EventType;
+use af_contracts::backlog::batch::assessment::{
+    CollectedBatch, CollectedMember, CollectionSchema, MAX_MEMBERS,
+};
 use af_contracts::backlog::batch::{
-    EvidenceAccess, HoldPolicy, Journal, Policy, Reconsideration, Settlement, ZoneSnapshot,
+    BatchReference, EvidenceAccess, HoldPolicy, Journal, Policy, Reconsideration, Settlement,
+    ZoneSnapshot,
 };
 use af_contracts::task::usage::DecimalU64;
 use af_scenario::contract::{Limits, MAX_TIME};
@@ -19,7 +23,6 @@ use crate::ProjectStore;
 
 const STREAM: &str = "backlog-daily-batch";
 pub const POLICY_FILE: &str = "backlog-batch-policy-v1.json";
-
 #[derive(Serialize)]
 pub struct IntakeEntry {
     pub report_id: String,
@@ -656,6 +659,76 @@ impl ProjectStore {
     pub fn backlog_batch_audit(&self) -> Result<Audit, String> {
         let (state, intake) = self.batch_state()?;
         Ok(state.audit(self.project_id.clone(), intake))
+    }
+
+    pub fn collect_backlog_batch(
+        &self,
+        reference: BatchReference,
+        scenario_id: &str,
+        limits: &Limits,
+        source_revision: String,
+    ) -> Result<CollectedBatch, String> {
+        reference.validate()?;
+        let (state, intake) = self.batch_state()?;
+        let pin = state.pin.ok_or("no pinned backlog batch policy")?;
+        let bytes = local_fs::read_bounded(&self.directory.join(POLICY_FILE), 16_384)
+            .map_err(|error| format!("reading backlog batch policy: {error}"))?;
+        let current: Policy =
+            serde_json::from_slice(&bytes).map_err(|_| "invalid backlog batch policy document")?;
+        if reference.project_id != self.project_id
+            || reference.policy_id != pin.id
+            || current != pin.policy
+            || scenario_id != pin.policy.scenario_id
+            || !limits.within(&pin.execution.per_run)
+            || state.active.as_deref() != Some(&reference.batch_id)
+        {
+            return Err(
+                "backlog Scenario differs from the active Project batch or its policy".into(),
+            );
+        }
+        let batch = &state.batches[&reference.batch_id];
+        if batch.high_water != reference.high_water
+            || batch.members.is_empty()
+            || batch.members.len() > MAX_MEMBERS
+        {
+            return Err(
+                "backlog Scenario requires the exact cutoff and 1 to 128 frozen members".into(),
+            );
+        }
+        let members = batch
+            .members
+            .values()
+            .map(|member| {
+                let accepted = &intake.reports[&member.work.report_id];
+                CollectedMember {
+                    member_id: member.work.member_id.clone(),
+                    report_id: member.work.report_id.clone(),
+                    item_id: member.work.item_id.clone(),
+                    evidence_report_id: member.work.evidence_report_id.clone(),
+                    evidence_ids: member.work.evidence_ids.clone(),
+                    sequence: accepted.receipt.body.sequence,
+                    report_digest: accepted.receipt.body.report_digest.clone(),
+                    source_revision: accepted.report.source_revision.clone(),
+                }
+            })
+            .collect();
+        let tracked_items = self.verified_backlog()?;
+        let tracked_items_truncated = tracked_items.len() > MAX_MEMBERS;
+        Ok(CollectedBatch {
+            schema: CollectionSchema::V1,
+            reference,
+            authority_id: pin.policy.authority_id,
+            scenario_id: pin.policy.scenario_id,
+            source_revision,
+            previous_high_water: batch.previous_high_water,
+            members,
+            tracked_items: tracked_items
+                .into_iter()
+                .take(MAX_MEMBERS)
+                .map(|item| (item.item_id, item.revision_id))
+                .collect(),
+            tracked_items_truncated,
+        })
     }
 
     pub fn reconsider_backlog_batch(&mut self, request: Reconsideration) -> Result<Audit, String> {

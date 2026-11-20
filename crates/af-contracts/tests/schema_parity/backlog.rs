@@ -196,3 +196,31 @@ fn backlog_batch_journal_and_policy_are_closed_and_versioned() {
     assert_invalid(record_schema, &duplicate, "duplicate frozen member");
     assert!(validate_event_payload(event_type, &duplicate).is_err());
 }
+
+#[test]
+fn portable_batch_reference_round_trips_without_caller_membership_or_policy() {
+    use af_contracts::backlog::batch::BatchReference;
+    let digest = format!("sha256:{}", "a".repeat(64));
+    let value = json!({
+        "schema":"af/backlog-batch-reference@1",
+        "project_id":digest, "batch_id":digest, "policy_id":digest, "high_water":"15"
+    });
+    let schema = "backlog-batch-reference-v1.json";
+    assert_valid(schema, &value);
+    let reference: BatchReference = serde_json::from_value(value.clone()).unwrap();
+    reference.validate().unwrap();
+    assert_eq!(serde_json::to_value(reference).unwrap(), value);
+    let mut extra = value.clone();
+    extra["members"] = json!(["caller-nominated"]);
+    assert_invalid(schema, &extra, "caller membership");
+    assert!(serde_json::from_value::<BatchReference>(extra).is_err());
+    let mut zero = value;
+    zero["high_water"] = json!("0");
+    assert_invalid(schema, &zero, "zero cutoff");
+    assert!(
+        serde_json::from_value::<BatchReference>(zero)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+}

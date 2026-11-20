@@ -537,7 +537,13 @@ impl ReportTaskDomain {
         Ok((document, draft, sources))
     }
     fn checks(&self, cas: &Cas, input: &TaskInvocationV1) -> Result<ReportCheckReceiptV1, String> {
-        let (snapshot, manifest_id, manifest) = self.source(cas, input)?;
+        let (snapshot, source, manifest) = source_snapshot(
+            cas,
+            input
+                .inputs
+                .get("source")
+                .ok_or("Report operation lacks its source")?,
+        )?;
         let document_id = input_id(input, "document", DOCUMENT_V1, Some(&snapshot))?;
         let (document, draft, sources) = self.document(cas, document_id, &snapshot)?;
         // With `sources` bound, the checks judge exactly the set the document was sealed with;
@@ -567,7 +573,12 @@ impl ReportTaskDomain {
                 });
             }
         }
-        let checks =
+        use af_contracts::backlog::batch::assessment::{Assessment, SOURCE_NAME, SOURCE_URI};
+        let batch = sources
+            .sources
+            .get(SOURCE_NAME)
+            .filter(|s| s.uri.starts_with(SOURCE_URI));
+        let mut checks =
             BTreeMap::from([
                 (
                     "size".into(),
@@ -588,12 +599,9 @@ impl ReportTaskDomain {
                 ),
                 (
                     "source_locations".into(),
-                    outcome(
-                        sources
-                            .sources
-                            .values()
-                            .all(|s| safe_source_location(&s.uri)),
-                    ),
+                    outcome(sources.sources.iter().all(|(name, s)| {
+                        (name == SOURCE_NAME && batch.is_some()) || safe_source_location(&s.uri)
+                    })),
                 ),
                 (
                     "repository_citations".into(),
@@ -603,6 +611,13 @@ impl ReportTaskDomain {
                     ),
                 ),
             ]);
+        if let Some(batch) = batch {
+            let origin = af_source_git::task::read_origin(cas, &source.origin_id)?;
+            checks.insert(
+                "backlog_assessment".into(),
+                outcome(Assessment::check(batch, &draft, origin.source_revision()).is_ok()),
+            );
+        }
         let passed = checks.values().all(|r| *r == ReceiptOutcomeV1::Passed);
         Ok(ReportCheckReceiptV1 {
             plan_id: input.plan_id.clone(),
@@ -610,7 +625,7 @@ impl ReportTaskDomain {
             sources_id,
             policy_id: self.policy_id.clone(),
             source_snapshot_id: snapshot,
-            manifest_id,
+            manifest_id: source.manifest_id,
             checks,
             citation_failures,
             outcome: outcome(passed),

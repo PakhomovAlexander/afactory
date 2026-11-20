@@ -4,7 +4,40 @@ use super::is_report_id;
 use crate::{is_digest, task::usage::DecimalU64};
 use serde::{Deserialize, Serialize};
 
+pub mod assessment;
+
 const MAX_CALENDAR_MS: u64 = 8_640_000_000_000;
+
+/// A receiver selects an admitted batch by identity. Its contents come from the Project Store.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BatchReference {
+    pub schema: BatchReferenceSchema,
+    pub project_id: String,
+    pub batch_id: String,
+    pub policy_id: String,
+    pub high_water: DecimalU64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BatchReferenceSchema {
+    #[serde(rename = "af/backlog-batch-reference@1")]
+    V1,
+}
+
+impl BatchReference {
+    pub fn validate(&self) -> Result<(), String> {
+        if [&self.project_id, &self.batch_id, &self.policy_id]
+            .into_iter()
+            .all(|id| is_digest(id))
+            && self.high_water.get() > 0
+        {
+            Ok(())
+        } else {
+            Err("invalid backlog batch reference".into())
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PolicySchema {

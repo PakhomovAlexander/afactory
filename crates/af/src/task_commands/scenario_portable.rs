@@ -1,5 +1,7 @@
 //! Lower a committed portable artifact to an ordinary, receiver-specific Scenario bundle.
 use super::*;
+use af_contracts::backlog::batch::BatchReference;
+use af_contracts::backlog::batch::assessment::{SOURCE_NAME as BATCH_SOURCE, SOURCE_URI};
 use af_contracts::task::document::DocumentSourceV1;
 use af_contracts::task::report_domain::{MAX_REPORT_SOURCES_FILE_BYTES, ReportSourcesV1};
 use af_pipeline_config::task::shared::safe_relative_path;
@@ -9,7 +11,75 @@ use af_scenario::contract::{
 };
 
 const SCHEMA: &str = "af/scenario-artifact@1";
+const BACKLOG_SCHEMA: &str = "af/scenario-artifact@2";
 pub(super) const SOURCES: &str = "scenario_portable_sources";
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Inputs {
+    Report(ReportSourcesV1),
+    Backlog(BatchReference),
+}
+
+impl Inputs {
+    fn bind(
+        self,
+        repo: &Path,
+        artifact: &Artifact,
+        artifact_digest: &str,
+        source_revision: String,
+    ) -> Result<ReportSourcesV1, String> {
+        let backlog = artifact.schema == BACKLOG_SCHEMA;
+        match self {
+            Self::Report(inputs) if !backlog => {
+                require(
+                    artifact
+                        .inputs
+                        .values()
+                        .all(|kind| *kind == InputType::ReportSource),
+                    "Portable report artifact requires report_source inputs",
+                )?;
+                Ok(inputs)
+            }
+            Self::Backlog(reference) if backlog => {
+                require(
+                    artifact.inputs
+                        == BTreeMap::from([(BATCH_SOURCE.into(), InputType::BacklogBatch)]),
+                    "Portable backlog artifact requires one backlog_batch input",
+                )?;
+                reference.validate()?;
+                let checkout = af_project::require_checkout(repo)?;
+                require(
+                    reference.project_id == checkout.project_id,
+                    "Backlog batch reference belongs to a different Project",
+                )?;
+                let store = af_project::ProjectStore::open_read_only(
+                    &crate::xdg_state_root()?,
+                    &checkout.project_id,
+                )?;
+                let batch = store.collect_backlog_batch(
+                    reference,
+                    artifact_digest,
+                    &artifact.definition.limits,
+                    source_revision,
+                )?;
+                let text = serde_json::to_string(&batch).map_err(|e| e.to_string())?;
+                let mut inputs = ReportSourcesV1::empty();
+                inputs.sources.insert(
+                    BATCH_SOURCE.into(),
+                    DocumentSourceV1 {
+                        title: "Frozen Project backlog batch".into(),
+                        uri: format!("{SOURCE_URI}{}", batch.reference.batch_id),
+                        revision: digest(text.as_bytes()),
+                        text,
+                    },
+                );
+                Ok(inputs)
+            }
+            _ => Err("Portable Scenario requires its declared input document type".into()),
+        }
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -31,10 +101,11 @@ struct Definition {
     task: ReportTask,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum InputType {
     ReportSource,
+    BacklogBatch,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -90,7 +161,7 @@ impl Artifact {
         mut inputs: ReportSourcesV1,
     ) -> Result<(serde_json::Value, Packages), String> {
         require(
-            self.schema == SCHEMA,
+            matches!(self.schema.as_str(), SCHEMA | BACKLOG_SCHEMA),
             "Unsupported portable Scenario artifact",
         )?;
         for id in [
@@ -189,8 +260,7 @@ pub(crate) fn prepare(
     )?;
     let directory = file.rfind('/').map_or("", |slash| &file[..=slash]);
     let bytes = af_scenario::store::read(inputs, MAX_REPORT_SOURCES_FILE_BYTES as u64)?;
-    let inputs: ReportSourcesV1 = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-    inputs.validate()?;
+    let inputs: Inputs = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
     let home = tempfile::tempdir().map_err(|e| e.to_string())?;
     let git = Repo::open(&repo, home.path());
     let top = git
@@ -201,9 +271,15 @@ pub(crate) fn prepare(
             .ok_or("Git omitted repository root")?,
     );
     let commit = git.rev_parse("HEAD").map_err(|e| e.to_string())?;
-    let (template, definition) =
-        scenario_template::pin_with(repo, state, commit, |cas, manifest, delivery| {
-            let artifact: Artifact = parse(Path::new(file), &captured_file(cas, manifest, file)?)?;
+    let (template, definition) = scenario_template::pin_with(
+        repo.clone(),
+        state,
+        commit.clone(),
+        |cas, manifest, delivery| {
+            let bytes = captured_file(cas, manifest, file)?;
+            let artifact: Artifact = parse(Path::new(file), &bytes)?;
+            let inputs = inputs.bind(&repo, &artifact, &digest(&bytes), commit)?;
+            inputs.validate()?;
             let (document, packages) = artifact.bind(cas, manifest, directory, inputs)?;
             let names: BTreeSet<_> = packages.pins.keys().cloned().collect();
             let task = &artifact.definition.task;
@@ -215,9 +291,16 @@ pub(crate) fn prepare(
                 delivery,
                 Some(packages),
             )?;
-            validate_closure(&compiler, &settings, task, names)?;
+            validate_closure(
+                &compiler,
+                &settings,
+                task,
+                names,
+                artifact.schema == BACKLOG_SCHEMA,
+            )?;
             Ok((document, authority, settings, artifact.definition))
-        })?;
+        },
+    )?;
     let template_id = template.id()?;
     let bundle = Bundle {
         schema: "af/scenario-bundle@10".into(),
@@ -271,6 +354,7 @@ fn validate_closure(
     settings: &RunAuthority,
     task: &ReportTask,
     mut names: BTreeSet<String>,
+    backlog: bool,
 ) -> Result<(), String> {
     require(
         selected_profile(compiler, settings, &task.kind, None)? == TaskKindProfile::Report,
@@ -294,6 +378,35 @@ fn validate_closure(
             }),
         "Portable report Pipeline must use native report operators and model Workers",
     )?;
+    if backlog {
+        let authors: BTreeSet<_> = pipeline
+            .nodes
+            .iter()
+            .filter_map(|node| match &node.operator {
+                pipeline::TaskOperatorV1::Worker { slot } => Some(slot.clone()),
+                _ => None,
+            })
+            .collect();
+        let mut verifiers = pipeline
+            .nodes
+            .iter()
+            .filter_map(|node| match &node.operator {
+                pipeline::TaskOperatorV1::Verify { slot } => Some(slot),
+                _ => None,
+            })
+            .peekable();
+        require(
+            !authors.is_empty()
+                && verifiers.peek().is_some()
+                && verifiers.all(|slot| {
+                    pipeline
+                        .slots
+                        .get(slot)
+                        .is_some_and(|verify| authors.is_subset(&verify.independent_from))
+                }),
+            "Portable backlog requires verifiers independent of every author slot",
+        )?;
+    }
     names.remove(&task.kind_package);
     names.remove(&task.pipeline);
     let workers = compiler.startup_workers(&task.pipeline)?;
