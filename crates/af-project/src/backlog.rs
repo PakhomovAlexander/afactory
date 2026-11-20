@@ -357,6 +357,9 @@ fn project_backlog(
                         reason: decision.reason.clone(),
                     });
                 }
+                if event.correlation_id.is_some() {
+                    current.insert(revision.item_id.clone(), decision.revision_id.clone());
+                }
                 decisions.insert(decision.revision_id.clone(), decision);
             }
             BacklogRecordV1::Publication(_) => {}

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:ant-pin:12",
-  "title": "ant-pin v12",
+  "$id": "urn:af:schema:ant-pin:13",
+  "title": "ant-pin v13",
   "description": "ADR-0274. Cross-port types, identity, authority, budget, signature and lifecycle invariants also require semantic admission.",
   "type": "object",
   "additionalProperties": false,
@@ -14,19 +14,19 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/ant-pin@12"
+      "const": "af/ant-pin@13"
     },
     "definition": {
-      "$ref": "urn:af:schema:scenario:10#/$defs/Ant"
+      "$ref": "urn:af:schema:scenario:11#/$defs/Ant"
     },
     "scenario": {
-      "$ref": "urn:af:schema:scenario:10#/$defs/Pin"
+      "$ref": "urn:af:schema:scenario:11#/$defs/Pin"
     },
     "zone": {
-      "$ref": "urn:af:schema:scenario:10#/$defs/Zone"
+      "$ref": "urn:af:schema:scenario:11#/$defs/Zone"
     },
     "revision": {
-      "$ref": "urn:af:schema:scenario:10#/$defs/digest"
+      "$ref": "urn:af:schema:scenario:11#/$defs/digest"
     }
   }
 }

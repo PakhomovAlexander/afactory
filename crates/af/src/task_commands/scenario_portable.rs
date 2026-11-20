@@ -6,11 +6,12 @@ use af_contracts::task::document::DocumentSourceV1;
 use af_contracts::task::report_domain::{MAX_REPORT_SOURCES_FILE_BYTES, ReportSourcesV1};
 use af_pipeline_config::task::shared::safe_relative_path;
 use af_scenario::contract::{
-    Authority, Binding, Bundle, Datum, Kind, Limits, Port, Scenario, Step, Timeout, digest, hash,
-    name, require,
+    Authority, Binding, Bundle, Datum, Grant, Kind, Limits, Operation, Port, Scenario, Step,
+    Timeout, digest, hash, name, require,
 };
 
 const SCHEMA: &str = "af/scenario-artifact@1";
+const BACKLOG_FILE: &str = "scenario_backlog_artifact_file";
 const BACKLOG_SCHEMA: &str = "af/scenario-artifact@2";
 pub(super) const SOURCES: &str = "scenario_portable_sources";
 
@@ -48,6 +49,17 @@ impl Inputs {
                     "Portable backlog artifact requires one backlog_batch input",
                 )?;
                 reference.validate()?;
+                require(
+                    artifact.definition.limits.max_dispatches >= 3
+                        && artifact
+                            .definition
+                            .task
+                            .limits
+                            .wall_ms
+                            .saturating_add(30_000)
+                            <= artifact.definition.limits.max_wall_ms,
+                    "Portable backlog bounds must cover assessment, settlement and dispatch",
+                )?;
                 let checkout = af_project::require_checkout(repo)?;
                 require(
                     reference.project_id == checkout.project_id,
@@ -271,7 +283,7 @@ pub(crate) fn prepare(
             .ok_or("Git omitted repository root")?,
     );
     let commit = git.rev_parse("HEAD").map_err(|e| e.to_string())?;
-    let (template, definition) = scenario_template::pin_with(
+    let (template, (definition, backlog)) = scenario_template::pin_with(
         repo.clone(),
         state,
         commit.clone(),
@@ -280,7 +292,10 @@ pub(crate) fn prepare(
             let artifact: Artifact = parse(Path::new(file), &bytes)?;
             let inputs = inputs.bind(&repo, &artifact, &digest(&bytes), commit)?;
             inputs.validate()?;
-            let (document, packages) = artifact.bind(cas, manifest, directory, inputs)?;
+            let (mut document, packages) = artifact.bind(cas, manifest, directory, inputs)?;
+            if artifact.schema == BACKLOG_SCHEMA {
+                document["requirements"][BACKLOG_FILE] = json!(file);
+            }
             let names: BTreeSet<_> = packages.pins.keys().cloned().collect();
             let task = &artifact.definition.task;
             let (authority, settings, compiler) = capture_authority_with_packages(
@@ -298,55 +313,112 @@ pub(crate) fn prepare(
                 names,
                 artifact.schema == BACKLOG_SCHEMA,
             )?;
-            Ok((document, authority, settings, artifact.definition))
+            Ok((
+                document,
+                authority,
+                settings,
+                (artifact.definition, artifact.schema == BACKLOG_SCHEMA),
+            ))
         },
     )?;
     let template_id = template.id()?;
-    let bundle = Bundle {
-        schema: "af/scenario-bundle@10".into(),
-        root: definition.id.clone(),
-        definitions: BTreeMap::from([(
-            definition.id,
-            Scenario {
-                schema: "af/scenario@10".into(),
-                inputs: BTreeMap::new(),
-                outputs: BTreeMap::from([(definition.result.clone(), Port::Task)]),
-                steps: vec![Step {
-                    id: definition.step.clone(),
-                    inputs: BTreeMap::new(),
-                    outputs: BTreeMap::from([("result".into(), Port::Task)]),
-                    when: None,
-                    max_attempts: 1,
-                    timeout_ms: definition.task.limits.wall_ms,
-                    on_timeout: Timeout::Fail,
-                    operation: Kind::FreshTask {
-                        template: Box::new(template),
-                        bindings: BTreeMap::new(),
-                    },
-                }],
-                result: BTreeMap::from([(
-                    definition.result,
-                    Binding::Step {
-                        step: definition.step,
-                        port: "result".into(),
-                    },
-                )]),
-                completion: vec![Binding::Literal {
-                    value: Box::new(Datum::Boolean(true)),
-                }],
-                authority: Authority {
-                    task_plans: BTreeSet::new(),
-                    task_templates: BTreeSet::from([template_id]),
-                    grants: BTreeSet::new(),
-                    decision_owners: BTreeSet::new(),
-                },
-                limits: definition.limits,
-                admission: None,
+    let assessment = step_result(&definition.step);
+    let mut scenario = Scenario {
+        schema: "af/scenario@11".into(),
+        inputs: BTreeMap::new(),
+        outputs: BTreeMap::from([(definition.result.clone(), Port::Task)]),
+        steps: vec![Step {
+            id: definition.step,
+            inputs: BTreeMap::new(),
+            outputs: BTreeMap::from([("result".into(), Port::Task)]),
+            when: None,
+            max_attempts: 1,
+            timeout_ms: definition.task.limits.wall_ms,
+            on_timeout: Timeout::Fail,
+            operation: Kind::FreshTask {
+                template: Box::new(template.clone()),
+                bindings: BTreeMap::new(),
             },
-        )]),
+        }],
+        result: BTreeMap::from([(definition.result, assessment.clone())]),
+        completion: vec![Binding::Literal {
+            value: Box::new(Datum::Boolean(true)),
+        }],
+        authority: Authority {
+            task_plans: BTreeSet::new(),
+            task_templates: BTreeSet::from([template_id]),
+            grants: BTreeSet::new(),
+            decision_owners: BTreeSet::new(),
+        },
+        limits: definition.limits,
+        admission: None,
+    };
+    if backlog {
+        let sources = bound_sources(template.document["requirements"].as_object())?
+            .ok_or("Missing portable backlog sources")?;
+        let source = sources
+            .sources
+            .get(BATCH_SOURCE)
+            .ok_or("Missing frozen backlog batch")?;
+        let batch: af_contracts::backlog::batch::assessment::CollectedBatch =
+            serde_json::from_str(&source.text).map_err(|e| e.to_string())?;
+        let inputs = BTreeMap::from([
+            ("assessment".into(), assessment),
+            ("subject".into(), literal(batch.reference.batch_id)),
+            ("revision".into(), literal(batch.reference.policy_id)),
+        ]);
+        for (id, operation) in [
+            ("settle-backlog", Operation::BacklogSettleV1),
+            ("dispatch-backlog", Operation::BacklogDispatchV1),
+        ] {
+            let mut inputs = inputs.clone();
+            if operation == Operation::BacklogDispatchV1 {
+                inputs.insert("settlement".into(), step_result("settle-backlog"));
+            }
+            let grant = Grant {
+                adapter: "builtin".into(),
+                operation,
+                destination: format!("local-backlog:{}", batch.reference.project_id),
+            };
+            scenario.authority.grants.insert(grant.clone());
+            scenario.outputs.insert(id.into(), Port::Action);
+            scenario.result.insert(id.into(), step_result(id));
+            scenario.steps.push(Step {
+                id: id.into(),
+                inputs,
+                outputs: BTreeMap::from([("result".into(), Port::Action)]),
+                when: None,
+                max_attempts: 1,
+                timeout_ms: 15_000,
+                on_timeout: Timeout::Fail,
+                operation: Kind::Action {
+                    grant,
+                    requires_decision: false,
+                    required_condition: None,
+                },
+            });
+        }
+    }
+    let bundle = Bundle {
+        schema: "af/scenario-bundle@11".into(),
+        root: definition.id.clone(),
+        definitions: BTreeMap::from([(definition.id, scenario)]),
     };
     bundle.validate(&crate::scenario::host::AfHost)?;
     Ok(bundle)
+}
+
+fn step_result(step: &str) -> Binding {
+    Binding::Step {
+        step: step.into(),
+        port: "result".into(),
+    }
+}
+
+fn literal(value: String) -> Binding {
+    Binding::Literal {
+        value: Box::new(Datum::Text(value)),
+    }
 }
 
 fn validate_closure(
@@ -434,3 +506,6 @@ fn validate_closure(
     }
     Ok(())
 }
+
+mod backlog;
+pub(crate) use backlog::run_backlog_action;

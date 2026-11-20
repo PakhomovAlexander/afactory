@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:scenario-artifact:2",
   "title": "Portable backlog Scenario artifact v2",
-  "description": "A committed read-only backlog assessment Scenario and its dependency pins. Preparation resolves its batch reference from the receiving Project Store.",
+  "description": "A committed backlog Scenario and its dependency pins. Preparation resolves the frozen batch from the receiving Project Store. Native actions settle accepted assessments and dispatch eligible revisions to the local sink.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "definition", "inputs", "packages", "schemas"],
@@ -13,10 +13,13 @@
       "additionalProperties": false,
       "required": ["id", "step", "result", "task", "limits"],
       "properties": {
-        "id": { "$ref": "urn:af:schema:scenario:10#/$defs/name" },
-        "step": { "$ref": "urn:af:schema:scenario:10#/$defs/name" },
-        "result": { "$ref": "urn:af:schema:scenario:10#/$defs/name" },
-        "limits": { "$ref": "urn:af:schema:scenario:10#/properties/limits" },
+        "id": { "$ref": "urn:af:schema:scenario:11#/$defs/name" },
+        "step": { "$ref": "urn:af:schema:scenario:11#/$defs/name" },
+        "result": { "$ref": "urn:af:schema:scenario:11#/$defs/name" },
+        "limits": {
+          "$ref": "urn:af:schema:scenario:11#/properties/limits",
+          "properties": { "max_dispatches": { "minimum": 3 } }
+        },
         "task": {
           "type": "object",
           "additionalProperties": false,
@@ -51,7 +54,7 @@
     "schemas": {
       "type": "object",
       "maxProperties": 16,
-      "propertyNames": { "$ref": "urn:af:schema:scenario:10#/$defs/name" },
+      "propertyNames": { "$ref": "urn:af:schema:scenario:11#/$defs/name" },
       "additionalProperties": {
         "type": "object",
         "additionalProperties": false,

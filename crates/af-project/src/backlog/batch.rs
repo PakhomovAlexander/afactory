@@ -21,6 +21,9 @@ use serde::Serialize;
 use super::intake::{AcceptedReport, value_id};
 use crate::ProjectStore;
 
+mod native;
+pub use native::{NativeAssessment, local_destination};
+
 const STREAM: &str = "backlog-daily-batch";
 pub const POLICY_FILE: &str = "backlog-batch-policy-v1.json";
 #[derive(Serialize)]
@@ -670,21 +673,9 @@ impl ProjectStore {
     ) -> Result<CollectedBatch, String> {
         reference.validate()?;
         let (state, intake) = self.batch_state()?;
-        let pin = state.pin.ok_or("no pinned backlog batch policy")?;
-        let bytes = local_fs::read_bounded(&self.directory.join(POLICY_FILE), 16_384)
-            .map_err(|error| format!("reading backlog batch policy: {error}"))?;
-        let current: Policy =
-            serde_json::from_slice(&bytes).map_err(|_| "invalid backlog batch policy document")?;
-        if reference.project_id != self.project_id
-            || reference.policy_id != pin.id
-            || current != pin.policy
-            || scenario_id != pin.policy.scenario_id
-            || !limits.within(&pin.execution.per_run)
-            || state.active.as_deref() != Some(&reference.batch_id)
-        {
-            return Err(
-                "backlog Scenario differs from the active Project batch or its policy".into(),
-            );
+        let pin = self.check_native_batch(&state, &reference, scenario_id, limits)?;
+        if state.active.as_deref() != Some(&reference.batch_id) {
+            return Err("backlog Scenario requires the active Project batch".into());
         }
         let batch = &state.batches[&reference.batch_id];
         if batch.high_water != reference.high_water
@@ -717,8 +708,8 @@ impl ProjectStore {
         Ok(CollectedBatch {
             schema: CollectionSchema::V1,
             reference,
-            authority_id: pin.policy.authority_id,
-            scenario_id: pin.policy.scenario_id,
+            authority_id: pin.policy.authority_id.clone(),
+            scenario_id: pin.policy.scenario_id.clone(),
             source_revision,
             previous_high_water: batch.previous_high_water,
             members,
@@ -729,6 +720,38 @@ impl ProjectStore {
                 .collect(),
             tracked_items_truncated,
         })
+    }
+
+    fn check_native_batch<'a>(
+        &self,
+        state: &'a State,
+        reference: &BatchReference,
+        scenario_id: &str,
+        limits: &Limits,
+    ) -> Result<&'a Pin, String> {
+        reference.validate()?;
+        let pin = state.pin.as_ref().ok_or("no pinned backlog batch policy")?;
+        let bytes = local_fs::read_bounded(&self.directory.join(POLICY_FILE), 16_384)
+            .map_err(|error| format!("reading backlog batch policy: {error}"))?;
+        let current: Policy =
+            serde_json::from_slice(&bytes).map_err(|_| "invalid backlog batch policy document")?;
+        if reference.project_id != self.project_id
+            || reference.policy_id != pin.id
+            || current != pin.policy
+            || scenario_id != pin.policy.scenario_id
+            || pin.policy.destination_id != local_destination(&self.project_id)?
+            || !limits.within(&pin.execution.per_run)
+        {
+            return Err("backlog Scenario differs from the Project batch policy".into());
+        }
+        if state
+            .batches
+            .get(&reference.batch_id)
+            .is_none_or(|batch| batch.high_water != reference.high_water)
+        {
+            return Err("backlog Scenario requires the exact cutoff".into());
+        }
+        Ok(pin)
     }
 
     pub fn reconsider_backlog_batch(&mut self, request: Reconsideration) -> Result<Audit, String> {
@@ -761,6 +784,11 @@ impl ProjectStore {
 
     fn update_backlog_batch(&mut self, record: Journal) -> Result<Audit, String> {
         let (mut state, intake) = self.batch_state()?;
+        if let Journal::Settled { batch_id, .. } | Journal::Closed { batch_id, .. } = &record
+            && self.native_batch_exists(batch_id)?
+        {
+            return Err("backlog batch is owned by its native Scenario settlement".into());
+        }
         if state.apply(&intake, record.clone())? {
             self.append_batch_journal(vec![record])?;
         }

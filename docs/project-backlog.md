@@ -226,7 +226,7 @@ local times and rolling-budget refusals appear in `occurrences`. The per-run res
 remains in the rolling window from close and is distinct from actual Provider spend.
 [Daily batch decision](adr/2026-11-20-freeze-project-backlog-at-authority-cutoff.md)
 
-## Prepare and run a private assessment
+## Prepare and run the portable daily Scenario
 
 The [daily backlog package](../fixtures/project-backlog/scenario.json) uses
 [`af/scenario-artifact@2`](../schemas/scenario-artifact-v2.json). Copy the whole package directory
@@ -237,6 +237,22 @@ travel with the artifact. The receiver selects its own private Project, Task and
 
 For a disposable daily policy, set `scenario_id` to `sha256:` followed by the SHA-256 of the
 committed artifact file. Give the daily budget at least the limits declared in the package.
+For a synthetic local destination, compute the policy's `destination_id` from the Project ID
+as shown below. Set `evidence_access` to `evidence_ids` to admit digest-matched source evidence.
+Set `hold_policy` to `allow_local_reservations` to authorize local delivery and set
+`publication_limit` to the number of revisions the native sink may accept per batch.
+
+```bash
+project_id=$(af project show --json | jq -r .project_id)
+python3 - "$project_id" <<'PYTHON'
+import hashlib
+import json
+import sys
+
+scope = json.dumps(["af/backlog-local-sink@1", sys.argv[1]], separators=(",", ":"))
+print("sha256:" + hashlib.sha256(b"review.kernel/content-id/v1\0" + scope.encode()).hexdigest())
+PYTHON
+```
 After admitting a nonempty batch, use its audit to write the reference. This example uses
 `jq` and sets restrictive permissions for the captured batch metadata and receipts.
 
@@ -261,7 +277,8 @@ Store. It collects at most 128 frozen members. The collected input contains acce
 identities, source revisions and the evidence digests allowed by policy. Raw Report text,
 their attachments, late arrivals and local-only Reports remain outside the prepared bundle.
 
-After reviewing the prepared template, grant it in the receiver's machine policy. Validate
+After reviewing the prepared template, grant it in the receiver's machine policy. The builtin
+backlog Actions use the installed Project policy and require no executable adapter. Validate
 with that policy and review the resulting revision. Set `pin` to the approved revision before
 starting. Start and resume use the same Scenario Store.
 
@@ -283,12 +300,28 @@ and the observed Provider charge. The private Document's Decisions section cover
 member exactly once. Its checks bind the structured assessment to the current source, frozen
 evidence and exact proposed public fields before independent verification.
 
-This assessment workflow ends with the native Report Task receipt. Continue to use the explicit
-batch commands above for local settlement and close. The prepared workflow carries no dispatch
-authority.
+The `settle-backlog` output identifies the Project transaction for the accepted assessment.
+Verified and already-tracked decisions need a policy-permitted evidence digest for each member
+that matches a cited file in the committed Snapshot. Record that complete file as an evidence
+attachment to opt into this match. The attachment itself stays private. A missing or mismatched
+match cannot produce a visible item or a sink delivery.
+
+The `dispatch-backlog` output identifies the resolved delivery intents. Approved revisions
+beyond the cap stay visible through `af backlog list` and can be admitted by a later batch on
+the same source revision. The synthetic sink is the receiving Store's `backlog-local-sink/`
+directory. Each delivery contains the item ID, revision ID and approved public fields.
+A resume with a pending intent reconciles the same delivery within the Scenario's remaining
+wall time and dispatch limits. The native graph closes the batch when admitted deliveries
+have receipts. `af backlog show ID --private --json` shows each Report's typed decision.
 
 The offline regression exercises signed intake and the normal prepare, validate, start and
 resume commands with two fresh receivers and a deterministic Provider. It checks duplicate
 grouping, distinct source defects, held and insufficient evidence and preservation of the
-original receipt on resume. Run it with
-`cargo nextest run --workspace --locked --profile ci -E 'binary_id(af::it) & test(portable_backlog_collects_and_verifies)'`.
+original receipt and sink delivery across interruption and resume.
+
+```sh
+cargo nextest run --workspace --locked --profile ci \
+  -E 'binary_id(af::it) & test(portable_backlog_settles_and_dispatches)'
+```
+
+[Native settlement and delivery decision](adr/2026-11-20-settle-and-dispatch-verified-backlog-locally.md)

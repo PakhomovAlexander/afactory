@@ -183,6 +183,20 @@ impl Host for AfHost {
         )))
     }
 
+    fn run_backlog_action(
+        &self,
+        run: &af_scenario::state::Run,
+        dispatch: &af_scenario::state::Dispatch,
+        grant: &Grant,
+        cancellation: &AtomicBool,
+    ) -> Result<Option<String>> {
+        crate::task_commands::scenario_portable::run_backlog_action(
+            run,
+            dispatch,
+            grant,
+            cancellation,
+        )
+    }
     fn active_task_run(&self, target: &TaskTarget) -> Option<u64> {
         let opened =
             crate::task_commands::open_task(&target.task_id, &target.repo, Some(&target.state))

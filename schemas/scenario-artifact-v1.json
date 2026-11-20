@@ -13,10 +13,10 @@
       "additionalProperties": false,
       "required": ["id", "step", "result", "task", "limits"],
       "properties": {
-        "id": { "$ref": "urn:af:schema:scenario:10#/$defs/name" },
-        "step": { "$ref": "urn:af:schema:scenario:10#/$defs/name" },
-        "result": { "$ref": "urn:af:schema:scenario:10#/$defs/name" },
-        "limits": { "$ref": "urn:af:schema:scenario:10#/properties/limits" },
+        "id": { "$ref": "urn:af:schema:scenario:11#/$defs/name" },
+        "step": { "$ref": "urn:af:schema:scenario:11#/$defs/name" },
+        "result": { "$ref": "urn:af:schema:scenario:11#/$defs/name" },
+        "limits": { "$ref": "urn:af:schema:scenario:11#/properties/limits" },
         "task": {
           "type": "object",
           "additionalProperties": false,
@@ -57,7 +57,7 @@
     "schemas": {
       "type": "object",
       "maxProperties": 16,
-      "propertyNames": { "$ref": "urn:af:schema:scenario:10#/$defs/name" },
+      "propertyNames": { "$ref": "urn:af:schema:scenario:11#/$defs/name" },
       "additionalProperties": {
         "type": "object",
         "additionalProperties": false,

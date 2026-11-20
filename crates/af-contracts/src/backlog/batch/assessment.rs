@@ -62,17 +62,17 @@ pub struct Assessment {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Decision {
-    members: Vec<String>,
-    evidence_ids: Vec<String>,
-    citations: Vec<RepositoryCitationV1>,
-    disposition: Disposition,
-    claim: String,
-    reason: String,
+pub struct Decision {
+    pub members: Vec<String>,
+    pub evidence_ids: Vec<String>,
+    pub citations: Vec<RepositoryCitationV1>,
+    pub disposition: Disposition,
+    pub claim: String,
+    pub reason: String,
     #[serde(deserialize_with = "Option::deserialize")]
-    tracked_id: Option<String>,
+    pub tracked_id: Option<String>,
     #[serde(deserialize_with = "Option::deserialize")]
-    proposed: Option<PublicFields>,
+    pub proposed: Option<PublicFields>,
 }
 
 impl Assessment {
@@ -81,6 +81,14 @@ impl Assessment {
         draft: &DocumentDraft,
         revision: Option<&str>,
     ) -> Result<(), String> {
+        Self::checked(source, draft, revision).map(|_| ())
+    }
+
+    pub fn checked(
+        source: &DocumentSourceV1,
+        draft: &DocumentDraft,
+        revision: Option<&str>,
+    ) -> Result<(CollectedBatch, Vec<Decision>), String> {
         let batch: CollectedBatch = serde_json::from_str(&source.text)
             .map_err(|_| "Invalid frozen backlog batch context")?;
         batch.reference.validate()?;
@@ -145,7 +153,7 @@ impl Assessment {
         if !remaining.is_empty() {
             return Err("Backlog assessment did not account for every frozen member".into());
         }
-        Ok(())
+        Ok((batch, assessment.decisions))
     }
 }
 

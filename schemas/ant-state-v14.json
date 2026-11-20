@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:ant-state:13",
-  "title": "ant-state v13",
+  "$id": "urn:af:schema:ant-state:14",
+  "title": "ant-state v14",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -16,13 +16,13 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/ant-state@13"
+      "const": "af/ant-state@14"
     },
     "pin": {
-      "$ref": "urn:af:schema:scenario:10#/$defs/AntPin"
+      "$ref": "urn:af:schema:scenario:11#/$defs/AntPin"
     },
     "state": {
-      "$ref": "urn:af:schema:scenario:10#/$defs/Enabled"
+      "$ref": "urn:af:schema:scenario:11#/$defs/Enabled"
     },
     "changes": {
       "type": "array",
@@ -35,7 +35,7 @@
             "maximum": 9007199254740991
           },
           {
-            "$ref": "urn:af:schema:scenario:10#/$defs/Enabled"
+            "$ref": "urn:af:schema:scenario:11#/$defs/Enabled"
           }
         ],
         "items": false,
@@ -55,11 +55,11 @@
     "occurrences": {
       "type": "array",
       "items": {
-        "$ref": "urn:af:schema:scenario:10#/$defs/Occurrence"
+        "$ref": "urn:af:schema:scenario:11#/$defs/Occurrence"
       }
     },
     "retention": {
-      "$ref": "urn:af:schema:scenario:10#/$defs/Retention"
+      "$ref": "urn:af:schema:scenario:11#/$defs/Retention"
     }
   }
 }

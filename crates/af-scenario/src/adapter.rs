@@ -211,6 +211,25 @@ pub(crate) fn dispatch(
             }
             Ok(Settlement::Waiting(r.evidence))
         }
+        Kind::Action { grant, .. } if grant.operation.backlog() => {
+            let Some(evidence) = host.run_backlog_action(run, dispatch, grant, cancellation)?
+            else {
+                return Ok(Settlement::Uncertain(
+                    "Local backlog sink has a pending delivery intent".into(),
+                ));
+            };
+            Ok(Settlement::Done(BTreeMap::from([(
+                "result".into(),
+                Datum::Action(ActionReceipt {
+                    intent_id: dispatch.intent.id.clone(),
+                    operation: grant.operation,
+                    destination: grant.destination.clone(),
+                    subject: dispatch.inputs["subject"].as_text()?.into(),
+                    revision: dispatch.inputs["revision"].as_text()?.into(),
+                    evidence,
+                }),
+            )])))
+        }
         Kind::Action { grant, .. } if grant.adapter == "builtin" => file_action(dispatch, grant),
         Kind::Action { grant, .. } => {
             super::nightly::validate_dispatch(policy, grant, &dispatch.inputs)?;

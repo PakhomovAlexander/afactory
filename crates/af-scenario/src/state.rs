@@ -205,7 +205,7 @@ impl Run {
             outputs: None,
         };
         Ok(Self {
-            schema: "af/scenario-run@11".into(),
+            schema: "af/scenario-run@12".into(),
             id,
             execution_id: execution_id()?,
             pin,
@@ -249,7 +249,7 @@ impl Run {
     }
     pub fn validate(&self, host: &dyn crate::Host) -> Result<()> {
         require(
-            self.schema == "af/scenario-run@11" && af_contracts::is_digest(&self.execution_id),
+            self.schema == "af/scenario-run@12" && af_contracts::is_digest(&self.execution_id),
             "Unsupported Run version",
         )?;
         name(&self.id)?;
@@ -660,6 +660,12 @@ impl Run {
                             receipt.subject == inputs["subject"].as_text()?
                                 && receipt.revision == inputs["revision"].as_text()?,
                             "Action receipt has stale object identity",
+                        )?;
+                    }
+                    if grant.operation.backlog() {
+                        require(
+                            af_contracts::is_digest(&receipt.evidence),
+                            "Backlog action lacks a Project receipt identity",
                         )?;
                     }
                     if grant.operation == Operation::PrepareCandidateV1 {

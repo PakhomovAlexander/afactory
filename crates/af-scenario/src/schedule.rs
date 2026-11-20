@@ -411,7 +411,7 @@ impl Ant {
         Ok(values)
     }
     pub fn validate(&self, host: &dyn crate::Host) -> Result<()> {
-        require(self.schema == "af/ant@11", "Unsupported Ant version")?;
+        require(self.schema == "af/ant@12", "Unsupported Ant version")?;
         name(&self.id)?;
         name(&self.owner)?;
         text(&self.notification)?;
@@ -451,7 +451,7 @@ impl AntPin {
         let zone = Zone::load(definition.schedule.timezone())?;
         let revision = pin_revision(&definition, &scenario, &zone)?;
         Ok(Self {
-            schema: "af/ant-pin@12".into(),
+            schema: "af/ant-pin@13".into(),
             definition,
             scenario,
             zone,
@@ -463,7 +463,7 @@ impl AntPin {
         self.scenario.validate(host)?;
         self.zone.validate()?;
         require(
-            self.schema == "af/ant-pin@12"
+            self.schema == "af/ant-pin@13"
                 && self.definition.scenario == self.scenario.bundle
                 && self.definition.schedule.timezone() == self.zone.name
                 && self.revision == pin_revision(&self.definition, &self.scenario, &self.zone)?,
@@ -523,7 +523,7 @@ impl AntState {
     pub fn new(pin: AntPin, now: u64) -> Result<Self> {
         let next_day = pin.definition.schedule.initial_index(&pin.zone)?;
         Ok(Self {
-            schema: "af/ant-state@13".into(),
+            schema: "af/ant-state@14".into(),
             pin,
             state: AntMode::Disabled,
             changes: vec![(now, AntMode::Disabled)],
@@ -537,7 +537,7 @@ impl AntState {
         self.pin.validate(host)?;
         self.retention.validate(self.next_day)?;
         require(
-            self.schema == "af/ant-state@13"
+            self.schema == "af/ant-state@14"
                 && self.cursor_valid()
                 && self.last_tick_unix_ms > 0
                 && self.last_tick_unix_ms <= MAX_TIME

@@ -7,7 +7,7 @@
     "limits": {
       "max_tokens": 150000,
       "max_wall_ms": 1230000,
-      "max_dispatches": 1
+      "max_dispatches": 5
     },
     "task": {
       "kind": "daily-backlog",
@@ -36,7 +36,7 @@
       "version": "1.0.0"
     },
     "backlog/daily-author": {
-      "digest": "sha256:59a536ce6c513a6392c00fd061ccd84517584593b41fafc016ef7fd0f688372a",
+      "digest": "sha256:e3f915815b73f2de53bd976f8f2cf00cacd8efe84075241cd21cdd3abaabe08d",
       "path": "task-packages/backlog/daily-author",
       "version": "1.0.0"
     },
@@ -46,7 +46,7 @@
       "version": "1.0.0"
     },
     "backlog/daily-verifier": {
-      "digest": "sha256:aabed7d1f070c4bc1635a6f0835f27a7959c890a68a92c2de5c139b9f934d425",
+      "digest": "sha256:cdb189ea61140556e0510890c8aa0a1f2cc0dfa347a5f27e7cb994cfe93335c8",
       "path": "task-packages/backlog/daily-verifier",
       "version": "1.0.0"
     }

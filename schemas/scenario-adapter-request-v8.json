@@ -26,24 +26,24 @@
       ]
     },
     "intent_id": {
-      "$ref": "urn:af:schema:scenario:10#/$defs/digest"
+      "$ref": "urn:af:schema:scenario:11#/$defs/digest"
     },
     "input_digest": {
-      "$ref": "urn:af:schema:scenario:10#/$defs/digest"
+      "$ref": "urn:af:schema:scenario:11#/$defs/digest"
     },
     "operation": {
-      "$ref": "urn:af:schema:scenario:10#/$defs/Operation"
+      "$ref": "urn:af:schema:scenario:11#/$defs/ExternalOperation"
     },
     "destination": {
-      "$ref": "urn:af:schema:scenario:10#/$defs/text"
+      "$ref": "urn:af:schema:scenario:11#/$defs/text"
     },
     "inputs": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:scenario:10#/$defs/name"
+        "$ref": "urn:af:schema:scenario:11#/$defs/name"
       },
       "additionalProperties": {
-        "$ref": "urn:af:schema:scenario:10#/$defs/Datum"
+        "$ref": "urn:af:schema:scenario:11#/$defs/Datum"
       }
     }
   }

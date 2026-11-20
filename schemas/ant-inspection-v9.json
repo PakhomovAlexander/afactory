@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:ant-inspection:8",
+  "$id": "urn:af:schema:ant-inspection:9",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -20,13 +20,13 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/ant-inspection@8"
+      "const": "af/ant-inspection@9"
     },
     "pin": {
-      "$ref": "urn:af:schema:scenario:10#/$defs/AntPin"
+      "$ref": "urn:af:schema:scenario:11#/$defs/AntPin"
     },
     "state": {
-      "$ref": "urn:af:schema:scenario:10#/$defs/Enabled"
+      "$ref": "urn:af:schema:scenario:11#/$defs/Enabled"
     },
     "changes": {
       "type": "array",
@@ -39,7 +39,7 @@
             "maximum": 9007199254740991
           },
           {
-            "$ref": "urn:af:schema:scenario:10#/$defs/Enabled"
+            "$ref": "urn:af:schema:scenario:11#/$defs/Enabled"
           }
         ],
         "items": false,
@@ -59,7 +59,7 @@
     "occurrences": {
       "type": "array",
       "items": {
-        "$ref": "urn:af:schema:scenario:10#/$defs/Occurrence"
+        "$ref": "urn:af:schema:scenario:11#/$defs/Occurrence"
       }
     },
     "scheduler": {
@@ -134,7 +134,7 @@
     "active_run": {
       "anyOf": [
         {
-          "$ref": "urn:af:schema:scenario:10#/$defs/name"
+          "$ref": "urn:af:schema:scenario:11#/$defs/name"
         },
         {
           "type": "null"
@@ -159,8 +159,8 @@
       ]
     },
     "retention": {
-      "$ref": "urn:af:schema:scenario:10#/$defs/Retention"
+      "$ref": "urn:af:schema:scenario:11#/$defs/Retention"
     }
   },
-  "title": "ant-inspection v8"
+  "title": "ant-inspection v9"
 }

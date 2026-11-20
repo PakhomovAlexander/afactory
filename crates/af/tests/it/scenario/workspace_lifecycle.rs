@@ -225,8 +225,8 @@ fn production_lifecycle(modes: &[&str]) {
                 "evidence":binding("merge")}),
             "action",
         );
-        let bundle = json!({"schema":"af/scenario-bundle@10","root":"documentation-maintenance","definitions":{"documentation-maintenance":{
-            "schema":"af/scenario@10","admission":null,"inputs":{},"outputs":{"selected":"action"},
+        let bundle = json!({"schema":"af/scenario-bundle@11","root":"documentation-maintenance","definitions":{"documentation-maintenance":{
+            "schema":"af/scenario@11","admission":null,"inputs":{},"outputs":{"selected":"action"},
             "steps":[step("edit",json!({"kind":"fresh_task","template":pinned["template"],"bindings":{}}),json!({}),"task"),
                 prepare("prepare","edit"),decision("approve","prepare"),publish("publish","prepare","approve"),
                 step("checks",json!({"kind":"wait","grant":grant("observe"),"condition":"checks_completed"}),
@@ -236,7 +236,7 @@ fn production_lifecycle(modes: &[&str]) {
             "authority":{"task_plans":[],"task_templates":[pinned["template_id"]],
                 "grants":[grant("prepare_candidate_v1"),grant("publish_pr"),grant("observe"),grant("cleanup_workspace_v1")],"decision_owners":["owner"]},
             "limits":{"max_tokens":2000,"max_wall_ms":3600000,"max_dispatches":24}}}});
-        valid("scenario-bundle-v10.json", &bundle);
+        valid("scenario-bundle-v11.json", &bundle);
         write(&f.bundle, &bundle);
         let initial = f.start("documentation");
         assert_eq!(initial["status"], "waiting", "{initial}");

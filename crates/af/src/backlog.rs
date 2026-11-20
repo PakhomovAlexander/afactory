@@ -43,11 +43,13 @@ pub(crate) enum Command {
     },
     /// List locally captured Report IDs awaiting an authority receipt
     Outbox {
+        /// Print pending Report IDs as JSON
         #[arg(long)]
         json: bool,
     },
     /// Write a signed private submission to stdout
     Export {
+        /// Producer Report ID to sign and export
         id: String,
         /// Local producer's Minisign secret key file
         #[arg(long)]
@@ -55,6 +57,7 @@ pub(crate) enum Command {
     },
     /// Commit a signed submission and write the signed authority receipt to stdout
     Accept {
+        /// Path to the signed producer submission
         submission: PathBuf,
         /// Designated authority's Minisign secret key file
         #[arg(long)]
@@ -62,7 +65,9 @@ pub(crate) enum Command {
     },
     /// Apply a signed authority receipt to the local outbox
     Ack {
+        /// Path to the signed authority receipt
         receipt: PathBuf,
+        /// Print the acknowledged receipt identity as JSON
         #[arg(long)]
         json: bool,
     },
@@ -94,6 +99,7 @@ pub(crate) enum Command {
 pub(crate) enum BatchCommand {
     /// Evaluate occurrences through an explicit clock and print the private JSON audit
     Tick {
+        /// Evaluate scheduled occurrences through this Unix time in milliseconds
         #[arg(long)]
         at_unix_ms: u64,
     },
@@ -101,19 +107,26 @@ pub(crate) enum BatchCommand {
     Audit,
     /// Queue an accounted Report for reconsideration in a future batch
     Reconsider {
+        /// Existing item to reconsider
         #[arg(long)]
         item_id: String,
+        /// Previously accounted authority Report ID
         #[arg(long)]
         report_id: String,
+        /// Later accepted Report supplying new evidence
         #[arg(long)]
         evidence_report_id: Option<String>,
+        /// Earliest eligible occurrence time in Unix milliseconds
         #[arg(long)]
         eligible_unix_ms: u64,
     },
     /// Record a local disposition for a frozen member
     Settle {
+        /// Frozen authority batch to settle
         batch_id: String,
+        /// Exact frozen member within the batch
         member_id: String,
+        /// Local disposition to record for the member
         outcome: LocalOutcome,
         /// Item identity for a local reservation
         #[arg(long, required_if_eq("outcome", "reserve-publication"))]
@@ -121,7 +134,9 @@ pub(crate) enum BatchCommand {
     },
     /// Close a batch whose members all have durable dispositions
     Close {
+        /// Frozen authority batch to close
         batch_id: String,
+        /// Close at this Unix time in milliseconds
         #[arg(long)]
         at_unix_ms: u64,
     },

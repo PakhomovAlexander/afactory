@@ -9,14 +9,15 @@ use std::{
     fs,
     os::unix::fs::{PermissionsExt, symlink},
     path::{Path, PathBuf},
-    process::Output,
+    process::{Command, Output, Stdio},
+    time::{Duration, Instant},
 };
 
 const ARTIFACT: &str = "fixtures/issue-triage/scenario.json";
 const STAGED: &str = "fixtures/issue-triage";
 const BACKLOG: &str = "fixtures/project-backlog/scenario.json";
 const FAKE_CODEX: &str = r#"#!/usr/bin/python3 -B
-import hashlib, json, os, re, sys
+import hashlib, json, os, re, subprocess, sys
 
 if sys.argv[1:2] == ['app-server']:
     for line in sys.stdin:
@@ -37,38 +38,42 @@ else:
     sources = inputs['sources']['payload']['sources']
     if 'backlog-batch' in sources:
         batch = json.loads(sources['backlog-batch']['text'])
-        assert batch['reference']['high_water'] == '5'
-        assert len(batch['members']) == 5
+        assert batch['reference']['high_water'] == '6'
+        assert len(batch['members']) == 6
         assert 'private-attachment' not in request
+        assert 'mismatched-attachment' not in request
         ids_by_evidence = {}
         for member in batch['members']:
             for evidence in member['evidence_ids']:
                 ids_by_evidence.setdefault(evidence, []).append(member['report_id'])
-        def ids(text):
-            return ids_by_evidence['sha256:'+hashlib.sha256(b'review.kernel/content-id/v1\x00'+text.encode()).hexdigest()]
-        assert ids('blue boundary') == ['blue-a', 'blue-b']
-        assert ids('green boundary') == ['green']
-        assert ids('private-attachment') == ['hold']
-        with open('boundary-rules.json', encoding='utf-8') as source_file:
-            rules = json.load(source_file)
-        citation = {'path':'boundary-rules.json', 'line':1}
-        def decision(members, evidence, disposition, claim, proposed=None):
+        def identity(data):
+            return 'sha256:'+hashlib.sha256(b'review.kernel/content-id/v1\x00'+data).hexdigest()
+        def decision(members, evidence, disposition, claim, citation=None, proposed=None):
             return dict(members=members, evidence_ids=evidence,
-                        citations=[citation] if evidence else [], disposition=disposition,
-                        claim=claim, reason='Checked the current source rules.',
+                        citations=[citation] if citation else [], disposition=disposition,
+                        claim=claim, reason='Checked the current source behavior.',
                         tracked_id=None, proposed=proposed)
         decisions = []
-        for color in ['blue', 'green']:
-            # These public source rules exclude the inclusive boundary required by the fixture.
-            assert rules[color]['expected_inclusive']
-            assert not rules[color]['implemented_inclusive']
-            text = color+' boundary'
-            evidence = 'sha256:'+hashlib.sha256(b'review.kernel/content-id/v1\x00'+text.encode()).hexdigest()
+        citations = []
+        for color, boundary, members in [('blue', 3, ['blue-a', 'blue-b']), ('green', 7, ['green'])]:
+            path = color+'-boundary.py'
+            # Observe the exact committed program. The boundary is excluded and the next value is accepted.
+            assert subprocess.check_output([sys.executable, path, str(boundary)]).strip() == b'False'
+            assert subprocess.check_output([sys.executable, path, str(boundary+1)]).strip() == b'True'
+            with open(path, 'rb') as script:
+                evidence = identity(script.read())
+            assert ids_by_evidence[evidence] == members
+            citation = {'path':path, 'line':2}
+            citations.append(citation)
             claim = color.title()+' excludes its required boundary.'
-            decisions.append(decision(ids(text), [evidence], 'verified', claim,
+            decisions.append(decision(members, [evidence], 'verified', claim, citation,
                                       {'title':claim, 'body':'The configured boundary must be inclusive.'}))
         decisions.append(decision(['unknown'], [], 'needs_evidence', 'The reported behavior is unknown.'))
         decisions.append(decision(['hold'], [], 'held', 'The evidence is unavailable for release.'))
+        # Exercise the kernel's digest guard even if the mock independent verifier passes this group.
+        mismatch = identity(b'mismatched-attachment')
+        decisions.append(decision(['mismatch'], [mismatch], 'verified', 'An unrelated claim.',
+                                  citations[0], {'title':'Unrelated claim', 'body':'Do not publish.'}))
         assessment = dict(schema='af/backlog-assessment@1', batch_id=batch['reference']['batch_id'],
                           source_revision=batch['source_revision'], decisions=decisions)
         body = '```json\n' + json.dumps(assessment) + '\n```'
@@ -92,7 +97,7 @@ else:
                     {'heading':'Recommendation','body':'Keep the assessment private.'},
                     {'heading':'Decisions','body':body}],
                 'citations':[{'kind':'source','name':'backlog-batch'},
-                    {'kind':'repository','location':citation}]}]}
+                    *({'kind':'repository','location':c} for c in citations)]}]}
     else:
         issue = sources['issue']
         number = int(re.search(r'Issue #(\d+)', issue['title']).group(1))
@@ -170,13 +175,13 @@ impl Receiver {
         copy_tree(&workspace().join(directory), &repo.join(directory));
         fs::write(repo.join("CONTRIBUTING.md"), "# Contribution evidence\n").unwrap();
         if artifact == BACKLOG {
-            save(
-                &repo.join("boundary-rules.json"),
-                &json!({
-                    "blue":{"expected_inclusive":true, "implemented_inclusive":false},
-                    "green":{"expected_inclusive":true, "implemented_inclusive":false}
-                }),
-            );
+            for (color, boundary) in [("blue", 3), ("green", 7)] {
+                fs::write(
+                    repo.join(format!("{color}-boundary.py")),
+                    format!("import sys\nprint(int(sys.argv[1]) > {boundary})\n"),
+                )
+                .unwrap();
+            }
         }
         fs::copy(
             workspace().join(".af/report-policy.toml"),
@@ -273,14 +278,18 @@ distinct_models = true
     }
 
     fn af_in(&self, repo: &Path, args: &[&str]) -> Output {
-        crate::common::af()
+        self.command(repo, args).output().unwrap()
+    }
+
+    fn command(&self, repo: &Path, args: &[&str]) -> Command {
+        let mut command = crate::common::af();
+        command
             .current_dir(repo)
             .env("XDG_STATE_HOME", self.root.join("state"))
             .env("PATH", &self.path)
             .env("AF_PROVIDERS_FILE", self.root.join("providers.toml"))
-            .args(args)
-            .output()
-            .unwrap()
+            .args(args);
+        command
     }
 
     fn prepare(&self, bindings: Option<&Path>) -> Output {
@@ -337,7 +346,7 @@ fn the_same_portable_triage_runs_in_two_clean_receivers_with_typed_issue_sources
             }}),
         );
         let bundle = ok(receiver.prepare(Some(&bindings)));
-        schemas::valid(&schemas::validator("scenario-bundle-v10.json"), &bundle);
+        schemas::valid(&schemas::validator("scenario-bundle-v11.json"), &bundle);
         let bundle_path = receiver.root.join("prepared.json");
         save(&bundle_path, &bundle);
         let root = &bundle["definitions"][bundle["root"].as_str().unwrap()];
@@ -622,11 +631,14 @@ fn capture_backlog_batch(receiver: &Receiver) -> Value {
         }
         ok(receiver.af_in(repo, &args));
     };
-    record(&receiver.repo, "blue-a", Some("blue boundary"));
-    record(&producer_repo, "blue-b", Some("blue boundary"));
-    record(&receiver.repo, "green", Some("green boundary"));
+    let blue = fs::read_to_string(receiver.repo.join("blue-boundary.py")).unwrap();
+    let green = fs::read_to_string(receiver.repo.join("green-boundary.py")).unwrap();
+    record(&receiver.repo, "blue-a", Some(&blue));
+    record(&producer_repo, "blue-b", Some(&blue));
+    record(&receiver.repo, "green", Some(&green));
     record(&producer_repo, "hold", Some("private-attachment"));
     record(&receiver.repo, "unknown", None);
+    record(&receiver.repo, "mismatch", Some("mismatched-attachment"));
     record(&receiver.repo, "late", None);
     let project = project(&receiver.repo);
     let store = Path::new(project["store"].as_str().unwrap());
@@ -648,12 +660,12 @@ fn capture_backlog_batch(receiver: &Receiver) -> Value {
             "schema":"af/backlog-batch-policy@1", "project_id":project_id,
             "authority_id":af_store::canonical::blob_content_id(&authority.pk.to_bytes()),
             "scenario_id":af_scenario::contract::digest(&artifact),
-            "destination_id":format!("sha256:{}", "a".repeat(64)),
+            "destination_id":af_project::backlog::batch::local_destination(project_id).unwrap(),
             "timezone":"UTC", "hour":0, "minute":0,
             "start_unix_ms":1772755200000_u64, "lateness_ms":60000,
-            "run_tokens":150000, "run_wall_ms":1230000, "run_dispatches":1,
+            "run_tokens":150000, "run_wall_ms":1230000, "run_dispatches":5,
             "rolling_tokens":150000, "rolling_window_ms":86400000,
-            "publication_limit":1, "evidence_access":"evidence_ids", "hold_policy":"hold_all"
+            "publication_limit":1, "evidence_access":"evidence_ids", "hold_policy":"allow_local_reservations"
         }),
     );
     let accept = |id| {
@@ -673,11 +685,11 @@ fn capture_backlog_batch(receiver: &Receiver) -> Value {
             authority_key.to_str().unwrap(),
         ]));
     };
-    for id in ["blue-a", "blue-b", "green", "unknown", "hold"] {
+    for id in ["blue-a", "blue-b", "green", "unknown", "hold", "mismatch"] {
         accept(id);
     }
     let audit = ok(receiver.af(&["backlog", "batch", "tick", "--at-unix-ms", "1772755200000"]));
-    assert_eq!(audit["high_water"], "5");
+    assert_eq!(audit["high_water"], "6");
     accept("late");
     json!({
         "schema":"af/backlog-batch-reference@1",
@@ -689,7 +701,7 @@ fn capture_backlog_batch(receiver: &Receiver) -> Value {
 }
 
 #[test]
-fn portable_backlog_collects_and_verifies_the_frozen_batch_in_two_receivers() {
+fn portable_backlog_settles_and_dispatches_the_frozen_batch_in_two_receivers() {
     let directory = tempfile::tempdir().unwrap();
     let parent = directory.path().canonicalize().unwrap();
     let mut receipts = Vec::new();
@@ -705,7 +717,7 @@ fn portable_backlog_collects_and_verifies_the_frozen_batch_in_two_receivers() {
             &reference,
         );
         let mut wrong = reference.clone();
-        wrong["high_water"] = json!("6");
+        wrong["high_water"] = json!("7");
         save(&receiver.input, &wrong);
         let refused = receiver.prepare_artifact(BACKLOG, None);
         assert!(!refused.status.success() && text(&refused).contains("exact cutoff"));
@@ -713,7 +725,7 @@ fn portable_backlog_collects_and_verifies_the_frozen_batch_in_two_receivers() {
 
         save(&receiver.input, &reference);
         let bundle = ok(receiver.prepare_artifact(BACKLOG, None));
-        schemas::valid(&schemas::validator("scenario-bundle-v10.json"), &bundle);
+        schemas::valid(&schemas::validator("scenario-bundle-v11.json"), &bundle);
         let bundle_path = receiver.root.join("prepared.json");
         save(&bundle_path, &bundle);
         let root = &bundle["definitions"]["daily-backlog"];
@@ -725,7 +737,7 @@ fn portable_backlog_collects_and_verifies_the_frozen_batch_in_two_receivers() {
             &collected,
         );
         assert_eq!(collected["reference"], reference);
-        assert_eq!(collected["members"].as_array().unwrap().len(), 5);
+        assert_eq!(collected["members"].as_array().unwrap().len(), 6);
         assert!(!collection.to_string().contains("private-attachment"));
         assert!(!collection.to_string().contains("Different behavior"));
         assert!(!collection.to_string().contains("late"));
@@ -776,7 +788,132 @@ fn portable_backlog_collects_and_verifies_the_frozen_batch_in_two_receivers() {
             receiver.scenarios.to_str().unwrap(),
             "--json",
         ];
+        let project = ok(receiver.af(&["project", "show", "--json"]));
+        let store_path = Path::new(project["store"].as_str().unwrap());
+        let sink = store_path.join("backlog-local-sink");
+        if issue == 303 {
+            // Stop after the accepted Task receipt and before any Project mutation. The
+            // shared observation lock blocks the native settlement writer at that boundary.
+            let guard = af_project::ProjectStore::open_read_only(
+                &receiver.root.join("state"),
+                reference["project_id"].as_str().unwrap(),
+            )
+            .unwrap();
+            let mut child = receiver
+                .command(&receiver.repo, &resume)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            let started = Instant::now();
+            let mut settlement_started = false;
+            while started.elapsed() < Duration::from_secs(60) && child.try_wait().unwrap().is_none()
+            {
+                let observed = ok(receiver.af(&[
+                    "scenario",
+                    "show",
+                    "daily",
+                    "--state",
+                    receiver.scenarios.to_str().unwrap(),
+                    "--json",
+                ]));
+                let steps = observed["frames"]["root"]["steps"].as_array().unwrap();
+                if steps.len() == 2 && steps[1]["intents"][0]["phase"] == "prepared" {
+                    assert_eq!(steps[0]["status"], "succeeded");
+                    settlement_started = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            let _ = child.kill();
+            child.wait().unwrap();
+            assert!(
+                settlement_started,
+                "Native settlement never reached its durable intent"
+            );
+            assert!(guard.verified_backlog().unwrap().is_empty());
+        }
+
+        // The obstruction stops delivery after the native assessment, atomic settlement and
+        // durable publication intent. Resume must reconcile that exact intent.
+        fs::write(&sink, "temporary sink obstruction").unwrap();
+        let interrupted = ok(receiver.af(&resume));
+        let run_schema = schemas::validator("scenario-run-v12.json");
+        schemas::valid(&run_schema, &interrupted);
+        assert_eq!(
+            interrupted["status"], "waiting",
+            "{}",
+            interrupted["failure"]
+        );
+        let trace = interrupted["frames"]["root"]["steps"].as_array().unwrap();
+        assert_eq!(trace[0]["step"], "analyze-and-verify");
+        assert_eq!(trace[1]["step"], "settle-backlog");
+        assert_eq!(trace[1]["status"], "succeeded");
+        assert_eq!(trace[2]["step"], "dispatch-backlog");
+        assert_eq!(trace[2]["status"], "waiting");
+
+        let event_store =
+            af_store::EventStore::open_read_only(store_path.join("events.sqlite")).unwrap();
+        let processing = || event_store.replay("backlog-processing").unwrap();
+        let publications = || {
+            processing()
+                .into_iter()
+                .filter_map(|event| {
+                    let record: af_contracts::backlog::BacklogRecordV1 =
+                        serde_json::from_value(event.payload).unwrap();
+                    match record {
+                        af_contracts::backlog::BacklogRecordV1::Publication(value) => Some(value),
+                        _ => None,
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        let intents = publications();
+        assert_eq!(intents.len(), 1);
+        assert!(intents[0].receipt_id.is_none());
+        assert_eq!(intents[0].attempt_ids.len(), 1);
+
+        let visible = ok(receiver.af(&["backlog", "list", "--json"]));
+        let items = visible["data"]["items"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        let blue = items
+            .iter()
+            .find(|item| item["public"]["title"] == "Blue excludes its required boundary.")
+            .unwrap();
+        let green = items
+            .iter()
+            .find(|item| item["public"]["title"] == "Green excludes its required boundary.")
+            .unwrap();
+        assert_ne!(blue["item_id"], green["item_id"]);
+        assert_eq!(blue["revision_id"], intents[0].revision_id);
+        let private_outcome = |id| {
+            let data = ok(receiver.af(&["backlog", "show", id, "--private", "--json"]));
+            let outcomes = data["data"]["outcomes"].as_array().unwrap();
+            assert_eq!(outcomes.len(), 1);
+            outcomes[0].clone()
+        };
+        assert_eq!(private_outcome("blue-a"), private_outcome("blue-b"));
+        assert_eq!(private_outcome("green")["disposition"], "verified");
+        assert_eq!(private_outcome("hold")["disposition"], "held");
+        assert_eq!(private_outcome("mismatch")["disposition"], "held");
+        assert_eq!(private_outcome("unknown")["disposition"], "needs_evidence");
+        assert!(!visible.to_string().contains("attachment"));
+
+        fs::remove_file(&sink).unwrap();
+        let entry = sink.join(format!("{}.json", &intents[0].intent_id[7..]));
+        if issue == 404 {
+            // Model a lost acknowledgement after the synthetic sink stored the approved bytes.
+            // The next resume must recognize the same delivery and record its receipt.
+            af_store::local_fs::create_private_dir_all(&sink).unwrap();
+            fs::write(&entry, serde_json::to_vec(&json!({
+                "item_id":blue["item_id"], "revision_id":blue["revision_id"], "public":blue["public"]
+            })).unwrap()).unwrap();
+        }
         let run = ok(receiver.af(&resume));
+        schemas::valid(&run_schema, &run);
+        let dispatch = &run["frames"]["root"]["steps"][2];
+        assert_eq!(dispatch["intents"][0]["id"], trace[2]["intents"][0]["id"]);
+        assert_eq!(dispatch["intents"][0]["phase"], "done");
         assert_eq!(run["status"], "succeeded", "{}", run["failure"]);
         let task = &run["frames"]["root"]["outputs"]["assessment"]["value"];
         assert_eq!(task["result"]["acceptance"], "satisfied");
@@ -843,10 +980,23 @@ fn portable_backlog_collects_and_verifies_the_frozen_batch_in_two_receivers() {
                 .collect::<Vec<_>>(),
             ["author", "verifier"]
         );
+        assert_eq!(read(&entry), *blue);
+        assert_eq!(fs::read_dir(&sink).unwrap().count(), 1);
+        let settled = publications();
+        assert_eq!(settled.len(), 2);
+        assert_eq!(settled[0], intents[0]);
+        assert_eq!(settled[1].intent_id, intents[0].intent_id);
+        assert_eq!(settled[1].attempt_ids, intents[0].attempt_ids);
         assert_eq!(
-            ok(receiver.af(&["backlog", "list", "--json"]))["data"]["items"],
-            json!([])
+            settled[1].receipt_id.as_deref(),
+            Some(af_store::canonical::blob_content_id(&fs::read(&entry).unwrap()).as_str())
         );
+        let audit = ok(receiver.af(&["backlog", "batch", "audit"]));
+        assert!(audit["active_batch_id"].is_null());
+        assert_eq!(audit["closed_high_water"], "6");
+        assert_eq!(audit["pending_member_ids"], json!(["late"]));
+        assert_eq!(ok(receiver.af(&resume)), run);
+        assert_eq!(publications(), settled);
         let evaluation = cas
             .get_artifact(receipt.payload["evaluation_id"].as_str().unwrap())
             .unwrap();

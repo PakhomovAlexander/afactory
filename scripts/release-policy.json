@@ -1,6 +1,6 @@
 {
   "schema": "af.dev-release-policy/3",
-  "compatibility": "Breaking combined Scenario/Ant and publication shapes: Scenario definitions/bundles 10, policy 8, pins/runs/list 11, Store 17 with retained driver 2 and typed bounded preflight waits; Ant definition 11, pin/tick 12, state/list 13, inspection 8; adapter request 8/response 3, workspace config 3/state 6 and GitHub journal 9, native Git candidate request/export 2. Nightly config/publish 2 and native nightly service/job/completion 1 retain separate release scope and external signing permission. Implementation startup scope 2 retains exact native scoped publication, finite progress and bounded repairs. Generic signed and performance authority stay separate. Finish or discard prior-release state; no migration or replay of retired shapes. Review and commit authority and refresh its lock before adoption. Performance executor 5, history 2, equivalence 2 and schedule 3 remain required. Native Task kernel failures are execution_failed/kernel_execution (exit 8); Task state/status/findings 3, inspection 21 and report/checks 4 replace their earlier public formats. Scenario terminal outcome 2 carries that failure without repair or publication authority.",
+  "compatibility": "Breaking combined Scenario/Ant and publication shapes: Scenario definitions/bundles 11, policy 8, pins/runs/list 12, Store 18 with retained driver 2 and typed bounded preflight waits; Ant definition 12, pin/tick 13, state/list 14, inspection 9; adapter request 8/response 3, workspace config 3/state 6 and GitHub journal 9, native Git candidate request/export 2. Nightly config/publish 2 and native nightly service/job/completion 1 retain separate release scope and external signing permission. Implementation startup scope 2 retains exact native scoped publication, finite progress and bounded repairs. Builtin backlog Actions settle native verified Documents and dispatch to a Project-scoped synthetic sink. Generic signed and performance authority stay separate. Finish or discard prior-release state; no migration or replay of retired shapes. Review and commit authority and refresh its lock before adoption. Performance executor 5, history 2, equivalence 2 and schedule 3 remain required. Native Task kernel failures are execution_failed/kernel_execution (exit 8); Task state/status/findings 3, inspection 21 and report/checks 4 replace their earlier public formats. Scenario terminal outcome 2 carries that failure without repair or publication authority.",
   "required_features": {
     "schemas/backlog-signed-submission-v1.json": [
       "af/backlog-signed-submission@1"
@@ -27,47 +27,54 @@
       "roadmap"
     ],
     "crates/af-scenario/src/store.rs": [
-      "af/scenario-store@17",
+      "af/scenario-store@18",
       "run_capacity"
     ],
-    "schemas/scenario-store-v17.json": [
-      "af/scenario-store@17"
+    "schemas/scenario-store-v18.json": [
+      "af/scenario-store@18"
     ],
-    "schemas/scenario-v10.json": [
-      "af/scenario@10"
+    "schemas/scenario-v11.json": [
+      "af/scenario@11"
     ],
     "schemas/scenario-artifact-v1.json": [
       "af/scenario-artifact@1"
     ],
-    "schemas/scenario-bundle-v10.json": [
-      "af/scenario-bundle@10"
+    "schemas/scenario-artifact-v2.json": [
+      "af/scenario-artifact@2"
     ],
-    "schemas/scenario-pin-v11.json": [
-      "af/scenario-pin@11"
+    "crates/af-project/src/backlog/batch/native.rs": [
+      "pub fn settle_native_backlog",
+      "pub fn dispatch_native_backlog"
     ],
-    "schemas/scenario-run-v11.json": [
-      "af/scenario-run@11"
+    "schemas/scenario-bundle-v11.json": [
+      "af/scenario-bundle@11"
     ],
-    "schemas/scenario-list-v11.json": [
-      "af/scenario-list@11"
+    "schemas/scenario-pin-v12.json": [
+      "af/scenario-pin@12"
     ],
-    "schemas/ant-v11.json": [
-      "af/ant@11"
+    "schemas/scenario-run-v12.json": [
+      "af/scenario-run@12"
     ],
-    "schemas/ant-pin-v12.json": [
-      "af/ant-pin@12"
+    "schemas/scenario-list-v12.json": [
+      "af/scenario-list@12"
     ],
-    "schemas/ant-tick-v12.json": [
-      "af/ant-tick@12"
+    "schemas/ant-v12.json": [
+      "af/ant@12"
     ],
-    "schemas/ant-state-v13.json": [
-      "af/ant-state@13"
+    "schemas/ant-pin-v13.json": [
+      "af/ant-pin@13"
     ],
-    "schemas/ant-inspection-v8.json": [
-      "af/ant-inspection@8"
+    "schemas/ant-tick-v13.json": [
+      "af/ant-tick@13"
     ],
-    "schemas/ant-list-v13.json": [
-      "af/ant-list@13"
+    "schemas/ant-state-v14.json": [
+      "af/ant-state@14"
+    ],
+    "schemas/ant-inspection-v9.json": [
+      "af/ant-inspection@9"
+    ],
+    "schemas/ant-list-v14.json": [
+      "af/ant-list@14"
     ],
     "schemas/scenario-task-template-v2.json": [
       "af/scenario-task-template@2",
