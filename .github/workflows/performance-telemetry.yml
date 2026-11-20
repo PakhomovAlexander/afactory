@@ -23,6 +23,7 @@ name: Performance telemetry
 on:
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   schedule:
     - cron: "41 4 * * *"
   release:
@@ -73,6 +74,7 @@ env:
 jobs:
   plan:
     name: plan
+    if: github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'nobuild')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:

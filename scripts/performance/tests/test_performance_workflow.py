@@ -238,7 +238,7 @@ class Workflow(unittest.TestCase):
         self.assertEqual(text.key(status, "name"), "Performance check")
         self.assertEqual(text.key(status, "needs"), "[scope, plan, build, shard, aggregate]")
         self.assertEqual(text.key(status, "if"), "${{ always() }}")
-        exempt = step_named(status, "Report the no-perf exemption")
+        exempt = step_named(status, "Report the PR performance exemption")
         self.assertEqual(with_value(exempt, "if"), "${{ needs.scope.result == 'success' && "
                                                    "needs.scope.outputs.exempt == 'true' }}")
         guard = step_named(status, "Require a completed scope decision")
@@ -259,7 +259,8 @@ class Steps(TempDir):
 
     def setUp(self):
         TempDir.setUp(self)
-        self.jobs = text.jobs(read(WORKFLOW).decode("utf-8"))
+        self.text = read(WORKFLOW).decode("utf-8")
+        self.jobs = text.jobs(self.text)
         self.repo = Repo(self.path("repo"))
         self.root = self.repo.commit("root", {"README": "r\n"})
         self.child = self.repo.commit("child", {"README": "c\n"})
@@ -412,7 +413,7 @@ class Steps(TempDir):
                                                   "GITHUB_RUN_ATTEMPT": "2"})
         self.assertNotEqual(result.returncode, 0)
 
-    def scope(self, event_name, event, attempt="1", claim="", control=None):
+    def scope(self, event_name, event, attempt="1", claim="", control=None, nobuild="false"):
         path = self.path("event-%d.json" % len(os.listdir(self.tmp)))
         with open(path, "w", encoding="utf-8") as stream:
             json.dump(event, stream)
@@ -421,6 +422,7 @@ class Steps(TempDir):
             os.remove(outputs)
         result, _ = self.run_step("scope", "Read the no-perf label", {
             "EVENT_NAME": event_name, "GITHUB_EVENT_PATH": path, "GITHUB_RUN_ATTEMPT": attempt,
+            "NOBUILD": nobuild,
             "RELEASE_CLAIM": claim, "GITHUB_OUTPUT": outputs, "CONTROL_ROOT": ROOT if control is None else control})
         return result, (read(outputs).decode() if os.path.exists(outputs) else None)
 
@@ -459,10 +461,25 @@ class Steps(TempDir):
                     self.assertEqual(result.returncode == 0,
                                      state == "success" and output in ("true", "false"))
 
+    def test_nobuild_exempts_perf_without_a_control_checkout(self):
+        self.assertIn("NOBUILD: ${{ github.event_name == 'pull_request' && "
+                      "contains(github.event.pull_request.labels.*.name, 'nobuild') }}", self.text)
+        self.assertIn("        if: env.NOBUILD != 'true'", text.steps(self.jobs['scope'])[0])
+        event = {"pull_request": {"labels": [{"name": "test:perf"}, {"name": "nobuild"}]}}
+        result, outputs = self.scope("pull_request", event, control=self.path("absent"),
+                                     attempt="2", nobuild="true")
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        self.assertEqual(outputs, "exempt=true\n")
+        result, _ = self.run_step("status", "Report the PR performance exemption",
+                                  {"EVENT_NAME": "pull_request", "NOBUILD": "true"})
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        self.assertIn("The PR carries nobuild. Performance work was skipped.",
+                      read(self.path("summary")).decode())
+
     def test_the_exemption_is_reported_as_one_and_a_missing_plan_never_passes(self):
-        name = "Report the no-perf exemption"
+        name = "Report the PR performance exemption"
         result, _ = self.run_step("status", name, {"EVENT_NAME": "pull_request",
-                                                   "GITHUB_RUN_ATTEMPT": "1"})
+                                                   "GITHUB_RUN_ATTEMPT": "1", "NOBUILD": "false"})
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         summary = read(self.path("summary")).decode()
         self.assertIn("Performance check: exempt (perf class NOT RUN), not measured", summary)
@@ -612,7 +629,8 @@ class ActivationWorkflow(TempDir):
 
     def test_only_pull_requests_touching_the_records_run_it_with_a_scoped_read_only_token(self):
         head = self.text[:self.text.index("\njobs:")]
-        self.assertIn("  pull_request:\n    branches: [main]\n    paths:\n"
+        self.assertIn("  pull_request:\n    branches: [main]\n"
+                      "    types: [opened, synchronize, reopened, labeled, unlabeled]\n    paths:\n"
                       "      - \"fixtures/performance/**\"\n", head)
         for forbidden in ("pull_request_target", "workflow_run", "secrets.", "id-token",
                           ": write", "write-all", "read-all", "github-script", "GITHUB_TOKEN",

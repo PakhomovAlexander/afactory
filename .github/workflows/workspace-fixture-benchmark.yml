@@ -3,6 +3,7 @@ name: Workspace fixture benchmark
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
     paths:
       - scripts/test-scenario-git-workspace.py
       - scripts/benchmark-workspace-fixtures.py
@@ -21,6 +22,7 @@ concurrency:
 
 jobs:
   benchmark:
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'nobuild') }}
     strategy:
       fail-fast: false
       matrix:

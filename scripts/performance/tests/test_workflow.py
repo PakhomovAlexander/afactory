@@ -118,6 +118,7 @@ class RequiredPythonCompatibility(unittest.TestCase):
                 uses_python = [i for i, step in enumerate(actions)
                                if any(re.search(r"^\s*(?:run: )?(?:python3?|make)\s", line)
                                       for line in step if "run:" in line or line.startswith("          "))
+                               and "        if: env.NOBUILD == 'true'" not in step
                                and i != setup[0]]
                 self.assertTrue(uses_python)
                 self.assertLess(setup[0], min(uses_python))
@@ -144,7 +145,8 @@ class RequiredPythonCompatibility(unittest.TestCase):
         job = "\n".join(self.jobs["resolve"])
         self.assertIn('--bound "$BOUND_PLAN"', job)
         self.assertIn('--event "$GITHUB_EVENT_PATH"', job)
-        self.assertNotIn("github.event.pull_request.labels", job)
+        self.assertNotIn("github.event.pull_request.labels", "\n".join(
+            line for step in steps(self.jobs["resolve"]) for line in step))
         self.assertNotIn("continue-on-error", job)
 
     def test_telemetry_smoke_is_selected_perf_validation_with_original_containment(self):

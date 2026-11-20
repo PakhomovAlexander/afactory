@@ -7,13 +7,18 @@ on:
       - '.github/workflows/release.yml'
       - 'scripts/prepare-linux-release-smoke.sh'
       - 'scripts/performance/perflab/account_isolation.py'
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 permissions:
   contents: read
 
+concurrency:
+  group: release-namespace-proof-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   namespace:
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'nobuild') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
