@@ -4,6 +4,7 @@ use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 
 use af_contracts::backlog::BacklogRecordV1;
+use af_contracts::backlog::batch::{Reconsideration, Settlement};
 use af_contracts::backlog::intake::MAX_EXCHANGE_BYTES;
 use af_project::backlog::{prepare_report, read_evidence};
 use af_project::{ProjectStore, require_checkout, store_directory};
@@ -65,6 +66,11 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Manually admit and account for local daily authority batches
+    Batch {
+        #[command(subcommand)]
+        command: BatchCommand,
+    },
     /// List verified backlog items
     List {
         /// Print verified items as JSON
@@ -82,6 +88,93 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum BatchCommand {
+    /// Evaluate occurrences through an explicit clock and print the private JSON audit
+    Tick {
+        #[arg(long)]
+        at_unix_ms: u64,
+    },
+    /// Print private JSON audit without changing the Store
+    Audit,
+    /// Queue an accounted Report for reconsideration in a future batch
+    Reconsider {
+        #[arg(long)]
+        item_id: String,
+        #[arg(long)]
+        report_id: String,
+        #[arg(long)]
+        evidence_report_id: Option<String>,
+        #[arg(long)]
+        eligible_unix_ms: u64,
+    },
+    /// Record a local disposition for a frozen member
+    Settle {
+        batch_id: String,
+        member_id: String,
+        outcome: LocalOutcome,
+        /// Item identity for a local reservation
+        #[arg(long, required_if_eq("outcome", "reserve-publication"))]
+        item_id: Option<String>,
+    },
+    /// Close a batch whose members all have durable dispositions
+    Close {
+        batch_id: String,
+        #[arg(long)]
+        at_unix_ms: u64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub(crate) enum LocalOutcome {
+    Accounted,
+    Held,
+    NeedsEvidence,
+    ReservePublication,
+}
+
+fn batch_write(store: &mut ProjectStore, command: BatchCommand) -> Result<i32, String> {
+    let audit = match command {
+        BatchCommand::Audit => {
+            unreachable!("read-only batch audit handled before opening a writer")
+        }
+        BatchCommand::Tick { at_unix_ms } => store.tick_backlog_batch(at_unix_ms)?,
+        BatchCommand::Reconsider {
+            item_id,
+            report_id,
+            evidence_report_id,
+            eligible_unix_ms,
+        } => store.reconsider_backlog_batch(Reconsideration {
+            item_id,
+            report_id,
+            evidence_report_id,
+            eligible_unix_ms,
+        })?,
+        BatchCommand::Settle {
+            batch_id,
+            member_id,
+            outcome,
+            item_id,
+        } => {
+            let settlement = match (outcome, item_id) {
+                (LocalOutcome::Accounted, None) => Settlement::Accounted,
+                (LocalOutcome::Held, None) => Settlement::Held,
+                (LocalOutcome::NeedsEvidence, None) => Settlement::NeedsEvidence,
+                (LocalOutcome::ReservePublication, Some(item_id)) => {
+                    Settlement::ReservePublication { item_id }
+                }
+                _ => return Err("provide --item-id only with reserve-publication".into()),
+            };
+            store.settle_backlog_batch(batch_id, member_id, settlement)?
+        }
+        BatchCommand::Close {
+            batch_id,
+            at_unix_ms,
+        } => store.close_backlog_batch(batch_id, at_unix_ms)?,
+    };
+    print_document(&audit)
 }
 
 fn new_report_id() -> Result<String, String> {
@@ -154,6 +247,17 @@ pub(crate) fn run(command: Command, repo: Option<&Path>) -> Result<i32, String> 
         return Ok(0);
     }
 
+    let command = match command {
+        audit @ Command::Batch {
+            command: BatchCommand::Audit,
+        } => audit,
+        Command::Batch { command } => {
+            let (mut store, _) = crate::project::adopt(&checkout, None)?;
+            return batch_write(&mut store, command);
+        }
+        command => command,
+    };
+
     let state = crate::xdg_state_root()?;
     let store = match std::fs::symlink_metadata(store_directory(&state, &checkout.project_id)) {
         Err(error) if error.kind() == ErrorKind::NotFound => None,
@@ -161,7 +265,16 @@ pub(crate) fn run(command: Command, repo: Option<&Path>) -> Result<i32, String> 
     };
     let project_id = checkout.project_id;
     match command {
-        Command::Record { .. } | Command::Accept { .. } | Command::Ack { .. } => {
+        Command::Batch {
+            command: BatchCommand::Audit,
+        } => {
+            let store = store.ok_or("no local Project backlog")?;
+            return print_document(&store.backlog_batch_audit()?);
+        }
+        Command::Record { .. }
+        | Command::Accept { .. }
+        | Command::Ack { .. }
+        | Command::Batch { .. } => {
             unreachable!("backlog writes handled above")
         }
         Command::Export { id, key } => {

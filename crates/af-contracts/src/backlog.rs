@@ -272,4 +272,5 @@ impl BacklogRecordV1 {
     }
 }
 
+pub mod batch;
 pub mod intake;

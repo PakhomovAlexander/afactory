@@ -133,3 +133,66 @@ fn backlog_intake_exchange_and_durable_records_have_closed_schemas() {
         assert!(validate_event_payload(event_type, &unsupported).is_err());
     }
 }
+
+#[test]
+fn backlog_batch_journal_and_policy_are_closed_and_versioned() {
+    use af_contracts::RunEvent;
+    use af_contracts::backlog::batch::{Journal, Policy};
+
+    let id = format!("sha256:{}", "a".repeat(64));
+    let policy = json!({
+        "schema": "af/backlog-batch-policy@1",
+        "project_id": id, "authority_id": id, "scenario_id": id, "destination_id": id,
+        "timezone": "UTC", "hour": 2, "minute": 30, "start_unix_ms": 1, "lateness_ms": 180000,
+        "run_tokens": 1, "run_wall_ms": 10000, "run_dispatches": 2, "rolling_tokens": 3,
+        "rolling_window_ms": 86400000, "publication_limit": 1,
+        "evidence_access": "metadata_only", "hold_policy": "hold_all"
+    });
+    let policy_schema = "backlog-batch-policy-v1.json";
+    assert_valid(policy_schema, &policy);
+    let parsed: Policy = serde_json::from_value(policy.clone()).unwrap();
+    parsed.validate().unwrap();
+    assert_eq!(serde_json::to_value(parsed).unwrap(), policy);
+    let mut unsupported = policy.clone();
+    unsupported["schema"] = json!("af/backlog-batch-policy@2");
+    assert_invalid(policy_schema, &unsupported, "unsupported policy version");
+    assert!(serde_json::from_value::<Policy>(unsupported).is_err());
+
+    let variants = [
+        json!({"kind":"pinned","policy":policy,"zone":{
+            "name":"UTC","initial_offset":0,"transitions":[],"valid_until_unix_seconds":null
+        }}),
+        json!({"kind":"ticked","at_unix_ms":1,"high_water":"1","members":["report-1",id]}),
+        json!({"kind":"reconsidered","request":{
+            "item_id":id,"report_id":"report-1","evidence_report_id":null,"eligible_unix_ms":2
+        }}),
+        json!({"kind":"settled","batch_id":id,"member_id":"report-1","settlement":{
+            "kind":"reserve_publication","item_id":id
+        }}),
+        json!({"kind":"closed","batch_id":id,"at_unix_ms":2}),
+    ];
+    let event_type = EventType::BacklogBatchStoredV1;
+    let record_schema = "backlog-batch-record-v1.json";
+    for payload in variants {
+        assert_valid(record_schema, &payload);
+        validate_event_payload(event_type, &payload).unwrap();
+        let parsed: Journal = serde_json::from_value(payload.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), payload);
+        let event = json!({
+            "schema":"review.kernel/RunEvent@3",
+            "event_id":"01jd8m4qz9k7v3n2p6r8t0w1xy","run_id":"backlog-daily-batch",
+            "sequence":0,"type":event_type,"occurred_at":"2026-03-06T07:30:00Z","payload":payload
+        });
+        assert_valid("run-event-v3.json", &event);
+        let decoded: RunEvent = serde_json::from_value(event).unwrap();
+        assert_eq!(decoded.event_type, event_type);
+
+        let mut extra = payload;
+        extra["unexpected"] = json!(true);
+        assert_invalid(record_schema, &extra, "unknown record field");
+        assert!(validate_event_payload(event_type, &extra).is_err());
+    }
+    let duplicate = json!({"kind":"ticked","at_unix_ms":1,"high_water":"1","members":["r","r"]});
+    assert_invalid(record_schema, &duplicate, "duplicate frozen member");
+    assert!(validate_event_payload(event_type, &duplicate).is_err());
+}

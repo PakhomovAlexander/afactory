@@ -135,17 +135,23 @@
       "reader_writer": [
         "crates/af/src/backlog.rs",
         "crates/af-contracts/src/backlog.rs",
+        "crates/af-contracts/src/backlog/batch.rs",
         "crates/af-contracts/src/backlog/intake.rs"
       ],
       "semantic_owner": [
         "crates/af-project/src/backlog.rs",
-        "crates/af-project/src/backlog/intake.rs"
+        "crates/af-project/src/backlog/batch.rs",
+        "crates/af-project/src/backlog/intake.rs",
+        "crates/af-scenario/src/schedule.rs"
       ],
       "tests": [
         "crates/af-contracts/tests/schema_parity/backlog.rs",
         "crates/af/tests/it/project.rs"
       ],
       "schemas": [
+        "schemas/backlog-batch-audit-v1.json",
+        "schemas/backlog-batch-policy-v1.json",
+        "schemas/backlog-batch-record-v1.json",
         "schemas/backlog-intake-policy-v1.json",
         "schemas/backlog-intake-record-v1.json",
         "schemas/backlog-record-v1.json",

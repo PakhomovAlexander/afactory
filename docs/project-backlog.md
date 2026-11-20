@@ -1,9 +1,8 @@
 # Project backlog operator runbook
 
-This page covers the current offline checkpoint: private Report capture and inspection in one
-local Project Store. It does not configure a designated authority, transfer Reports between
-machines, run collection or verification, schedule an Ant, or publish tickets. Those integration
-steps are not available through this CLI checkpoint and are intentionally not described here.
+This runbook covers private Report capture and inspection, signed authority intake and
+manual daily batch admission in a local Project Store. See
+[authority intake configuration](project.md#capture-and-inspect-the-project-backlog) to set up the signed exchange.
 
 The privacy and receipt boundaries are fixed by
 [ADR-2026-11-20](adr/2026-11-20-store-project-backlog-reports-privately.md). Project and Workspace
@@ -160,3 +159,69 @@ verified list is empty. The adjacent `backlog_refuses_bad_fact_and_evidence_befo
 covers blank facts, invalid UTF-8, oversized evidence, and symlink refusal. The JSON shapes are
 defined by [`backlog-v1.json`](../schemas/backlog-v1.json) and
 [`backlog-record-v1.json`](../schemas/backlog-record-v1.json).
+
+## Manually admit a daily batch
+
+Use a disposable authority Store with a signed intake policy and accepted sample Reports.
+Save a machine-local `backlog-batch-policy-v1.json` in the Project Store shown by
+`af project show --json`. The policy uses the same Project ID and the receipt's
+`body.authority_id`. Use opaque digest identities for the Scenario and destination. These
+are local fixtures for this checkpoint. The first tick pins the policy and timezone transition
+table. Subsequent ticks require the same policy. The policy lives outside the checkout.
+
+```json
+{
+  "schema": "af/backlog-batch-policy@1",
+  "project_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "authority_id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "scenario_id": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "destination_id": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "timezone": "America/New_York",
+  "hour": 2,
+  "minute": 30,
+  "start_unix_ms": 1772782200000,
+  "lateness_ms": 60000,
+  "run_tokens": 5,
+  "run_wall_ms": 30000,
+  "run_dispatches": 1,
+  "rolling_tokens": 5,
+  "rolling_window_ms": 345600000,
+  "publication_limit": 1,
+  "evidence_access": "metadata_only",
+  "hold_policy": "hold_all"
+}
+```
+
+Replace the sample Project and authority digests before ticking. `evidence_ids` exposes
+only evidence digests in the private batch audit. `allow_local_reservations` permits
+reservation accounting for the pinned destination. Provider calls, ticket writes and
+installation of a scheduler are outside this command's effects.
+
+```sh
+af backlog batch tick --at-unix-ms 1772782200000
+af backlog batch audit
+af backlog batch settle "$batch_id" "$report_id" needs-evidence
+af backlog batch close "$batch_id" --at-unix-ms 1772782200000
+```
+
+Take the batch ID from `active_batch_id` and settle every ID in its `members` map before
+closing. A batch with no members closes at admission. The atomically sampled `high_water`
+is the last accepted Report sequence at admission, even if a tick arrives within the allowed
+lateness window. `closed_high_water` advances only after every frozen member has a disposition.
+The audit lists each accepted Report once in `intake` with its original sequence and digest.
+Reports accepted after the cutoff first appear in `pending_member_ids`. Retrying the same tick
+timestamp recovers the original occurrence and the current audit.
+
+After close, queue an explicit reconsideration of an accounted Report with
+`af backlog batch reconsider --item-id "$item_id" --report-id "$report_id" --eligible-unix-ms "$due"`.
+Use `--evidence-report-id "$later_report_id"` to link a later accepted Report. A future
+occurrence takes the request when it is due and the evidence falls within its cutoff.
+
+Under `allow_local_reservations`, settle with `reserve-publication --item-id "$item_id"` to
+exercise the batch cap. A conflicting item claim or an exhausted cap produces a durable
+deferral. The deferred member and its item identity carry into the next admitted batch.
+Keep the same batch ID after an interruption. While its members are unfinished, later due
+ticks record a busy skip, and the batch can still be settled and closed. Missed or nonexistent
+local times and rolling-budget refusals appear in `occurrences`. The per-run reservation
+remains in the rolling window from close and is distinct from actual Provider spend.
+[Daily batch decision](adr/2026-11-20-freeze-project-backlog-at-authority-cutoff.md)
