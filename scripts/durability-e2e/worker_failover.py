@@ -13,6 +13,14 @@ CASE = "worker-loss-and-late-completion"
 REQUIRED = {"remote_worker_replacement", "late_completion_delivery"}
 
 
+class AdapterError(Exception):
+    """A sanitized failure from the executable adapter transport."""
+
+
+class FailoverDeadline(TimeoutError):
+    """The expected observations did not arrive before the trial deadline."""
+
+
 def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
@@ -80,7 +88,9 @@ def run(manifest, directory, call):
                 return found
             time.sleep(0.2)
         missing_facts = set(facts) - {record["fact"] for record in events}
-        raise TimeoutError("worker failover deadline for " + ", ".join(sorted(missing_facts or facts)))
+        raise FailoverDeadline(
+            "worker failover deadline for " + ", ".join(sorted(missing_facts or facts))
+        )
 
     try:
         execution = invoke("start")["scenario"]
@@ -114,11 +124,7 @@ def run(manifest, directory, call):
             for fact in ("stale_completion.delivered", "stale_completion.rejected",
                          "late_usage.reconciled"):
                 bind(fact, original)
-    except subprocess.CalledProcessError as error:
-        violations.append(f"adapter execution failed (exit status {error.returncode})")
-    except subprocess.TimeoutExpired as error:
-        violations.append(f"adapter execution timed out after {error.timeout} seconds")
-    except TimeoutError as error:
+    except (AdapterError, FailoverDeadline) as error:
         violations.append(str(error))
     if (directory / "trace.json").exists():
         refs.append(str(directory / "trace.json"))
@@ -140,9 +146,19 @@ def main():
     adapter = args.adapter.resolve()
 
     def invoke(action, data):
-        result = subprocess.run([adapter, action], input=json.dumps(data),
-                                capture_output=True, text=True, check=True, timeout=30)
-        return json.loads(result.stdout)
+        request = json.dumps(data)
+        try:
+            result = subprocess.run([adapter, action], input=request,
+                                    capture_output=True, text=True, check=True, timeout=30)
+            return json.loads(result.stdout)
+        except subprocess.CalledProcessError as error:
+            raise AdapterError(f"adapter execution failed (exit status {error.returncode})") from None
+        except subprocess.TimeoutExpired as error:
+            raise AdapterError(f"adapter execution timed out after {error.timeout} seconds") from None
+        except OSError:
+            raise AdapterError("adapter could not be launched") from None
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            raise AdapterError("adapter returned malformed JSON") from None
 
     result = run(manifest, args.evidence, invoke)
     write(args.evidence / "report.json", result)

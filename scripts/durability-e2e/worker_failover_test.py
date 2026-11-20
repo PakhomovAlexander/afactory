@@ -75,9 +75,16 @@ class Driver(unittest.TestCase):
                         if adapter_failure is subprocess.TimeoutExpired:
                             raise subprocess.TimeoutExpired(command, 30, "stdout-secret",
                                                             "stderr-secret")
-                        completed = subprocess.CompletedProcess(
-                            command, 7, "stdout-secret", "stderr-secret"
-                        )
+                        if issubclass(adapter_failure, OSError):
+                            raise adapter_failure(1, "launch-secret", str(command[0]))
+                        if adapter_failure is json.JSONDecodeError:
+                            completed = subprocess.CompletedProcess(
+                                command, 0, '{"credential": "json-secret"', "stderr-secret"
+                            )
+                        else:
+                            completed = subprocess.CompletedProcess(
+                                command, 7, "stdout-secret", "stderr-secret"
+                            )
                     else:
                         response = adapter(action, json.loads(input))
                         completed = subprocess.CompletedProcess(command, 0, json.dumps(response))
@@ -90,7 +97,8 @@ class Driver(unittest.TestCase):
                      patch("worker_failover.time.sleep"):
                     status = main()
                 exported = (trial / "report.json").read_bytes()
-                self.assertNotIn(b"-secret", exported)
+                for evidence in trial.iterdir():
+                    self.assertNotIn(b"-secret", evidence.read_bytes(), evidence.name)
                 result = json.loads(exported)
                 self.assertIn(str(trial.resolve() / "trace.json"), result["evidence"])
                 trace = json.loads((trial / "trace.json").read_bytes())
@@ -185,6 +193,49 @@ class Driver(unittest.TestCase):
         self.assertEqual(result["verdict"], "fail")
         self.assertTrue(result["fault_witnessed"])
         self.assertEqual(result["violations"], ["adapter execution timed out after 30 seconds"])
+
+    def test_forbidden_charge_survives_adapter_launch_error(self):
+        for error in (FileNotFoundError, PermissionError):
+            with self.subTest(error=error):
+                result, exit_code = self.exercise(
+                    NEXT, recovery=["worker.lost", "unaccounted_charge"], adapter_failure=error
+                )
+                self.assertEqual(exit_code, 1)
+                self.assertEqual(result["verdict"], "fail")
+                self.assertTrue(result["fault_witnessed"])
+                self.assertEqual(result["violations"], [
+                    "forbidden observation: unaccounted_charge",
+                    "adapter could not be launched",
+                ])
+
+    def test_forbidden_charge_survives_malformed_adapter_json(self):
+        result, exit_code = self.exercise(
+            NEXT, recovery=["worker.lost", "unaccounted_charge"],
+            adapter_failure=json.JSONDecodeError,
+        )
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(result["verdict"], "fail")
+        self.assertTrue(result["fault_witnessed"])
+        self.assertEqual(result["violations"], [
+            "forbidden observation: unaccounted_charge",
+            "adapter returned malformed JSON",
+        ])
+
+    def test_local_trace_write_timeout_propagates(self):
+        write_text = Path.write_text
+
+        def write(path, data):
+            if path.name == "trace.json":
+                raise TimeoutError("local trace write failed")
+            return write_text(path, data)
+
+        with patch.object(Path, "write_text", write):
+            with self.assertRaisesRegex(TimeoutError, "local trace write failed"):
+                self.exercise(NEXT)
+
+    def test_worker_loss_for_a_different_attempt_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "different Worker or Attempt"):
+            self.exercise(NEXT, subjects={"worker.lost": NEXT})
 
     def test_late_usage_must_reconcile_original_attempt(self):
         result, _ = self.exercise(NEXT, subjects={"late_usage.reconciled": NEXT})
