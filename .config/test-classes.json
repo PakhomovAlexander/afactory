@@ -358,6 +358,7 @@
     "test-pi-host.py": "e2e",
     "test-pr-lines.py": "functional",
     "test-prereqs.py": "functional",
+    "test-project-backlog-github.py": "functional",
     "test-provider-auth-host.py": "functional",
     "test-release-resolve.py": "functional",
     "test-scenario-github-adapter.py": "e2e",
