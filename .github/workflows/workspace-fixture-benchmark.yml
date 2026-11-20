@@ -17,12 +17,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: workspace-fixture-benchmark-${{ github.event.pull_request.number }}
+  group: workspace-fixture-benchmark-${{ github.event.pull_request.number }}${{ contains(fromJSON('["labeled","unlabeled"]'), github.event.action) && github.event.label.name != 'nobuild' && format('-ignored-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
 jobs:
   benchmark:
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'nobuild') }}
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'nobuild') && (!contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || github.event.label.name == 'nobuild') }}
     strategy:
       fail-fast: false
       matrix:
