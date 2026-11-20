@@ -345,6 +345,7 @@
     "test-release-contract.py": "functional",
     "test-backlog-check-triage.py": "functional",
     "test-backlog-labels.py": "functional",
+    "test-backlog-open-issues.py": "functional",
     "test-issue-workflows.py": "functional",
     "test-backlog-triage.py": "functional",
     "test-changelog-notes.py": "functional",

@@ -2,6 +2,13 @@
   "schema": "af.contract-inventory/1",
   "families": [
     {
+      "name": "backlog-open-issues",
+      "reader_writer": ["scripts/backlog-open-issues.py"],
+      "semantic_owner": ["scripts/backlog-open-issues.py"],
+      "tests": ["scripts/test-backlog-open-issues.py"],
+      "schemas": ["schemas/backlog-open-issues-v1.json"]
+    },
+    {
       "name": "laboratory",
       "reader_writer": [
         "scripts/performance/perflab/contracts.py"
