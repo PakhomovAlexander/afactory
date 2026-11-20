@@ -18,7 +18,8 @@ NEXT = {"allocation": "worker-b", "attempt": "replacement"}
 
 class Driver(unittest.TestCase):
     def exercise(self, replacement, missing=False, subjects=None, premature=False,
-                 recovery=None, timeout=False, adapter_failure=None):
+                 recovery=None, timeout=False, adapter_failure=None,
+                 adapter_stdout=None, failure_action="observe"):
         calls = []
         before = ["scenario.submitted", "child.admitted", "first_attempt.started"]
         if recovery is None:
@@ -65,21 +66,22 @@ class Driver(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp:
             trial = Path(temp) / "trial"
-            if adapter_failure:
+            if adapter_failure or adapter_stdout is not None:
                 command = ["worker_failover.py", str(Path(temp) / "adapter-secret"),
                            str(ROOT / "manifests" / "worker-failover.json"), str(trial)]
 
                 def run_adapter(command, *, input, check, **_kwargs):
                     action = command[1]
-                    if action == "observe" and calls.count("observe") == 2:
+                    if action == failure_action and (action != "observe"
+                                                     or calls.count("observe") == 2):
                         if adapter_failure is subprocess.TimeoutExpired:
                             raise subprocess.TimeoutExpired(command, 30, "stdout-secret",
                                                             "stderr-secret")
-                        if issubclass(adapter_failure, OSError):
+                        if adapter_failure and issubclass(adapter_failure, OSError):
                             raise adapter_failure(1, "launch-secret", str(command[0]))
-                        if adapter_failure is json.JSONDecodeError:
+                        if adapter_stdout is not None:
                             completed = subprocess.CompletedProcess(
-                                command, 0, '{"credential": "json-secret"', "stderr-secret"
+                                command, 0, adapter_stdout, "stderr-secret"
                             )
                         else:
                             completed = subprocess.CompletedProcess(
@@ -100,9 +102,16 @@ class Driver(unittest.TestCase):
                 for evidence in trial.iterdir():
                     self.assertNotIn(b"-secret", evidence.read_bytes(), evidence.name)
                 result = json.loads(exported)
-                self.assertIn(str(trial.resolve() / "trace.json"), result["evidence"])
-                trace = json.loads((trial / "trace.json").read_bytes())
-                self.assertEqual([event["fact"] for event in trace], before + recovery)
+                trace_path = trial / "trace.json"
+                expected_refs = [str(trial.resolve() / name)
+                                 for name in ("inputs.json", "capabilities.json")]
+                if failure_action == "observe":
+                    expected_refs.append(str(trace_path.resolve()))
+                    trace = json.loads(trace_path.read_bytes())
+                    self.assertEqual([event["fact"] for event in trace], before + recovery)
+                else:
+                    self.assertFalse(trace_path.exists())
+                self.assertEqual(result["evidence"], expected_refs)
                 return result, status
             if timeout:
                 inputs = {**INPUTS, "fault": {**INPUTS["fault"], "deadline_s": 5}}
@@ -209,16 +218,60 @@ class Driver(unittest.TestCase):
                 ])
 
     def test_forbidden_charge_survives_malformed_adapter_json(self):
+        self.assert_observe_failure_preserves_charge(
+            '{"credential": "json-secret"', "adapter returned malformed JSON"
+        )
+
+    def test_forbidden_charge_survives_adapter_json_recursion_limit(self):
+        # Some Python versions give the C decoder a separate recursion limit.
+        depth = max(10_000, sys.getrecursionlimit() + 1)
+        stdout = '{"credential": "json-secret", "trace": ' + "[" * depth
+        with self.assertRaises(RecursionError):
+            json.loads(stdout)
+        self.assert_observe_failure_preserves_charge(stdout, "adapter returned malformed JSON")
+
+    @unittest.skipUnless(hasattr(sys, "set_int_max_str_digits"), "requires integer digit limit")
+    def test_forbidden_charge_survives_adapter_json_integer_limit(self):
+        self.addCleanup(sys.set_int_max_str_digits, sys.get_int_max_str_digits())
+        limit = sys.int_info.str_digits_check_threshold
+        sys.set_int_max_str_digits(limit)
+        stdout = '{"credential": "json-secret", "trace": [], "integer": ' + "9" * (limit + 1) + "}"
+        with self.assertRaises(ValueError) as failure:
+            json.loads(stdout)
+        self.assertNotIsInstance(failure.exception, json.JSONDecodeError)
+        self.assert_observe_failure_preserves_charge(stdout, "adapter returned malformed JSON")
+
+    def test_wrong_adapter_observe_response_preserves_charge(self):
+        for stdout, diagnostic in (
+            ('["json-secret"]', "adapter returned a non-object JSON response"),
+            ('{"credential": "json-secret"}', "adapter observe response requires a trace array"),
+            ('{"trace": "json-secret"}', "adapter observe response requires a trace array"),
+        ):
+            with self.subTest(stdout=stdout):
+                self.assert_observe_failure_preserves_charge(stdout, diagnostic)
+
+    def test_wrong_adapter_start_response_is_invalid(self):
+        for stdout in ('{"credential": "json-secret"}', '{"scenario": ["json-secret"]}',
+                       '{"scenario": ""}'):
+            with self.subTest(stdout=stdout):
+                result, status = self.exercise(NEXT, adapter_stdout=stdout, failure_action="start")
+                self.assertEqual(status, 2)
+                self.assertEqual(result["verdict"], "invalid")
+                self.assertFalse(result["fault_witnessed"])
+                self.assertEqual(result["violations"], [
+                    "adapter start response requires a nonempty Scenario identity",
+                ])
+
+    def assert_observe_failure_preserves_charge(self, stdout, diagnostic):
         result, exit_code = self.exercise(
-            NEXT, recovery=["worker.lost", "unaccounted_charge"],
-            adapter_failure=json.JSONDecodeError,
+            NEXT, recovery=["worker.lost", "unaccounted_charge"], adapter_stdout=stdout,
         )
         self.assertEqual(exit_code, 1)
         self.assertEqual(result["verdict"], "fail")
         self.assertTrue(result["fault_witnessed"])
         self.assertEqual(result["violations"], [
             "forbidden observation: unaccounted_charge",
-            "adapter returned malformed JSON",
+            diagnostic,
         ])
 
     def test_local_trace_write_timeout_propagates(self):

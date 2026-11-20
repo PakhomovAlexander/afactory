@@ -150,15 +150,30 @@ def main():
         try:
             result = subprocess.run([adapter, action], input=request,
                                     capture_output=True, text=True, check=True, timeout=30)
-            return json.loads(result.stdout)
         except subprocess.CalledProcessError as error:
             raise AdapterError(f"adapter execution failed (exit status {error.returncode})") from None
         except subprocess.TimeoutExpired as error:
             raise AdapterError(f"adapter execution timed out after {error.timeout} seconds") from None
         except OSError:
             raise AdapterError("adapter could not be launched") from None
-        except (json.JSONDecodeError, UnicodeDecodeError):
+        except UnicodeDecodeError:
             raise AdapterError("adapter returned malformed JSON") from None
+
+        stdout = result.stdout
+        try:
+            response = json.loads(stdout)
+        except (ValueError, RecursionError):
+            raise AdapterError("adapter returned malformed JSON") from None
+
+        if not isinstance(response, dict):
+            raise AdapterError("adapter returned a non-object JSON response")
+        if action == "start":
+            scenario = response.get("scenario")
+            if not isinstance(scenario, str) or not scenario:
+                raise AdapterError("adapter start response requires a nonempty Scenario identity")
+        if action == "observe" and not isinstance(response.get("trace"), list):
+            raise AdapterError("adapter observe response requires a trace array")
+        return response
 
     result = run(manifest, args.evidence, invoke)
     write(args.evidence / "report.json", result)
