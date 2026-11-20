@@ -160,6 +160,7 @@
         "crates/af-contracts/src/lib.rs",
         "crates/af-store/src/store/task.rs",
         "crates/af-scenario/src/lib.rs",
+        "crates/af/src/task_commands/scenario_portable.rs",
         "scripts/scenario-git-workspace.py",
         "scripts/scenario-github-adapter.py",
         "crates/af/src/task_commands/candidate/implementation.rs",
@@ -173,6 +174,7 @@
         "scripts/scenario-git-workspace.py",
         "scripts/scenario-github-adapter.py",
         "crates/af-scenario/src/workspace.rs",
+        "crates/af/src/task_commands/scenario_portable.rs",
         "scripts/benchmark-workspace-fixtures.py"
       ],
       "tests": [
@@ -181,6 +183,7 @@
         "crates/af-scenario/src/tests.rs",
         "crates/af-scenario/src/implementation.rs",
         "crates/af-scenario/src/driver.rs",
+        "crates/af/tests/it/scenario/portable.rs",
         "scripts/test-scenario-git-workspace.py",
         "scripts/test-scenario-github-adapter.py",
         "scripts/test-workspace-fixtures.py"
@@ -242,6 +245,7 @@
         "schemas/issue-triage-hold-v1.json",
         "schemas/issue-triage-merged-v1.json",
         "schemas/issue-triage-runner-v3.json",
+        "fixtures/issue-triage/portable-issue-triage-v1.json",
         "schemas/issue-triage-v1.json",
         "schemas/issue-workflow-pilot-v1.json",
         "schemas/measurement-comparison-v1.json",
@@ -315,6 +319,7 @@
         "schemas/run-event-v3.json",
         "schemas/scenario-adapter-request-v8.json",
         "schemas/scenario-adapter-response-v3.json",
+        "schemas/scenario-artifact-v1.json",
         "schemas/scenario-bundle-v10.json",
         "schemas/scenario-decision-v1.json",
         "schemas/scenario-driver-v2.json",

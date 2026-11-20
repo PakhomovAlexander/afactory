@@ -1,5 +1,7 @@
 # `backlog/triage` for this repository
 
+For a single caller-supplied issue, see [Run portable triage locally](#run-portable-triage-locally).
+
 The issue-triage Task of [`docs/design/issue-triage.md`](../../docs/design/issue-triage.md)
 §6 (rollout step 2): the business kind `triage` on the installed report profile, an author and
 an independent verifier that triage one issue each, and the check that merges them. It is
@@ -33,6 +35,66 @@ report policy requires of every report. The verifier triages the issue itself be
 the author's, and ends its `af/ReportEvaluation@1` summary with its own document whatever its
 outcome. Both instructions quote §4 and §5 of the design verbatim and treat the issue text as
 untrusted data.
+
+## Run portable triage locally
+
+From a clean Afactory checkout at any path, use the current checkout's `af`, Git, `jq`, and
+a working Codex CLI with a configured `codex-personal` Provider. The checkout's committed
+report policy and Provider aliases supply receiver policy. To use another locally configured
+alias, pass `--bindings /path/to/bindings.toml` to preparation. An `af.task-bindings/1` file
+can set both `"backlog/triage-author"` and `"backlog/triage-verifier"` under `[providers]`.
+The artifact supplies the Task kind, Pipeline, Workers, and schemas without catalog installation.
+
+These commands prepare the example issue and inspect the requested authority. Set
+`issue_input` to your own [report sources JSON](../../schemas/report-sources-v1.json) with
+exactly the named `issue` entry. Include its number, title, labels, body and any relevant
+comments as text. The example shows the body digest and provenance spelling. The prepared
+bundle contains this evidence, so keep the work directory private and outside the checkout.
+The native Task template has a 64 KiB limit including input and schema text.
+
+```sh
+cargo build --locked --bin af
+af_bin="$PWD/target/debug/af"
+export AF_VERSION="$("$af_bin" --version --json | jq -er .version)"
+umask 077
+work="$(mktemp -d)"
+issue_input="$PWD/fixtures/issue-triage/example/portable-inputs.json"
+"$af_bin" scenario prepare --file fixtures/issue-triage/scenario.json \
+  --task-state "$work/tasks" --inputs "$issue_input" --json > "$work/bundle.json"
+jq . "$work/bundle.json"
+```
+
+After reviewing the bundle, grant its single template in a dedicated owner-only policy
+and inspect the native pin. Preparation and validation make no inference calls.
+
+```sh
+jq '{
+  schema: "af/scenario-policy@8", adapters: {}, task_plans: [],
+  task_templates: .definitions[.root].authority.task_templates,
+  decision_keys: {}, file_roots: []
+}' "$work/bundle.json" > "$work/policy.json"
+printf '{}\n' > "$work/empty.json"
+"$af_bin" scenario validate --file "$work/bundle.json" \
+  --authority "$work/policy.json" --json > "$work/pin.json"
+jq . "$work/pin.json"
+```
+
+After reviewing the exact pin, explicitly approve execution and read the accepted Task report.
+This step uses the configured Provider and consumes its tokens.
+
+```sh
+"$af_bin" scenario start triage-one --file "$work/bundle.json" \
+  --authority "$work/policy.json" --inputs "$work/empty.json" \
+  --state "$work/scenarios" --confirm-pin "$(jq -er .revision "$work/pin.json")" \
+  --execute --json > "$work/run.json"
+task_id="$(jq -er '.frames.root.outputs.triage.value.task_id' "$work/run.json")"
+"$af_bin" task output "$task_id" --state "$work/tasks" --port report --format canonical-markdown
+```
+
+Use `af scenario show triage-one --state "$work/scenarios" --json` to inspect the Run and
+its native Task receipt. The output is an independently verified report. The separate backlog
+merge, GitHub mutations and the scheduler lie outside this workflow. Prepare again with a
+new issue input to pin it before approval.
 
 ## Budget
 
