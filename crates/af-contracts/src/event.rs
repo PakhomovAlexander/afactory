@@ -67,10 +67,12 @@ pub enum EventType {
     SurveyFailedV1,
     #[serde(rename = "SurveyCollected@1")]
     SurveyCollectedV1,
+    #[serde(rename = "BacklogRecordStored@1")]
+    BacklogRecordStoredV1,
 }
 
 impl EventType {
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 30] = [
         Self::TaskTransitionV6,
         Self::TaskExecutionStartedV1,
         Self::TaskGateRetriedV1,
@@ -100,6 +102,7 @@ impl EventType {
         Self::SurveyRecordedV1,
         Self::SurveyFailedV1,
         Self::SurveyCollectedV1,
+        Self::BacklogRecordStoredV1,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -133,6 +136,7 @@ impl EventType {
             Self::SurveyRecordedV1 => "SurveyRecorded@1",
             Self::SurveyFailedV1 => "SurveyFailed@1",
             Self::SurveyCollectedV1 => "SurveyCollected@1",
+            Self::BacklogRecordStoredV1 => "BacklogRecordStored@1",
         }
     }
 
@@ -167,6 +171,7 @@ impl EventType {
             Self::SurveyRecordedV1 => ("SurveyRecorded", 1),
             Self::SurveyFailedV1 => ("SurveyFailed", 1),
             Self::SurveyCollectedV1 => ("SurveyCollected", 1),
+            Self::BacklogRecordStoredV1 => ("BacklogRecordStored", 1),
         }
     }
 }
@@ -242,6 +247,7 @@ impl std::str::FromStr for EventType {
             "SurveyRecorded@1" => Ok(Self::SurveyRecordedV1),
             "SurveyFailed@1" => Ok(Self::SurveyFailedV1),
             "SurveyCollected@1" => Ok(Self::SurveyCollectedV1),
+            "BacklogRecordStored@1" => Ok(Self::BacklogRecordStoredV1),
             other => Err(UnknownEventType(other.to_string())),
         }
     }
@@ -465,6 +471,11 @@ pub fn validate_event_payload(
         EventType::SurveyFailedV1 => {
             serde_json::from_value::<crate::SurveyFailedPayloadV1>(payload.clone())
                 .map_err(|error| format!("SurveyFailed@1: {error}"))?
+                .validate()
+        }
+        EventType::BacklogRecordStoredV1 => {
+            serde_json::from_value::<crate::backlog::BacklogRecordV1>(payload.clone())
+                .map_err(|_| "invalid BacklogRecordStored@1 payload".to_string())?
                 .validate()
         }
         EventType::SurveyCollectedV1 => {

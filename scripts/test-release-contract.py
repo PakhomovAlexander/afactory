@@ -285,6 +285,19 @@ class ReleaseContract(unittest.TestCase):
             path.write_bytes(original)
         self.assertEqual(PREFLIGHT.check(self.root), '0.15.1-rc.3')
 
+    def test_project_backlog_schema_bytes_are_bound_by_the_release_contract(self):
+        for name in ('backlog-v1.json', 'backlog-record-v1.json', 'run-event-v3.json'):
+            with self.subTest(schema=name):
+                path = self.root / 'schemas' / name
+                original = path.read_bytes()
+                path.write_bytes(original + b'\n')
+                try:
+                    with self.assertRaisesRegex(ValueError, 'capabilities differ'):
+                        PREFLIGHT.check(self.root)
+                finally:
+                    path.write_bytes(original)
+        self.assertEqual(PREFLIGHT.check(self.root), '0.15.1-rc.3')
+
     def test_preparation_refuses_changed_capabilities(self):
         self.version('0.15.1-rc.4')
         path = self.root / 'scripts/release-contract.json'

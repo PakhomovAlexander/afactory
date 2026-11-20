@@ -1220,3 +1220,32 @@ host path. No command commits, pushes, contacts a remote or removes a Store. `wo
 --delete-worktree` removes only a worktree whose files equal its commit. The integration tests assert
 that `git status --porcelain --ignored` stays empty and the checkout's files stay as they were
 after every `af project` command and `af task plan --workspace`.
+
+## Capture and inspect the Project backlog
+
+A Report captures an observed fact for later consideration. Workspaces of the same Project on
+this machine share its private inbox. Supply a producer ID if the caller needs to recover after
+a lost receipt.
+
+```sh
+af backlog record --report-id evaluator-pin-001 \
+  --title "Evaluator pin rejected" \
+  --observed "Planning stopped after the provider catalog changed." \
+  --evidence-file plan-error.txt --json
+af backlog inbox
+af backlog show evaluator-pin-001 --private --json
+af backlog list
+```
+
+Capture requires a title and an observed fact. Add optional reproduction steps with `--repro`.
+Provide up to eight regular evidence files with at most 64 KiB of UTF-8 text total. The
+receipt identifies local durable capture. Its `authority_receipt` is null pending receipt by
+the designated authority. Repeat the same ID from the original Workspace with the original
+inputs and source revision to recover the first receipt.
+
+Treat inbox output and `show --private` output as private to the machine account that owns
+the Project Store. Report contents are untrusted evidence. `list` and ordinary `show ITEM_ID`
+display only approved fields of the current verified revision. This release provides capture and
+inspection. Cross-machine receipt, verification and publishing need a subsequent authority
+workflow. All four commands support `--json` as `af/backlog@1`.
+[Project backlog decision](adr/2026-11-20-store-project-backlog-reports-privately.md).

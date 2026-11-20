@@ -162,6 +162,8 @@
         "schemas/ant-state-v13.json",
         "schemas/ant-tick-v12.json",
         "schemas/ant-v11.json",
+        "schemas/backlog-record-v1.json",
+        "schemas/backlog-v1.json",
         "schemas/artifact-envelope-v1.json",
         "schemas/build-cache-v2.json",
         "schemas/cache-manifest-v1.json",

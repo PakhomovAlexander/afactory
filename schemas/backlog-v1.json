@@ -1,0 +1,202 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:backlog:1",
+  "title": "Project backlog command result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "view",
+    "data"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/backlog@1"
+    },
+    "view": {
+      "enum": [
+        "capture",
+        "inbox",
+        "report",
+        "list",
+        "item"
+      ]
+    },
+    "data": {
+      "type": "object"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "view": {
+            "const": "capture"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "project_id",
+              "report_id",
+              "captured_unix_ms",
+              "local_capture",
+              "authority_receipt"
+            ],
+            "properties": {
+              "project_id": {
+                "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+              },
+              "report_id": {
+                "$ref": "urn:af:schema:backlog-record:1#/$defs/reportId"
+              },
+              "captured_unix_ms": {
+                "$ref": "urn:af:schema:backlog-record:1#/$defs/decimal"
+              },
+              "local_capture": {
+                "const": true
+              },
+              "authority_receipt": {
+                "const": null
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "view": {
+            "const": "inbox"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "project_id",
+              "reports"
+            ],
+            "properties": {
+              "project_id": {
+                "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+              },
+              "reports": {
+                "type": "array",
+                "items": {
+                  "$ref": "urn:af:schema:backlog-record:1#/$defs/report"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "view": {
+            "const": "report"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "urn:af:schema:backlog-record:1#/$defs/report"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "view": {
+            "const": "list"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "project_id",
+              "items"
+            ],
+            "properties": {
+              "project_id": {
+                "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "item_id",
+                    "revision_id",
+                    "public"
+                  ],
+                  "properties": {
+                    "item_id": {
+                      "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+                    },
+                    "revision_id": {
+                      "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+                    },
+                    "public": {
+                      "$ref": "urn:af:schema:backlog-record:1#/$defs/public"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "view": {
+            "const": "item"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "item_id",
+              "revision_id",
+              "public"
+            ],
+            "properties": {
+              "item_id": {
+                "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+              },
+              "revision_id": {
+                "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+              },
+              "public": {
+                "$ref": "urn:af:schema:backlog-record:1#/$defs/public"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

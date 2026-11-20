@@ -30,6 +30,7 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("ant-state", 13),
     schema!("ant-tick", 12),
     schema!("ant", 11),
+    schema!("backlog", 1),
     schema!("command-catalog", 1),
     schema!("error", 2),
     schema!("findings-sarif", 1),

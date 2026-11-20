@@ -4504,3 +4504,231 @@ fn a_directory_at_the_original_path_after_any_moved_step_stops_the_removal() {
         assert_eq!(removals_of(&machine, &repo, &id), 1, "{what}");
     }
 }
+
+#[test]
+fn backlog_recovers_a_lost_receipt_and_shares_privately_across_worktrees() {
+    use std::process::Stdio;
+
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    let worktree = machine.root().join("other-worktree");
+    git(
+        &repo,
+        &["worktree", "add", "--detach", worktree.to_str().unwrap()],
+    );
+    let unrelated_root = machine.root().join("unrelated");
+    std::fs::create_dir_all(&unrelated_root).unwrap();
+    git(&unrelated_root, &["init", "-q"]);
+    git(
+        &unrelated_root,
+        &["commit", "--allow-empty", "-qm", "unrelated root"],
+    );
+
+    let evidence = machine.root().join("evidence.txt");
+    std::fs::write(&evidence, "private evidence sentinel\n").unwrap();
+    let record = [
+        "backlog",
+        "record",
+        "--report-id",
+        "producer-1",
+        "--title",
+        "Private title",
+        "--observed",
+        "Observed condition",
+        "--evidence-file",
+        evidence.to_str().unwrap(),
+        "--json",
+    ];
+    let (reader, writer) = nix::unistd::pipe().unwrap();
+    drop(reader);
+    let mut interrupted = crate::common::af()
+        .current_dir(&repo)
+        .env("XDG_STATE_HOME", machine.state_home())
+        .stdout(Stdio::from(writer))
+        .stderr(Stdio::null())
+        .args(record)
+        .spawn()
+        .unwrap();
+    // Close the only reader before the child can finish capture. Printing the acknowledgement
+    // fails after SQLite commits. The retry must recover the existing report.
+    assert!(!interrupted.wait().unwrap().success());
+
+    let private_args = ["backlog", "show", "producer-1", "--private", "--json"];
+    let before = machine.expect(&worktree, &private_args, 0);
+    let receipt = machine.expect(&repo, &record, 0);
+    let receipt: Value = serde_json::from_str(&receipt).unwrap();
+    let report: Value = serde_json::from_str(&before).unwrap();
+    let schema = schemas::validator("backlog-v1.json");
+    schemas::valid(&schema, &receipt);
+    schemas::valid(&schema, &report);
+    assert_eq!(
+        receipt["data"]["captured_unix_ms"],
+        report["data"]["captured_unix_ms"]
+    );
+    assert_eq!(receipt["data"]["local_capture"], true);
+    assert!(receipt["data"]["authority_receipt"].is_null());
+    assert!(report["data"]["task_id"].is_null());
+    assert!(report["data"]["run_id"].is_null());
+    assert_eq!(
+        report["data"]["source_revision"],
+        git(&repo, &["rev-parse", "HEAD"])
+    );
+    assert_eq!(
+        report["data"]["evidence"][0]["text"],
+        "private evidence sentinel\n"
+    );
+
+    let mut conflict = record;
+    conflict[7] = "A conflicting observation";
+    assert!(!machine.af(&repo, &conflict).status.success());
+    assert!(!machine.af(&worktree, &record).status.success());
+    let mut separate = record;
+    separate[3] = "producer-2";
+    machine.expect(&worktree, &separate, 0);
+
+    let inbox = machine.expect(&worktree, &["backlog", "inbox", "--json"], 0);
+    let inbox: Value = serde_json::from_str(&inbox).unwrap();
+    schemas::valid(&schema, &inbox);
+    let reports = inbox["data"]["reports"].as_array().unwrap();
+    assert_eq!(reports.len(), 2);
+    assert_ne!(reports[0]["workspace_id"], reports[1]["workspace_id"]);
+
+    let list = machine.expect(&worktree, &["backlog", "list", "--json"], 0);
+    let list: Value = serde_json::from_str(&list).unwrap();
+    schemas::valid(&schema, &list);
+    assert_eq!(list["data"]["items"], serde_json::json!([]));
+    let public = machine.af(&worktree, &["backlog", "show", "producer-1", "--json"]);
+    assert!(!public.status.success());
+    assert!(!String::from_utf8_lossy(&public.stdout).contains("private evidence sentinel"));
+    assert!(!machine.af(&unrelated_root, &private_args).status.success());
+    let other = machine.expect(&unrelated_root, &["backlog", "inbox", "--json"], 0);
+    let other: Value = serde_json::from_str(&other).unwrap();
+    assert_eq!(other["data"]["reports"], serde_json::json!([]));
+
+    let pruned = crate::common::af()
+        .current_dir(&repo)
+        .env("XDG_STATE_HOME", machine.state_home())
+        .env("AF_STORAGE__MAX_BYTES", "1")
+        .args(["storage", "prune", "--apply", "--json"])
+        .output()
+        .unwrap();
+    assert!(pruned.status.success(), "{}", text(&pruned).1);
+    assert_eq!(machine.expect(&worktree, &private_args, 0), before);
+}
+
+#[test]
+fn backlog_refuses_bad_fact_and_evidence_before_capture() {
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    let record = ["backlog", "record", "--title", "Report", "--observed"];
+    assert!(
+        !machine
+            .af(&repo, &[record.as_slice(), &[" \t"]].concat())
+            .status
+            .success()
+    );
+
+    let evidence = machine.root().join("evidence.txt");
+    let link = machine.root().join("link.txt");
+    std::os::unix::fs::symlink(&evidence, &link).unwrap();
+    let attempt = |path: &Path| {
+        let args = [
+            record.as_slice(),
+            &["A fact", "--evidence-file", path.to_str().unwrap()],
+        ]
+        .concat();
+        assert!(!machine.af(&repo, &args).status.success());
+    };
+    std::fs::write(&evidence, [0xff]).unwrap();
+    attempt(&evidence);
+    std::fs::write(&evidence, vec![b'a'; 65537]).unwrap();
+    attempt(&evidence);
+    std::fs::write(&evidence, "real evidence").unwrap();
+    attempt(&link);
+    assert!(!machine.projects().exists());
+}
+
+#[test]
+fn backlog_verified_cli_prints_only_the_approved_projection() {
+    use af_contracts::EventType::BacklogRecordStoredV1;
+    use af_store::{Cas, EventStore, NewEvent, content_id};
+    use serde_json::json;
+
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    let project_id = expected_project_id(&repo);
+    let store = machine
+        .projects()
+        .join(project_id.trim_start_matches("sha256:"));
+    machine.expect(
+        &repo,
+        &[
+            "backlog",
+            "record",
+            "--report-id",
+            "private",
+            "--title",
+            "Raw title",
+            "--observed",
+            "Raw fact",
+        ],
+        0,
+    );
+
+    // These fixtures represent authority records in the private Store. The CLI has no command
+    // that appends them.
+    let mut events = EventStore::open(store.join("events.sqlite")).unwrap();
+    let cas = Cas::open_existing(store.join("cas")).unwrap();
+    let digest = |byte: &str| format!("sha256:{}", byte.repeat(64));
+    let mut add = |data: Value| {
+        let id = content_id(&data).unwrap();
+        events
+            .append(
+                "backlog-processing",
+                &cas,
+                NewEvent::new(BacklogRecordStoredV1, data),
+            )
+            .unwrap();
+        id
+    };
+    let item = digest("1");
+    let evidence = vec![digest("2")];
+    let revision = add(json!({
+        "schema": "af/BacklogItemRevision@1", "project_id": project_id, "item_id": item,
+        "report_ids": ["private"], "claim": "raw internal claim", "evidence_ids": evidence,
+        "source_revision": git(&repo, &["rev-parse", "HEAD"]),
+        "proposed": {"title": "Public title", "body": "Approved description"}
+    }));
+    let batch = add(json!({
+        "schema": "af/BacklogBatch@1", "project_id": project_id, "authority_id": digest("3"),
+        "first_sequence": "1", "last_sequence": "1", "report_ids": ["private"],
+        "scenario_id": digest("4"), "policy_id": digest("5")
+    }));
+    add(json!({
+        "schema": "af/BacklogDecision@1", "project_id": project_id, "batch_id": batch,
+        "revision_id": revision, "task_results": [digest("6")],
+        "independent_verification_id": digest("6"), "disposition": "verified",
+        "reason": "raw decision reason", "evidence_ids": evidence
+    }));
+    drop(events);
+
+    let shown = machine.expect(&repo, &["backlog", "show", &item, "--json"], 0);
+    let shown: Value = serde_json::from_str(&shown).unwrap();
+    let schema = schemas::validator("backlog-v1.json");
+    schemas::valid(&schema, &shown);
+    assert_eq!(
+        shown["data"],
+        json!({
+            "item_id": item,
+            "revision_id": revision,
+            "public": {"title": "Public title", "body": "Approved description"}
+        })
+    );
+    let human = machine.expect(&repo, &["backlog", "show", &item], 0);
+    assert!(human.contains("Approved description"));
+    assert!(!human.contains("raw"));
+    let list = machine.expect(&repo, &["backlog", "list", "--json"], 0);
+    let list: Value = serde_json::from_str(&list).unwrap();
+    schemas::valid(&schema, &list);
+    assert_eq!(list["data"]["items"], json!([shown["data"]]));
+}

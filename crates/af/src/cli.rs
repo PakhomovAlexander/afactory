@@ -312,6 +312,12 @@ af project workspace remove research   # needs: Workspace research\n  \
         #[command(subcommand)]
         command: ProjectCli,
     },
+    /// Capture private observations and inspect the Project backlog
+    #[command(display_order = 32)]
+    Backlog {
+        #[command(subcommand)]
+        command: crate::backlog::Command,
+    },
     /// Show the effective configuration and where each value came from
     #[command(
         display_order = 10,

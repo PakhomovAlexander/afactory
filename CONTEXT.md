@@ -234,6 +234,15 @@ carries), labelled by `[project] name` in `.af/af.toml`, and owning one Project 
 _Avoid_: the `.af/` directory, which is a declaration the Project's tree carries, not the
 entity; a checkout path, which is a Workspace; a Snapshot, which is one tree the Project had.
 
+**Project backlog**:
+The Project-owned private Report inbox and verified item view. A **Backlog Report** records a
+producer's observed fact and bounded evidence in one local capture. A **Backlog Item Revision**
+binds a material claim and proposed public fields to its Reports and evidence. A Batch freezes
+membership, a Decision records its disposition, and a Publication records the separately
+authorized destination write. A local capture receipt and a designated authority receipt attest
+to different commits.
+[Project backlog decision](docs/adr/2026-11-20-store-project-backlog-reports-privately.md).
+
 **Workspace**:
 One registered checkout of a Project for one line of work: a worktree or clone, its Task Store,
 its Task files and its bindings file, under one label. Every default Task Store af has ever
