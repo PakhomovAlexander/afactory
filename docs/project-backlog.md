@@ -761,8 +761,9 @@ Use a dedicated, owner-writable regular `.md` file on a local filesystem with ap
 semantics. The file may be readable by other users. The receiver must own the file and its
 containing directory. Group or public write access, symlinks and hard links are refused. Keep the AF markers and the text between them intact. Edit surrounding
 prose between deliveries. Writers that edit concurrently should take an exclusive file lock and
-keep the pathname in place until they finish. AF takes a non-blocking lock, checks for changes to
-the file and its pathname, and appends without replacing the document. An edit or replacement
+keep the pathname in place until they finish. AF takes a non-blocking lock, checks the pathname,
+file identity, contents, size and both file timestamps (status change and modification) at
+nanosecond precision, and appends without replacing the document. An edit or replacement
 that races the append can leave publication pending until the receiver can observe the exact
 entry. A short or ambiguous append is never repeated. A confirmed prewrite conflict can retry
 within the same Run's limits once the operator clears the obstruction.

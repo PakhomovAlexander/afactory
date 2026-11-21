@@ -206,16 +206,16 @@ fn open_document(path: &Path) -> rustix::io::Result<(File, File)> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Stamp {
     identity: (i128, u64),
-    change: (i64, i64),
-    modified: (i64, i64),
+    change: (i64, i128),
+    modified: (i64, i128),
     size: i64,
 }
 
 fn stamp(stat: &Stat) -> Stamp {
     Stamp {
         identity: (i128::from(stat.st_dev), stat.st_ino),
-        change: (stat.st_ctime, stat.st_ctime_nsec),
-        modified: (stat.st_mtime, stat.st_mtime_nsec),
+        change: (stat.st_ctime, i128::from(stat.st_ctime_nsec)),
+        modified: (stat.st_mtime, i128::from(stat.st_mtime_nsec)),
         size: stat.st_size,
     }
 }
@@ -381,6 +381,34 @@ mod tests {
             std_fs::read_to_string(real.join("Backlog.md")).unwrap(),
             "Human notes"
         );
+    }
+
+    #[test]
+    fn markdown_rejects_nanosecond_only_stamp_conflicts() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().canonicalize().unwrap().join("Backlog.md");
+        let original = b"Human notes";
+        std_fs::write(&path, original).unwrap();
+        let (parent, mut file) = open_document(&path).unwrap();
+        let observed = fs::fstat(&file).unwrap();
+        let mut changed_ctime = observed;
+        changed_ctime.st_ctime_nsec ^= 1;
+        let mut changed_mtime = observed;
+        changed_mtime.st_mtime_nsec ^= 1;
+
+        for stale in [changed_ctime, changed_mtime] {
+            let result = append_checked(
+                &path,
+                &parent,
+                &mut file,
+                (original, stamp(&stale)),
+                b"AF entry",
+                &AtomicBool::new(false),
+                Instant::now() + Duration::from_secs(5),
+            );
+            assert!(matches!(result, Err(Pending::PrewriteConflict)));
+            assert_eq!(std_fs::read(&path).unwrap(), original);
+        }
     }
 
     #[test]
