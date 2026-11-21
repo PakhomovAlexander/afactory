@@ -1,0 +1,21 @@
+{
+  "schema": "af-durability/trial-inputs@1",
+  "profile": "independent-worker-vm-replacement",
+  "workload": {
+    "recipe": "one-pinned-task-and-one-required-final-check",
+    "hold": "hold final acceptance until stale completion delivery is witnessed",
+    "accounting": "record one original provider charge and one replacement charge independently"
+  },
+  "fault": {
+    "trigger": "first Task Attempt is durable and its completion is buffered",
+    "injection": "isolate original Worker and release its buffered completion after replacement verifies",
+    "deadline_s": 180
+  },
+  "placement": {
+    "requires_distinct_worker_allocations": true,
+    "coordinator_and_evidence_outside_worker_failure_domain": true,
+    "release_allocations": false
+  },
+  "clock": "collector monotonic from witnessed Worker loss",
+  "seed": 0
+}

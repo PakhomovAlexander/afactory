@@ -1796,6 +1796,42 @@ class ReleaseCLI(unittest.TestCase):
         self.cli('resume', ok=False)
         self.assertEqual((self.source / 'Cargo.toml').read_text(), 'dirty caller cannot supply bytes')
 
+    def test_release_notes_exclude_prior_release_and_keep_same_second_changes(self):
+        previous = '- release: v0.15.1-rc.3 (#1)'
+        changelog = self.source / 'CHANGELOG.md'
+        changelog.write_text(changelog.read_text().replace(
+            '## [0.15.1-rc.3] - today\n',
+            '## [0.15.1-rc.3] - today\n\n### Changes\n\n' + previous + '\n'))
+        (self.source / 'changelog.d/note.md').unlink()
+        self.commit('previous release')
+        self.git('-C', self.source, 'tag', 'v0.15.1-rc.3')
+        released_at = int(self.git('-C', self.source, 'show', '-s', '--format=%ct', 'HEAD'))
+        original_env = self.env
+        try:
+            for filename, note, offset in (
+                ('same-second.md', '- A change merged in the release second.', 0),
+                ('later.md', '- A later change.', 1),
+            ):
+                timestamp = str(released_at + offset) + ' +0000'
+                self.env = {**original_env, 'GIT_AUTHOR_DATE': timestamp,
+                            'GIT_COMMITTER_DATE': timestamp}
+                (self.source / 'changelog.d' / filename).write_text(note + '\n')
+                self.commit(filename)
+                self.assertEqual(int(self.git('-C', self.source, 'show', '-s', '--format=%ct',
+                                              'HEAD')), released_at + offset)
+        finally:
+            self.env = original_env
+        self.git('-C', self.source, 'push', str(self.remote), 'main', '--tags')
+        self.cli('rc')
+        state = self.state_value()
+        rendered = self.git('--git-dir', self.remote, 'show', state['candidate'] + ':CHANGELOG.md')
+        fresh, history = rendered.split('## [0.15.1-rc.3]', 1)
+        self.assertIn('## [0.15.1-rc.4]', fresh)
+        self.assertIn('- A change merged in the release second.', fresh)
+        self.assertIn('- A later change.', fresh)
+        self.assertNotIn(previous, fresh, 'previous release PR must stay out of the new Changes')
+        self.assertIn(previous, history, 'historical release notes must remain intact')
+
     def test_real_cut_reuses_exact_identity_and_pin_is_separate(self):
         self.cli('rc')
         state = self.state_value()
