@@ -58,7 +58,7 @@ class Control:
             # An ambiguous acknowledgement may mean the job is already running.
             if isinstance(failure, HTTPError) and failure.status != 503:
                 raise
-            self.request(status_path)
+            save(evidence / "reconciled-status.json", self.request(status_path))
         else:
             save(evidence / "submission.json", receipt)
             if receipt["status"] != status_path or receipt["logs"] != status_path + "/logs":
@@ -79,7 +79,13 @@ class Control:
             properties = status["properties"]
             if (properties["ActiveState"] in {"failed", "inactive"}
                     or properties["SubState"] == "exited"):
-                save(evidence / "logs.json", self.request(status_path + "/logs"))
+                try:
+                    save(evidence / "logs.json", self.request(status_path + "/logs"))
+                except HTTPError as error:
+                    if error.status != 503:
+                        raise
+                    time.sleep(2)
+                    continue
                 return (
                     properties.get("Result") == "success"
                     and properties.get("ExecMainCode") == "1"
