@@ -104,6 +104,9 @@ def run(binary, source, pause):
         run["id"]: [t["task_id"] for t in run["fresh_tasks"].values()]
         for run in (originals, other)
     }
+    for index, task_id in enumerate(sorted({task for ids in parent_tasks.values() for task in ids})):
+        af(f"admitted-task-{index}", "task-state", "task", "show", task_id)
+
     recorded = root / "admission-ledger.json"
     write_json(recorded, truth)
     checks = {
