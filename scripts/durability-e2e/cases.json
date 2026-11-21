@@ -1,0 +1,279 @@
+{
+  "clean": {
+    "chains": [
+      [
+        "scenario.submitted",
+        "child.admitted",
+        "candidate.sealed",
+        "gate.passed",
+        "child.verified",
+        "parent.succeeded",
+        "slot.reused"
+      ]
+    ],
+    "forbidden": []
+  },
+  "ci-lost-green": {
+    "chains": [
+      [
+        "scenario.submitted",
+        "child.admitted",
+        "candidate.sealed",
+        "check.created",
+        "response.dropped",
+        "coordinator.down",
+        "notification.lost",
+        "reads.restored",
+        "coordinator.restarted",
+        "check.reconciled",
+        "gate.passed",
+        "child.verified",
+        "parent.succeeded",
+        "slot.reused"
+      ]
+    ],
+    "forbidden": []
+  },
+  "ci-lost-red": {
+    "chains": [
+      [
+        "scenario.submitted",
+        "child.admitted",
+        "candidate.sealed",
+        "check.created",
+        "response.dropped",
+        "coordinator.down",
+        "notification.lost",
+        "reads.restored",
+        "coordinator.restarted",
+        "check.reconciled",
+        "gate.failed",
+        "child.unsuccessful",
+        "parent.failed",
+        "slot.reused"
+      ]
+    ],
+    "forbidden": [
+      "child.verified",
+      "parent.succeeded"
+    ]
+  },
+  "gate-repair": {
+    "chains": [
+      [
+        "scenario.submitted",
+        "child.admitted",
+        "candidate.sealed",
+        "gate.failed.on.a",
+        "repair.admitted",
+        "candidate.b.sealed",
+        "gate.passed.on.b",
+        "child.verified",
+        "parent.succeeded",
+        "slot.reused"
+      ]
+    ],
+    "forbidden": [
+      "candidate.a.accepted"
+    ]
+  },
+  "gate-terminal": {
+    "chains": [
+      [
+        "scenario.submitted",
+        "child.admitted",
+        "candidate.sealed",
+        "gate.failed",
+        "child.unsuccessful",
+        "parent.failed",
+        "slot.reused"
+      ]
+    ],
+    "forbidden": [
+      "child.verified",
+      "parent.succeeded",
+      "repair.admitted"
+    ]
+  },
+  "budget-exhausted-terminal": {
+    "chains": [
+      [
+        "scenario.submitted",
+        "child.admitted",
+        "usage.settled",
+        "budget.exhausted",
+        "child.unsuccessful",
+        "parent.failed",
+        "slot.reused"
+      ],
+      [
+        "budget.exhausted",
+        "coordinator.restarted",
+        "old.grant.ledger.audited"
+      ],
+      [
+        "budget.exhausted",
+        "sibling.progressed"
+      ]
+    ],
+    "forbidden": [
+      "unfunded.call.accepted",
+      "child.verified"
+    ]
+  },
+  "github-auth-expired": {
+    "chains": [
+      [
+        "scenario.submitted",
+        "child.admitted",
+        "candidate.sealed",
+        "github.401",
+        "credential.rotated",
+        "check.reconciled",
+        "gate.passed",
+        "child.verified",
+        "parent.succeeded",
+        "slot.reused"
+      ]
+    ],
+    "forbidden": [
+      "duplicate.implementation",
+      "duplicate.check"
+    ]
+  },
+  "worker-loss-and-late-completion": {
+    "chains": [
+      [
+        "scenario.submitted",
+        "child.admitted",
+        "first_attempt.started",
+        "worker.lost",
+        "first_attempt.fenced",
+        "replacement.started",
+        "replacement.verified",
+        "stale_completion.delivered",
+        "stale_completion.rejected",
+        "parent.succeeded",
+        "slot.reused"
+      ],
+      [
+        "stale_completion.delivered",
+        "late_usage.reconciled"
+      ]
+    ],
+    "forbidden": [
+      "duplicate_acceptance",
+      "replaced_candidate_superseded",
+      "unaccounted_charge"
+    ]
+  },
+  "journal-enospc": {
+    "chains": [
+      [
+        "child.verified",
+        "wait.persisted",
+        "journal_write.enospc",
+        "partial_write.rejected",
+        "space.restored",
+        "coordinator.restarted",
+        "prior_receipts.verified",
+        "parent.succeeded",
+        "slot.reused"
+      ]
+    ],
+    "forbidden": [
+      "lost_committed_receipt",
+      "duplicate.implementation"
+    ]
+  },
+  "artifact-enospc": {
+    "chains": [
+      [
+        "child.verified",
+        "wait.persisted",
+        "cas_write.enospc",
+        "incomplete_artifact.rejected",
+        "space.restored",
+        "coordinator.restarted",
+        "prior_artifacts.verified",
+        "artifact.published",
+        "parent.succeeded",
+        "slot.reused"
+      ]
+    ],
+    "forbidden": [
+      "lost_committed_artifact",
+      "partial_artifact.accepted"
+    ]
+  },
+  "cancel-child-during-parent-outage": {
+    "chains": [
+      [
+        "scenario.submitted",
+        "child.admitted",
+        "parent.waiting",
+        "coordinator.down",
+        "child.cancelled",
+        "coordinator.restarted",
+        "cancellation.reconciled",
+        "parent.terminal",
+        "slot.reused"
+      ]
+    ],
+    "forbidden": [
+      "cancelled_child_accepted",
+      "cancelled_child_redispatched"
+    ]
+  },
+  "checks-clean-control": {
+    "chains": [
+      [
+        "fixture.empty",
+        "child.verified",
+        "check.requested",
+        "check.committed",
+        "check.completed",
+        "receipt.delivered",
+        "parent.succeeded"
+      ]
+    ],
+    "forbidden": [
+      "coordinator.down",
+      "parent.failed"
+    ]
+  },
+  "checks-commit-before-crash-green": {
+    "chains": [
+      [
+        "fixture.empty",
+        "child.verified",
+        "check.requested",
+        "check.committed",
+        "coordinator.down",
+        "check.completed",
+        "coordinator.restarted",
+        "parent.succeeded"
+      ]
+    ],
+    "forbidden": [
+      "parent.failed"
+    ]
+  },
+  "checks-commit-before-crash-red": {
+    "chains": [
+      [
+        "fixture.empty",
+        "child.verified",
+        "check.requested",
+        "check.committed",
+        "coordinator.down",
+        "check.completed",
+        "coordinator.restarted",
+        "parent.failed"
+      ]
+    ],
+    "forbidden": [
+      "parent.succeeded"
+    ]
+  }
+}
