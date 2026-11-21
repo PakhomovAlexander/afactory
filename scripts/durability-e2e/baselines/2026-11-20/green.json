@@ -1,0 +1,28 @@
+{
+  "schema": "af-durability/trial-report@1",
+  "case": "checks-commit-before-crash-green",
+  "profile": "two-vm-control-api-relay",
+  "engine": {
+    "name": "af-native",
+    "build": "bd79ea23b6a1ddc82be0def4c6f118cbdd2e4bc3a53b8da84c785eabc229a283"
+  },
+  "inputs": {
+    "workload_sha256": "6aaa0c4ae4ec311bd856c7f6c06004a2dd27e72b4d9413f9677a8076dcf515e2",
+    "placement_sha256": "ff04e9f19b82de5f04bdcb2bbbb4a0ed2acab690a12e3a52a80a823854da690a",
+    "fault_sha256": "b4d63d0c36b09e5d01919f437efc0a861df3bf36cfb30f18019cd5083b4c2f5c",
+    "clock": "engine monotonic after receipt delivery",
+    "seed": 0
+  },
+  "expectation": "recover",
+  "fault_witnessed": true,
+  "verdict": "pass",
+  "violations": [],
+  "metrics": {
+    "terminal_s": 0.141,
+    "provider_tokens": 0,
+    "repeated_steps": 0
+  },
+  "evidence": [
+    "scripts/durability-e2e/BASELINE-20261120.md"
+  ]
+}

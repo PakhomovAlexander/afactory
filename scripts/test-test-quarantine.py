@@ -387,6 +387,38 @@ class QuarantineFiles(unittest.TestCase):
         environment.update(extra)
         return environment
 
+    def expired(self, identities=CONFIRMED):
+        value = {'schema': 'af.test-quarantine/1', 'tests': {
+            identity: held(identity, '2026-10-01', '2026-10-15') for identity in identities}}
+        tc.write(self.file, value)
+        return value
+
+    def invalid_recovery_inputs(self):
+        base = self.expired((HEAVY,))
+        cases = []
+        for field, value, needle in (
+                ('extra', True, 'unknown field'), ('state', 'other', 'neither quarantined nor flaky'),
+                ('since', '2026-10-99', 'not a YYYY-MM-DD date'),
+                ('expires', '2026-10-16', 'at most 14 days'),
+                ('evidence', [], 'evidence is not'), ('issue', True, 'not a positive integer')):
+            bad = copy.deepcopy(base)
+            bad['tests'][HEAVY][field] = value
+            cases.append((bad, needle))
+        missing = copy.deepcopy(base)
+        del missing['tests'][HEAVY]['evidence']
+        cases.append((missing, 'missing field'))
+        cases.append(({**base, 'schema': 'af.test-quarantine/2'}, 'unsupported test quarantine'))
+        cases.append(({**base, 'extra': True}, 'unsupported test quarantine'))
+        for identity, needle in (
+                ('bad identity with spaces', 'not a `<binary_id> <test name>`'),
+                (IGNORED, '#[ignore]'), (FEATURE, 'default-feature inventory only'),
+                ('af::it absent::test', 'not in the test inventory')):
+            cases.append(({**base, 'tests': {identity: held(identity, '2026-10-01', '2026-10-15')}},
+                          needle))
+        cases.append(({**base, 'tests': {i: held(i, '2026-10-01', '2026-10-15')
+                                         for i in MANY[:21]}}, 'at most 20'))
+        return cases
+
 
 class Confirm(QuarantineFiles):
     def setUp(self):
@@ -427,6 +459,31 @@ class Confirm(QuarantineFiles):
         """Run by run: MANY[0] fails in runs 2 and 4, HEAVY in all, CAPTURE in none."""
         return [{MANY[0]: 'fail' if index in (2, 4) else 'pass', HEAVY: 'fail', CAPTURE: 'pass'}
                 for index in range(1, runs + 1)]
+
+    def test_expired_entries_can_be_confirmed_without_changing_the_catalog(self):
+        self.expired()
+        before = self.file.read_bytes()
+        for load in ('none', 'functional'):
+            with self.subTest(load=load):
+                result = self.confirm(self.plan(), load=load)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(len(self.runs()), 5)
+                self.assertEqual(tc.read(self.report)['tests'][MANY[0]]['classification'], 'flaky')
+                self.assertEqual(self.file.read_bytes(), before)
+        with self.assertRaisesRegex(ValueError, 'expired on 2026-10-15'):
+            tc.quarantine(tc.catalog(), dt.date.fromisoformat(TODAY), tc.read(self.file))
+
+    def test_recovery_rejects_invalid_inputs_before_running_or_writing_a_report(self):
+        for value, needle in self.invalid_recovery_inputs():
+            with self.subTest(needle=needle):
+                tc.write(self.file, value)
+                before = self.file.read_bytes()
+                result = self.confirm(self.plan())
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(needle, result.stderr)
+                self.assertEqual(self.runs(), [])
+                self.assertFalse(self.report.exists())
+                self.assertEqual(self.file.read_bytes(), before)
 
     def test_every_run_runs_and_each_identity_is_classified(self):
         result = self.confirm(self.plan())
@@ -546,6 +603,53 @@ class Apply(QuarantineFiles):
 
     def entries(self):
         return tc.read(self.file)['tests']
+
+    def test_expired_entries_renew_on_fresh_flaky_evidence_or_leave_on_same_platform_clean(self):
+        self.expired()
+        value = tc.read(self.file)
+        value['tests'][MANY[0]].update(issue=994, evidence=['T_A', 'T_B'])
+        tc.write(self.file, value)
+        result = self.apply(report({MANY[0]: [2, 4], HEAVY: list(range(1, 51)), CAPTURE: []}))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.entries(), {MANY[0]: {
+            'state': 'flaky', 'since': TODAY, 'expires': '2026-11-12',
+            'evidence': ['T_A', 'T_B'], 'issue': 994}})
+        tc.quarantine(tc.catalog(), dt.date.fromisoformat(TODAY), tc.read(self.file))
+        self.assertEqual(len(list(self.issues.iterdir())), 2)
+
+    def test_cross_platform_clean_expiry_is_kept_in_preview_and_refuses_all_writes(self):
+        self.expired((HEAVY, CAPTURE))
+        before = self.file.read_bytes()
+        value = report({HEAVY: [2], CAPTURE: []}, system='Linux')
+        preview = self.apply(value, write=False)
+        self.assertEqual(preview.returncode, 0, preview.stderr)
+        self.assertIn('its dates unchanged', preview.stdout)
+        self.assertEqual(self.file.read_bytes(), before)
+        result = self.apply(value)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(f'{CAPTURE}: expired on 2026-10-15', result.stderr)
+        self.assertEqual(self.file.read_bytes(), before)
+        self.assertFalse(self.issues.exists())
+
+    def test_unrelated_expired_entry_blocks_renewal_and_issue_writes(self):
+        self.expired((HEAVY, CAPTURE))
+        before = self.file.read_bytes()
+        result = self.apply(report({HEAVY: [2]}))
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(f'{CAPTURE}: expired on 2026-10-15', result.stderr)
+        self.assertEqual(self.file.read_bytes(), before)
+        self.assertFalse(self.issues.exists())
+
+    def test_recovery_rejects_invalid_input_even_when_the_report_would_remove_it(self):
+        for value, needle in self.invalid_recovery_inputs():
+            with self.subTest(needle=needle):
+                tc.write(self.file, value)
+                before = self.file.read_bytes()
+                result = self.apply(report({identity: [] for identity in value['tests']}))
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(needle, result.stderr)
+                self.assertEqual(self.file.read_bytes(), before)
+                self.assertFalse(self.issues.exists())
 
     def test_flaky_always_fails_and_clean_outcomes(self):
         value = report({MANY[0]: [2, 4], HEAVY: list(range(1, 51)), CAPTURE: []})
@@ -671,11 +775,107 @@ class Apply(QuarantineFiles):
                           self.file.read_bytes()), ('mine', before))
 
     def test_today_comes_from_the_flag_else_the_environment(self):
-        result = self.apply(report({HEAVY: [3]}), today=None,
+        tc.write(self.file, {'schema': 'af.test-quarantine/1', 'tests': {HEAVY: held(HEAVY)}})
+        value = report({HEAVY: [3]})
+        result = self.apply(value, today=None,
                             env={'AF_TEST_QUARANTINE_TODAY': '2026-10-31'})
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.entries()[HEAVY]['since'], '2026-10-31')
-        self.assertEqual(self.entries()[HEAVY]['expires'], '2026-11-14')
+        self.assertEqual(self.entries()[HEAVY]['since'], TODAY)
+        self.assertEqual(self.entries()[HEAVY]['expires'], '2026-11-12')
+        # The environment supplies the actual freshness guard; the flag overrides it.
+        self.issues = self.dir / 'later-issues'
+        before = self.file.read_bytes()
+        result = self.apply(value, today=None,
+                            env={'AF_TEST_QUARANTINE_TODAY': '2026-11-13'})
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('older than 14 days (today is 2026-11-13)', result.stderr)
+        self.assertEqual(self.file.read_bytes(), before)
+        self.assertFalse(self.issues.exists())
+        result = self.apply(value, today='2026-11-12',
+                            env={'AF_TEST_QUARANTINE_TODAY': '2026-11-13'})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.file.read_bytes(), before)
+
+    def test_stale_reports_refuse_every_outcome_before_preview_or_any_write(self):
+        for failures in ([2], [], list(range(1, 51))):
+            for write in (False, True):
+                with self.subTest(failures=len(failures), write=write):
+                    self.expired()
+                    before = self.file.read_bytes()
+                    self.issues.mkdir(exist_ok=True)
+                    sentinel = self.issues / 'existing.md'
+                    sentinel.write_text('keep this issue body')
+                    value = report({HEAVY: failures}, today='2026-10-14')
+                    result = self.apply(value, write=write)
+                    self.assertEqual(result.returncode, 1, result.stdout)
+                    self.assertIn('older than 14 days', result.stderr)
+                    self.assertEqual(result.stdout, '')
+                    self.assertEqual(self.file.read_bytes(), before)
+                    self.assertEqual({p.name: p.read_text() for p in self.issues.iterdir()},
+                                     {'existing.md': 'keep this issue body'})
+
+    def test_prior_window_reports_refuse_every_outcome_including_cross_platform_clean(self):
+        for failures in ([2], [], list(range(1, 51))):
+            for system in ('Darwin', 'Linux'):
+                for write in (False, True):
+                    with self.subTest(failures=len(failures), system=system, write=write):
+                        before = self.file.read_bytes()
+                        result = self.apply(report({HEAVY: failures}, system=system,
+                                                   today='2026-10-24'), write=write)
+                        self.assertEqual(result.returncode, 1, result.stdout)
+                        self.assertIn(f'{HEAVY}: report date 2026-10-24 predates current since '
+                                      '2026-10-25', result.stderr)
+                        self.assertEqual(result.stdout, '')
+                        self.assertEqual(self.file.read_bytes(), before)
+                        self.assertFalse(self.issues.exists())
+
+    def test_delayed_fresh_recovery_anchors_dates_and_issues_to_confirmation(self):
+        self.expired((HEAVY,))
+        result = self.apply(report({HEAVY: [2]}, today='2026-10-27'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.entries()[HEAVY], {
+            'state': 'flaky', 'since': '2026-10-27', 'expires': '2026-11-10',
+            'evidence': ['T_OLD']})
+        body = (self.issues / 'flaky-af-it-task_heavy-loaded.md').read_text()
+        self.assertIn('confirmed on 2026-10-27', body)
+        self.assertIn('until 2026-11-10', body)
+
+    def test_identical_report_cannot_extend_window_even_after_expiry(self):
+        self.expired((HEAVY,))
+        value = report({HEAVY: [2]})
+        self.assertEqual(self.apply(value).returncode, 0)
+        before = self.file.read_bytes()
+        self.issues = self.dir / 'reapply-issues'
+        result = self.apply(value, today='2026-10-31')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.file.read_bytes(), before)
+        self.issues = self.dir / 'expired-issues'
+        result = self.apply(value, today='2026-11-13')
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('older than 14 days', result.stderr)
+        self.assertEqual(self.file.read_bytes(), before)
+        self.assertFalse(self.issues.exists())
+
+    def test_exact_freshness_boundary_accepts_every_outcome_and_next_day_refuses(self):
+        for failures in ([2], [], list(range(1, 51))):
+            with self.subTest(failures=len(failures)):
+                self.expired((HEAVY,))
+                value = report({HEAVY: failures})
+                before = self.file.read_bytes()
+                result = self.apply(value, today='2026-11-13')
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn('older than 14 days', result.stderr)
+                self.assertEqual(self.file.read_bytes(), before)
+                self.assertFalse(self.issues.exists())
+                result = self.apply(value, today='2026-11-12')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                if len(failures) == 1:
+                    self.assertEqual(self.entries()[HEAVY]['since'], TODAY)
+                    self.assertEqual(self.entries()[HEAVY]['expires'], '2026-11-12')
+                else:
+                    self.assertEqual(self.entries(), {})
+                if self.issues.exists():
+                    shutil.rmtree(self.issues)
 
 
 # Execute the runbook's remote shell bodies locally. Every privileged/network command is a
