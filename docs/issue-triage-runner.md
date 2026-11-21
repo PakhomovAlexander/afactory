@@ -40,7 +40,8 @@ The `observation` value `live-page-walk` marks a read of the listing through its
 GitHub's live pagination can shift during reads, so the result cannot establish the
 absence of a duplicate. The daily Project Scenario uses a private pin to give both Workers
 the same observation for verification against committed source. See the
-[Project receiver steps](project-backlog.md#use-a-private-provider-index-for-daily-duplicate-checks).
+[manual receiver steps](project-backlog.md#use-a-private-provider-index-for-daily-duplicate-checks)
+or [recurring enrollment setup](project-backlog.md#opt-in-to-recurring-github-issue-indexing).
 
 Run the offline example from the repository root. The harness passes synthetic responses
 through the ordinary command entrypoint and replaces the transport's socket and HTTP

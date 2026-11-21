@@ -1,5 +1,5 @@
 //! Scenario CLI parsing and presentation; the domain lives in `af_scenario`.
-mod backlog;
+pub(crate) mod backlog;
 pub(crate) mod host;
 use af_scenario::Host;
 use af_scenario::{

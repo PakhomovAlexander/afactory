@@ -104,12 +104,13 @@ def pagination(link, path, repository_id, page):
     return 'next' in relations, relations.get('last')
 
 
-def observe(repository, token, transport):
+def observe(repository, token, transport, expected_repository_id=None):
     deadline = time.monotonic() + WALL_SECONDS
     repo, _ = get(transport, '/repos/' + repository, token, deadline)
     require(isinstance(repo, dict), 'GitHub repository identity refused')
     name, repo_id = repo.get('full_name'), repo.get('id')
     require(repository_name(name) and name.lower() == repository.lower() and identity(repo_id)
+            and (expected_repository_id is None or repo_id == expected_repository_id)
             and repo.get('url') == API_URL + '/repos/' + name, 'GitHub repository identity refused')
     path = '/repos/' + name + '/issues'
     repo_url = API_URL + '/repos/' + name
@@ -180,15 +181,18 @@ class Parser(argparse.ArgumentParser):
 def main(argv=None):
     parser = Parser(description=__doc__, allow_abbrev=False)
     parser.add_argument('--repository', required=True, help='GitHub OWNER/REPO')
+    parser.add_argument('--repository-id', type=int, help='expected stable GitHub repository ID')
     parser.add_argument('--github-token-file', required=True, type=Path,
                         help='private token file with Issues read permission')
     parser.add_argument('--output', required=True, type=Path, help='new private JSON file')
     args = parser.parse_args(argv)
     try:
         require(repository_name(args.repository), 'expected GitHub OWNER/REPO')
+        require(args.repository_id is None or identity(args.repository_id),
+                'expected a valid stable GitHub repository ID')
         require(not os.path.lexists(args.output), 'output already exists')
         token = read_token(args.github_token_file)
-        result = observe(args.repository, token, HttpsTransport())
+        result = observe(args.repository, token, HttpsTransport(), args.repository_id)
         data = (json.dumps(result, ensure_ascii=False, separators=(',', ':')) + '\n').encode('utf-8')
         require(token.encode('ascii') not in data, 'GitHub response contained the credential')
         require(len(data) <= OUTPUT_BYTES, 'open issue index exceeds output bound')

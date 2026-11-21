@@ -3,7 +3,7 @@ use super::*;
 use crate::task_commands::scenario_portable as portable;
 use af_contracts::backlog::batch::BatchReference;
 use af_project::ProjectStore;
-use af_project::backlog::batch::{ENROLLMENT_FILE, ScheduleScope};
+use af_project::backlog::batch::{ENROLLMENT_FILE, IndexMode, ScheduleScope};
 use af_scenario::template::Template;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -12,7 +12,7 @@ use std::io::ErrorKind;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
-const SCHEMA: &str = "af/backlog-schedule@1";
+const SCHEMA: &str = "af/backlog-schedule@2";
 const RUN_PREFIX: &str = "backlog-daily-";
 
 #[derive(Debug, Args)]
@@ -32,6 +32,9 @@ pub(crate) struct Receiver {
     /// Accountable owner of this enrollment
     #[arg(long)]
     owner: String,
+    /// Index existing GitHub issues with the receiver's private Issues-read observer
+    #[arg(long)]
+    github_issue_index: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -105,6 +108,8 @@ struct Scope {
     batch_policy: String,
     intake_policy: String,
     destination: String,
+    #[serde(deserialize_with = "Deserialize::deserialize")]
+    github_observer: Option<String>,
     limits: Limits,
 }
 
@@ -118,6 +123,14 @@ struct Enrollment {
 }
 
 impl Scope {
+    fn index_mode(&self) -> IndexMode {
+        if self.github_observer.is_some() {
+            IndexMode::RecurringIndexed
+        } else {
+            IndexMode::RecurringUnindexed
+        }
+    }
+
     fn validate_project(&self, project: &ScheduleScope) -> Result<()> {
         require(
             self.project_id == project.policy.project_id
@@ -193,7 +206,12 @@ impl Scope {
                     ]),
             "Recurring backlog bundle differs from the reviewed template, limits or destination",
         )?;
-        let reference = portable::backlog_template_reference(template)?;
+        let collection = portable::backlog_template_collection(template)?;
+        require(
+            collection.provider_index.is_some() == self.github_observer.is_some(),
+            "Recurring backlog collection differs from its enrolled GitHub observer scope",
+        )?;
+        let reference = collection.reference;
         reference.validate()?;
         require(
             reference.project_id == self.project_id && reference.policy_id == self.batch_policy,
@@ -223,7 +241,13 @@ fn review(receiver: Receiver, inspect: &Inspect, project_id: &str) -> Result<Enr
         "Recurring backlog receiver Project changed",
     )?;
     name(&receiver.owner)?;
-    let project = read_project(project_id)?.backlog_schedule_scope()?;
+    let store = read_project(project_id)?;
+    let project = store.backlog_schedule_scope()?;
+    let github_observer = receiver
+        .github_issue_index
+        .then(|| store.backlog_observer_pin(&project.policy.destination_id))
+        .transpose()?;
+    drop(store);
     let bindings = receiver
         .bindings
         .as_deref()
@@ -262,6 +286,7 @@ fn review(receiver: Receiver, inspect: &Inspect, project_id: &str) -> Result<Enr
         batch_policy: project.policy_pin,
         intake_policy: project.intake_policy,
         destination: project.destination,
+        github_observer,
         limits,
     };
     scope.validate_receiver()?;
@@ -288,6 +313,11 @@ fn load(directory: &Path) -> Result<Option<Enrollment>> {
         .map_err(|_| "Invalid recurring backlog enrollment")?;
     require(
         enrollment.schema == SCHEMA
+            && enrollment
+                .scope
+                .github_observer
+                .as_deref()
+                .is_none_or(af_contracts::is_digest)
             && enrollment.revision == hash(&(SCHEMA, &enrollment.scope))?
             && directory.file_name().and_then(|name| name.to_str())
                 == enrollment.scope.project_id.strip_prefix("sha256:"),
@@ -346,6 +376,12 @@ pub(super) fn command(command: Command, inspect: &Inspect) -> Result<i32> {
             let current = project.backlog_schedule_scope()?;
             enrollment.scope.validate_project(&current)?;
             enrollment.scope.validate_receiver()?;
+            if let Some(observer) = &enrollment.scope.github_observer {
+                require(
+                    &project.backlog_observer_pin(&current.policy.destination_id)? == observer,
+                    "GitHub backlog observer changed during enrollment",
+                )?;
+            }
             if let Some(old) = load(&project.directory)? {
                 if old.revision == enrollment.revision {
                     return print(&old, inspect);
@@ -457,7 +493,7 @@ pub(super) fn check_dispatch(state: &Path, run: &Run) -> Result<()> {
         return Ok(());
     }
     let template = recurring_template(run).ok_or("Missing recurring backlog Task template")?;
-    let reference = portable::backlog_template_reference(template)?;
+    let reference = portable::backlog_template_collection(template)?.reference;
     reference.validate()?;
     let project = read_project(&reference.project_id)?;
     let enrollment = load(&project.directory)?.ok_or("Backlog schedule is not enrolled")?;
@@ -473,6 +509,25 @@ pub(super) fn check_dispatch(state: &Path, run: &Run) -> Result<()> {
     scope.validate_receiver()?;
     scope.validate_bundle(&run.pin.bundle)?;
     project.check_backlog_action_destination(&reference, &scope.destination)
+}
+
+pub(crate) fn index_mode(
+    project: &ProjectStore,
+    run: &Run,
+    template: &Template,
+) -> Result<IndexMode> {
+    match (
+        load(&project.directory)?,
+        portable::backlog_template_enrollment(template),
+    ) {
+        (None, None) => Ok(IndexMode::Manual),
+        (Some(enrollment), Some(revision))
+            if revision == enrollment.revision && reserved(&run.id) =>
+        {
+            Ok(enrollment.scope.index_mode())
+        }
+        _ => Err("Backlog action differs from the Project's enrollment".into()),
+    }
 }
 
 fn admit(store: &Store, enrollment: Enrollment, now: u64) -> Result<Option<String>> {
@@ -504,6 +559,21 @@ fn admit(store: &Store, enrollment: Enrollment, now: u64) -> Result<Option<Strin
         )?;
         return Ok(None);
     }
+    if let Some(observer) = &scope.github_observer {
+        let mut project = write_project(&scope.project_id)?;
+        let current = load(&project.directory)?.ok_or("Backlog schedule is not enrolled")?;
+        require(
+            current.revision == enrollment.revision,
+            "Backlog enrollment changed during tick",
+        )?;
+        project.bind_backlog_observation(
+            reference.clone(),
+            &scope.scenario_id,
+            &scope.limits,
+            scope.commit.clone(),
+            observer,
+        )?;
+    }
     let bundle = portable::prepare_backlog(
         scope.repo.clone(),
         scope.task_state.clone(),
@@ -511,6 +581,7 @@ fn admit(store: &Store, enrollment: Enrollment, now: u64) -> Result<Option<Strin
         reference.clone(),
         scope.bindings_path(),
         &enrollment.revision,
+        scope.index_mode(),
     )?;
     require(
         scope.validate_bundle(&bundle)? == reference,

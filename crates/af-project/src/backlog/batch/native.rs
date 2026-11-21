@@ -45,7 +45,7 @@ pub(super) fn owned_file(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
 }
 
 /// Stage only receiver-pinned bytes, outside the checkout and with a cleared environment.
-fn stage_adapter(
+pub(super) fn stage_adapter(
     root: &Path,
     name: &str,
     bytes: &[u8],
@@ -74,6 +74,7 @@ pub fn local_destination(project_id: &str) -> Result<String, String> {
 /// The application constructs this from the accepted Task and its captured source.
 pub struct NativeAssessment<'a> {
     pub collection: &'a CollectedBatch,
+    pub index_mode: IndexMode,
     pub decisions: &'a [AssessedDecision],
     pub manifest: &'a Manifest,
     pub limits: &'a Limits,
@@ -200,6 +201,7 @@ impl ProjectStore {
                 &batch.scenario_id,
                 proof.limits,
                 batch.source_revision.clone(),
+                proof.index_mode,
             )?;
             if current != *batch
                 || state.batches[batch_id]

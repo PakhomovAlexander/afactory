@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:backlog-schedule:1",
+  "$id": "urn:af:schema:backlog-schedule:2",
   "title": "Receiver-local backlog schedule enrollment",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "revision", "scope", "paused"],
   "properties": {
-    "schema": {"const": "af/backlog-schedule@1"},
+    "schema": {"const": "af/backlog-schedule@2"},
     "revision": {"$ref": "#/$defs/digest"},
     "paused": {"type": "boolean"},
     "scope": {
@@ -15,7 +15,7 @@
       "required": [
         "owner", "project_id", "scenario_state", "repo", "commit", "file", "task_state",
         "template_scope", "bindings", "providers", "scenario_id", "intake_authority",
-        "batch_policy", "intake_policy", "destination", "limits"
+        "batch_policy", "intake_policy", "destination", "github_observer", "limits"
       ],
       "properties": {
         "owner": {"$ref": "urn:af:schema:scenario:11#/$defs/name"},
@@ -33,6 +33,7 @@
         "batch_policy": {"$ref": "#/$defs/digest"},
         "intake_policy": {"$ref": "#/$defs/digest"},
         "destination": {"type": "string", "minLength": 1},
+        "github_observer": {"oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
         "limits": {"$ref": "urn:af:schema:scenario:11#/$defs/Limits"}
       }
     }

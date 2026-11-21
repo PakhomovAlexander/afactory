@@ -141,15 +141,6 @@ pub(crate) fn run_backlog_action(
         "Backlog verification does not bind the exact collected source, assessment and checks",
     )?;
     let (collection, decisions) = Assessment::checked(source, &draft, origin.source_revision())?;
-    let proof = NativeAssessment {
-        collection: &collection,
-        decisions: &decisions,
-        manifest: &manifest,
-        limits: &run.limits,
-        deadline,
-        result_id: &receipt.result_id,
-        verification_id,
-    };
     let mut store = af_project::ProjectStore::open_waiting(
         &crate::project::Application,
         &crate::xdg_state_root()?,
@@ -157,6 +148,16 @@ pub(crate) fn run_backlog_action(
         af_project::Wait::Until(deadline),
     )
     .map_err(af_project::Unopened::message)?;
+    let proof = NativeAssessment {
+        collection: &collection,
+        index_mode: crate::scenario::backlog::index_mode(&store, run, template)?,
+        decisions: &decisions,
+        manifest: &manifest,
+        limits: &run.limits,
+        deadline,
+        result_id: &receipt.result_id,
+        verification_id,
+    };
     match grant.operation {
         Operation::BacklogSettleV1 => {
             store.check_backlog_action_destination(&collection.reference, &grant.destination)?;

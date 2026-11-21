@@ -10,7 +10,7 @@ use std::process::Command;
 
 const CONFIG: &str = "backlog-github-destination-v1.json";
 const EXECUTABLE: &str = "backlog-github-adapter";
-const CREDENTIAL: &str = "backlog-github-token";
+pub(in crate::backlog::batch) const CREDENTIAL: &str = "backlog-github-token";
 const MAX_RESPONSE: u64 = 4096;
 const MAX_EXECUTABLE: u64 = 8 * 1024 * 1024;
 const MAX_CREDENTIAL: u64 = 1024;
@@ -72,6 +72,9 @@ impl Config {
             return Err("GitHub backlog executable differs from pinned bytes".into());
         }
         let token = owned_file(&store.directory.join(CREDENTIAL), MAX_CREDENTIAL)?;
+        if store.directory.join(ENROLLMENT_FILE).exists() {
+            check_distinct_credentials(store, &token, provider_index::READ_CREDENTIAL)?;
+        }
         let token_pin = af_store::canonical::blob_content_id(&token);
         let token = std::str::from_utf8(&token)
             .map_err(|_| "Invalid GitHub backlog credential")?
@@ -96,6 +99,30 @@ impl Config {
         );
         Ok((directory, command, token_pin))
     }
+}
+
+pub(in crate::backlog::batch) fn check_distinct_credentials(
+    store: &ProjectStore,
+    token: &[u8],
+    other: &str,
+) -> Result<(), String> {
+    if let Ok(bytes) = owned_file(
+        &store.directory.join(other),
+        provider_index::MAX_READ_CREDENTIAL,
+    ) {
+        let trim = |bytes: &[u8]| {
+            bytes
+                .iter()
+                .rposition(|byte| *byte != b'\n')
+                .map_or(0, |i| i + 1)
+        };
+        if bytes[..trim(&bytes)] == token[..trim(token)] {
+            return Err(
+                "GitHub backlog observer and publisher require distinct credentials".into(),
+            );
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn check_destination(store: &ProjectStore, destination: &str) -> bool {

@@ -435,6 +435,56 @@ pin=$(jq -er .revision "$private/review.json")
 af ant backlog enroll "${scope[@]}" --confirm-pin "$pin" --json
 ```
 
+### Opt in to recurring GitHub issue indexing
+
+Complete the GitHub destination setup first. On each receiving machine, package the
+[read-only observer](issue-triage-runner.md#read-only-open-issue-index) from the reviewed
+Afactory source corresponding to the installed release. Use a trusted Python 3 on the
+scheduler's `PATH`. Set `af_source` to the absolute path of that source. Run from the
+receiving checkout after setting the `scope` array above, before validating and enrolling.
+
+```bash
+umask 077
+store=$(af project show --json | jq -er .store)
+build=$(mktemp -d) || exit 1
+mkdir -p "$build/observer/performance"
+cp "$af_source/scripts/backlog-open-issues.py" "$build/observer/__main__.py"
+cp -R "$af_source/scripts/performance/perflab" "$build/observer/performance/"
+python3 -I -m zipapp "$build/observer" -p '/usr/bin/env python3' -o "$build/backlog-github-observer"
+install -m 700 "$build/backlog-github-observer" "$store/backlog-github-observer"
+rm -r "$build"
+```
+
+Place a fine-grained token for the exact configured repository with Issues read permission
+in the owner-only `$store/backlog-github-read-token`. Use a separate credential from the
+publisher's `backlog-github-token`. The reader only receives the read credential, and
+the Tasks only receive the bounded observation. Use the same index flag for validation and
+confirmation, and review the `github_observer` executable digest in the preview.
+
+```bash
+scope+=(--github-issue-index)
+af ant backlog validate "${scope[@]}" --json > "$private/review.json"
+jq . "$private/review.json"
+pin=$(jq -er .revision "$private/review.json")
+af ant backlog enroll "${scope[@]}" --confirm-pin "$pin" --json
+```
+
+For an existing enrollment, settle outstanding work and pause it in its original Scenario
+Store before confirming the replacement. Enrollment envelopes with schema
+`af/backlog-schedule@1` must be retired after settling work with the release that wrote
+them. Archive the old private enrollment file `backlog-schedule-v1.json` and validate and
+enroll the new scope with this release. The private file slot now holds the
+`af/backlog-schedule@2` envelope.
+
+For each frozen batch that needs a Run, the scheduler checks the configured GitHub repository
+name and stable numeric ID, then validates the complete page walk. The accepted
+observation must fit the [existing Project limits](#use-a-private-provider-index-for-daily-duplicate-checks).
+Before preparation the scheduler retains the exact bytes in the private Project Store,
+addressed by digest, and records one immutable pin for that batch. The two assessment Workers
+use the same observation. A pre-existing issue independently verified as an exact match
+settles as already tracked without a publication intent. Local, Markdown and Jira destinations
+need no observer. GitHub enrollment without this flag uses only local Project evidence.
+
 ### Continuous runtime
 
 Run the normal foreground scheduler with the same Scenario Store and receiver Provider registry.
@@ -482,13 +532,24 @@ confirmation in the original Scenario Store. For a failed or cancelled terminal 
 batch journal and retained Task and delivery receipts before making an explicit recovery
 decision. The scheduler reports the blocked batch and retains its membership.
 
+For an indexed batch, a refused observer read leaves the frozen batch private. Check
+`af ant tick --state "$scenario_state" --json` and `af backlog batch audit`.
+For an unavailable or incomplete read, restore the Issues-read service or rotate the read token
+in its owner-only file, then retry with the same scheduler. For a scope mismatch, check the
+reviewed GitHub repository name and ID and the token's repository permissions. An oversized
+walk stays blocked until a complete observation fits the input bounds. If a retained pin or its
+observation is unavailable, restore the exact private files from backup. Preserve
+`backlog-provider-index-<batch digest>.json` and its corresponding
+`backlog-open-issues-<observation digest>.json`; replacing a bound observation would change
+the batch's evidence. Once bound, reconciling the same Run does not contact the observer.
+
 ### Optional manual mode
 
 For a Project without recurring enrollment, [admit the batch manually](#manually-admit-a-daily-batch)
 and use the [preparation and execution commands](#prepare-and-run-the-portable-daily-scenario).
-The optional batch-specific GitHub observation pin belongs to manual preparation. Archive that
-pin outside the Project Store before enrolling a recurring schedule. Recurring assessment uses
-the private intake and tracked Project evidence without an automatic provider index lookup.
+The optional `backlog-provider-index-v1.json` pin belongs to manual preparation. Archive that
+pin outside the Project Store before enrolling a recurring schedule. The scheduler preserves any
+manual pin it encounters and reports a conflict.
 
 ### Reproduce the scheduler evidence
 
@@ -722,10 +783,10 @@ approved public fields. Fixture identities change with each fresh repository and
 
 ### Use a private provider index for daily duplicate checks
 
-On the receiving Project authority, run the
+For manual batches, run the
 [Issues-read observer](issue-triage-runner.md#read-only-open-issue-index) against the exact
-GitHub destination. Use a fresh observation for each batch. The observer's read credential
-stays outside the Project and Workers. The receiver admits at most 128 issues and 64 KiB of
+GitHub destination. Use a fresh observation for each batch. Keep the manual observer's read
+credential outside the Project and Workers. The receiver admits at most 128 issues and 64 KiB of
 observation JSON. The entire accepted walk must also fit in the encoded portable Task input
 alongside the frozen members. Preparation refuses an observation that cannot fit intact.
 The observer marks truncated issue bodies individually. Such a body cannot support

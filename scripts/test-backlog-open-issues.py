@@ -56,7 +56,7 @@ class Response(io.BytesIO):
         return self.headers.items()
 
 
-def run(root, pages, repository='example/backlog', prepare=None):
+def run(root, pages, repository='example/backlog', prepare=None, repository_id=None):
     token_file, output = root / 'token', root / 'observation.json'
     token_file.touch(mode=0o600)
     token_file.write_text(TOKEN + '\n')
@@ -86,6 +86,9 @@ def run(root, pages, repository='example/backlog', prepare=None):
         connection.getresponse.side_effect = answer
         return connection
 
+    args = ['--repository', repository, '--github-token-file', str(token_file), '--output', str(output)]
+    if repository_id is not None:
+        args.extend(['--repository-id', str(repository_id)])
     stdout, stderr = io.StringIO(), io.StringIO()
     with mock.patch.object(socket, 'getaddrinfo', return_value=[
         (socket.AF_INET, socket.SOCK_STREAM, 0, '', ('127.0.0.1', 443)),
@@ -93,8 +96,7 @@ def run(root, pages, repository='example/backlog', prepare=None):
          mock.patch('ssl.create_default_context'), \
          mock.patch.object(INDEX.http.client, 'HTTPSConnection', side_effect=connect), \
          contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-        code = INDEX.main(['--repository', repository, '--github-token-file', str(token_file),
-                           '--output', str(output)])
+        code = INDEX.main(args)
     if any(call.args[:2] != ('api.github.com', 443) for call in lookup.call_args_list):
         raise AssertionError('lookup left the GitHub API')
     return code, stdout.getvalue(), stderr.getvalue(), output, calls
@@ -164,6 +166,10 @@ class OpenIssueIndexTests(unittest.TestCase):
             self.assertEqual(self.assert_refused([], 'expected GitHub OWNER/REPO', repository=value), [])
         self.assert_refused([(dict(METADATA, full_name='Wrong/Backlog'), 200, {})],
                             'GitHub repository identity refused')
+        calls = self.assert_refused(example_pages(), 'GitHub repository identity refused',
+                                    repository_id=43)
+        self.assertEqual(calls, [('api.github.com', 443, 'GET', '/repos/example/backlog')])
+        self.assertEqual(self.invoke(example_pages(), repository_id=42)[0], 0)
         self.assert_refused([(METADATA, 200, {}),
                              ([issue(1, repository_url=REPO_URL + '2')], 200, {})],
                             'GitHub issue identity refused')

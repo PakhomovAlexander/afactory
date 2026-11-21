@@ -1,10 +1,13 @@
 //! Lower a committed portable artifact to an ordinary, receiver-specific Scenario bundle.
 use super::*;
 use af_contracts::backlog::batch::BatchReference;
-use af_contracts::backlog::batch::assessment::{SOURCE_NAME as BATCH_SOURCE, SOURCE_URI};
+use af_contracts::backlog::batch::assessment::{
+    CollectedBatch, SOURCE_NAME as BATCH_SOURCE, SOURCE_URI,
+};
 use af_contracts::task::document::DocumentSourceV1;
 use af_contracts::task::report_domain::{MAX_REPORT_SOURCES_FILE_BYTES, ReportSourcesV1};
 use af_pipeline_config::task::shared::safe_relative_path;
+use af_project::backlog::batch::IndexMode;
 use af_scenario::contract::{
     Authority, Binding, Bundle, Datum, Grant, Kind, Limits, Operation, Port, Scenario, Step,
     Timeout, digest, hash, name, require,
@@ -25,7 +28,7 @@ enum Inputs {
     #[serde(skip)]
     BacklogReview(String),
     #[serde(skip)]
-    RecurringBacklog(BatchReference, String),
+    RecurringBacklog(BatchReference, String, IndexMode),
 }
 
 impl Inputs {
@@ -48,7 +51,12 @@ impl Inputs {
                 )?;
                 Ok(inputs)
             }
-            Self::Backlog(reference) | Self::RecurringBacklog(reference, _) if backlog => {
+            input @ (Self::Backlog(_) | Self::RecurringBacklog(..)) if backlog => {
+                let (reference, mode) = match input {
+                    Self::Backlog(reference) => (reference, IndexMode::Manual),
+                    Self::RecurringBacklog(reference, _, mode) => (reference, mode),
+                    _ => unreachable!(),
+                };
                 artifact.validate_backlog()?;
                 reference.validate()?;
                 let checkout = af_project::require_checkout(repo)?;
@@ -65,6 +73,7 @@ impl Inputs {
                     artifact_digest,
                     &artifact.definition.limits,
                     source_revision,
+                    mode,
                 )?;
                 let text = serde_json::to_string(&batch).map_err(|e| e.to_string())?;
                 let mut inputs = ReportSourcesV1::empty();
@@ -314,12 +323,13 @@ pub(crate) fn prepare_backlog(
     reference: BatchReference,
     local: Option<&Path>,
     enrollment: &str,
+    mode: IndexMode,
 ) -> Result<Bundle, String> {
     let (template, (definition, backlog)) = capture(
         repo,
         state,
         file,
-        Inputs::RecurringBacklog(reference, enrollment.into()),
+        Inputs::RecurringBacklog(reference, enrollment.into(), mode),
         local,
     )?;
     bundle(template, definition, backlog)
@@ -342,18 +352,13 @@ pub(crate) fn backlog_template_enrollment(template: &Template) -> Option<&str> {
     template.document["requirements"][BACKLOG_ENROLLMENT].as_str()
 }
 
-pub(crate) fn backlog_template_reference(template: &Template) -> Result<BatchReference, String> {
-    let batch: af_contracts::backlog::batch::assessment::CollectedBatch = serde_json::from_str(
+pub(crate) fn backlog_template_collection(template: &Template) -> Result<CollectedBatch, String> {
+    serde_json::from_str(
         template.document["requirements"][SOURCES]["sources"][BATCH_SOURCE]["text"]
             .as_str()
             .ok_or("Missing frozen backlog collection")?,
     )
-    .map_err(|_| "Invalid frozen backlog collection")?;
-    require(
-        batch.provider_index.is_none(),
-        "Recurring backlog does not authorize a batch-specific provider index",
-    )?;
-    Ok(batch.reference)
+    .map_err(|_| "Invalid frozen backlog collection".into())
 }
 
 fn capture(
@@ -386,7 +391,7 @@ fn capture(
             let bytes = captured_file(cas, manifest, file)?;
             let artifact: Artifact = parse(Path::new(file), &bytes)?;
             let enrollment = match &inputs {
-                Inputs::RecurringBacklog(_, revision) => Some(revision.clone()),
+                Inputs::RecurringBacklog(_, revision, _) => Some(revision.clone()),
                 _ => None,
             };
             let inputs = inputs.bind(&repo, &artifact, &digest(&bytes), commit)?;

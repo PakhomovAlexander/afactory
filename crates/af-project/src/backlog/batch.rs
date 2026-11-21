@@ -4,7 +4,8 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use af_contracts::EventType;
 use af_contracts::backlog::batch::assessment::{
-    CollectedBatch, CollectedMember, CollectionSchema, EvidenceExcerpt, ReportContext,
+    CollectedBatch, CollectedMember, CollectionSchema, EvidenceExcerpt, ProviderIndex,
+    ReportContext,
 };
 use af_contracts::backlog::batch::{
     BatchReference, DeliveryOutcome, DeliveryResolution, EvidenceAccess, HoldPolicy, Journal,
@@ -25,6 +26,7 @@ use crate::ProjectStore;
 mod native;
 mod provider_index;
 pub use native::{NativeAssessment, local_destination};
+pub use provider_index::IndexMode;
 
 // The collection is a JSON string in a bounded portable Task template. Leave
 // room for the template and packaged schema, and for collection fields outside membership.
@@ -32,6 +34,7 @@ const COLLECTION_BYTES: usize = 56 * 1024;
 const MEMBER_BYTES: usize = 52 * 1024;
 const TRACKED_BYTES: usize = 32 * 1024;
 const STREAM: &str = "backlog-daily-batch";
+// A stable private slot. Its envelope version is validated by the scheduler.
 pub const ENROLLMENT_FILE: &str = "backlog-schedule-v1.json";
 pub const POLICY_FILE: &str = "backlog-batch-policy-v2.json";
 #[derive(Serialize)]
@@ -976,6 +979,99 @@ impl ProjectStore {
         scenario_id: &str,
         limits: &Limits,
         source_revision: String,
+        mode: IndexMode,
+    ) -> Result<CollectedBatch, String> {
+        match (
+            mode,
+            self.directory.join(ENROLLMENT_FILE).symlink_metadata(),
+        ) {
+            (IndexMode::Manual, Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
+            (IndexMode::RecurringIndexed | IndexMode::RecurringUnindexed, Ok(_)) => {}
+            _ => return Err("Backlog collection mode differs from Project enrollment".into()),
+        }
+        self.collect_backlog_with(
+            reference,
+            scenario_id,
+            limits,
+            source_revision,
+            |reference, source, destination, has_members| match mode {
+                IndexMode::Manual if has_members => provider_index::collect(
+                    self,
+                    reference,
+                    source,
+                    destination,
+                    &self.directory.join(provider_index::PIN_FILE),
+                ),
+                IndexMode::RecurringIndexed => provider_index::collect(
+                    self,
+                    reference,
+                    source,
+                    destination,
+                    &provider_index::batch_path(self, reference),
+                )?
+                .map(Some)
+                .ok_or_else(|| {
+                    "Recurring backlog batch lacks its GitHub observation binding".into()
+                }),
+                _ => Ok(None),
+            },
+        )
+    }
+
+    /// Capture the reviewed observer bytes for receiver-local enrollment.
+    pub fn backlog_observer_pin(&self, destination_id: &str) -> Result<String, String> {
+        provider_index::observer_pin(self, destination_id)
+    }
+
+    /// Establish the batch binding under the exclusive Project Store lock before preparation.
+    pub fn bind_backlog_observation(
+        &mut self,
+        reference: BatchReference,
+        scenario_id: &str,
+        limits: &Limits,
+        source_revision: String,
+        executable_pin: &str,
+    ) -> Result<(), String> {
+        let mut pending = None;
+        self.collect_backlog_with(
+            reference.clone(),
+            scenario_id,
+            limits,
+            source_revision,
+            |reference, source, destination, _| {
+                if let Some(index) = provider_index::collect(
+                    self,
+                    reference,
+                    source,
+                    destination,
+                    &provider_index::batch_path(self, reference),
+                )? {
+                    return Ok(Some(index));
+                }
+                let (index, acquired) =
+                    provider_index::observe(self, reference, source, destination, executable_pin)?;
+                pending = Some(acquired);
+                Ok(Some(index))
+            },
+        )?;
+        if let Some(pending) = pending {
+            pending.commit(self, &reference)?;
+        }
+        Ok(())
+    }
+
+    fn collect_backlog_with(
+        &self,
+        reference: BatchReference,
+        scenario_id: &str,
+        limits: &Limits,
+        source_revision: String,
+        collect_index: impl FnOnce(
+            &BatchReference,
+            &str,
+            &str,
+            bool,
+        ) -> Result<Option<ProviderIndex>, String>,
     ) -> Result<CollectedBatch, String> {
         reference.validate()?;
         let (state, intake) = self.batch_state()?;
@@ -991,16 +1087,12 @@ impl ProjectStore {
             .collect::<Result<Vec<_>, _>>()?;
         let mut collected = CollectedBatch {
             schema: CollectionSchema::V3,
-            provider_index: if batch.members.is_empty() {
-                None
-            } else {
-                provider_index::collect(
-                    self,
-                    &reference,
-                    &source_revision,
-                    &pin.policy.destination_id,
-                )?
-            },
+            provider_index: collect_index(
+                &reference,
+                &source_revision,
+                &pin.policy.destination_id,
+                !batch.members.is_empty(),
+            )?,
             reference,
             authority_id: pin.policy.authority_id.clone(),
             scenario_id: pin.policy.scenario_id.clone(),

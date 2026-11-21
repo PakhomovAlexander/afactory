@@ -95,10 +95,13 @@ else:
                     *({'kind':'repository','location':c} for c in citations)]}]}
     elif batch:
         count = len(batch['members'])
-        reconsidering = count == 2
-        duplicate = count == 1
-        assert count in (0, 1, 2, 6)
-        assert batch['reference']['high_water'] == ('7' if reconsidering or duplicate else '6')
+        member_ids = {member['member_id'] for member in batch['members']}
+        provider_index = batch['provider_index']
+        reconsidering = count == 2 and not provider_index
+        duplicate = member_ids == {'late'} and not provider_index
+        if not provider_index:
+            assert count in (0, 1, 2, 6)
+            assert batch['reference']['high_water'] == ('7' if reconsidering or duplicate else '6')
         assert not {'AF_BACKLOG_GITHUB_TOKEN', 'AF_BACKLOG_GITHUB_SCOPE', 'GH_TOKEN',
                     'GITHUB_TOKEN', 'SSH_AUTH_SOCK', 'AF_BACKLOG_JIRA_CREDENTIAL',
                     'AF_BACKLOG_JIRA_SCOPE'} & os.environ.keys()
@@ -146,6 +149,8 @@ else:
             assert member['item_id']
             groups = [('blue', 3, [member['member_id']])]
         for color, boundary, members in groups:
+            if not member_ids.intersection(members):
+                continue
             path = color+'-boundary.py'
             # Observe the exact committed program. The boundary is excluded and the next value is accepted.
             assert subprocess.check_output([sys.executable, path, str(boundary)]).strip() == b'False'
@@ -160,8 +165,9 @@ else:
                            else 'The configured boundary must be inclusive.')
             decisions.append(decision(members, [evidence], 'verified', claim, citation,
                                       {'title':claim, 'body':public_body}))
-        provider_index = batch['provider_index']
         if provider_index:
+            assert 'fixture_issues_read_only' not in request
+            assert all('fixture_issues_read_only' not in value for value in os.environ.values())
             index = provider_index['observation']
             assert index['repository_id'] == 23 and index['observation'] == 'live-page-walk'
             exact, similar = index['issues']
@@ -172,9 +178,10 @@ else:
             assert 'rejects a string before comparing' in similar['body_excerpt']
             assert all('green-boundary.py' not in issue['body_excerpt'] for issue in index['issues'])
             assert not exact['body_truncated'] and not similar['body_truncated']
-            decisions[0].update(disposition='already_tracked', proposed=None,
-                                provider_match={'issue_id': exact['id'], 'quote': quote},
-                                reason='The same input and source path exhibit the same behavior.')
+            if 'blue-a' in member_ids:
+                decisions[0].update(disposition='already_tracked', proposed=None,
+                                    provider_match={'issue_id': exact['id'], 'quote': quote},
+                                    reason='The same input and source path exhibit the same behavior.')
         if duplicate:
             tracked = next((key, value) for key, value in batch['tracked_items'].items()
                            if value['revision']['claim'] == 'Green excludes its required boundary.')
@@ -184,13 +191,17 @@ else:
             decisions[0].update(disposition='already_tracked', proposed=None, tracked_id=key)
         elif reconsidering:
             decisions.append(decision(['late'], [], 'needs_evidence', 'The reported behavior is unknown.'))
-        elif count:
-            decisions.append(decision(['unknown'], [], 'needs_evidence', 'The reported behavior is unknown.'))
-            decisions.append(decision(['hold'], [], 'held', 'The evidence is unavailable for release.'))
-            # Exercise the kernel's digest guard even if the mock independent verifier passes this group.
-            mismatch = identity(b'mismatched-attachment')
-            decisions.append(decision(['mismatch'], [mismatch], 'verified', 'An unrelated claim.',
-                                      citations[0], {'title':'Unrelated claim', 'body':'Do not publish.'}))
+        else:
+            for member in ('unknown', 'late'):
+                if member in member_ids:
+                    decisions.append(decision([member], [], 'needs_evidence', 'The reported behavior is unknown.'))
+            if 'hold' in member_ids:
+                decisions.append(decision(['hold'], [], 'held', 'The evidence is unavailable for release.'))
+            if 'mismatch' in member_ids:
+                # Exercise the kernel's digest guard even if the mock independent verifier passes this group.
+                mismatch = identity(b'mismatched-attachment')
+                decisions.append(decision(['mismatch'], [mismatch], 'verified', 'An unrelated claim.',
+                                          citations[0], {'title':'Unrelated claim', 'body':'Do not publish.'}))
         assessment = dict(schema='af/backlog-assessment@2', batch_id=batch['reference']['batch_id'],
                           source_revision=batch['source_revision'], decisions=decisions)
         body = '```json\n' + json.dumps(assessment) + '\n```'
@@ -200,6 +211,9 @@ else:
             block = 'Late report matches the verified Green revision.'
         if not count:
             block = 'No report members. Publish only previously verified revisions.'
+        elif provider_index:
+            block = 'Assess the frozen members using the captured GitHub observation.'
+        if not citations:
             citations.append({'path':'CONTRIBUTING.md', 'line':1})
         issue = sources['backlog-batch']
         if 'document' in inputs:
@@ -207,7 +221,7 @@ else:
             assert inputs['checks']['payload']['outcome'] == 'passed'
             document = inputs['document']['payload']['text']
             assert block in document
-            if provider_index:
+            if provider_index and 'blue-a' in member_ids:
                 assert quote in document and '1073' in document
                 assert 'already_tracked' in document and 'Private index detail.' not in document
             assert inputs['checks']['payload']['checks']['backlog_assessment'] == 'passed'
@@ -796,6 +810,15 @@ fn configure_backlog_intake<'a>(
     fixture: Option<BacklogFixture<'_>>,
     bulk: bool,
 ) -> (impl Fn(&str) -> Value + 'a, usize) {
+    configure_backlog_intake_with_filter(receiver, fixture, bulk, |_| true)
+}
+
+fn configure_backlog_intake_with_filter<'a>(
+    receiver: &'a Receiver,
+    fixture: Option<BacklogFixture<'_>>,
+    bulk: bool,
+    initial: impl Fn(&str) -> bool,
+) -> (impl Fn(&str) -> Value + 'a, usize) {
     let producer_repo = receiver.root.join("another producer");
     git(
         &receiver.repo,
@@ -991,6 +1014,7 @@ fn configure_backlog_intake<'a>(
             authority_key.to_str().unwrap(),
         ]))
     };
+    let ids: Vec<_> = ids.iter().filter(|id| initial(id)).collect();
     let first = ids.first().unwrap();
     let accepted = accept(first);
     assert_eq!(accept(first), accepted);
@@ -1048,7 +1072,7 @@ fn portable_backlog_scheduler_enrolls_once_and_replays_two_daily_batches() {
         receiver.af(&[&["ant", "backlog", operation][..], &receiver_args, extra].concat())
     };
     let preview = ok(enroll("validate", &[]));
-    schemas::valid(&schemas::validator("backlog-schedule-v1.json"), &preview);
+    schemas::valid(&schemas::validator("backlog-schedule-v2.json"), &preview);
     let wrong = enroll("enroll", &["--confirm-pin", "wrong"]);
     assert!(!wrong.status.success() && text(&wrong).contains("confirmation differs"));
     assert!(!receiver.provider_home.join("calls").exists());
@@ -2227,6 +2251,327 @@ fn portable_backlog_github_retains_a_crash_before_the_provider_write_as_pending(
     assert_eq!(publication["attempt_ids"].as_array().unwrap().len(), 2);
     assert!(publication["remote_id"].is_null());
     assert!(publication["receipt_id"].is_null());
+}
+
+fn github_observer_fixture(receiver: &Receiver) -> Vec<u8> {
+    let fixture = tempfile::tempdir_in(&receiver.root).unwrap();
+    let source = fixture.path().join("source");
+    fs::create_dir(&source).unwrap();
+    let observer = include_str!("../../../../../scripts/backlog-open-issues.py");
+    let (implementation, entrypoint) = observer.split_once("\nif __name__ == ").unwrap();
+    let transport = include_str!("../../../../../fixtures/project-backlog/fake-github-observer.py")
+        .replace(
+            "__AF_BACKLOG_FIXTURE_STATE__",
+            &serde_json::to_string(&receiver.root.join("fake-github")).unwrap(),
+        );
+    fs::write(
+        source.join("__main__.py"),
+        format!("{implementation}\n{transport}\nif __name__ == {entrypoint}"),
+    )
+    .unwrap();
+    copy_tree(
+        &workspace().join("scripts/performance/perflab"),
+        &source.join("performance/perflab"),
+    );
+    let archive = fixture.path().join("observer");
+    let output = Command::new("python3")
+        .args(["-I", "-m", "zipapp", "-p", "/usr/bin/env python3"])
+        .arg(source)
+        .arg("-o")
+        .arg(&archive)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    fs::read(archive).unwrap()
+}
+
+#[test]
+fn portable_backlog_scheduler_indexes_fresh_github_evidence_before_each_batch() {
+    let directory = tempfile::tempdir().unwrap();
+    let receiver = Receiver::for_artifact(
+        directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("indexed receiver"),
+        513,
+        BACKLOG,
+    );
+    let publisher = github_fixture(&receiver);
+    let (accept, _) = configure_backlog_intake_with_filter(
+        &receiver,
+        Some(BacklogFixture::GitHub(&publisher)),
+        false,
+        |id| matches!(id, "blue-a" | "blue-b"),
+    );
+    let project = ok(receiver.af(&["project", "show", "--json"]));
+    let store = Path::new(project["store"].as_str().unwrap());
+    let fake = receiver.root.join("fake-github");
+    let mode = |value| fs::write(fake.join("observer-mode"), value).unwrap();
+    mode("first");
+    let observer = github_observer_fixture(&receiver);
+    private_write(&store.join("backlog-github-observer"), &observer);
+    let read_token = store.join("backlog-github-read-token");
+    private_write(&read_token, "fixture_issues_read_only\n");
+    private_write(&store.join(GITHUB_ADAPTER), &publisher);
+
+    let policy_file = store.join("backlog-batch-policy-v2.json");
+    let due = af_scenario::runtime::now().unwrap() / 60_000 * 60_000;
+    let mut policy = read(&policy_file);
+    policy["start_unix_ms"] = json!(due);
+    policy["hour"] = json!(due / 3_600_000 % 24);
+    policy["minute"] = json!(due / 60_000 % 60);
+    policy["lateness_ms"] = json!(600_000);
+    save(&policy_file, &policy);
+    let state = receiver.scenarios.to_str().unwrap();
+    let before = (due - 1).to_string();
+    let args = [
+        "--file",
+        BACKLOG,
+        "--task-state",
+        receiver.tasks.to_str().unwrap(),
+        "--owner",
+        "fixture-owner",
+        "--state",
+        state,
+        "--now",
+        &before,
+        "--github-issue-index",
+        "--json",
+    ];
+    let enrollment =
+        |verb, extra: &[&str]| receiver.af(&[&["ant", "backlog", verb][..], &args, extra].concat());
+    let preview = ok(enrollment("validate", &[]));
+    schemas::valid(&schemas::validator("backlog-schedule-v2.json"), &preview);
+    assert_eq!(
+        preview["scope"]["github_observer"],
+        af_store::canonical::blob_content_id(&observer)
+    );
+    let manual_pin = store.join("backlog-provider-index-v1.json");
+    private_write(&manual_pin, "Existing manual pin");
+    let conflict = enrollment("validate", &[]);
+    assert!(!conflict.status.success() && text(&conflict).contains("manual backlog preparation"));
+    assert_eq!(
+        fs::read_to_string(&manual_pin).unwrap(),
+        "Existing manual pin"
+    );
+    fs::remove_file(&manual_pin).unwrap();
+    assert_eq!(
+        ok(enrollment(
+            "enroll",
+            &["--confirm-pin", preview["revision"].as_str().unwrap()]
+        )),
+        preview
+    );
+    let reads = fake.join("observer-requests");
+    assert!(!reads.exists());
+    let enrollment_file = store.join("backlog-schedule-v1.json");
+    let mut old = preview.clone();
+    old["schema"] = json!("af/backlog-schedule@1");
+    old["scope"]
+        .as_object_mut()
+        .unwrap()
+        .remove("github_observer");
+    let installed = fs::read(&enrollment_file).unwrap();
+    fs::write(&enrollment_file, serde_json::to_vec(&old).unwrap()).unwrap();
+    let rejected = receiver.af(&["ant", "backlog", "show", "--state", state]);
+    assert!(!rejected.status.success());
+    fs::write(&enrollment_file, installed).unwrap();
+
+    let tick = |now: u64| {
+        ok(receiver.af(&[
+            "ant",
+            "tick",
+            "--state",
+            state,
+            "--now",
+            &now.to_string(),
+            "--json",
+        ]))
+    };
+    let audit = || ok(receiver.af(&["backlog", "batch", "audit"]));
+    let binding_path = |id: &str| store.join(format!("backlog-provider-index-{}.json", &id[7..]));
+    let index = |run: &Value| {
+        let text = run["pin"]["bundle"]["definitions"]["daily-backlog"]["steps"][0]["operation"]
+            ["template"]["document"]["requirements"]["scenario_portable_sources"]["sources"]
+            ["backlog-batch"]["text"].as_str().unwrap();
+        let collection: Value = serde_json::from_str(text).unwrap();
+        let batch = collection["reference"]["batch_id"].as_str().unwrap();
+        let pin = read(&binding_path(batch));
+        schemas::valid(
+            &schemas::validator("backlog-provider-index-pin-v1.json"),
+            &pin,
+        );
+        assert_eq!(pin["batch_id"], batch);
+        assert_eq!(pin["source_revision"], collection["source_revision"]);
+        assert_eq!(pin["destination_id"], policy["destination_id"]);
+        let index = &collection["provider_index"];
+        let id = index["observation_id"].as_str().unwrap();
+        assert_eq!(pin["observation_id"], id);
+        let raw = fs::read(store.join(format!("backlog-open-issues-{}.json", &id[7..]))).unwrap();
+        assert_eq!(af_store::canonical::blob_content_id(&raw), id);
+        assert!(raw.ends_with(b"\n"));
+        assert_eq!(
+            serde_json::from_slice::<Value>(&raw).unwrap(),
+            index["observation"]
+        );
+        assert_eq!(index["observation"]["repository"], "Fixture/Backlog");
+        assert_eq!(index["observation"]["issues"][0]["body_truncated"], false);
+        assert!(
+            index["observation"]["issues"][0]["body_excerpt"]
+                .as_str()
+                .unwrap()
+                .contains("Private index detail.")
+        );
+        (pin, raw)
+    };
+    let publish_token = store.join("backlog-github-token");
+    private_write(&publish_token, "fixture_issues_read_only\n");
+    let shared_credential = tick(due);
+    assert!(
+        shared_credential["refused"]
+            .as_object()
+            .unwrap()
+            .values()
+            .any(|error| error
+                .as_str()
+                .is_some_and(|error| error.contains("require distinct credentials"))),
+        "{shared_credential}"
+    );
+    assert!(!reads.exists());
+    fs::remove_file(&publish_token).unwrap();
+
+    let first = tick(due);
+    let first_id = first["started"][0]
+        .as_str()
+        .unwrap_or_else(|| panic!("{first}"));
+    let first_run = &first["runs"][first_id];
+    assert_eq!(first_run["status"], "succeeded", "{}", first_run["failure"]);
+    let (first_pin, first_raw) = index(first_run);
+    assert_eq!(fs::read_to_string(&reads).unwrap().lines().count(), 3);
+    assert!(!fake.join("requests").exists());
+    let first_audit = audit();
+    let first_batch = first_pin["batch_id"].as_str().unwrap();
+    let closed = first_audit["batches"][first_batch]["closed_unix_ms"]
+        .as_u64()
+        .unwrap();
+    let day_two = closed + 86_400_000;
+    let tracked = ok(receiver.af(&["backlog", "show", "blue-a", "--private", "--json"]));
+    let decision = &tracked["data"]["outcomes"][0];
+    assert_eq!(decision["disposition"], "already_tracked");
+    assert!(
+        decision["reason"]
+            .as_str()
+            .unwrap()
+            .contains("Verified GitHub issue ID 1073 (#73)")
+    );
+
+    accept("green");
+    let project_refusal = format!(
+        "project-backlog-{}",
+        &project["project_id"].as_str().unwrap()[7..]
+    );
+    let provider_calls = receiver.provider_home.join("calls");
+    let first_calls = fs::read(&provider_calls).unwrap();
+    fs::remove_file(&read_token).unwrap();
+    let missing = tick(day_two);
+    assert!(
+        missing["refused"][&project_refusal]
+            .as_str()
+            .unwrap()
+            .contains("credential unavailable")
+    );
+    private_write(&read_token, "fixture_issues_read_only\n");
+    let frozen = audit();
+    let second_batch = frozen["active_batch_id"].as_str().unwrap();
+    assert_ne!(first_batch, second_batch);
+    for (failure, diagnostic) in [
+        ("unavailable", "observation unavailable"),
+        ("partial", "observation unavailable"),
+        ("wrong-scope", "different GitHub repository"),
+        ("oversize", "over-bound GitHub backlog observation"),
+    ] {
+        mode(failure);
+        let refused = tick(day_two);
+        assert_eq!(refused["started"], json!([]));
+        assert!(
+            refused["refused"][&project_refusal]
+                .as_str()
+                .unwrap()
+                .contains(diagnostic),
+            "{refused}"
+        );
+        assert_eq!(audit(), frozen);
+        assert!(!binding_path(second_batch).exists());
+        assert_eq!(fs::read(&provider_calls).unwrap(), first_calls);
+        assert!(!fake.join("requests").exists());
+    }
+    // Simulate interruption between binding the observation and admitting the prepared Run.
+    let registry = receiver.root.join("providers.toml");
+    let registry_bytes = fs::read(&registry).unwrap();
+    mode("second-with-registry-drift");
+    let interrupted = tick(day_two);
+    assert_eq!(interrupted["started"], json!([]));
+    assert!(
+        interrupted["refused"][&project_refusal]
+            .as_str()
+            .unwrap()
+            .contains("Provider registry"),
+        "{interrupted}"
+    );
+    let bound_before_admission = read(&binding_path(second_batch));
+    assert_eq!(audit(), frozen);
+    assert_eq!(fs::read(&provider_calls).unwrap(), first_calls);
+    assert!(!fake.join("requests").exists());
+    fs::write(&registry, registry_bytes).unwrap();
+
+    mode("wrong-scope");
+    fs::remove_file(&read_token).unwrap();
+    let trace = fs::read(&reads).unwrap();
+    fs::write(fake.join("expect-green"), "").unwrap();
+    let second = tick(day_two);
+    let second_id = second["started"][0]
+        .as_str()
+        .unwrap_or_else(|| panic!("{second}"));
+    let waiting = &second["runs"][second_id];
+    assert_eq!(waiting["status"], "waiting", "{second}");
+    let (second_pin, second_raw) = index(waiting);
+    assert_eq!(second_pin, bound_before_admission);
+    assert_eq!(second_pin["batch_id"], second_batch);
+    assert_ne!(first_pin["observation_id"], second_pin["observation_id"]);
+    assert_ne!(first_raw, second_raw);
+    assert!(!fake.join("requests").exists());
+    let attempts = &waiting["frames"]["root"]["steps"][2]["intents"];
+    private_write(&publish_token, "fixture_token\n");
+    fs::write(fake.join("mode"), "lost_reply").unwrap();
+    let lost = tick(day_two + 1);
+    assert_eq!(lost["runs"][second_id]["status"], "waiting", "{lost}");
+    assert!(fake.join("issue.json").exists());
+    // The pending publication reconciles the original intent with the observer still unavailable.
+    fs::write(fake.join("mode"), "normal").unwrap();
+    let retry = tick(day_two + 2);
+    assert_eq!(retry["started"], json!([]));
+    let done = &retry["runs"][second_id];
+    assert_eq!(done["status"], "succeeded", "{retry}");
+    assert_eq!(
+        done["frames"]["root"]["steps"][2]["intents"][0]["id"],
+        attempts[0]["id"]
+    );
+    assert_eq!(index(done), (second_pin, second_raw));
+    assert_eq!(index(first_run), (first_pin, first_raw));
+    assert_eq!(fs::read(&reads).unwrap(), trace);
+    let requests = http_requests(&fake);
+    let posts: Vec<_> = requests
+        .iter()
+        .filter(|call| call["method"] == "POST")
+        .collect();
+    assert_eq!(posts.len(), 1);
+    assert_eq!(
+        posts[0]["body"]["title"],
+        "Green excludes its required boundary."
+    );
+    assert_eq!(tick(day_two + 3)["started"], json!([]));
+    assert_eq!(http_requests(&fake), requests);
 }
 
 #[test]
