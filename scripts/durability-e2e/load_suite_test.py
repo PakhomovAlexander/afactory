@@ -4,17 +4,18 @@ import errno
 from collections import Counter
 import json
 from pathlib import Path
+import signal
 import sys
 import tempfile
 import threading
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from control import Control, HTTPError, save
 from load_cases import CASES, MARKER, load_profiles
 from load_suite import (BINDINGS_SCHEMA, SUITE, compare_runs, max_overlap, normalized, run,
                         schedule)
-from load_worker import execute, judge, witness
+from load_worker import execute, judge, run_case, witness
 
 RUN = "af-load-" + "a" * 20
 WORKERS = ["r-101", "r-102"]
@@ -119,6 +120,7 @@ class LoadSuite(unittest.TestCase):
         self.assertEqual(len(list((args.evidence / "trials").glob("*.json"))), 5)
         self.assertEqual(report["workers"]["r-101"]["observed_max_overlap"], 2)
         self.assertEqual(report["aggregate"]["spent_case_cpu_s"]["measured"], 4)
+        self.assertTrue(all(row["measurements"]["terminal_s"] is None for row in report["trials"]))
         self.assertEqual(len(control.jobs), 7)
         invalid, = (row for row in report["trials"] if row["status"] == "invalid/harness")
         self.assertEqual(invalid["reason"], "original worker error")
@@ -168,6 +170,99 @@ class LoadSuite(unittest.TestCase):
         self.assertEqual(error["verdict"], "invalid")
         self.assertEqual(error["phase"], "before-fault-witness")
         self.assertEqual(error["reason"], "existing diagnostic")
+
+    def test_checks_recovery_requires_ordered_receipts_for_the_persisted_check(self):
+        check_id, revision, intent = "a" * 64, "sha256:" + "b" * 64, "sha256:" + "c" * 64
+        stale = "sha256:" + "0" * 64
+        crash = {"scheduler_pid": 10, "exit": -signal.SIGKILL, "fixture_pid": 11,
+                 "fixture_alive": True}
+
+        def call(sequence, action, status, served_revision):
+            return {"sequence": sequence, "action": action, "check_id": check_id, "intent": intent,
+                    "status": status, "served_revision": served_revision}
+
+        for case_id, fault, create_status, read_status, served in (
+                ("restart-green", "lost-reply", 0, 503, None),
+                ("restart-red", "lost-reply", 0, 503, None),
+                ("expired-auth", "expired-auth", 201, 401, None),
+                ("wrong-revision", "wrong-revision", 201, 200, stale)):
+            self.case_json("recovery-summary.json", {
+                "fault": fault, "scenario": "failed" if case_id == "restart-red" else "succeeded",
+                "terminal_steps_settled": True,
+                "requirements": {"same_execution": True, "same_check_intent": True,
+                                 "exact_candidate_check": True, "correct_outcome": True},
+            })
+            persisted = [{"id": check_id, "revision": revision}]
+            create = call(2, "create", create_status, revision if create_status == 201 else None)
+            read_fault = call(3, "read", read_status, served)
+            valid = {"checks": persisted, "calls": [call(1, "read", 404, None), create, read_fault]}
+            self.case_json("crash.json", crash)
+            self.case_json("ledger-before.json", valid)
+            result = judge(case_id, self.root, 0, False, "")
+            self.assertEqual(result["verdict"], "pass", case_id)
+            self.assertEqual(result["fault_witness"], "ledger-before.json + crash.json")
+
+            wrong_response = revision if case_id == "wrong-revision" else stale
+            invalid = {
+                "missing": None,
+                "no saved check": {**valid, "checks": []},
+                "unrelated check": {**valid, "calls": [create, {**read_fault, "check_id": "d" * 64}]},
+                "unrelated intent": {**valid, "calls": [create, {**read_fault, "intent": "sha256:" + "d" * 64}]},
+                "wrong response revision": {**valid, "calls": [create, {**read_fault, "served_revision": wrong_response}]},
+                "wrong create status": {**valid, "calls": [call(2, "create", 200, revision), read_fault]},
+                "malformed call after witness": {**valid, "calls": [create, read_fault, None]},
+                "reversed export order": {**valid, "calls": [read_fault, create]},
+                "read before create": {**valid, "calls": [{**read_fault, "sequence": 1}, create]},
+            }
+            if case_id == "wrong-revision":
+                invalid["saved revision equals stale response"] = {
+                    "checks": [{"id": check_id, "revision": stale}],
+                    "calls": [{**create, "served_revision": stale}, read_fault],
+                }
+            for reason, ledger in invalid.items():
+                with self.subTest(case=case_id, reason=reason):
+                    if ledger is None:
+                        (self.root / "ledger-before.json").unlink()
+                    else:
+                        self.case_json("ledger-before.json", ledger)
+                    result = judge(case_id, self.root, 0, False, "")
+                    self.assertEqual(result["verdict"], "invalid")
+                    self.assertEqual(result["phase"], "before-fault-witness")
+                    self.assertIsNone(result["fault_witness"])
+
+            self.case_json("ledger-before.json", valid)
+            for field, value in (("exit", -signal.SIGTERM), ("exit", float(-signal.SIGKILL)),
+                                 ("fixture_alive", False)):
+                self.case_json("crash.json", {**crash, field: value})
+                self.assertIsNone(witness(case_id, self.root))
+
+    def test_worker_interval_is_retained_without_measuring_terminal_time(self):
+        args = Namespace(run=RUN, job="job", case="clean")
+        root = self.root / RUN
+        self.case_json(f"{RUN}/preflight.json", {"boot_id": "boot",
+                                                  "scratch_device": self.root.stat().st_dev,
+                                                  "scratch_inode": self.root.stat().st_ino})
+        interval = [1_000_000_000, 9_000_000_000]
+
+        def execute_case(argv, output, env, job_dir, seconds):
+            save(job_dir / "summary.json", {"scenario_status": "succeeded", "task_state": {}, "attempts": 1})
+            return 0, False, "", interval
+
+        binding = {"binary": "/opt/af", "source": "/srv/source", "binary_sha256": "a" * 64,
+                   "suite_workload": "b" * 64, "source_workload": "c" * 64}
+        with (patch("load_worker.verify", return_value=self.root),
+              patch("load_worker.canonical", return_value=root),
+              patch.object(Path, "read_text", return_value="boot\n"),
+              patch("load_worker.available"), patch("load_worker.check_capacity"),
+              patch("load_worker.adopt_children"), patch("load_worker.emit"),
+              patch("load_worker.execute", side_effect=execute_case)):
+            result = run_case(binding, args)
+        self.assertEqual(result["verdict"], "pass")
+        self.assertEqual(result["interval_ns"], interval)
+        self.assertIn("cpu_s", result["metrics"])
+        row = {"case": args.case, "job": args.job, "worker": WORKERS[0], "seed": 0}
+        record = normalized(root, row, result, "short", binding, {})
+        self.assertNotIn("terminal_s", record["metrics"])
 
     def test_terminal_budget_refusal_is_a_policy_pass_with_separate_token_counts(self):
         state = {"attempts": 1, "chargeable_tokens": 4097, "budget": 20480, "unknown_usage": []}

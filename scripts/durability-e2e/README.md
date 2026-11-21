@@ -186,12 +186,19 @@ evidence. For a pinned custom cohort, pass `--manifest PATH` with the same schem
 fault receipts, native Task and Scenario outcomes, invariants, timing, simulated Provider charges
 and separate real Provider token measurements. A correct terminal red gate or budget refusal can
 pass. A missed fault, timeout or incomplete harness receipt is invalid and retains its phase and
-diagnostic. Case overlap uses complete monotonic subprocess intervals on each VM, including
-failed trials. Worker CPU covers user and system time reported for the case's reaped subprocesses
-and excludes preflight and broker overhead. Missing measurements appear as null in the suite
-report and are omitted from the neutral records in `trials/`. An unresolved job submission or
-wait stops further submissions to that worker. A 503 acknowledgement is reconciled by job ID
-without sending a second POST. Keep the retained broker receipts and raw VM directories private.
+diagnostic. Checks restart, expired authentication and wrong revision require both a scheduler
+SIGKILL with the fixture still alive and ordered create and fault read receipts for the same
+persisted check and intent in `ledger-before.json`.
+
+Case overlap and aggregate case wall time use complete monotonic subprocess intervals on each VM,
+including failed trials, and throughput counts those intervals. Each interval covers setup,
+post-terminal observation, teardown and orphan cleanup. The load runner leaves `terminal_s`
+unmeasured because it has no dedicated terminal timing. Worker CPU covers user and system time
+reported for the case's reaped subprocesses and excludes preflight and broker overhead. Missing
+measurements appear as null in the suite report and are omitted from the neutral records in
+`trials/`. An unresolved job submission or wait stops further submissions to that worker. A 503
+acknowledgement is reconciled by job ID without sending a second POST. Keep the retained broker
+receipts and raw VM directories private.
 
 Compare uses the neutral records and reports aggregate transitions, per-trial verdicts, input
 mismatches, missing pairs and missing metrics. Matching binds the case, repeat seed, actual fixture

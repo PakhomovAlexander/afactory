@@ -14,7 +14,7 @@ import subprocess
 import sys
 import time
 
-from load_cases import CASES, FIXTURES, MARKER, SUITE_FILES, file_sha, files_identity
+from load_cases import CASES, DIGEST_PATTERN, FIXTURES, MARKER, SUITE_FILES, file_sha, files_identity
 from native_budget import ADMISSION
 from native_smoke import private_scratch
 from worker_failover import REQUIRED
@@ -149,6 +149,54 @@ def tail(path, limit=3000):
         return stream.read(limit).decode(errors="replace").strip()
 
 
+def checks_fault_witness(case_id, ledger):
+    checks, calls = ledger.get("checks"), ledger.get("calls")
+    if (not isinstance(checks, list) or len(checks) != 1 or not isinstance(checks[0], dict)
+            or not isinstance(calls, list)):
+        return False
+    check_id, revision = checks[0].get("id"), checks[0].get("revision")
+    digest = "sha256:" + DIGEST_PATTERN
+    if (not isinstance(check_id, str) or not re.fullmatch(DIGEST_PATTERN, check_id)
+            or not isinstance(revision, str) or not re.fullmatch(digest, revision)):
+        return False
+
+    stale = "sha256:" + "0" * 64
+    if case_id == "wrong-revision" and revision == stale:
+        return False
+    create, read_fault = {
+        "restart-green": ((0, None), (503, None)),
+        "restart-red": ((0, None), (503, None)),
+        "expired-auth": ((201, revision), (401, None)),
+        "wrong-revision": ((201, revision), (200, stale)),
+    }[case_id]
+    sequence = 0
+    created = set()
+    witnessed = False
+    statuses = {"create": (0, 200, 201, 400, 401, 409), "read": (200, 401, 404, 503)}
+    for call in calls:
+        if not isinstance(call, dict) or call.get("check_id") != check_id:
+            return False
+        number, intent = call.get("sequence"), call.get("intent")
+        action, status = call.get("action"), call.get("status")
+        if (type(number) is not int or number <= sequence or not isinstance(intent, str)
+                or not re.fullmatch(digest, intent) or type(status) is not int
+                or not isinstance(action, str) or status not in statuses.get(action, ())
+                or "served_revision" not in call):
+            return False
+        sequence = number
+        served = call["served_revision"]
+        if status in (200, 201):
+            if not isinstance(served, str) or not re.fullmatch(digest, served):
+                return False
+        elif served is not None:
+            return False
+        if action == "create" and (status, served) == create:
+            created.add(intent)
+        if action == "read" and (status, served) == read_fault and intent in created:
+            witnessed = True
+    return witnessed
+
+
 def witness(case_id, root):
     """Return a receipt only when it proves the declared fault happened."""
     if case_id == "gate-red":
@@ -157,7 +205,9 @@ def witness(case_id, root):
             return "task-checks.json"
     if case_id in {"restart-green", "restart-red", "expired-auth", "wrong-revision"}:
         crash = read(root / "crash.json")
-        if crash.get("exit") == -9 and crash.get("fixture_alive") is True:
+        exit_code = crash.get("exit")
+        if (type(exit_code) is int and exit_code == -signal.SIGKILL and crash.get("fixture_alive") is True
+                and checks_fault_witness(case_id, read(root / "ledger-before.json"))):
             return "ledger-before.json + crash.json"
     if case_id == "journal-enospc":
         disk = read(root / "disk-fault.json")
@@ -418,8 +468,6 @@ def run_case(binding, args):
                   "reason": f"could not interpret native evidence: {error}",
                   "diagnostic": diagnostic, "summary": None, "metrics": {}}
     result["metrics"]["cpu_s"] = (after.ru_utime - cpu.ru_utime) + (after.ru_stime - cpu.ru_stime)
-    if result["verdict"] in {"pass", "fail"} and result["summary"]:
-        result["metrics"]["terminal_s"] = (interval[1] - interval[0]) / 1e9
     return {**result, "interval_ns": interval, "evidence_dir": str(job_dir),
             "native_dir": str(native_root), "native_exit": code}
 
