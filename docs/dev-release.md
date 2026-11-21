@@ -13,6 +13,12 @@ values are read. Configure `MINISIGN_SECRET_KEY` and the scoped `RELEASE_PIN_TOK
 runner as described in [contributing](../CONTRIBUTING.md). Only the signing secret is a publication prerequisite. Missing pin credentials are reported
 independently as `CREDENTIAL_MISSING`; the RC can still become ready. Preflight
 cannot establish whether a key is usable.
+Before planning, cutting or resuming, a local capability probe requires `gh pr checks` to support
+`--required --json name,bucket,link`. The help probe has a ten-second limit within the invocation
+deadline and makes no GitHub request. Unsupported clients (including GitHub CLI 2.46.0) refuse
+with `gh_capability` and an upgrade instruction before authorization or release effects. Upgrade
+`gh` and retry the same command; exact-head CI and additional required checks remain mandatory.
+Read-only status remains available with an unsupported client.
 The selected release label (`release:fast` or `release:full`) must already exist. Required checks and branch protection apply;
 the CLI has no admin or ruleset bypass mode.
 

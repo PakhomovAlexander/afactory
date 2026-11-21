@@ -131,6 +131,29 @@ def run(argv, cwd=None, accepted=(0,), git_env=None):
     return result.stdout.strip()
 
 
+def check_gh_capabilities():
+    diagnostic = ('gh_capability: upgrade GitHub CLI (gh) to a version supporting '
+                  '`gh pr checks --required --json name,bucket,link`, then retry; '
+                  'release checks cannot be bypassed')
+    # Help is local: no PR lookup, credentials, or network request. Check the
+    # advertised fields as well as flags; accepting --json alone is insufficient.
+    try:
+        result = subprocess.run(['gh', 'pr', 'checks', '--required', '--json',
+                                 'name,bucket,link', '--help'],
+                                capture_output=True, text=True, timeout=min(10, remaining()),
+                                env={**os.environ, 'GH_PROMPT_DISABLED': '1', 'GH_PAGER': 'cat'})
+    except (OSError, subprocess.TimeoutExpired):
+        raise Refusal(diagnostic) from None
+    fields = re.search(r'(?ms)^JSON FIELDS\n(.*?)(?=^\S|\Z)', result.stdout)
+    if (result.returncode != 0
+            or not all(re.search(r'(?m)^\s+--' + flag + r'\b', result.stdout)
+                       for flag in ('required', 'json'))
+            or fields is None
+            or not {'name', 'bucket', 'link'} <= set(re.findall(r'\w+', fields[1]))):
+        # Do not echo CLI diagnostics, which can contain credential-bearing text.
+        raise Refusal(diagnostic)
+
+
 def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
@@ -1224,6 +1247,7 @@ def main():
                 time.sleep(2)
         with lease(directory):
             try:
+                check_gh_capabilities()
                 if args.new:
                     controller.new_run()
                 if args.command == 'resume' and not controller.path.exists():
