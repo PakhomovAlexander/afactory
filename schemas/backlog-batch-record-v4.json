@@ -1,0 +1,301 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:backlog-batch-record:4",
+  "title": "BacklogBatchStored@4 payload",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "policy",
+        "zone"
+      ],
+      "properties": {
+        "kind": {
+          "const": "pinned"
+        },
+        "policy": {
+          "$ref": "urn:af:schema:backlog-batch-policy:2"
+        },
+        "zone": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "initial_offset",
+            "transitions",
+            "valid_until_unix_seconds"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "initial_offset": {
+              "type": "integer",
+              "minimum": -86400,
+              "maximum": 86400
+            },
+            "transitions": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "prefixItems": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": -86400,
+                    "maximum": 86400
+                  }
+                ]
+              },
+              "maxItems": 100000
+            },
+            "valid_until_unix_seconds": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "at_unix_ms",
+        "paused",
+        "high_water",
+        "members"
+      ],
+      "properties": {
+        "kind": {
+          "const": "ticked"
+        },
+        "at_unix_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8640000000000
+        },
+        "paused": {
+          "type": "boolean"
+        },
+        "high_water": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$"
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+              },
+              {
+                "$ref": "urn:af:schema:backlog-record:2#/$defs/reportId"
+              }
+            ]
+          },
+          "uniqueItems": true,
+          "maxItems": 64
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "request"
+      ],
+      "properties": {
+        "kind": {
+          "const": "reconsidered"
+        },
+        "request": {
+          "$ref": "#/$defs/reconsideration"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "batch_id",
+        "member_id",
+        "settlement"
+      ],
+      "properties": {
+        "kind": {
+          "const": "settled"
+        },
+        "batch_id": {
+          "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+        },
+        "member_id": {
+          "oneOf": [
+            {
+              "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+            },
+            {
+              "$ref": "urn:af:schema:backlog-record:2#/$defs/reportId"
+            }
+          ]
+        },
+        "settlement": {
+          "$ref": "#/$defs/settlement"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "batch_id",
+        "at_unix_ms",
+        "pending_deliveries",
+        "resolved_deliveries"
+      ],
+      "properties": {
+        "kind": {
+          "const": "closed"
+        },
+        "batch_id": {
+          "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+        },
+        "at_unix_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8640000000000
+        },
+        "pending_deliveries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "revision_id",
+              "decision_id"
+            ],
+            "properties": {
+              "revision_id": {
+                "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+              },
+              "decision_id": {
+                "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+              }
+            }
+          }
+        },
+        "resolved_deliveries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "revision_id",
+              "outcome"
+            ],
+            "properties": {
+              "revision_id": {
+                "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+              },
+              "outcome": {
+                "enum": [
+                  "delivered",
+                  "requires_reverification"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "reconsideration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "item_id",
+        "report_id",
+        "evidence_report_id",
+        "eligible_unix_ms"
+      ],
+      "properties": {
+        "item_id": {
+          "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+        },
+        "report_id": {
+          "$ref": "urn:af:schema:backlog-record:2#/$defs/reportId"
+        },
+        "evidence_report_id": {
+          "anyOf": [
+            {
+              "$ref": "urn:af:schema:backlog-record:2#/$defs/reportId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "eligible_unix_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8640000000000
+        }
+      }
+    },
+    "settlement": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "accounted",
+                "held",
+                "needs_evidence"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "item_id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "reserve_publication"
+            },
+            "item_id": {
+              "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

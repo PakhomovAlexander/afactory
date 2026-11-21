@@ -502,7 +502,7 @@ mod tests {
                 }),
             );
         }
-        valid("scenario-pin-v11.json", &pin);
+        valid("scenario-pin-v12.json", &pin);
         let host = TestHost {
             startup_reject: Some(repair.clone()),
             ..Default::default()
@@ -530,7 +530,7 @@ mod tests {
             None,
         )
         .unwrap();
-        valid("scenario-run-v11.json", &run);
+        valid("scenario-run-v12.json", &run);
         assert_eq!(
             run.pin.policy.implementation_startup,
             pin.policy.implementation_startup
@@ -883,7 +883,7 @@ mod tests {
                 "expiry" => assert_eq!(driver.resumes, 1),
                 _ => assert_eq!(driver.resumes, 2),
             }
-            valid("scenario-store-v17.json", &world);
+            valid("scenario-store-v18.json", &world);
         }
     }
 

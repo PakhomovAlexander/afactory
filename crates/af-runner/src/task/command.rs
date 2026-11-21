@@ -142,7 +142,7 @@ fn command_runner(
             after_ms: timeout.as_millis().try_into().unwrap_or(u64::MAX),
         });
     }
-    let mut runner = ModelRunner::new(workdir, remaining);
+    let mut runner = ModelRunner::new(workdir, remaining).isolating_ticket_auth();
     if access.has_shell() {
         // A shell granted to run the candidate must not leave children behind: the same
         // process-group policy the model adapters apply to an execute-checks Attempt.

@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:backlog-batch-policy:2",
+  "title": "Machine-local Project backlog batch policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "project_id",
+    "authority_id",
+    "scenario_id",
+    "destination_id",
+    "timezone",
+    "hour",
+    "minute",
+    "start_unix_ms",
+    "lateness_ms",
+    "run_tokens",
+    "run_wall_ms",
+    "run_dispatches",
+    "rolling_tokens",
+    "rolling_window_ms",
+    "publication_limit",
+    "evidence_access",
+    "hold_policy"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/backlog-batch-policy@2"
+    },
+    "project_id": {
+      "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+    },
+    "authority_id": {
+      "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+    },
+    "scenario_id": {
+      "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+    },
+    "destination_id": {
+      "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+    },
+    "timezone": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "hour": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 23
+    },
+    "minute": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 59
+    },
+    "start_unix_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8640000000000
+    },
+    "lateness_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 86399999
+    },
+    "run_tokens": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "run_wall_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8640000000000
+    },
+    "run_dispatches": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10000
+    },
+    "rolling_tokens": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "rolling_window_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8640000000000
+    },
+    "publication_limit": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "evidence_access": {
+      "enum": [
+        "metadata_only",
+        "evidence_ids",
+        "private_report"
+      ]
+    },
+    "hold_policy": {
+      "enum": [
+        "hold_all",
+        "allow_local_reservations"
+      ]
+    }
+  }
+}

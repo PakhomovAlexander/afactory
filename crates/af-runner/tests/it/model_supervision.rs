@@ -263,6 +263,42 @@ fn an_ungranted_variable_never_reaches_the_child() {
 }
 
 #[test]
+fn worker_ticket_auth_isolated_from_explicit_process_context() {
+    let (dir, cas) = workdir();
+    let git_config = dir.path().join("host-gitconfig");
+    std::fs::write(
+        &git_config,
+        "[credential]\n helper = !echo username=fixture && echo password=write-sentinel && :\n",
+    )
+    .unwrap();
+    let probe = sh(r#"test "$CLAUDE_CONFIG_DIR" = provider-auth || exit 1
+         test "$GH_CONFIG_DIR" = /dev/null || exit 2
+         test -z "${GH_TOKEN+x}${AF_BACKLOG_GITHUB_TOKEN+x}" || exit 3
+         printf 'protocol=https\nhost=fixture.invalid\n\n' | git credential fill"#);
+    let runner = ModelRunner::new(dir.path(), LOAD_SAFE_WALL)
+        .with_env("GIT_CONFIG_GLOBAL", git_config.to_str().unwrap())
+        .with_env("GH_CONFIG_DIR", dir.path().to_str().unwrap())
+        .with_env("GH_TOKEN", "write-sentinel")
+        .with_grant("AF_BACKLOG_GITHUB_TOKEN", "write-sentinel")
+        .with_grant("CLAUDE_CONFIG_DIR", "provider-auth");
+
+    let helper = sh("printf 'protocol=https\nhost=fixture.invalid\n\n' | git credential fill");
+    let baseline = runner.capture(&cas, &helper, vec![], None);
+    assert!(
+        baseline.status.unwrap().success(),
+        "{}",
+        String::from_utf8_lossy(&baseline.stderr)
+    );
+    assert!(String::from_utf8_lossy(&baseline.stdout).contains("password=[redacted]\n"));
+
+    let worker = runner
+        .isolating_ticket_auth()
+        .capture(&cas, &probe, vec![], None);
+    assert_eq!(worker.status.unwrap().code(), Some(128));
+    assert!(worker.stdout.is_empty());
+}
+
+#[test]
 fn a_missing_provider_is_unavailable_not_silent() {
     let (dir, cas) = workdir();
     let runner = ModelRunner::new(dir.path(), Duration::from_secs(1));

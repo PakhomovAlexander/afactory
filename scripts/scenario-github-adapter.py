@@ -969,7 +969,7 @@ def schema_documents():
                    "intent_id": text(DIGEST), "input_digest": text(DIGEST),
                    "operation": {"enum": list(PAYLOAD_SCHEMAS)}, "destination": text(),
                    "inputs": {"type": "object", "additionalProperties": {
-                       "$ref": "urn:af:schema:scenario:10#/$defs/Datum"}}})
+                       "$ref": "urn:af:schema:scenario:11#/$defs/Datum"}}})
     record = obj({"publication_checkpoint": {"enum": [None, "native_proof_ready", "publication_prepared"]}, "request": request, "request_digest": text(DIGEST),
                   "phase": {"enum": ["prepared", "dispatched", "done", "failed"]}, "metadata_dispatched": {"type":"boolean"},
                   "object": {"anyOf": [{"type": "null"}, obj({"id": positive, "number": positive})]},

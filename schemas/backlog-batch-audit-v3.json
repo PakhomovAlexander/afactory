@@ -1,0 +1,415 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:backlog-batch-audit:3",
+  "title": "Private Project backlog batch audit",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "project_id",
+    "policy",
+    "pin_id",
+    "intake",
+    "high_water",
+    "closed_high_water",
+    "occurrences",
+    "batches",
+    "active_batch_id",
+    "reconsiderations",
+    "pending_member_ids",
+    "pending_deliveries",
+    "delivery_resolutions"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/backlog-batch-audit@3"
+    },
+    "project_id": {
+      "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+    },
+    "policy": {
+      "anyOf": [
+        {
+          "$ref": "urn:af:schema:backlog-batch-policy:2"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "pin_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "intake": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "report_id",
+          "sequence",
+          "report_digest"
+        ],
+        "properties": {
+          "report_id": {
+            "$ref": "urn:af:schema:backlog-record:2#/$defs/reportId"
+          },
+          "sequence": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]{0,19})$"
+          },
+          "report_digest": {
+            "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+          }
+        }
+      }
+    },
+    "high_water": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,19})$"
+    },
+    "closed_high_water": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,19})$"
+    },
+    "occurrences": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "local_day",
+          "admitted_unix_ms",
+          "due_unix_ms",
+          "outcome"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+          },
+          "local_day": {
+            "type": "integer"
+          },
+          "admitted_unix_ms": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 8640000000000
+          },
+          "due_unix_ms": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 8640000000000
+          },
+          "outcome": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "skipped_busy",
+                      "skipped_missed",
+                      "skipped_budget",
+                      "skipped_missing_time"
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind",
+                  "batch_id",
+                  "reserved_tokens"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "admitted"
+                  },
+                  "reserved_tokens": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "batch_id": {
+                    "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "batches": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/batch"
+      }
+    },
+    "active_batch_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "reconsiderations": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "request",
+          "admitted_batch_id"
+        ],
+        "properties": {
+          "request": {
+            "$ref": "urn:af:schema:backlog-batch-record:4#/$defs/reconsideration"
+          },
+          "admitted_batch_id": {
+            "anyOf": [
+              {
+                "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "pending_member_ids": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+          },
+          {
+            "$ref": "urn:af:schema:backlog-record:2#/$defs/reportId"
+          }
+        ]
+      },
+      "uniqueItems": true
+    },
+    "pending_deliveries": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "revision_id",
+          "decision_id"
+        ],
+        "properties": {
+          "revision_id": {
+            "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+          },
+          "decision_id": {
+            "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+          }
+        }
+      }
+    },
+    "delivery_resolutions": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "revision_id",
+          "outcome"
+        ],
+        "properties": {
+          "revision_id": {
+            "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+          },
+          "outcome": {
+            "enum": [
+              "delivered",
+              "requires_reverification"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "batch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "policy_id",
+        "previous_high_water",
+        "high_water",
+        "members",
+        "closed_unix_ms",
+        "publication_reservations"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+        },
+        "policy_id": {
+          "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+        },
+        "previous_high_water": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$"
+        },
+        "high_water": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$"
+        },
+        "members": {
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": {
+            "oneOf": [
+              {
+                "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+              },
+              {
+                "$ref": "urn:af:schema:backlog-record:2#/$defs/reportId"
+              }
+            ]
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/member"
+          }
+        },
+        "closed_unix_ms": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8640000000000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "publication_reservations": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "member": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "member_id",
+        "report_id",
+        "item_id",
+        "evidence_report_id",
+        "evidence_ids",
+        "settlement",
+        "disposition"
+      ],
+      "properties": {
+        "member_id": {
+          "oneOf": [
+            {
+              "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+            },
+            {
+              "$ref": "urn:af:schema:backlog-record:2#/$defs/reportId"
+            }
+          ]
+        },
+        "report_id": {
+          "$ref": "urn:af:schema:backlog-record:2#/$defs/reportId"
+        },
+        "item_id": {
+          "anyOf": [
+            {
+              "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_report_id": {
+          "anyOf": [
+            {
+              "$ref": "urn:af:schema:backlog-record:2#/$defs/reportId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+          }
+        },
+        "settlement": {
+          "anyOf": [
+            {
+              "$ref": "urn:af:schema:backlog-batch-record:4#/$defs/settlement"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "disposition": {
+          "anyOf": [
+            {
+              "enum": [
+                "accounted",
+                "held",
+                "needs_evidence",
+                "publication_reserved",
+                "deferred_publication_cap",
+                "deferred_item_claim"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -8,10 +8,26 @@ cron job, starts a daemon, or creates an instance until explicitly requested. Mo
 inside Tasks. [ADR-0274](adr/0274-orchestrate-pinned-scenarios-and-admit-ant-occurrences.md)
 defines the authority boundary.
 
+## Prepare a portable report Scenario
+
+A committed [portable Scenario artifact](../schemas/scenario-artifact-v1.json) describes one
+fresh report Task, the named report sources it accepts, and the package and schema dependencies
+shipped beside it. `af scenario prepare` records the template in the receiver's Task Store
+without spending model tokens. The prepared bundle binds the receiver's exact commit, Task Store,
+report policy, Provider settings, and concrete inputs. Optional `--bindings FILE` may supply
+Provider aliases. Preparation rejects slot and local package declarations before looking up any
+path they reference. Review and grant the template through
+the owner-only machine policy, then approve the exact native Scenario revision. See the
+[local triage walkthrough](../fixtures/issue-triage/README.md#run-portable-triage-locally)
+and [the portability decision](adr/2026-11-19-prepare-portable-scenario-artifacts.md).
+For a frozen Project batch, the [Project backlog runbook](project-backlog.md)
+uses a typed batch reference and the receiver’s Project Store. The native Actions bind settlement
+to the accepted assessment and dispatch to the configured synthetic local sink.
+
 ## Review, record, drive
 
 Definitions use TOML for authoring and JSON for their versioned wire documents, with schema
-`af/scenario@10`. A bundle (`af/scenario-bundle@10`) names its
+`af/scenario@11`. A bundle (`af/scenario-bundle@11`) names its
 `root` and maps names to definitions. See the inert examples in `fixtures/scenarios/` and the
 schemas from `af schema show`. Definitions have explicit `inputs`, `outputs`, ordered `steps`,
 `result` bindings, boolean `completion` conditions, `authority`, and `limits`.
@@ -216,7 +232,7 @@ script does not change native Wait behavior or complete a native Scenario Run.
 
 ## Ant scheduling
 
-An `af/ant@11` definition has `id`, `scenario` (bundle), typed `inputs`, `owner`, `notification`,
+An `af/ant@12` definition has `id`, `scenario` (bundle), typed `inputs`, `owner`, `notification`,
 `schedule` (`kind: daily`, `timezone`, `hour`, `minute`, `start_unix_ms`), and `execution`. The
 notification is
 an accountable routing label retained in inspection; sending a notification is an explicit
@@ -541,7 +557,7 @@ Creation refuses an existing label. Replay checks the revision chain and account
 missing ownership and corrupt journals fail closed.
 
 Roadmaps share `runs/scenarios.sqlite`, its immediate transactions, private ownership and checksum
-with Runs and Ants. The journal is now `af/scenario-store@17`; the previous Store shape is refused
+with Runs and Ants. The journal is now `af/scenario-store@18`; the previous Store shape is refused
 without migration. The unchanged 16 MiB document bound includes all roadmap history; the Ant
 retention policy above does not erase goal provenance or roadmap revisions. The ordinary
 machine Storage Budget counts these bytes as retained Store remainder; pruning never silently

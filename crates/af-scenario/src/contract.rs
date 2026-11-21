@@ -454,6 +454,13 @@ pub enum Operation {
     WriteOwnedFile,
     CleanupOwnedFile,
     Observe,
+    BacklogSettleV1,
+    BacklogDispatchV1,
+}
+impl Operation {
+    pub fn backlog(self) -> bool {
+        matches!(self, Self::BacklogSettleV1 | Self::BacklogDispatchV1)
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -602,7 +609,7 @@ fn decision_origin(
 impl Bundle {
     pub fn validate(&self, host: &dyn crate::Host) -> Result<()> {
         require(
-            self.schema == "af/scenario-bundle@10"
+            self.schema == "af/scenario-bundle@11"
                 && !self.definitions.is_empty()
                 && self.definitions.len() <= 64,
             "Unsupported or oversized Scenario bundle",
@@ -746,7 +753,7 @@ impl Bundle {
 impl Scenario {
     fn validate(&self, bundle: &Bundle, host: &dyn crate::Host) -> Result<()> {
         require(
-            self.schema == "af/scenario@10"
+            self.schema == "af/scenario@11"
                 && !self.outputs.is_empty()
                 && self.outputs.len() <= 32
                 && self.inputs.len() <= 32
@@ -1003,6 +1010,20 @@ impl Scenario {
                             expected.insert("candidate".into(), Port::Task);
                             output = Port::Action;
                         }
+                        Operation::BacklogSettleV1 | Operation::BacklogDispatchV1 => {
+                            require(
+                                !requires_decision && required_condition.is_none(),
+                                "Backlog actions require native assessment and Project policy",
+                            )?;
+                            for key in ["subject", "revision"] {
+                                expected.insert(key.into(), Port::Text);
+                            }
+                            expected.insert("assessment".into(), Port::Task);
+                            if grant.operation == Operation::BacklogDispatchV1 {
+                                expected.insert("settlement".into(), Port::Action);
+                            }
+                            output = Port::Action;
+                        }
                         Operation::WriteOwnedFile => {
                             expected.insert("file".into(), Port::Text);
                             expected.insert("content".into(), Port::Text);
@@ -1123,8 +1144,9 @@ impl Policy {
             )?;
             require(
                 !a.operations.contains(&Operation::WriteOwnedFile)
-                    && !a.operations.contains(&Operation::CleanupOwnedFile),
-                "File actions use the builtin adapter",
+                    && !a.operations.contains(&Operation::CleanupOwnedFile)
+                    && !a.operations.iter().any(|op| op.backlog()),
+                "File and Project backlog actions use the builtin adapter",
             )?;
             for d in &a.destinations {
                 text(d)?;
@@ -1199,7 +1221,22 @@ impl Policy {
                         || self.implementation_startup.is_some(),
                     "Scoped implementation publication needs admitted startup authority",
                 )?;
-                if matches!(
+                if grant.operation.backlog() {
+                    let local = grant.destination.strip_prefix("local-backlog:");
+                    let external = ["github-backlog:", "markdown-backlog:", "jira-backlog:"]
+                        .into_iter()
+                        .find_map(|prefix| grant.destination.strip_prefix(prefix))
+                        .and_then(|scope| scope.split_once(":sha256:"));
+                    require(
+                        grant.adapter == "builtin"
+                            && (local.is_some_and(af_contracts::is_digest)
+                                || external.is_some_and(|(project, destination)| {
+                                    af_contracts::is_digest(project)
+                                        && af_contracts::is_digest(&format!("sha256:{destination}"))
+                                })),
+                        "Backlog actions require a builtin Project destination",
+                    )?;
+                } else if matches!(
                     grant.operation,
                     Operation::WriteOwnedFile | Operation::CleanupOwnedFile
                 ) {
@@ -1258,7 +1295,7 @@ impl Pin {
             .collect::<Result<_>>()?;
         let revision = hash(&(&bundle, &policy))?;
         Ok(Self {
-            schema: "af/scenario-pin@11".into(),
+            schema: "af/scenario-pin@12".into(),
             bundle,
             policy,
             revision,

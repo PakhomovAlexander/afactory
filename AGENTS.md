@@ -25,11 +25,14 @@ review corpora belong in consuming repositories, not here.
   refuses a description without exactly one well-formed block, apart from Dependabot and
   `release/` pull requests
   ([ADR-0142](docs/adr/0142-carry-the-af-task-report-in-every-pull-request.md)).
-- When you meet a defect or a gap during work, file it raw with the evidence you have and
-  continue: `gh issue create -l triage/pending -t "<one sentence>" -F body.md`, where `body.md`
-  has the raw template's three headings, `What I saw`, `Evidence` and `Repro`. Never classify,
-  estimate or search for duplicates yourself; the triage process does that, and it is the only
-  process that does ([`docs/design/issue-triage.md`](docs/design/issue-triage.md)).
+- When you meet a defect or gap, record a private Project backlog Report immediately and keep
+  working on the current Task. From its registered checkout, run `af backlog record --report-id ID
+  --title TITLE --observed FACT --json` with any available `--repro` and `--evidence-file`.
+  Choose a unique ID before capture. If the receipt is lost, retry the same ID and inputs from the
+  same Workspace and source revision. If an isolated Worker cannot access the checkout's Project
+  Store, hand the observed fact and private evidence to the supervising developer to record.
+  Leave classification, estimation, deduplication and ticket publication to the authorized
+  backlog process. See the [Project backlog runbook](docs/project-backlog.md).
 - The description also states additions and deletions per area: the block between
   `<!-- af-pr-lines:v1 -->` and `<!-- /af-pr-lines -->` that `python3 scripts/pr-lines.py`
   prints — a Lines added title and one Area/Changes/+/−/Share of additions table with bold roots

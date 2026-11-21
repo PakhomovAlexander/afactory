@@ -1171,7 +1171,7 @@ def workspace_schema_documents():
     doc("git-workspace-prepared", prepared)
     doc("git-workspace-content", dict(title=text(maximum=200), body=text(maximum=48000)))
     doc("performance-pr-content", dict(title=text(maximum=200)))
-    doc("git-candidate-source-request", dict(receipt={"$ref": "urn:af:schema:scenario:10#/$defs/TaskReceipt"},
+    doc("git-candidate-source-request", dict(receipt={"$ref": "urn:af:schema:scenario:11#/$defs/TaskReceipt"},
         source_commit=sha, candidate_snapshot_id=dig, predecessor_snapshot_id=dict(anyOf=[dict(type="null"), dig])), version=2)
     doc("git-candidate-source", dict(request_digest=dig, repository_id=text(maximum=4096), source_snapshot=dig, task_source_snapshot=dig,
         candidate_snapshot=dig, predecessor_snapshot=dict(anyOf=[dict(type="null"), dig]), source_content_digest=dig, source_commit=sha, candidate_tree=sha,
@@ -1194,7 +1194,7 @@ def workspace_schema_documents():
     schemas["git-workspace-config-v3.json"]["required"].remove("implementation_state")
     request = obj(dict(schema={"const": "af/scenario-adapter-request@8"}, intent_id=dig, input_digest=dig,
         operation={"enum": sorted(OPS - {"observe"})}, destination=text(), inputs={"type": "object",
-            "additionalProperties": {"$ref": "urn:af:schema:scenario:10#/$defs/Datum"}}))
+            "additionalProperties": {"$ref": "urn:af:schema:scenario:11#/$defs/Datum"}}))
     rec = obj(dict(request=request, phase={"enum": ["reserved", "started", "done"]},
         prepared=dict(anyOf=[dict(type="null"), obj(dict(schema={"const": PREPARED}, **prepared))]),
         inode=nullable_int, device=nullable_int,

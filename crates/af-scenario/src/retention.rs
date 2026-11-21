@@ -543,7 +543,7 @@ mod tests {
         }
         let definition = Ant {
             occurrence_inputs: BTreeMap::new(),
-            schema: "af/ant@11".into(),
+            schema: "af/ant@12".into(),
             id: id.into(),
             scenario: bundle,
             inputs: BTreeMap::new(),
@@ -648,7 +648,7 @@ mod tests {
                 let world = store.read().unwrap();
                 assert_eq!(world, Store::isolated(root.path()).unwrap().read().unwrap());
                 assert!(serde_json::to_vec(&world).unwrap().len() as u64 <= MAX_BYTES);
-                valid("scenario-store-v17.json", &world);
+                valid("scenario-store-v18.json", &world);
             }
         }
         eprintln!(
@@ -1477,7 +1477,7 @@ mod tests {
         );
         assert_eq!(run.dispatches, 1);
         assert!(occupied(&world).unwrap() <= MAX_BYTES);
-        valid("scenario-store-v17.json", &world);
+        valid("scenario-store-v18.json", &world);
     }
 
     #[test]

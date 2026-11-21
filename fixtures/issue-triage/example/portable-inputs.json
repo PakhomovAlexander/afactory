@@ -1,0 +1,11 @@
+{
+  "schema": "af.document-sources/1",
+  "sources": {
+    "issue": {
+      "title": "Issue #101: Link to the developer quickstart",
+      "uri": "https://example.invalid/issues/101",
+      "revision": "sha256:b6b5bac3dcba24368a07ccf3e0b39e712f8b6faefac9c712e8897cb7e6470e8d",
+      "text": "Issue #101: Link to the developer quickstart\nState: open\nLabels: triage/pending\nbody_sha256: b6b5bac3dcba24368a07ccf3e0b39e712f8b6faefac9c712e8897cb7e6470e8d\n\n--- body ---\nAdd a link to the local developer quickstart from the contribution guide."
+    }
+  }
+}

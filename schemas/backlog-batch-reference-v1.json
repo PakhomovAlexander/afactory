@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:backlog-batch-reference:1",
+  "title": "Portable Project backlog batch reference",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "project_id", "batch_id", "policy_id", "high_water"],
+  "properties": {
+    "schema": { "const": "af/backlog-batch-reference@1" },
+    "project_id": { "$ref": "urn:af:schema:task-contracts:4#/$defs/digest" },
+    "batch_id": { "$ref": "urn:af:schema:task-contracts:4#/$defs/digest" },
+    "policy_id": { "$ref": "urn:af:schema:task-contracts:4#/$defs/digest" },
+    "high_water": { "type": "string", "pattern": "^[1-9][0-9]{0,19}$" }
+  }
+}

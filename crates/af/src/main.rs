@@ -4,6 +4,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 mod af_paths;
 mod agent_setup;
+mod backlog;
 mod caches;
 mod cli;
 mod command_catalog;
@@ -445,6 +446,9 @@ fn main() {
         cli::Command::Task { command } => ("af task", task_command(command)),
         cli::Command::Scenario { command } => ("af scenario", scenario::scenario(command)),
         cli::Command::Ant { command } => ("af ant", scenario::ant(command)),
+        cli::Command::Backlog { command } => {
+            ("af backlog", backlog::run(command, parsed.repo.as_deref()))
+        }
         cli::Command::Project {
             command:
                 cli::ProjectCli::Brief {

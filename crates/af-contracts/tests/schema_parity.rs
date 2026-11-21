@@ -22,7 +22,7 @@ use af_contracts::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 251] = [
+const SCHEMAS: [&str; 265] = [
     "task-wake-traversal-v1.json",
     "task-wake-route-traversal-v1.json",
     "task-wake-pi-config-v1.json",
@@ -267,6 +267,20 @@ const SCHEMAS: [&str; 251] = [
     "reviewer-result-v2.json",
     "resolution-challenge-v1.json",
     "run-event-v3.json",
+    "backlog-batch-audit-v3.json",
+    "backlog-assessment-v2.json",
+    "backlog-collected-batch-v3.json",
+    "backlog-open-issues-v1.json",
+    "backlog-provider-index-pin-v1.json",
+    "backlog-batch-policy-v2.json",
+    "backlog-batch-reference-v1.json",
+    "backlog-batch-record-v4.json",
+    "backlog-intake-policy-v1.json",
+    "backlog-intake-record-v1.json",
+    "backlog-record-v2.json",
+    "backlog-signed-receipt-v1.json",
+    "backlog-signed-submission-v1.json",
+    "backlog-v2.json",
     "semantic-closure-v1.json",
     "shard-set-v1.json",
     "slice-set-v1.json",
@@ -3607,6 +3621,8 @@ fn measurements_and_comparisons_match_their_schemas_in_both_directions() {
     }
 }
 
+#[path = "schema_parity/backlog.rs"]
+mod backlog;
 #[path = "schema_parity/project_brief.rs"]
 mod project_brief;
 #[path = "schema_parity/project_collection.rs"]

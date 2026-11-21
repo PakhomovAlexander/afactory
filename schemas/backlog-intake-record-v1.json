@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:backlog-intake-record:1",
+  "title": "BacklogIntakeStored@1 payload",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "report",
+        "receipt"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af/BacklogAccepted@1"
+        },
+        "report": {
+          "$ref": "urn:af:schema:backlog-signed-submission:1#/properties/body/properties/report"
+        },
+        "receipt": {
+          "$ref": "urn:af:schema:backlog-signed-receipt:1"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "receipt"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af/BacklogAcknowledged@1"
+        },
+        "receipt": {
+          "$ref": "urn:af:schema:backlog-signed-receipt:1"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:backlog-markdown-destination:2",
+  "title": "Receiver-owned Markdown backlog destination",
+  "type": "object",
+  "required": [
+    "schema",
+    "project_id",
+    "scope",
+    "path"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af/backlog-markdown-destination@2"
+    },
+    "project_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "scope": {
+      "const": "unversioned_file"
+    },
+    "path": {
+      "type": "string",
+      "pattern": "^/.*\\.md$"
+    }
+  }
+}

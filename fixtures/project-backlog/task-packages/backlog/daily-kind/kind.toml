@@ -1,0 +1,5 @@
+schema = "af.task-kind/3"
+name = "backlog/daily-kind"
+version = "1.0.0"
+kind = "daily-backlog"
+profile = "report"

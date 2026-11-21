@@ -1,5 +1,7 @@
 //! Scenario CLI parsing and presentation; the domain lives in `af_scenario`.
+pub(crate) mod backlog;
 pub(crate) mod host;
+use af_scenario::Host;
 use af_scenario::{
     contract, performance, roadmap, runtime, schedule, source, state, store, workspace,
 };
@@ -170,6 +172,26 @@ af scenario experiment-source --file source.json --repo /project \\\n    --task-
         #[command(subcommand)]
         command: RoadmapCommand,
     },
+    /// Prepare a committed portable Scenario artifact as a native bundle without running a Task
+    Prepare {
+        /// Repository-relative portable Scenario artifact path, read from committed HEAD
+        #[arg(long)]
+        file: String,
+        /// Receiver checkout (default: current directory)
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        /// Receiver's private native Task Store outside the checkout
+        #[arg(long)]
+        task_state: PathBuf,
+        /// Caller-supplied named report sources JSON
+        #[arg(long)]
+        inputs: PathBuf,
+        /// Optional receiver-owned Provider aliases in af.task-bindings/1 form
+        #[arg(long)]
+        bindings: Option<PathBuf>,
+        #[command(flatten)]
+        inspect: Inspect,
+    },
     /// Validate types, transitive definitions, authority and bounds; print the exact pin to review
     Validate {
         #[command(flatten)]
@@ -276,6 +298,13 @@ af scenario experiment-source --file source.json --repo /project \\\n    --task-
 }
 #[derive(Debug, Subcommand)]
 pub(crate) enum AntCommand {
+    /// Configure recurring daily Project backlog processing
+    Backlog {
+        #[command(subcommand)]
+        command: backlog::Command,
+        #[command(flatten)]
+        inspect: Inspect,
+    },
     /// Explicit foreground scheduler lifecycle; never installs a service
     Scheduler {
         #[command(subcommand)]
@@ -431,7 +460,7 @@ fn scheduler(command: SchedulerCommand) -> Result<i32> {
                 let poll = std::time::Instant::now();
                 // Native supervised Task/adapter dispatch retains its existing deadlines,
                 // reconciliation and per-Run locks. Failed ticks are visible, never successes.
-                let error = match runtime::tick(&store, at, None) {
+                let error = match backlog::tick(&store, at, None) {
                     Ok(tick) if tick.refused.is_empty() => None,
                     Ok(tick) => {
                         Some(serde_json::to_string(&tick.refused).map_err(|e| e.to_string())?)
@@ -735,6 +764,23 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
             )
         }
         ScenarioCommand::Roadmap { command } => roadmap_command(command),
+        ScenarioCommand::Prepare {
+            file,
+            repo,
+            task_state,
+            inputs,
+            bindings,
+            inspect,
+        } => print(
+            &crate::task_commands::scenario_portable::prepare(
+                repo,
+                task_state,
+                &file,
+                &inputs,
+                bindings.as_deref(),
+            )?,
+            &inspect,
+        ),
         ScenarioCommand::Validate {
             definition,
             inspect,
@@ -759,6 +805,10 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
                 "Implementation startup scope is required but absent",
             )?;
             af_scenario::driver::validate_schedule(&pin, poll_ms)?;
+            require(
+                !backlog::reserved(&run_id),
+                "Run label is reserved for recurring Project backlog",
+            )?;
             let limits = pin.bundle.definitions[&pin.bundle.root].limits.clone();
             let run = Run::new(
                 &AfHost,
@@ -800,7 +850,7 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
         ScenarioCommand::List { inspect } => {
             let world = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?.read()?;
             print(
-                &serde_json::json!({"schema":"af/scenario-list@11","runs":world.runs}),
+                &serde_json::json!({"schema":"af/scenario-list@12","runs":world.runs}),
                 &inspect,
             )
         }
@@ -914,6 +964,7 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
 pub(crate) fn ant(command: AntCommand) -> Result<i32> {
     match command {
         AntCommand::Scheduler { command } => scheduler(command),
+        AntCommand::Backlog { command, inspect } => backlog::command(command, &inspect),
         AntCommand::Output { id, view, inspect } => output(&id, true, &view, &inspect),
         AntCommand::Validate {
             definition,
@@ -961,7 +1012,7 @@ pub(crate) fn ant(command: AntCommand) -> Result<i32> {
                 .map(|(id, ant)| Ok((id.clone(), ant_inspection(ant, &world, &scheduler)?)))
                 .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
             print(
-                &serde_json::json!({"schema":"af/ant-list@13","ants":ants}),
+                &serde_json::json!({"schema":"af/ant-list@14","ants":ants}),
                 &inspect,
             )
         }
@@ -976,9 +1027,9 @@ pub(crate) fn ant(command: AntCommand) -> Result<i32> {
                 refused,
                 busy,
                 runs: results,
-            } = runtime::tick(&store, now, inspect.now)?;
+            } = backlog::tick(&store, now, inspect.now)?;
             print(
-                &serde_json::json!({"schema":"af/ant-tick@12","now_unix_ms":now,"started":started,"busy":busy,"refused":refused,"runs":results}),
+                &serde_json::json!({"schema":"af/ant-tick@13","now_unix_ms":now,"started":started,"busy":busy,"refused":refused,"runs":results}),
                 &inspect,
             )
         }
@@ -990,7 +1041,7 @@ fn ant_inspection(
     scheduler: &serde_json::Value,
 ) -> Result<serde_json::Value> {
     let mut value = serde_json::to_value(ant).map_err(|e| e.to_string())?;
-    value["schema"] = serde_json::json!("af/ant-inspection@8");
+    value["schema"] = serde_json::json!("af/ant-inspection@9");
     value["scheduler"] = scheduler.clone();
     let next_due = ant.next_due_unix_ms();
     value["next_due_unix_ms"] = serde_json::json!(next_due.as_ref().ok().copied().flatten());

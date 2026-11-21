@@ -4504,3 +4504,956 @@ fn a_directory_at_the_original_path_after_any_moved_step_stops_the_removal() {
         assert_eq!(removals_of(&machine, &repo, &id), 1, "{what}");
     }
 }
+
+#[test]
+fn backlog_recovers_a_lost_receipt_and_shares_privately_across_worktrees() {
+    use std::process::Stdio;
+
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    let worktree = machine.root().join("other-worktree");
+    git(
+        &repo,
+        &["worktree", "add", "--detach", worktree.to_str().unwrap()],
+    );
+    let unrelated_root = machine.root().join("unrelated");
+    std::fs::create_dir_all(&unrelated_root).unwrap();
+    git(&unrelated_root, &["init", "-q"]);
+    git(
+        &unrelated_root,
+        &["commit", "--allow-empty", "-qm", "unrelated root"],
+    );
+
+    let evidence = machine.root().join("evidence.txt");
+    std::fs::write(&evidence, "private evidence sentinel\n").unwrap();
+    let record = [
+        "backlog",
+        "record",
+        "--report-id",
+        "producer-1",
+        "--title",
+        "Private title",
+        "--observed",
+        "Observed condition",
+        "--evidence-file",
+        evidence.to_str().unwrap(),
+        "--json",
+    ];
+    let (reader, writer) = nix::unistd::pipe().unwrap();
+    drop(reader);
+    let mut interrupted = crate::common::af()
+        .current_dir(&repo)
+        .env("XDG_STATE_HOME", machine.state_home())
+        .stdout(Stdio::from(writer))
+        .stderr(Stdio::null())
+        .args(record)
+        .spawn()
+        .unwrap();
+    // Close the only reader before the child can finish capture. Printing the acknowledgement
+    // fails after SQLite commits. The retry must recover the existing report.
+    assert!(!interrupted.wait().unwrap().success());
+
+    let private_args = ["backlog", "show", "producer-1", "--private", "--json"];
+    let before = machine.expect(&worktree, &private_args, 0);
+    let receipt = machine.expect(&repo, &record, 0);
+    let receipt: Value = serde_json::from_str(&receipt).unwrap();
+    let report: Value = serde_json::from_str(&before).unwrap();
+    let schema = schemas::validator("backlog-v2.json");
+    schemas::valid(&schema, &receipt);
+    schemas::valid(&schema, &report);
+    assert_eq!(
+        receipt["data"]["captured_unix_ms"],
+        report["data"]["captured_unix_ms"]
+    );
+    assert_eq!(receipt["data"]["local_capture"], true);
+    assert!(receipt["data"]["authority_receipt"].is_null());
+    assert!(report["data"]["task_id"].is_null());
+    assert!(report["data"]["run_id"].is_null());
+    assert_eq!(
+        report["data"]["source_revision"],
+        git(&repo, &["rev-parse", "HEAD"])
+    );
+    assert_eq!(
+        report["data"]["evidence"][0]["text"],
+        "private evidence sentinel\n"
+    );
+
+    let mut conflict = record;
+    conflict[7] = "A conflicting observation";
+    assert!(!machine.af(&repo, &conflict).status.success());
+    assert!(!machine.af(&worktree, &record).status.success());
+    let mut separate = record;
+    separate[3] = "producer-2";
+    machine.expect(&worktree, &separate, 0);
+
+    let inbox = machine.expect(&worktree, &["backlog", "inbox", "--json"], 0);
+    let inbox: Value = serde_json::from_str(&inbox).unwrap();
+    schemas::valid(&schema, &inbox);
+    let reports = inbox["data"]["reports"].as_array().unwrap();
+    assert_eq!(reports.len(), 2);
+    assert_ne!(reports[0]["workspace_id"], reports[1]["workspace_id"]);
+
+    let list = machine.expect(&worktree, &["backlog", "list", "--json"], 0);
+    let list: Value = serde_json::from_str(&list).unwrap();
+    schemas::valid(&schema, &list);
+    assert_eq!(list["data"]["items"], serde_json::json!([]));
+    let public = machine.af(&worktree, &["backlog", "show", "producer-1", "--json"]);
+    assert!(!public.status.success());
+    assert!(!String::from_utf8_lossy(&public.stdout).contains("private evidence sentinel"));
+    assert!(!machine.af(&unrelated_root, &private_args).status.success());
+    let other = machine.expect(&unrelated_root, &["backlog", "inbox", "--json"], 0);
+    let other: Value = serde_json::from_str(&other).unwrap();
+    assert_eq!(other["data"]["reports"], serde_json::json!([]));
+
+    let pruned = crate::common::af()
+        .current_dir(&repo)
+        .env("XDG_STATE_HOME", machine.state_home())
+        .env("AF_STORAGE__MAX_BYTES", "1")
+        .args(["storage", "prune", "--apply", "--json"])
+        .output()
+        .unwrap();
+    assert!(pruned.status.success(), "{}", text(&pruned).1);
+    assert_eq!(machine.expect(&worktree, &private_args, 0), before);
+}
+
+#[test]
+fn backlog_refuses_bad_fact_and_evidence_before_capture() {
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    let record = ["backlog", "record", "--title", "Report", "--observed"];
+    assert!(
+        !machine
+            .af(&repo, &[record.as_slice(), &[" \t"]].concat())
+            .status
+            .success()
+    );
+
+    let evidence = machine.root().join("evidence.txt");
+    let link = machine.root().join("link.txt");
+    std::os::unix::fs::symlink(&evidence, &link).unwrap();
+    let attempt = |path: &Path| {
+        let args = [
+            record.as_slice(),
+            &["A fact", "--evidence-file", path.to_str().unwrap()],
+        ]
+        .concat();
+        assert!(!machine.af(&repo, &args).status.success());
+    };
+    std::fs::write(&evidence, [0xff]).unwrap();
+    attempt(&evidence);
+    std::fs::write(&evidence, vec![b'a'; 65537]).unwrap();
+    attempt(&evidence);
+    std::fs::write(&evidence, "real evidence").unwrap();
+    attempt(&link);
+    assert!(!machine.projects().exists());
+}
+
+#[test]
+fn backlog_verified_cli_prints_only_the_approved_projection() {
+    use af_contracts::EventType::BacklogRecordStoredV2;
+    use af_store::{Cas, EventStore, NewEvent, content_id};
+    use serde_json::json;
+
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    let project_id = expected_project_id(&repo);
+    let store = machine
+        .projects()
+        .join(project_id.trim_start_matches("sha256:"));
+    for id in ["private", "held", "needs-evidence"] {
+        machine.expect(
+            &repo,
+            &[
+                "backlog",
+                "record",
+                "--report-id",
+                id,
+                "--title",
+                "Raw title",
+                "--observed",
+                "Raw fact",
+            ],
+            0,
+        );
+    }
+    let authority_key = minisign::KeyPair::generate_unencrypted_keypair()
+        .unwrap()
+        .pk;
+    let authority_id = af_store::canonical::blob_content_id(&authority_key.to_bytes());
+    write_backlog_policy(&store, &project_id, &authority_key, None, &[]);
+
+    // These fixtures represent authority records in the private Store. The CLI has no command
+    // that appends them.
+    let mut events = EventStore::open(store.join("events.sqlite")).unwrap();
+    let cas = Cas::open_existing(store.join("cas")).unwrap();
+    let digest = |byte: &str| format!("sha256:{}", byte.repeat(64));
+    let mut add = |data: Value| {
+        let id = content_id(&data).unwrap();
+        events
+            .append(
+                "backlog-processing",
+                &cas,
+                NewEvent::new(BacklogRecordStoredV2, data),
+            )
+            .unwrap();
+        id
+    };
+    let item = digest("1");
+    let evidence = vec![digest("2")];
+    let batch = add(json!({
+        "schema": "af/BacklogBatch@2", "settlement_id": null, "project_id": project_id, "authority_id": authority_id,
+        "first_sequence": "1", "last_sequence": "3",
+        "report_ids": ["private", "held", "needs-evidence"],
+        "scenario_id": digest("4"), "policy_id": digest("5")
+    }));
+    let schema = schemas::validator("backlog-v2.json");
+    let mut verified_revision = String::new();
+    for (id, item, disposition, reason) in [
+        (
+            "private",
+            item.clone(),
+            "verified",
+            "raw verification reason",
+        ),
+        ("held", digest("7"), "held", "raw hold reason"),
+        (
+            "needs-evidence",
+            digest("8"),
+            "needs_evidence",
+            "raw evidence request",
+        ),
+    ] {
+        let revision = add(json!({
+            "schema": "af/BacklogItemRevision@1", "project_id": project_id, "item_id": item,
+            "report_ids": [id], "claim": "raw internal claim", "evidence_ids": evidence,
+            "source_revision": git(&repo, &["rev-parse", "HEAD"]),
+            "proposed": {"title": "Public title", "body": "Approved description"}
+        }));
+        let decision = add(json!({
+            "schema": "af/BacklogDecision@2", "project_id": project_id, "batch_id": batch, "local_match": null,
+            "revision_id": revision, "task_results": [digest("6")],
+            "independent_verification_id": (disposition == "verified").then(|| digest("6")),
+            "disposition": disposition, "reason": reason, "evidence_ids": evidence
+        }));
+        let shown = machine.json(&repo, &["backlog", "show", id, "--private", "--json"]);
+        schemas::valid(&schema, &shown);
+        assert_eq!(shown["data"]["report"]["observed"], "Raw fact");
+        assert_eq!(
+            shown["data"]["outcomes"],
+            json!([{
+                "decision_id": decision, "batch_id": batch, "revision_id": revision,
+                "item_id": item, "local_match": null, "disposition": disposition, "reason": reason
+            }])
+        );
+        let human = machine.expect(&repo, &["backlog", "show", id, "--private"], 0);
+        assert!(human.contains(disposition) && human.contains(reason));
+        assert!(!machine.af(&repo, &["backlog", "show", id]).status.success());
+        if disposition == "verified" {
+            verified_revision = revision;
+        } else {
+            assert!(
+                !machine
+                    .af(&repo, &["backlog", "show", &item])
+                    .status
+                    .success()
+            );
+        }
+    }
+    drop(events);
+
+    let shown = machine.expect(&repo, &["backlog", "show", &item, "--json"], 0);
+    let shown: Value = serde_json::from_str(&shown).unwrap();
+    schemas::valid(&schema, &shown);
+    assert_eq!(
+        shown["data"],
+        json!({
+            "item_id": item,
+            "revision_id": verified_revision,
+            "public": {"title": "Public title", "body": "Approved description"}
+        })
+    );
+    let human = machine.expect(&repo, &["backlog", "show", &item], 0);
+    assert!(human.contains("Approved description"));
+    assert!(!human.contains("raw"));
+    let list = machine.expect(&repo, &["backlog", "list", "--json"], 0);
+    let list: Value = serde_json::from_str(&list).unwrap();
+    schemas::valid(&schema, &list);
+    assert_eq!(list["data"]["items"], json!([shown["data"]]));
+}
+
+fn write_backlog_policy(
+    store: &Path,
+    project_id: &str,
+    authority: &minisign::PublicKey,
+    producer: Option<&minisign::PublicKey>,
+    enrolled: &[&minisign::PublicKey],
+) {
+    let policy = serde_json::json!({
+        "schema": "af/backlog-intake-policy@1",
+        "project_id": project_id,
+        "authority_key": authority.to_base64(),
+        "producer_key": producer.map(minisign::PublicKey::to_base64),
+        "enrolled_keys": enrolled.iter().map(|k| k.to_base64()).collect::<Vec<_>>(),
+    });
+    schemas::valid(
+        &schemas::validator("backlog-intake-policy-v1.json"),
+        &policy,
+    );
+    std::fs::write(store.join("backlog-intake-v1.json"), policy.to_string()).unwrap();
+}
+
+#[test]
+fn backlog_offline_intake_commits_before_ack_and_replays_exactly_once() {
+    use serde_json::json;
+    use std::process::Stdio;
+
+    let machine = Machine::new();
+    let destination = Machine::new();
+    let other_producer = Machine::new();
+    let repo = repository(&machine.root());
+    let destination_repo = destination.root().join("clone");
+    let other_repo = other_producer.root().join("clone");
+    for clone in [&destination_repo, &other_repo] {
+        git(
+            &repo,
+            &[
+                "clone",
+                "-q",
+                repo.to_str().unwrap(),
+                clone.to_str().unwrap(),
+            ],
+        );
+    }
+
+    let evidence = machine.root().join("evidence.txt");
+    std::fs::write(&evidence, "private intake evidence\n").unwrap();
+    let capture = |owner: &Machine, checkout: &Path, id: &str| {
+        owner.json(
+            checkout,
+            &[
+                "backlog",
+                "record",
+                "--report-id",
+                id,
+                "--title",
+                "Observed issue",
+                "--observed",
+                "Observed condition",
+                "--evidence-file",
+                evidence.to_str().unwrap(),
+                "--json",
+            ],
+        )
+    };
+    for id in ["offline-1", "offline-2"] {
+        let captured = capture(&machine, &repo, id);
+        assert!(captured["data"]["authority_receipt"].is_null());
+    }
+    capture(&other_producer, &other_repo, "offline-1");
+    let pending = || machine.json(&repo, &["backlog", "outbox", "--json"]);
+    let command_schema = schemas::validator("backlog-v2.json");
+    schemas::valid(&command_schema, &pending());
+    assert_eq!(
+        pending()["data"]["report_ids"],
+        json!(["offline-1", "offline-2"])
+    );
+
+    let authority = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+    let producer = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+    let second = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+    let key_file = |owner: &Machine, key: &minisign::SecretKey| {
+        use std::io::Write as _;
+        let path = owner.root().join("signing.key");
+        let mut file = af_store::local_fs::private_file_options()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(key.to_box(None).unwrap().into_string().as_bytes())
+            .unwrap();
+        path
+    };
+    let authority_key = key_file(&destination, &authority.sk);
+    let producer_key = key_file(&machine, &producer.sk);
+    let second_key = key_file(&other_producer, &second.sk);
+    let configure =
+        |owner: &Machine, checkout: &Path, producer, enrolled: &[&minisign::PublicKey]| {
+            let data = owner.json(checkout, &["project", "show", "--json"]);
+            write_backlog_policy(
+                Path::new(data["store"].as_str().unwrap()),
+                data["project_id"].as_str().unwrap(),
+                &authority.pk,
+                producer,
+                enrolled,
+            );
+        };
+    configure(&machine, &repo, Some(&producer.pk), &[]);
+    configure(&other_producer, &other_repo, Some(&second.pk), &[]);
+    configure(&destination, &destination_repo, None, &[]);
+
+    let packet = machine.root().join("submission.json");
+    let receipt_path = machine.root().join("receipt.json");
+    let export = |owner: &Machine, checkout: &Path, id: &str, key: &Path| {
+        let value = owner.json(
+            checkout,
+            &["backlog", "export", id, "--key", key.to_str().unwrap()],
+        );
+        schemas::valid(
+            &schemas::validator("backlog-signed-submission-v1.json"),
+            &value,
+        );
+        value
+    };
+    let first = export(&machine, &repo, "offline-1", &producer_key);
+    let write_packet = |packet_value: &Value| {
+        std::fs::write(&packet, packet_value.to_string()).unwrap();
+    };
+    write_packet(&first);
+    let accept = [
+        "backlog",
+        "accept",
+        packet.to_str().unwrap(),
+        "--key",
+        authority_key.to_str().unwrap(),
+    ];
+    let refuse = |args: &[&str], expected: &str| {
+        let result = destination.af(&destination_repo, args);
+        let (stdout, stderr) = text(&result);
+        assert!(
+            !result.status.success() && stdout.is_empty() && stderr.contains(expected),
+            "{stdout} {stderr}"
+        );
+    };
+    refuse(&accept, "producer is not enrolled");
+
+    let unrelated = Machine::new();
+    // Ensure a different root even on filesystems and clocks shared by both fixture checkouts.
+    let other = unrelated.root().join("other");
+    std::fs::create_dir(&other).unwrap();
+    git(&other, &["init", "-q"]);
+    git(
+        &other,
+        &["commit", "--allow-empty", "-qm", "distinct Project"],
+    );
+    assert_ne!(expected_project_id(&repo), expected_project_id(&other));
+    configure(&unrelated, &other, None, &[&producer.pk]);
+    let result = unrelated.af(&other, &accept);
+    assert!(text(&result).1.contains("different Project"));
+    assert_eq!(
+        unrelated.json(&other, &["backlog", "inbox", "--json"])["data"]["reports"],
+        json!([])
+    );
+
+    configure(
+        &destination,
+        &destination_repo,
+        None,
+        &[&producer.pk, &second.pk],
+    );
+    let mut missing = first.clone();
+    missing["body"]["report"]["evidence"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("text");
+    write_packet(&missing);
+    refuse(&accept, "invalid backlog exchange document");
+    let mut altered = first.clone();
+    altered["body"]["report"]["evidence"][0]["text"] = json!("mismatched evidence");
+    write_packet(&altered);
+    refuse(&accept, "authentication failed");
+    altered["signature"] = json!(
+        minisign::sign(
+            Some(&producer.pk),
+            &producer.sk,
+            af_store::canonicalize(&altered["body"]).unwrap().as_slice(),
+            None,
+            None,
+        )
+        .unwrap()
+        .into_string()
+    );
+    write_packet(&altered);
+    refuse(&accept, "differs from its recorded content identity");
+    assert_eq!(
+        destination.json(&destination_repo, &["backlog", "inbox", "--json"])["data"]["reports"],
+        json!([])
+    );
+    write_packet(&first);
+
+    let (reader, writer) = nix::unistd::pipe().unwrap();
+    drop(reader);
+    let status = crate::common::af()
+        .current_dir(&destination_repo)
+        .env("XDG_STATE_HOME", destination.state_home())
+        .env("AF_SELF_OFFLINE", "1")
+        .stdout(Stdio::from(writer))
+        .stderr(Stdio::null())
+        .args(accept)
+        .status()
+        .unwrap();
+    assert!(
+        !status.success(),
+        "the first authority receipt must be lost"
+    );
+    let stored = destination.json(
+        &destination_repo,
+        &["backlog", "show", "offline-1", "--private", "--json"],
+    );
+    assert_eq!(stored["data"]["authority_receipt"]["sequence"], "1");
+    assert_eq!(
+        stored["data"]["report"]["evidence"][0]["text"],
+        "private intake evidence\n"
+    );
+    assert_eq!(
+        pending()["data"]["report_ids"],
+        json!(["offline-1", "offline-2"])
+    );
+
+    let wrong_key = [
+        "backlog",
+        "accept",
+        packet.to_str().unwrap(),
+        "--key",
+        producer_key.to_str().unwrap(),
+    ];
+    refuse(&wrong_key, "does not match configured public key");
+    let ack = ["backlog", "ack", receipt_path.to_str().unwrap(), "--json"];
+    let mut forged = destination.json(&destination_repo, &accept);
+    forged["signature"] = json!(
+        minisign::sign(
+            Some(&producer.pk),
+            &producer.sk,
+            af_store::canonicalize(&forged["body"]).unwrap().as_slice(),
+            None,
+            None,
+        )
+        .unwrap()
+        .into_string()
+    );
+    std::fs::write(&receipt_path, forged.to_string()).unwrap();
+    let refused = machine.af(&repo, &ack);
+    assert!(!refused.status.success());
+    let (stdout, stderr) = text(&refused);
+    assert!(stdout.contains("authentication failed") || stderr.contains("authentication failed"));
+    assert_eq!(
+        pending()["data"]["report_ids"],
+        json!(["offline-1", "offline-2"])
+    );
+
+    let receipt_schema = schemas::validator("backlog-signed-receipt-v1.json");
+    for (id, sequence) in [("offline-1", "1"), ("offline-2", "2")] {
+        write_packet(&export(&machine, &repo, id, &producer_key));
+        let receipt = destination.json(&destination_repo, &accept);
+        schemas::valid(&receipt_schema, &receipt);
+        assert_eq!(receipt["body"]["sequence"], sequence);
+        assert_eq!(receipt["body"]["report_id"], id);
+        assert!(!receipt.to_string().contains("private intake evidence"));
+        assert_eq!(receipt, destination.json(&destination_repo, &accept));
+        std::fs::write(&receipt_path, receipt.to_string()).unwrap();
+        let acked = machine.json(&repo, &ack);
+        schemas::valid(&command_schema, &acked);
+        assert_eq!(acked, machine.json(&repo, &ack));
+        assert_eq!(
+            capture(&machine, &repo, id)["data"]["authority_receipt"],
+            acked["data"]["authority_receipt"]
+        );
+    }
+    assert_eq!(pending()["data"]["report_ids"], json!([]));
+
+    write_packet(&export(
+        &other_producer,
+        &other_repo,
+        "offline-1",
+        &second_key,
+    ));
+    refuse(&accept, "different content or producer");
+    configure(&destination, &destination_repo, None, &[&second.pk]);
+    write_packet(&first);
+    refuse(&accept, "producer is not enrolled");
+    let inbox = destination.json(&destination_repo, &["backlog", "inbox", "--json"]);
+    let reports = inbox["data"]["reports"].as_array().unwrap();
+    assert_eq!(reports.len(), 2);
+    assert_eq!(reports[0]["report_id"], "offline-1");
+    assert_eq!(reports[1]["report_id"], "offline-2");
+
+    capture(&other_producer, &other_repo, "second-producer");
+    write_packet(&export(
+        &other_producer,
+        &other_repo,
+        "second-producer",
+        &second_key,
+    ));
+    let second_receipt = destination.json(&destination_repo, &accept);
+    assert_eq!(second_receipt["body"]["sequence"], "3");
+    std::fs::write(&receipt_path, second_receipt.to_string()).unwrap();
+    other_producer.json(&other_repo, &ack);
+
+    let pruned = crate::common::af()
+        .current_dir(&destination_repo)
+        .env("XDG_STATE_HOME", destination.state_home())
+        .env("AF_STORAGE__MAX_BYTES", "1")
+        .args(["storage", "prune", "--apply", "--json"])
+        .output()
+        .unwrap();
+    assert!(pruned.status.success(), "{}", text(&pruned).1);
+    assert_eq!(
+        stored,
+        destination.json(
+            &destination_repo,
+            &["backlog", "show", "offline-1", "--private", "--json"]
+        )
+    );
+    assert_eq!(
+        destination.json(&destination_repo, &["backlog", "list", "--json"])["data"]["items"],
+        json!([])
+    );
+    assert!(
+        !destination
+            .af(&destination_repo, &["backlog", "show", "offline-1"])
+            .status
+            .success()
+    );
+}
+
+#[test]
+fn backlog_daily_batch_replays_frozen_intake_and_accounts_for_every_report() {
+    use serde_json::json;
+
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    let authority = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+    let producer = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+    let write_key = |name: &str, key: &minisign::SecretKey| {
+        use std::io::Write as _;
+        let path = machine.root().join(name);
+        af_store::local_fs::private_file_options()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap()
+            .write_all(key.to_box(None).unwrap().into_string().as_bytes())
+            .unwrap();
+        path
+    };
+    let authority_key = write_key("authority.key", &authority.sk);
+    let producer_key = write_key("producer.key", &producer.sk);
+    let evidence = machine.root().join("private.txt");
+    std::fs::write(&evidence, "early private evidence").unwrap();
+    let capture = |id| {
+        machine.json(
+            &repo,
+            &[
+                "backlog",
+                "record",
+                "--report-id",
+                id,
+                "--title",
+                "Observed issue",
+                "--observed",
+                "Observed condition",
+                "--evidence-file",
+                evidence.to_str().unwrap(),
+                "--json",
+            ],
+        )
+    };
+    for id in ["first", "capacity", "competing"] {
+        capture(id);
+    }
+    std::fs::write(&evidence, "late private evidence").unwrap();
+    for id in ["late", "local-only"] {
+        capture(id);
+    }
+    let project = machine.json(&repo, &["project", "show", "--json"]);
+    let project_id = project["project_id"].as_str().unwrap();
+    let store = Path::new(project["store"].as_str().unwrap());
+    write_backlog_policy(
+        store,
+        project_id,
+        &authority.pk,
+        Some(&producer.pk),
+        &[&producer.pk],
+    );
+    let digest = |ch: char| format!("sha256:{}", ch.to_string().repeat(64));
+    let (item, other_item) = (digest('a'), digest('b'));
+    // 02:30 America/New_York, March 6 and 7 EST. March 8 has no 02:30.
+    const FIRST: &str = "1772782200000";
+    const BUSY: &str = "1772868600000";
+    const BUDGET: &str = "1773124200000"; // March 10 at 02:30 EDT.
+    const NEXT: &str = "1773297000000"; // March 12 at 02:30 EDT.
+    let policy = json!({
+        "schema": "af/backlog-batch-policy@2",
+        "project_id": project_id,
+        "authority_id": af_store::canonical::blob_content_id(&authority.pk.to_bytes()),
+        "scenario_id": digest('c'),
+        "destination_id": digest('d'),
+        "timezone": "America/New_York",
+        "hour": 2, "minute": 30, "start_unix_ms": FIRST.parse::<u64>().unwrap(),
+        "lateness_ms": 60000, "run_tokens": 5, "run_wall_ms": 30000, "run_dispatches": 1,
+        "rolling_tokens": 5, "rolling_window_ms": 4 * 86_400_000u64, "publication_limit": 1,
+        "evidence_access": "evidence_ids", "hold_policy": "allow_local_reservations",
+    });
+    let policy_file = store.join("backlog-batch-policy-v2.json");
+    let put_policy = |value: &Value| std::fs::write(&policy_file, value.to_string()).unwrap();
+    put_policy(&policy);
+
+    let accept = |id| {
+        let packet = machine.json(
+            &repo,
+            &[
+                "backlog",
+                "export",
+                id,
+                "--key",
+                producer_key.to_str().unwrap(),
+            ],
+        );
+        let submission = machine.root().join("packet.json");
+        std::fs::write(&submission, packet.to_string()).unwrap();
+        machine.json(
+            &repo,
+            &[
+                "backlog",
+                "accept",
+                submission.to_str().unwrap(),
+                "--key",
+                authority_key.to_str().unwrap(),
+            ],
+        )
+    };
+    let receipt = accept("first");
+    assert_eq!(accept("first"), receipt);
+    accept("capacity");
+    accept("competing");
+
+    let audit = || machine.json(&repo, &["backlog", "batch", "audit"]);
+    let tick = |time| machine.json(&repo, &["backlog", "batch", "tick", "--at-unix-ms", time]);
+    let refuse = |args: &[&str], reason: &str| {
+        let output = machine.af(&repo, args);
+        assert!(
+            !output.status.success() && text(&output).1.contains(reason),
+            "{:?}",
+            text(&output)
+        );
+    };
+    let initial = std::thread::scope(|scope| {
+        let competing_tick = scope.spawn(|| tick(FIRST));
+        let initial = tick(FIRST);
+        assert_eq!(competing_tick.join().unwrap(), initial);
+        initial
+    });
+    let audit_schema = schemas::validator("backlog-batch-audit-v3.json");
+    schemas::valid(&audit_schema, &initial);
+    let batch = initial["active_batch_id"].as_str().unwrap();
+    assert_eq!(initial["high_water"], "3");
+    assert_eq!(initial["closed_high_water"], "0");
+    assert_eq!(initial["occurrences"].as_array().unwrap().len(), 1);
+    assert_eq!(initial["occurrences"][0]["outcome"]["reserved_tokens"], 5);
+    assert_eq!(
+        initial["batches"][batch]["members"]
+            .as_object()
+            .unwrap()
+            .len(),
+        3
+    );
+    let reserve = |batch, member, item| {
+        machine.json(
+            &repo,
+            &[
+                "backlog",
+                "batch",
+                "settle",
+                batch,
+                member,
+                "reserve-publication",
+                "--item-id",
+                item,
+            ],
+        )
+    };
+    let close = |batch, time| {
+        machine.json(
+            &repo,
+            &["backlog", "batch", "close", batch, "--at-unix-ms", time],
+        )
+    };
+
+    // Kill the local driver after AF emits its first committed disposition and before the
+    // driver can close the batch. The next invocation must reload the claim from SQLite.
+    let af = crate::common::af();
+    let mut driver = Command::new("/bin/sh");
+    driver
+        .args(["-c", r#""$@" && read -r ignored"#, "batch-driver"])
+        .arg(af.get_program())
+        .args([
+            "backlog",
+            "batch",
+            "settle",
+            batch,
+            "first",
+            "reserve-publication",
+            "--item-id",
+            &item,
+        ])
+        .current_dir(&repo)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped());
+    for (key, value) in af.get_envs() {
+        if let Some(value) = value {
+            driver.env(key, value);
+        } else {
+            driver.env_remove(key);
+        }
+    }
+    let mut driver = driver
+        .env("XDG_STATE_HOME", machine.state_home())
+        .spawn()
+        .unwrap();
+    let partial = serde_json::Deserializer::from_reader(driver.stdout.take().unwrap())
+        .into_iter::<Value>()
+        .next()
+        .unwrap()
+        .unwrap();
+    driver.kill().unwrap();
+    assert!(!driver.wait().unwrap().success());
+    assert_eq!(audit(), partial);
+    assert_eq!(reserve(batch, "first", &item), partial);
+    assert_eq!(
+        partial["batches"][batch]["publication_reservations"],
+        json!([item])
+    );
+    refuse(
+        &["backlog", "batch", "close", batch, "--at-unix-ms", FIRST],
+        "all members",
+    );
+    let late = accept("late");
+    assert_eq!(late["body"]["sequence"], "4");
+    assert_eq!(accept("late"), late);
+    let resumed = tick(FIRST);
+    assert_eq!(resumed["pending_member_ids"], json!(["late"]));
+    assert_eq!(resumed["batches"][batch], partial["batches"][batch]);
+    assert!(!resumed.to_string().contains("late private evidence"));
+    let late_digest = af_store::canonical::blob_content_id(b"late private evidence");
+    assert!(!resumed["batches"][batch].to_string().contains(&late_digest));
+    let mut changed = policy.clone();
+    changed["publication_limit"] = json!(2);
+    put_policy(&changed);
+    refuse(
+        &["backlog", "batch", "tick", "--at-unix-ms", BUSY],
+        "during an active batch",
+    );
+    assert_eq!(audit(), resumed);
+    put_policy(&policy);
+    let overlap = tick(BUSY);
+    assert_eq!(overlap["occurrences"][1]["outcome"]["kind"], "skipped_busy");
+    assert_eq!(overlap["high_water"], "3");
+    refuse(
+        &["backlog", "batch", "settle", batch, "late", "held"],
+        "outside the frozen",
+    );
+
+    let conflict = reserve(batch, "competing", &item);
+    assert_eq!(
+        conflict["batches"][batch]["members"]["competing"]["disposition"],
+        "deferred_item_claim"
+    );
+    let capacity = reserve(batch, "capacity", &other_item);
+    assert_eq!(
+        capacity["batches"][batch]["members"]["capacity"]["disposition"],
+        "deferred_publication_cap"
+    );
+    let closed = close(batch, BUSY);
+    assert_eq!(close(batch, BUSY), closed);
+    assert_eq!(closed["closed_high_water"], "3");
+    assert_eq!(
+        closed["pending_member_ids"],
+        json!(["capacity", "competing", "late"])
+    );
+
+    let request = [
+        "backlog",
+        "batch",
+        "reconsider",
+        "--item-id",
+        &item,
+        "--report-id",
+        "first",
+        "--evidence-report-id",
+        "late",
+        "--eligible-unix-ms",
+        NEXT,
+    ];
+    let reconsidered = machine.json(&repo, &request);
+    assert_eq!(machine.json(&repo, &request), reconsidered);
+    let reconsider_id = reconsidered["reconsiderations"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .next()
+        .unwrap();
+    assert!(reconsidered["reconsiderations"][reconsider_id]["admitted_batch_id"].is_null());
+
+    changed["run_tokens"] = json!(2);
+    changed["evidence_access"] = json!("metadata_only");
+    put_policy(&changed);
+    let skipped = tick(BUDGET);
+    assert_ne!(skipped["pin_id"], initial["pin_id"]);
+    let occurrences = skipped["occurrences"].as_array().unwrap();
+    assert_eq!(occurrences[2]["outcome"]["kind"], "skipped_missing_time");
+    assert_eq!(occurrences[2]["due_unix_ms"], 1_772_953_200_000u64);
+    assert_eq!(occurrences[3]["outcome"]["kind"], "skipped_missed");
+    assert_eq!(occurrences[3]["due_unix_ms"], 1_773_037_800_000u64);
+    assert_eq!(occurrences[4]["outcome"]["kind"], "skipped_budget");
+    assert_eq!(skipped["high_water"], "3");
+
+    let next = tick(NEXT);
+    assert_eq!(next["pin_id"], skipped["pin_id"]);
+    let admitted = next["occurrences"].as_array().unwrap().last().unwrap();
+    assert_eq!(admitted["outcome"]["reserved_tokens"], 2);
+    assert_eq!(next["batches"][batch]["policy_id"], initial["pin_id"]);
+    assert_eq!(
+        next["batches"][next["active_batch_id"].as_str().unwrap()]["policy_id"],
+        next["pin_id"]
+    );
+    let next_batch = next["active_batch_id"].as_str().unwrap();
+    assert_ne!(next_batch, batch);
+    let members = next["batches"][next_batch]["members"].as_object().unwrap();
+    assert_eq!(members.len(), 4);
+    assert_eq!(members["capacity"]["item_id"], other_item);
+    assert_eq!(members[reconsider_id]["evidence_report_id"], "late");
+    assert_eq!(members["late"]["evidence_ids"], json!([]));
+    assert_eq!(members[reconsider_id]["evidence_ids"], json!([]));
+    assert_eq!(
+        next["reconsiderations"][reconsider_id]["admitted_batch_id"],
+        next_batch
+    );
+    assert_eq!(
+        next["intake"][0]["report_digest"],
+        receipt["body"]["report_digest"]
+    );
+    assert_eq!(
+        next["intake"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["report_id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["first", "capacity", "competing", "late"]
+    );
+    schemas::valid(&audit_schema, &next);
+    for id in ["capacity", "competing", "late", reconsider_id] {
+        machine.json(
+            &repo,
+            &["backlog", "batch", "settle", next_batch, id, "accounted"],
+        );
+    }
+    let complete = close(next_batch, NEXT);
+    assert_eq!(complete["closed_high_water"], "4");
+    assert_eq!(complete["pending_member_ids"], json!([]));
+    assert!(complete["active_batch_id"].is_null());
+    assert_eq!(complete, audit());
+    assert_eq!(
+        machine.json(&repo, &["backlog", "list", "--json"])["data"]["items"],
+        json!([])
+    );
+}

@@ -70,6 +70,18 @@ pub trait Host: Send + Sync {
         timeout_ms: u64,
         cancellation: &AtomicBool,
     ) -> Result<Settlement>;
+    fn check_run_dispatch(&self, _: &Path, _: &crate::state::Run) -> Result<()> {
+        Ok(())
+    }
+    fn run_backlog_action(
+        &self,
+        _: &crate::state::Run,
+        _: &crate::state::Dispatch,
+        _: &crate::contract::Grant,
+        _: &AtomicBool,
+    ) -> Result<Option<String>> {
+        Err("Host does not support local backlog actions".into())
+    }
     fn active_task_run(&self, target: &TaskTarget) -> Option<u64>;
     fn cancel_task_run(&self, target: &TaskTarget, expected: u64) -> Result<()>;
     /// Missing, unreadable, running or mismatched Tasks retain the full reservation (`None`).

@@ -14,6 +14,7 @@
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 compile_error!("af supports Linux and macOS only");
 
+pub mod backlog;
 pub mod build_cache;
 pub mod cache;
 pub mod change_set;

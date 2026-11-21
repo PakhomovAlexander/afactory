@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:backlog-scenario-artifact:1",
+  "title": "Portable backlog Scenario artifact v1",
+  "description": "A committed backlog Scenario and its dependency pins. Preparation resolves the frozen batch from the receiving Project Store. Native actions settle accepted assessments and dispatch eligible revisions to the local sink.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "definition", "inputs", "packages", "schemas"],
+  "properties": {
+    "schema": { "const": "af/backlog-scenario-artifact@1" },
+    "definition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "step", "result", "task", "limits"],
+      "properties": {
+        "id": { "$ref": "urn:af:schema:scenario:11#/$defs/name" },
+        "step": { "$ref": "urn:af:schema:scenario:11#/$defs/name" },
+        "result": { "$ref": "urn:af:schema:scenario:11#/$defs/name" },
+        "limits": {
+          "$ref": "urn:af:schema:scenario:11#/properties/limits",
+          "properties": { "max_dispatches": { "minimum": 3 } }
+        },
+        "task": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "kind_package", "pipeline", "goal", "limits"],
+          "properties": {
+            "kind": { "$ref": "urn:af:schema:task-contracts:4#/$defs/package" },
+            "kind_package": { "$ref": "urn:af:schema:task-contracts:4#/$defs/package" },
+            "pipeline": { "$ref": "urn:af:schema:task-contracts:4#/$defs/package" },
+            "goal": { "type": "string", "minLength": 1 },
+            "limits": { "$ref": "urn:af:schema:task-file:1#/properties/limits" }
+          }
+        }
+      }
+    },
+    "inputs": { "const": { "backlog-batch": "backlog_batch" } },
+    "packages": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 128,
+      "propertyNames": { "$ref": "urn:af:schema:task-contracts:4#/$defs/package" },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "digest", "version"],
+        "properties": {
+          "path": { "$ref": "#/$defs/path" },
+          "digest": { "$ref": "urn:af:schema:task-contracts:4#/$defs/digest" },
+          "version": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "schemas": {
+      "type": "object",
+      "maxProperties": 16,
+      "propertyNames": { "$ref": "urn:af:schema:scenario:11#/$defs/name" },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "digest"],
+        "properties": {
+          "path": { "$ref": "#/$defs/path" },
+          "digest": { "$ref": "urn:af:schema:task-contracts:4#/$defs/digest" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(?!/)(?!.*//)(?!.*/$)(?!.*(?:^|/)(?:\\.{1,2}|\\.git)(?:/|$))[^\\\\\\x00-\\x1f\\x7f]+$"
+    }
+  }
+}

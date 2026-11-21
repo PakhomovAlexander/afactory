@@ -18,6 +18,8 @@
 //! The application supplies machine services through [`Host`]; `.af/af.toml` validation
 //! remains the CLI's separate `project_policy` responsibility.
 
+pub mod backlog;
+
 /// Project Briefs (ADR-0160), rendered from the Surveyor's records.
 pub mod brief;
 mod environment;

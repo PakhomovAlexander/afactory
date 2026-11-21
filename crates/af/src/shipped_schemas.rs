@@ -23,13 +23,20 @@ macro_rules! schema {
 /// Every shipped schema: its document id (the `schema` field the document carries), its file
 /// under `schemas/`, and its bytes.
 pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
-    schema!("ant-inspection", 8),
-    schema!("ant-list", 13),
-    schema!("ant-pin", 12),
+    schema!("ant-inspection", 9),
+    schema!("ant-list", 14),
+    schema!("ant-pin", 13),
     schema!("ant-scheduler", 1),
-    schema!("ant-state", 13),
-    schema!("ant-tick", 12),
-    schema!("ant", 11),
+    schema!("ant-state", 14),
+    schema!("ant-tick", 13),
+    schema!("ant", 12),
+    schema!("backlog-assessment", 2),
+    schema!("backlog-batch-reference", 1),
+    schema!("backlog-collected-batch", 3),
+    schema!("backlog-scenario-artifact", 1),
+    schema!("backlog-signed-receipt", 1),
+    schema!("backlog-signed-submission", 1),
+    schema!("backlog", 2),
     schema!("command-catalog", 1),
     schema!("error", 2),
     schema!("findings-sarif", 1),
@@ -65,26 +72,27 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("review-ledger", 3),
     schema!("scenario-adapter-request", 8),
     schema!("scenario-adapter-response", 3),
-    schema!("scenario-bundle", 10),
+    schema!("scenario-artifact", 1),
+    schema!("scenario-bundle", 11),
     schema!("scenario-decision", 1),
     schema!("scenario-driver", 2),
     schema!("scenario-evidence-source", 1),
     schema!("scenario-experiment-source-request", 1),
     schema!("scenario-experiment-source", 1),
-    schema!("scenario-list", 11),
+    schema!("scenario-list", 12),
     schema!("scenario-owned-file", 1),
-    schema!("scenario-pin", 11),
+    schema!("scenario-pin", 12),
     schema!("scenario-policy", 8),
     schema!("scenario-roadmap-list", 3),
     schema!("scenario-roadmap-proposal", 2),
     schema!("scenario-roadmap-revision", 2),
     schema!("scenario-roadmap", 3),
-    schema!("scenario-run", 11),
+    schema!("scenario-run", 12),
     schema!("scenario-signed-decision", 1),
-    schema!("scenario-store", 17),
+    schema!("scenario-store", 18),
     schema!("scenario-task-template", 2),
     schema!("scenario-template-pin", 2),
-    schema!("scenario", 10),
+    schema!("scenario", 11),
     schema!("task-attention", 2),
     schema!("task-cancelled", 3),
     schema!("task-checks", 4),
@@ -257,6 +265,6 @@ mod tests {
         assert!(refusal("af/task-inspection@18").contains("only af/task-inspection@21"));
         let listing = listing();
         assert_eq!(listing.lines().count(), SCHEMAS.len());
-        assert!(listing.starts_with("af/ant-inspection@8  "), "{listing}");
+        assert!(listing.starts_with("af/ant-inspection@9  "), "{listing}");
     }
 }

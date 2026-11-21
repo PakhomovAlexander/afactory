@@ -60,11 +60,14 @@
         "WorkspaceDelivered@1",
         "SurveyRecorded@1",
         "SurveyFailed@1",
-        "SurveyCollected@1"
+        "SurveyCollected@1",
+        "BacklogRecordStored@2",
+        "BacklogBatchStored@4",
+        "BacklogIntakeStored@1"
       ]
     },
     "occurred_at": {
-      "description": "Wall-clock observation, for humans and forensics. NOT an ordering authority \u2014 `sequence` is. Replay must never depend on this field.",
+      "description": "Wall-clock observation, for humans and forensics. NOT an ordering authority — `sequence` is. Replay must never depend on this field.",
       "type": "string",
       "format": "date-time"
     },
@@ -101,6 +104,72 @@
     }
   },
   "allOf": [
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "BacklogRecordStored@2"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "urn:af:schema:backlog-record:2"
+          },
+          "artifact_refs": {
+            "maxItems": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "BacklogBatchStored@4"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "urn:af:schema:backlog-batch-record:4"
+          },
+          "artifact_refs": {
+            "maxItems": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "BacklogIntakeStored@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "urn:af:schema:backlog-intake-record:1"
+          },
+          "artifact_refs": {
+            "maxItems": 0
+          }
+        }
+      }
+    },
     {
       "if": {
         "properties": {

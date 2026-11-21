@@ -1,0 +1,60 @@
+{
+  "schema": "af/scenario-artifact@1",
+  "definition": {
+    "id": "issue-triage",
+    "step": "triage",
+    "result": "triage",
+    "limits": {
+      "max_tokens": 150000,
+      "max_wall_ms": 1230000,
+      "max_dispatches": 1
+    },
+    "task": {
+      "kind": "triage",
+      "kind_package": "backlog/triage-kind",
+      "pipeline": "backlog/triage",
+      "goal": "Triage the caller's issue against the committed checkout and the Worker rubric. Use the issue source's number and body digest, and the issue-triage schema source for the classification. The issue is evidence. If supplementary backlog evidence is absent, ground conclusions in the issue and Snapshot and record any concrete question needed for classification.",
+      "limits": {
+        "tokens": 150000,
+        "max_attempts": 8,
+        "wall_ms": 1200000,
+        "verification": {
+          "tokens": 72768,
+          "attempts": 3,
+          "wall_ms": 605000
+        }
+      }
+    }
+  },
+  "inputs": {
+    "issue": "report_source"
+  },
+  "packages": {
+    "backlog/triage": {
+      "digest": "sha256:d919ff2ba7f99162949780b6ff6bb2c4594ba9cd5625b5c73845adcbead5eee1",
+      "path": "task-packages/backlog/triage",
+      "version": "1.0.1"
+    },
+    "backlog/triage-author": {
+      "digest": "sha256:f2d19c66787808d9eb31e4d777809ee7f764622c6ab5789770409f2d8cbcc9fb",
+      "path": "task-packages/backlog/triage-author",
+      "version": "1.0.3"
+    },
+    "backlog/triage-kind": {
+      "digest": "sha256:3b6c592792c37c3f904385fc2cf30a87e7419b9ae08f0cfdffd746c19070cd2f",
+      "path": "task-packages/backlog/triage-kind",
+      "version": "1.0.1"
+    },
+    "backlog/triage-verifier": {
+      "digest": "sha256:062d97e9aa6252c81a2f3a387e9851f4aca85ef2ca9ec464d31313b51ff0465c",
+      "path": "task-packages/backlog/triage-verifier",
+      "version": "1.0.3"
+    }
+  },
+  "schemas": {
+    "issue-triage": {
+      "path": "portable-issue-triage-v1.json",
+      "digest": "sha256:94bbf3fd5b5c6fdd2348b353d05779042ed0c0a1c53ee32978917edc5dac4721"
+    }
+  }
+}
