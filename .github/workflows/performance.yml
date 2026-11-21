@@ -109,11 +109,12 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
+  NOBUILD: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'nobuild') }}
   PYTHONDONTWRITEBYTECODE: "1"
 
 jobs:
   # The pull request's own opt-out, decided before any plan, build or matrix exists. Only an
-  # resolved perf exclusion exempts it. A rerun preserves the event selection.
+  # resolved perf exclusion or nobuild exempts it. A rerun preserves the event selection.
   # Only the trusted base checkout runs the resolver; candidate code never executes here.
   scope:
     name: scope
@@ -123,6 +124,7 @@ jobs:
       exempt: ${{ steps.label.outputs.exempt }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.NOBUILD != 'true'
         with:
           ref: ${{ github.event.pull_request.base.sha || github.sha }}
           path: scope-control
@@ -135,7 +137,9 @@ jobs:
           CONTROL_ROOT: ${{ github.workspace }}/scope-control
         run: |
           set -eu
-          if [ -f "$CONTROL_ROOT/scripts/test-classes.py" ]; then
+          if [ "$NOBUILD" = true ]; then
+            echo 'exempt=true' >> "$GITHUB_OUTPUT"
+          elif [ -f "$CONTROL_ROOT/scripts/test-classes.py" ]; then
             python3 "$CONTROL_ROOT/scripts/test-classes.py" measurement-scope \
               --event-name "$EVENT_NAME" --event "$GITHUB_EVENT_PATH" \
               --release-claim "${RELEASE_CLAIM:-}" --github-output "$GITHUB_OUTPUT"
@@ -376,7 +380,7 @@ jobs:
             *) echo "Performance scope did not produce a valid decision" >&2; exit 1 ;;
           esac
       # An exemption is reported as one, never as a measured or qualified result (ADR-0196).
-      - name: Report the no-perf exemption
+      - name: Report the PR performance exemption
         id: exemption
         if: ${{ needs.scope.result == 'success' && needs.scope.outputs.exempt == 'true' }}
         env:
@@ -384,17 +388,22 @@ jobs:
         run: |
           set -eu
           test "$EVENT_NAME" = pull_request
+          if [ "$NOBUILD" = true ]; then
+            reason='The PR carries nobuild. Performance work was skipped.'
+          else
+            reason='The resolved PR plan excludes perf (default fast profile, a partial test allowlist or no-perf): no comparison was planned, built or measured, and no performance claim is made. Select test:perf or release:full to measure it.'
+          fi
           {
             echo "### Performance check: exempt (perf class NOT RUN), not measured"
             echo
-            echo "The resolved PR plan excludes perf (default fast profile, a partial test allowlist or no-perf): no comparison was planned, built or measured, and no performance claim is made. Select test:perf or release:full to measure it."
+            echo "$reason"
           } | tee -a "$GITHUB_STEP_SUMMARY"
           {
             echo 'report_label=EXEMPT (perf class NOT RUN; not measured)'
             echo 'report_summary<<AF_PERFORMANCE_EXEMPT'
             echo '## Performance report: EXEMPT (perf class NOT RUN; not measured)'
             echo
-            echo 'The resolved PR plan excludes perf (default fast profile, a partial test allowlist or no-perf): no comparison was planned, built or measured, and no performance claim is made. Select test:perf or release:full to measure it.'
+            echo "$reason"
             echo 'AF_PERFORMANCE_EXEMPT'
           } >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
