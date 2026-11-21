@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:backlog-configured-state:1",
+  "$id": "urn:af:schema:backlog-configured-state:2",
   "title": "Private Markdown and Jira backlog publication state",
   "type": "object",
   "required": [
@@ -12,7 +12,7 @@
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "af/backlog-configured-state@1"
+      "const": "af/backlog-configured-state@2"
     },
     "attempt_id": {
       "anyOf": [
@@ -48,7 +48,8 @@
                 "authority_unavailable",
                 "identity_conflict",
                 "not_observed",
-                "attempt_limit"
+                "attempt_limit",
+                "prewrite_conflict"
               ]
             }
           }
@@ -78,7 +79,7 @@
                   "properties": {
                     "remote_id": {
                       "type": "string",
-                      "pattern": "^backlog-item-[0-9a-f]{64}\\.md$"
+                      "pattern": "^markdown:[0-9a-f]{64}:[0-9a-f]{64}:[0-9a-f]{64}$"
                     },
                     "closed": {
                       "type": "boolean"

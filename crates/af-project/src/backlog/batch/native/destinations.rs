@@ -64,7 +64,7 @@ impl Kind {
         match self {
             Self::Local => "af/backlog-local-intent@1",
             Self::GitHub => "af/backlog-github-intent@1",
-            Self::Markdown => "af/backlog-markdown-intent@1",
+            Self::Markdown => "af/backlog-markdown-intent@2",
             Self::Jira => "af/backlog-jira-intent@1",
         }
     }
@@ -109,6 +109,7 @@ enum Pending {
     AdapterUnavailable,
     AuthorityUnavailable,
     Conflict,
+    PrewriteConflict,
     NotObserved,
     AttemptLimit,
 }
@@ -119,6 +120,7 @@ impl Pending {
             Self::AdapterUnavailable => "adapter_unavailable",
             Self::AuthorityUnavailable => "authority_unavailable",
             Self::Conflict => "identity_conflict",
+            Self::PrewriteConflict => "prewrite_conflict",
             Self::NotObserved => "not_observed",
             Self::AttemptLimit => "attempt_limit",
         }
@@ -172,11 +174,22 @@ impl ProjectStore {
             );
         }
         let mapped = mapped_items.get(&item.item_id).map(String::as_str);
-        let operation = if mapped.is_none() && publication.attempt_ids.is_empty() {
-            Operation::Create
-        } else {
-            Operation::Reconcile
-        };
+        let retry_prewrite = kind == Kind::Markdown
+            && publication.provider_state_id.as_ref().is_some_and(|id| {
+                self.cas.get_json(id).is_ok_and(|saved| {
+                    saved["schema"] == "af/backlog-configured-state@2"
+                        && saved["attempt_id"].as_str()
+                            == publication.attempt_ids.last().map(String::as_str)
+                        && saved["operation"] == "create"
+                        && saved["outcome"]["kind"] == Pending::PrewriteConflict.kind()
+                })
+            });
+        let operation =
+            if mapped.is_none() && (publication.attempt_ids.is_empty() || retry_prewrite) {
+                Operation::Create
+            } else {
+                Operation::Reconcile
+            };
         let attempt = value_id(&(
             "af/backlog-configured-attempt@1",
             &publication.intent_id,
@@ -206,7 +219,7 @@ impl ProjectStore {
             Kind::Markdown => {
                 let config = markdown::Config::load(self, &destination)?;
                 journal(self, publication)?;
-                config.deliver(self, delivery(publication))
+                config.deliver(self, delivery(publication), mapped_items)
             }
             Kind::Jira => {
                 let config = jira::Config::load(self, &destination)?;
@@ -242,7 +255,13 @@ impl ProjectStore {
             .last()
             .filter(|id| *id == &attempt)
             .map(|_| operation);
-        self.record_destination_state(batch, publication, operation, outcome)
+        let observed_markdown = kind == Kind::Markdown && outcome["kind"] == "observed";
+        match self.record_destination_state(batch, publication, operation, outcome) {
+            // The file may already contain the entry. Resume from the durable
+            // attempt and observe it again if the receipt could not be persisted.
+            Err(_) if observed_markdown => Ok(false),
+            result => result,
+        }
     }
 
     fn record_destination_state(
@@ -255,7 +274,7 @@ impl ProjectStore {
         let state = self
             .cas
             .put_json(&json!({
-                "schema": "af/backlog-configured-state@1",
+                "schema": "af/backlog-configured-state@2",
                 "attempt_id": publication.attempt_ids.last(),
                 "operation": operation,
                 "outcome": outcome,
@@ -266,7 +285,7 @@ impl ProjectStore {
             publication.provider_state_id = Some(state);
             if resolved {
                 publication.receipt_id = Some(value_id(&(
-                    "af/backlog-configured-receipt@1",
+                    "af/backlog-configured-receipt@2",
                     &publication,
                 ))?);
             }

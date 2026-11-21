@@ -750,26 +750,43 @@ only the approved title and body and the metadata needed to bind the publication
 
 ### Markdown
 
-Markdown writes one private `backlog-item-<item-digest>.md` file per verified item to the
-Project Store. The filename and marker bind the stable item identity. AF uses atomic
-create-without-replacement and leaves preexisting files, symlinks and surrounding text alone.
-Human edits are read back when a later independently verified revision is dispatched. Keep the
-marker intact. An absent or conflicting entry leaves the intent waiting. A file inside a Git
-checkout or bare repository requires a separately authorized publication workflow.
+Markdown appends independently verified items to one existing UTF-8 Markdown file selected
+by the receiving operator. The file can already contain prose and headings. AF keeps its
+existing bytes and appends an entry with a stable Project and item marker, the approved title and
+body, and a closing marker. Raw reports, evidence files and credentials stay private. Later
+revisions observe the current entry and record whether its text matches the new approved text.
+To preserve human content, AF leaves existing managed entries in place.
 
-Run this from the registered receiver checkout to create the private configuration once, then
-use the shared pin step below to compute its destination ID.
+Use a dedicated, owner-writable regular `.md` file on a local filesystem with append and file-lock
+semantics. The file may be readable by other users. The receiver must own the file and its
+containing directory. Group or public write access, symlinks and hard links are refused. Keep the AF markers and the text between them intact. Edit surrounding
+prose between deliveries. Writers that edit concurrently should take an exclusive file lock and
+keep the pathname in place until they finish. AF takes a non-blocking lock, checks for changes to
+the file and its pathname, and appends without replacing the document. An edit or replacement
+that races the append can leave publication pending until the receiver can observe the exact
+entry. A short or ambiguous append is never repeated. A confirmed prewrite conflict can retry
+within the same Run's limits once the operator clears the obstruction.
+
+The `unversioned_file` scope refuses files under Git checkouts, linked worktrees, submodules and
+bare repositories. To track the file in Git, use a separately authorized repository publication
+workflow that binds the repository, ref, path and expected revision. The Markdown receiver has
+no repository write authority.
+
+From the registered receiver checkout, set `backlog_file` to the existing file's absolute path
+using its real, symlink-free directory names. Create the private configuration and use the shared
+pin step below to compute its destination ID.
 
 ```bash
 project=$(af project show --json)
 store=$(jq -r .store <<< "$project")
 project_id=$(jq -r .project_id <<< "$project")
+backlog_file=/absolute/path/to/team-backlog.md
 (
   umask 077
   set -o noclobber
-  jq -n --arg project_id "$project_id" \
-    '{schema:"af/backlog-markdown-destination@1", $project_id}' \
-    > "$store/backlog-markdown-destination-v1.json"
+  jq -n --arg project_id "$project_id" --arg path "$backlog_file" \
+    '{schema:"af/backlog-markdown-destination@2", $project_id, scope:"unversioned_file", $path}' \
+    > "$store/backlog-markdown-destination-v2.json"
 )
 ```
 
@@ -824,12 +841,14 @@ share the receiver UID. When provisioning is complete, resume the already-admitt
 
 ### Pin and recover a configured destination
 
-Set `kind` to `markdown` or `jira`, then copy the following digest into the batch policy's
+Set `destination_config` to the configuration created above, then copy its digest into the batch policy's
 `destination_id` before ticking. Review the `<kind>-backlog:<project_id>:<destination_id>`
 grant before confirming the prepared Scenario.
 
 ```bash
-python3 - "$store/backlog-$kind-destination-v1.json" <<'PYTHON'
+# For Jira use "$store/backlog-jira-destination-v1.json".
+destination_config="$store/backlog-markdown-destination-v2.json"
+python3 - "$destination_config" <<'PYTHON'
 import hashlib
 import json
 import sys
@@ -853,16 +872,18 @@ af scenario resume "$run_id" --state "$scratch/scenarios" --json
 af backlog list --json
 ```
 
-Private publication rows reference [configured destination state](../schemas/backlog-configured-state-v1.json).
-For Markdown, `remote_id` is the managed filename. For Jira, `remote_id` is `jira:<issue-id>`
+Private publication rows reference [configured destination state](../schemas/backlog-configured-state-v2.json).
+For Markdown, `remote_id` binds the managed item, first intent and content digest.
+For Jira, `remote_id` is `jira:<issue-id>`
 and the private observation includes the display key. An observed digest mismatch records
 the discrepancy without replacing text or reopening an issue.
 
 ### Offline checks for all four destinations
 
 This command exercises the CLI and portable Ant with isolated Stores and deterministic
-Providers. GitHub and Jira use fake transports. The Markdown fixture uses a disposable
-Project Store and exercises a collision and read-only recovery.
+Providers. GitHub and Jira use fake transports. The Markdown fixture runs with a disposable Project Store, recovers an append after a lost
+receipt and verifies two entries in the configured file. It also checks that the receiver
+preserves existing prose and leaves damaged or duplicate markers pending.
 
 ```sh
 cargo nextest run --workspace --locked --profile ci \

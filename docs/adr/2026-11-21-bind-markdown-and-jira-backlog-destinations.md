@@ -15,8 +15,10 @@ interrupted write.
   every editor. Committing that document would also need repository publication authority.
 - Retrying Jira creation after a missing response or search result could duplicate a ticket
   while its search index catches up.
-- Using a create-only destination entry and a pinned Jira adapter gives both destinations
-  read-only reconciliation and preserves human changes.
+- Storing one private file per item makes publication inaccessible from the team's chosen
+  backlog document.
+- Appending to a receiver-selected unversioned file preserves surrounding prose without
+  replacing the document. A pinned Jira adapter provides scoped issue creation and observation.
 
 ## Decision
 
@@ -25,12 +27,20 @@ its content ID and the prepared builtin grant names the Project and destination.
 uses the same current revision, decision, policy, publication limit and cancellation checks for
 all destinations. It persists the intent and attempt before performing an effect.
 
-Markdown publishes one file per stable item ID under the receiver's private Project Store.
-The receiver stages and syncs the file, installs it atomically without replacement and syncs
-the directory. The marker binds the Project, item and first publication intent. A matching
-entry can be observed after an uncertain result. A missing entry, ambiguous marker or
-conflicting file remains pending. Reconciliation never edits the file. Checkout and bare
-repository paths are outside this authority.
+Markdown pins the Project, unversioned-file scope and absolute path in receiver-owned
+configuration. The portable Scenario carries the destination digest. The receiver resolves
+the path without symlinks and refuses checkout and bare repository paths. Repository
+publication requires separate native authority over the repository, ref, path and expected
+revision.
+
+The receiver locks the file, validates existing managed entries and checks the exact file
+snapshot and identity immediately before one append. The entry binds the Project, stable
+item, first intent and approved content digest. A synced append can be observed after a
+lost receipt. Reconciliation accepts an exact matching entry and preserves human changes.
+Edited, missing or ambiguous entries remain pending. AF never replaces the document.
+Concurrent editors can coordinate with the file lock. A confirmed conflict before the
+append can retry within the existing attempt bounds. An uncertain append may only be
+observed.
 
 Jira Cloud publication pins the site, numeric project and issue type, publisher account and
 exact adapter bytes. The adapter maps approved title and body to Summary and an Atlassian
@@ -43,7 +53,7 @@ Only the adapter receives the separately provisioned credential.
 ## Consequences
 
 One ambiguous attempt can block a batch while the operator restores scope or inspects the
-destination. A missing observation never authorizes another create. The Project journal retains
+destination. A missing observation after a potentially committed write never authorizes another create. The Project journal retains
 attempt history and references versioned provider observations. The verified CLI view continues
 to read without credentials or provider access.
 

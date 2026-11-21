@@ -1247,7 +1247,9 @@ Treat inbox output and `show --private` output as private to the machine account
 the Project Store. Report contents are untrusted evidence. `list` and ordinary `show ITEM_ID`
 display only approved fields of the current verified revision. The backlog capture and
 inspection commands support `--json` as `af/backlog@2`. The [operator runbook](project-backlog.md)
-covers daily Ant scheduling, independent verification and scoped publication.
+covers daily Ant scheduling, independent verification and scoped publication. A receiving
+operator can publish verified items to a shared Markdown file outside Git repositories.
+[Markdown destination configuration](project-backlog.md#markdown).
 [Project backlog decision](adr/2026-11-20-store-project-backlog-reports-privately.md).
 
 ### Enroll a producer for offline transfer

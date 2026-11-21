@@ -766,7 +766,7 @@ fn capture_backlog_batch(receiver: &Receiver, github: Option<&str>, accept_late:
 
 enum BacklogFixture<'a> {
     GitHub(&'a str),
-    Markdown,
+    Markdown(&'a Path),
     Jira(&'a str),
 }
 
@@ -913,10 +913,11 @@ fn capture_backlog_intake(
                 "executable_digest": af_store::canonical::blob_content_id(executable.as_bytes()),
             }),
         )),
-        Some(BacklogFixture::Markdown) => Some((
-            "backlog-markdown-destination-v1.json",
+        Some(BacklogFixture::Markdown(path)) => Some((
+            "backlog-markdown-destination-v2.json",
             json!({
-                "schema": "af/backlog-markdown-destination@1", "project_id": project_id,
+                "schema": "af/backlog-markdown-destination@2", "project_id": project_id,
+                "scope": "unversioned_file", "path": path,
             }),
         )),
         Some(BacklogFixture::Jira(executable)) => Some((
@@ -950,7 +951,7 @@ fn capture_backlog_intake(
             "start_unix_ms":1772755200000_u64, "lateness_ms":60000,
             "run_tokens":150000, "run_wall_ms":1230000, "run_dispatches":dispatches,
             "rolling_tokens":150000, "rolling_window_ms":86400000,
-            "publication_limit":1, "evidence_access":"private_report", "hold_policy":"allow_local_reservations"
+            "publication_limit":if matches!(fixture, Some(BacklogFixture::Markdown(_))) { 2 } else { 1 }, "evidence_access":"private_report", "hold_policy":"allow_local_reservations"
         }),
     );
     let accept = |id| {
@@ -1569,7 +1570,7 @@ fn http_requests(fake: &Path) -> Vec<Value> {
         .collect()
 }
 
-fn configure_github_fixture_bounds(receiver: &Receiver) {
+fn configure_backlog_receiver_fault_bounds(receiver: &Receiver) {
     // Give this test-only artifact one dispatch per scripted fault and recovery. The
     // shipped artifact and synthetic-sink tests keep their ordinary five-dispatch limit.
     let artifact = receiver.repo.join(BACKLOG);
@@ -1589,7 +1590,7 @@ fn portable_backlog_github_reconciles_a_lost_create_without_duplicate_writes() {
         505,
         BACKLOG,
     );
-    configure_github_fixture_bounds(&receiver);
+    configure_backlog_receiver_fault_bounds(&receiver);
     let executable = github_fixture(&receiver);
     let reference = capture_backlog_batch(&receiver, Some(&executable), true);
     let (run_id, first) = start_backlog_ant(&receiver, "github-backlog", &reference);
@@ -2198,7 +2199,7 @@ fn configured_backlog_state(store: &Path) -> (Value, Value) {
         .get_json(publication["provider_state_id"].as_str().unwrap())
         .unwrap();
     schemas::valid(
-        &schemas::validator("backlog-configured-state-v1.json"),
+        &schemas::validator("backlog-configured-state-v2.json"),
         &state,
     );
     (publication, state)
@@ -2212,7 +2213,7 @@ fn portable_backlog_jira_reconciles_one_create_with_stable_id_and_human_edits() 
         509,
         BACKLOG,
     );
-    configure_github_fixture_bounds(&receiver);
+    configure_backlog_receiver_fault_bounds(&receiver);
     let fake = receiver.root.join("fake-jira");
     fs::create_dir(&fake).unwrap();
     let script = include_str!("../../../../../scripts/project-backlog-jira.py");
@@ -2302,75 +2303,176 @@ fn portable_backlog_jira_reconciles_one_create_with_stable_id_and_human_edits() 
 }
 
 #[test]
-fn portable_backlog_markdown_creates_one_managed_entry_and_never_replaces_a_conflict() {
-    for conflict in [false, true] {
-        let directory = tempfile::tempdir().unwrap();
-        let receiver = Receiver::for_artifact(
-            directory.path().canonicalize().unwrap().join("receiver"),
-            510,
-            BACKLOG,
-        );
-        let reference =
-            capture_backlog_intake(&receiver, Some(BacklogFixture::Markdown), false, false);
-        let project = ok(receiver.af(&["project", "show", "--json"]));
-        let store = Path::new(project["store"].as_str().unwrap());
-        let project_id = project["project_id"].as_str().unwrap();
-        let item = af_store::canonical::content_id(&json!([
-            "af/backlog-native-item@1",
-            project_id,
-            "blue-a"
-        ]))
+fn portable_backlog_markdown_recovers_two_publications_in_the_configured_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let receiver = Receiver::for_artifact(
+        directory.path().canonicalize().unwrap().join("receiver"),
+        510,
+        BACKLOG,
+    );
+    configure_backlog_receiver_fault_bounds(&receiver);
+    let destination = receiver.root.join("destination");
+    fs::create_dir(&destination).unwrap();
+    let path = destination.join("Human backlog.md");
+    let human = "# Team backlog\r\n\r\nKeep these notes.\r\n\r\n## Housekeeping\r\nExisting prose.";
+    fs::write(&path, human).unwrap();
+    let reference = capture_backlog_intake(
+        &receiver,
+        Some(BacklogFixture::Markdown(&path)),
+        false,
+        false,
+    );
+    let project = ok(receiver.af(&["project", "show", "--json"]));
+    let store = Path::new(project["store"].as_str().unwrap());
+    let config = read(&store.join("backlog-markdown-destination-v2.json"));
+    let validator = schemas::validator("backlog-markdown-destination-v2.json");
+    let mut repository_scope = config.clone();
+    repository_scope["scope"] = json!("repository");
+    assert!(!validator.is_valid(&repository_scope));
+    let mut old = config.clone();
+    old["schema"] = json!("af/backlog-markdown-destination@1");
+    assert!(!validator.is_valid(&old));
+
+    // Abort only receipt insertion after AF has actually synced the first append.
+    // The already committed attempt remains the recovery authority.
+    let database = rusqlite::Connection::open(store.join("events.sqlite")).unwrap();
+    database
+        .execute_batch(
+            "CREATE TRIGGER lose_markdown_receipt BEFORE INSERT ON events
+         WHEN NEW.run_id = 'backlog-processing'
+           AND json_extract(NEW.payload, '$.receipt_id') IS NOT NULL
+         BEGIN SELECT RAISE(ABORT, 'fixture lost receipt'); END;",
+        )
         .unwrap();
-        let name = format!("backlog-item-{}.md", &item[7..]);
-        let path = store.join(&name);
-        let human = "Human-owned file\n\nKeep these notes.\n";
-        if conflict {
-            private_write(&path, human);
-        }
-        let (run, outcome) = start_backlog_ant(&receiver, "markdown-backlog", &reference);
-        let (publication, state) = configured_backlog_state(store);
-        if conflict {
-            assert_eq!(outcome["status"], "waiting");
-            assert!(publication["receipt_id"].is_null());
-            assert_eq!(state["outcome"]["kind"], "identity_conflict");
-            assert_eq!(fs::read_to_string(&path).unwrap(), human);
-            // Simulate a committed entry restored after an uncertain local write, with a
-            // subsequent human note. Reconciliation must observe the pinned intent.
-            let intent = publication["intent_id"].as_str().unwrap();
-            let text = format!("<!-- af-backlog-item:{project_id}:{item}:{intent} -->\n{human}");
-            fs::write(&path, &text).unwrap();
-            let resumed = ok(receiver.af(&[
-                "scenario",
-                "resume",
-                &run,
-                "--state",
-                receiver.scenarios.to_str().unwrap(),
-                "--json",
-            ]));
-            assert_eq!(resumed["status"], "succeeded");
-            let (_, state) = configured_backlog_state(store);
-            assert_eq!(state["outcome"]["approved_fields_match"], false);
-            assert_eq!(fs::read_to_string(&path).unwrap(), text);
-        } else {
-            assert_eq!(outcome["status"], "succeeded", "{}", outcome["failure"]);
-            assert_backlog_publication_conformance(&receiver, store, &publication);
-            assert_eq!(publication["remote_id"], name);
-            assert!(publication["receipt_id"].is_string());
-            assert_eq!(state["outcome"]["approved_fields_match"], true);
-            let text = fs::read_to_string(&path).unwrap();
-            assert!(text.contains("The configured boundary must be inclusive."));
-            assert!(!text.contains("private-attachment"));
-        }
-        assert_eq!(
-            fs::read_dir(store)
-                .unwrap()
-                .filter_map(Result::ok)
-                .filter(|entry| entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with("backlog-item-"))
-                .count(),
-            1
-        );
+    let editor = fs::OpenOptions::new().write(true).open(&path).unwrap();
+    rustix::fs::flock(
+        &editor,
+        rustix::fs::FlockOperation::NonBlockingLockExclusive,
+    )
+    .unwrap();
+    let (run, outcome) = start_backlog_ant(&receiver, "markdown-backlog", &reference);
+    assert_eq!(outcome["status"], "waiting", "{}", outcome["failure"]);
+    assert_eq!(
+        configured_backlog_state(store).1["outcome"]["kind"],
+        "prewrite_conflict"
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), human);
+    drop(editor);
+    let resume = || {
+        ok(receiver.af(&[
+            "scenario",
+            "resume",
+            &run,
+            "--state",
+            receiver.scenarios.to_str().unwrap(),
+            "--json",
+        ]))
+    };
+    // The grant pins the path, and acquiring Git metadata at that path cannot widen it.
+    git(&destination, &["init", "-q"]);
+    git(&destination, &["add", "--", "Human backlog.md"]);
+    assert_eq!(resume()["status"], "waiting");
+    assert_eq!(
+        configured_backlog_state(store).1["outcome"]["kind"],
+        "prewrite_conflict"
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), human);
+    fs::rename(destination.join(".git"), receiver.root.join("disabled-git")).unwrap();
+
+    assert_eq!(resume()["status"], "waiting");
+    let (first, state) = configured_backlog_state(store);
+    assert!(first["receipt_id"].is_null());
+    assert_eq!(state["outcome"]["kind"], "attempt_prepared");
+    let original = fs::read_to_string(&path).unwrap();
+    let first_entry = original.strip_prefix(human).unwrap();
+    let blue = "Blue excludes its required boundary.";
+    let green = "Green excludes its required boundary.";
+    let (first_title, second_title) = if first_entry.contains(blue) {
+        (blue, green)
+    } else {
+        (green, blue)
+    };
+    assert!(first_entry.contains(first_title));
+    assert_eq!(first_entry.matches("<!-- af-backlog-entry-v1:").count(), 1);
+    assert!(first_entry.contains(first["intent_id"].as_str().unwrap()));
+    let expected_grant = format!(
+        "markdown-backlog:{}:{}",
+        reference["project_id"].as_str().unwrap(),
+        af_store::canonical::content_id(&config).unwrap()
+    );
+    let prepared = read(&receiver.root.join("ant.json"));
+    let grants = prepared["scenario"]["definitions"]["daily-backlog"]["authority"]["grants"]
+        .as_array()
+        .unwrap();
+    assert_eq!(grants.len(), 2);
+    assert!(
+        grants
+            .iter()
+            .all(|grant| grant["destination"] == expected_grant)
+    );
+    assert!(!prepared.to_string().contains(path.to_str().unwrap()));
+
+    database
+        .execute_batch("DROP TRIGGER lose_markdown_receipt;")
+        .unwrap();
+    let human_change = "\n\nOperator added a note between deliveries.\n";
+    let edited = format!("{human}{human_change}{first_entry}");
+    for conflict in [
+        edited.replace(
+            "<!-- af-backlog-entry-v1:",
+            "<!-- af-backlog-entry-v1-edited:",
+        ),
+        edited.replace(first_title, "A human edited the managed heading."),
+        format!("{edited}{first_entry}"),
+    ] {
+        fs::write(&path, &conflict).unwrap();
+        assert_eq!(resume()["status"], "waiting");
+        let (_, state) = configured_backlog_state(store);
+        assert_eq!(state["outcome"]["kind"], "identity_conflict");
+        assert_eq!(fs::read_to_string(&path).unwrap(), conflict);
     }
+
+    fs::write(&path, &edited).unwrap();
+    let finished = resume();
+    assert_eq!(finished["status"], "succeeded", "{}", finished["failure"]);
+    assert_eq!(
+        finished["frames"]["root"]["outputs"]["assessment"]["value"]["result"]["acceptance"],
+        "satisfied"
+    );
+    let document = fs::read_to_string(&path).unwrap();
+    let second_entry = document.strip_prefix(&edited).unwrap();
+    assert!(second_entry.contains(second_title));
+    assert_eq!(document.matches("<!-- af-backlog-entry-v1:").count(), 2);
+    assert_eq!(
+        document
+            .matches("The configured boundary must be inclusive.")
+            .count(),
+        2
+    );
+    for private in [
+        "private-attachment",
+        "mismatched-attachment",
+        "private-insufficient-repro",
+        "An unrelated claim",
+        "The reported behavior is unknown.",
+    ] {
+        assert!(!document.contains(private));
+    }
+    let (_, state) = configured_backlog_state(store);
+    assert_eq!(state["outcome"]["approved_fields_match"], true);
+    let receipts: Vec<_> = af_store::EventStore::open_read_only(store.join("events.sqlite"))
+        .unwrap()
+        .replay("backlog-processing")
+        .unwrap()
+        .into_iter()
+        .map(|event| event.payload)
+        .filter(|payload| payload["receipt_id"].is_string())
+        .collect();
+    assert_eq!(receipts.len(), 2);
+    assert_eq!(receipts[0]["intent_id"], first["intent_id"]);
+    assert_ne!(receipts[0]["remote_id"], receipts[1]["remote_id"]);
+    let blue_receipt = &receipts[usize::from(first_title != blue)];
+    assert_backlog_publication_conformance(&receiver, store, blue_receipt);
+    assert_eq!(resume(), finished);
+    assert_eq!(fs::read_to_string(&path).unwrap(), document);
 }
