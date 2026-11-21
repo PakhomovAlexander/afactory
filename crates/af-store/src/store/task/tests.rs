@@ -13,6 +13,7 @@ mod reservation;
 mod retry;
 mod source;
 mod token_scopes;
+mod wake_episode;
 mod wide_usage;
 
 /// Artifact type of the fixture Pipeline definition envelope. Production captures the
@@ -2137,4 +2138,90 @@ fn archived_plan_prefix_replays_current_records_without_changing_the_live_projec
         store.len(&task_run_id("task-1").unwrap()).unwrap(),
         planned.next_sequence
     );
+}
+
+/// Current-source corruption is refused without reopening on fresh accounting or altering
+/// evidence. These are disposable Stores; no historical Store reader or migration is added.
+#[test]
+fn contract_gate_corrupt_truncated_and_unknown_documents_never_reset_task_budget() {
+    test_clock::with_time(1_000_000, |_| {
+        let mut f = Fixture::new(false).with_execution_graph();
+        let lease = f.open();
+        f.propose(&lease);
+        f.store
+            .admit_task_plan(&f.cas, &lease, &f.authority)
+            .unwrap();
+        f.record_execution_inputs(&lease);
+        let context = f.cas.put_json(&json!({"context":"exact"})).unwrap();
+        let _attempt = f
+            .store
+            .reserve_and_bind_task_attempt(
+                &f.cas,
+                &lease,
+                "root.nodes.write",
+                &context,
+                &f.authority,
+            )
+            .unwrap();
+        let budget = f.state().execution.unwrap().budget;
+        assert_eq!(budget.reserved_tokens(), 10);
+        let run = task_run_id("task-1").unwrap();
+        let prefix = f.store.replay(&run).unwrap();
+        let original = f.cas.get(&f.plan_id).unwrap();
+        let hex = f.plan_id.strip_prefix("sha256:").unwrap();
+        let path = f
+            ._dir
+            .path()
+            .join("cas/objects")
+            .join(&hex[..2])
+            .join(&hex[2..]);
+        for bytes in [
+            b"not JSON".to_vec(),
+            original[..original.len() / 2].to_vec(),
+        ] {
+            std::fs::write(&path, &bytes).unwrap();
+            let store = EventStore::open_read_only(&f.path).unwrap();
+            let error = store
+                .task_projection(&f.cas, "task-1")
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("does not match its digest"), "{error}");
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                bytes,
+                "refusal never rewrites corrupt bytes"
+            );
+            assert_eq!(
+                store.replay(&run).unwrap(),
+                prefix,
+                "refusal never appends a reset"
+            );
+            std::fs::write(&path, &original).unwrap();
+            let state = store.task_projection(&f.cas, "task-1").unwrap().unwrap();
+            let replayed = state.execution.unwrap().budget;
+            assert_eq!(replayed.reserved_tokens(), budget.reserved_tokens());
+            assert_eq!(replayed.committed_tokens(), budget.committed_tokens());
+            assert_eq!(replayed.begun_attempts(), budget.begun_attempts());
+        }
+        let unknown = f
+            .cas
+            .put_artifact(
+                "af/ExecutionPlan@999",
+                producer(),
+                vec![],
+                None,
+                serde_json::to_value(&f.plan).unwrap(),
+            )
+            .unwrap()
+            .0;
+        let error = payload::<ExecutionPlan>(&f.cas, &unknown, task::EXECUTION_PLAN_V4)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("Expected exact af/ExecutionPlan@4"),
+            "{error}"
+        );
+        assert_eq!(f.store.replay(&run).unwrap(), prefix);
+        assert_eq!(f.state().execution.unwrap().budget.reserved_tokens(), 10);
+    });
 }

@@ -44,7 +44,7 @@ pub fn text(s: &str) -> Result<()> {
     )
 }
 
-fn unique<'de, D, T>(deserializer: D) -> std::result::Result<BTreeSet<T>, D::Error>
+pub(crate) fn unique<'de, D, T>(deserializer: D) -> std::result::Result<BTreeSet<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de> + Ord,
@@ -63,9 +63,11 @@ where
 #[serde(rename_all = "snake_case")]
 pub enum Port {
     Text,
+    NightlyTag,
     Boolean,
     Integer,
     Task,
+    TaskOutcome,
     Action,
     Decision,
     Observation,
@@ -81,9 +83,11 @@ pub enum Port {
 )]
 pub enum Datum {
     Text(String),
+    NightlyTag(String),
     Boolean(bool),
     Integer(u64),
     Task(TaskReceipt),
+    TaskOutcome(super::task_outcome::TaskOutcome),
     Action(ActionReceipt),
     Decision(DecisionReceipt),
     Observation(Observation),
@@ -93,9 +97,11 @@ impl Datum {
     pub fn port(&self) -> Port {
         match self {
             Self::Text(_) => Port::Text,
+            Self::NightlyTag(_) => Port::NightlyTag,
             Self::Boolean(_) => Port::Boolean,
             Self::Integer(_) => Port::Integer,
             Self::Task(_) => Port::Task,
+            Self::TaskOutcome(_) => Port::TaskOutcome,
             Self::Action(_) => Port::Action,
             Self::Decision(_) => Port::Decision,
             Self::Observation(_) => Port::Observation,
@@ -103,11 +109,15 @@ impl Datum {
         }
     }
     pub fn scalar(&self) -> bool {
-        matches!(self, Self::Text(_) | Self::Boolean(_) | Self::Integer(_))
+        matches!(
+            self,
+            Self::Text(_) | Self::NightlyTag(_) | Self::Boolean(_) | Self::Integer(_)
+        )
     }
     pub fn validate(&self) -> Result<()> {
         match self {
             Self::Text(s) => text(s),
+            Self::NightlyTag(s) => super::nightly::validate_tag(s),
             Self::Integer(n) => require(
                 *n <= af_contracts::json::SAFE_INTEGER_MAX as u64,
                 "Unsafe integer",
@@ -129,6 +139,7 @@ impl Datum {
                     "Task receipt lacks acceptance",
                 )
             }
+            Self::TaskOutcome(r) => r.validate(),
             Self::Action(r) => {
                 text(&r.intent_id)?;
                 text(&r.evidence)?;
@@ -238,10 +249,14 @@ pub enum Binding {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Projection {
     ActionIntent,
+    NightlyTagText,
     WorkspaceSubject,
     WorkspaceRevision,
     WorkspacePublication,
     WorkspaceReceipt,
+    TaskAccepted,
+    TaskRepairable,
+    AcceptedTask,
     TaskConclusion,
     TaskResultId,
     TaskOutputId {
@@ -266,6 +281,7 @@ pub enum Projection {
 impl Projection {
     fn types(&self) -> Result<(Port, Port)> {
         Ok(match self {
+            Self::NightlyTagText => (Port::NightlyTag, Port::Text),
             Self::CiDiagnosisField { field } => {
                 require(
                     matches!(field.as_str(), "category" | "signature_id"),
@@ -284,6 +300,8 @@ impl Projection {
                 name(port)?;
                 (Port::Task, Port::Text)
             }
+            Self::TaskAccepted | Self::TaskRepairable => (Port::TaskOutcome, Port::Boolean),
+            Self::AcceptedTask => (Port::TaskOutcome, Port::Task),
             Self::TaskOutputField {
                 port,
                 schema,
@@ -347,6 +365,10 @@ impl Projection {
     }
     pub fn apply(&self, value: Datum) -> Result<Datum> {
         Ok(match (self, value) {
+            (Self::NightlyTagText, Datum::NightlyTag(s)) => {
+                super::nightly::validate_tag(&s)?;
+                Datum::Text(s)
+            }
             (Self::CiDiagnosisField { field }, Datum::Observation(o)) => {
                 self.types()?;
                 let record = crate::ci_diagnosis::Record::parse(&o)?;
@@ -378,6 +400,14 @@ impl Projection {
             (Self::WorkspaceReceipt, Datum::Action(a)) => {
                 super::workspace::Prepared::parse(&a)?;
                 Datum::Text(a.evidence)
+            }
+            (Self::TaskAccepted, Datum::TaskOutcome(t)) => Datum::Boolean(t.accepted()),
+            (Self::TaskRepairable, Datum::TaskOutcome(t)) => Datum::Boolean(t.repairable()),
+            (Self::AcceptedTask, Datum::TaskOutcome(t)) => {
+                t.validate()?;
+                let value = Datum::Task(t.receipt);
+                value.validate()?;
+                value
             }
             (Self::ActionIntent, Datum::Action(a)) => Datum::Text(a.intent_id),
             (Self::TaskConclusion, Datum::Task(t)) => Datum::Text(t.result.domain_conclusion),
@@ -451,8 +481,10 @@ impl Binding {
             Self::Equals { left, right } => {
                 let p = left.port(inputs, previous)?;
                 require(
-                    matches!(p, Port::Text | Port::Boolean | Port::Integer)
-                        && p == right.port(inputs, previous)?,
+                    matches!(
+                        p,
+                        Port::Text | Port::NightlyTag | Port::Boolean | Port::Integer
+                    ) && p == right.port(inputs, previous)?,
                     "Equality requires two scalars of the same type",
                 )?;
                 Ok(Port::Boolean)
@@ -503,6 +535,11 @@ impl Limits {
 #[serde(rename_all = "snake_case")]
 pub enum Operation {
     PublishPr,
+    PublishImplementationPrV1,
+    NightlyBuildV1,
+    NightlyCompareV1,
+    NightlyReportV1,
+    PublishNightlyV1,
     PublishPerformancePrV1,
     Followup,
     Notify,
@@ -663,7 +700,7 @@ fn decision_origin(
 impl Bundle {
     pub fn validate(&self, host: &dyn crate::Host) -> Result<()> {
         require(
-            self.schema == "af/scenario-bundle@6"
+            self.schema == "af/scenario-bundle@11"
                 && !self.definitions.is_empty()
                 && self.definitions.len() <= 64,
             "Unsupported or oversized Scenario bundle",
@@ -806,7 +843,7 @@ impl Bundle {
 impl Scenario {
     fn validate(&self, bundle: &Bundle, host: &dyn crate::Host) -> Result<()> {
         require(
-            self.schema == "af/scenario@6"
+            self.schema == "af/scenario@11"
                 && !self.outputs.is_empty()
                 && self.outputs.len() <= 32
                 && self.inputs.len() <= 32
@@ -908,7 +945,18 @@ impl Scenario {
                         )?;
                         expected.insert("publication".into(), Port::Action);
                     }
-                    output = Port::Task;
+                    if step.inputs.contains_key("repair") {
+                        require(
+                            bindings.is_empty(),
+                            "Native repair cannot mix predecessor bindings",
+                        )?;
+                        expected.insert("repair".into(), Port::TaskOutcome);
+                    }
+                    output = if step.outputs.get("result") == Some(&Port::TaskOutcome) {
+                        Port::TaskOutcome
+                    } else {
+                        Port::Task
+                    };
                 }
                 Kind::Task { target } | Kind::CiDiagnosis { target } => {
                     name(&target.task_id)?;
@@ -989,6 +1037,35 @@ impl Scenario {
                         "Publication requires an exact human decision",
                     )?;
                     match grant.operation {
+                        Operation::NightlyBuildV1
+                        | Operation::NightlyCompareV1
+                        | Operation::NightlyReportV1
+                        | Operation::PublishNightlyV1 => {
+                            require(
+                                !requires_decision
+                                    && required_condition.as_deref()
+                                        == super::nightly::predecessor(grant.operation),
+                                "Nightly action requires its exact predecessor condition",
+                            )?;
+                            expected.insert("subject".into(), Port::Text);
+                            expected.insert("revision".into(), Port::Text);
+                            expected.insert("nightly_tag".into(), Port::NightlyTag);
+                            output = Port::Action;
+                        }
+                        Operation::PublishImplementationPrV1 => {
+                            require(
+                                !requires_decision && required_condition.is_none(),
+                                "Scoped implementation publication requires native proof",
+                            )?;
+                            for key in ["subject", "revision", "body"] {
+                                expected.insert(key.into(), Port::Text);
+                            }
+                            for key in ["candidate", "verification"] {
+                                expected.insert(key.into(), Port::Task);
+                            }
+                            expected.insert("prepared".into(), Port::Action);
+                            output = Port::Action;
+                        }
                         Operation::PublishPerformancePrV1 => {
                             require(
                                 !requires_decision && required_condition.is_none(),
@@ -1124,14 +1201,18 @@ pub struct Policy {
     pub task_templates: BTreeSet<String>,
     pub decision_keys: BTreeMap<String, String>,
     #[serde(default)]
+    pub nightly_releases: BTreeMap<String, super::nightly::Scope>,
+    #[serde(default)]
     pub performance_publications: BTreeMap<String, super::performance::Scope>,
     #[serde(deserialize_with = "unique")]
     pub file_roots: BTreeSet<PathBuf>,
+    #[serde(default)]
+    pub implementation_startup: Option<super::implementation::Scope>,
 }
 impl Policy {
     pub fn validate(&self) -> Result<()> {
         require(
-            self.schema == "af/scenario-policy@5"
+            self.schema == "af/scenario-policy@8"
                 && self.adapters.len() <= 32
                 && self.decision_keys.len() <= 32
                 && self.task_templates.len() <= 256
@@ -1143,6 +1224,9 @@ impl Policy {
                 && self.file_roots.len() <= 32,
             "Invalid machine Scenario policy",
         )?;
+        if let Some(scope) = &self.implementation_startup {
+            scope.validate()?;
+        }
         for (id, a) in &self.adapters {
             name(id)?;
             require(
@@ -1201,6 +1285,7 @@ impl Policy {
                 "Performance publication needs explicit machine standing scope",
             )?;
         }
+        super::nightly::validate_policy(self)?;
         for (owner, key) in &self.decision_keys {
             name(owner)?;
             minisign_verify::PublicKey::decode(key).map_err(|e| e.to_string())?;
@@ -1216,6 +1301,9 @@ impl Policy {
     }
     pub fn admits(&self, bundle: &Bundle) -> Result<()> {
         self.validate()?;
+        if let Some(scope) = &self.implementation_startup {
+            scope.admits(bundle)?;
+        }
         for def in bundle.definitions.values() {
             require(
                 def.authority.task_templates.is_subset(&self.task_templates),
@@ -1226,6 +1314,11 @@ impl Policy {
                 "Scenario Task plan authority exceeds machine policy",
             )?;
             for grant in &def.authority.grants {
+                require(
+                    grant.operation != Operation::PublishImplementationPrV1
+                        || self.implementation_startup.is_some(),
+                    "Scoped implementation publication needs admitted startup authority",
+                )?;
                 if matches!(
                     grant.operation,
                     Operation::WriteOwnedFile | Operation::CleanupOwnedFile
@@ -1285,7 +1378,7 @@ impl Pin {
             .collect::<Result<_>>()?;
         let revision = hash(&(&bundle, &policy))?;
         Ok(Self {
-            schema: "af/scenario-pin@6".into(),
+            schema: "af/scenario-pin@12".into(),
             bundle,
             policy,
             revision,

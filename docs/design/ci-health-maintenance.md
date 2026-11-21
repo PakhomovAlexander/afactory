@@ -72,7 +72,7 @@ adds a native `task_output_field` projection for an admitted structured Task out
 allowlist is the scalar `category` and `signature_id` fields of `af.ci-diagnosis/1`; it refuses
 other schemas, fields, missing values and non-scalar values. Scenario `equals` conditions compare
 the projected category with literals and the signature with the selected occurrence.
-The accepted-output projection remains closed to those fields. The explicit `af/scenario@6`
+The accepted-output projection remains closed to those fields. The explicit `af/scenario@11`
 `ci_diagnosis` Task specialization additionally settles refused output as an
 `af/scenario-ci-diagnosis@2` native observation. It retains the original refused Task receipt,
 exact captured selection and bounded native diagnostic evidence beside the deterministic unknown;
@@ -131,6 +131,13 @@ equal or missing completion timestamps cannot establish closure and leave the ob
 incomplete, retaining the failure and any release alert. Unfinished sibling checks and runs
 add omissions without discarding independently collected failed jobs. A different head SHA starts a new occurrence but retains cross-occurrence history for 14
 days. These rules, not model judgement, control deduplication and one-open-PR limits.
+Signature state `af.ci-signature-state/5` keeps the maximum actual known completion separately
+from unknown occurrence identities within each exact live workflow/job/platform/head scope. Its
+`completed_at` is null until an actual completion is known, never synthesized from capture time.
+Recovering an earlier unknown occurrence preserves any later known completion; another head's
+unknown timing cannot prevent valid closure. Expired scopes supply neither kind of timing evidence.
+Earlier signature-state versions are refused without migration under
+[ADR-0145](../adr/0145-read-only-what-this-release-writes-and-version-every-changed-shape.md).
 Version 2 of the observer journal metadata atomically retains the latest service-evidence digest
 and its exact snapshot with the recurrence folds. Unchanged evidence replays the original
 pre-capture evaluation, including per-job recurrence counts; changed evidence is previewed on a

@@ -236,7 +236,7 @@ def page(document, field, maximum=100):
 
 
 def receipt(path, repository, source_sha, since, captured_at):
-    """Read the actual af.nightly-publish/1 receipt, never a fixture service summary.
+    """Read the actual af.nightly-publish/2 receipt, never a fixture service summary.
 
     A receipt of a previous green head cannot attest the current main head. Its date and
     publication must be in this observation window; stale or foreign bytes are omissions.
@@ -244,7 +244,7 @@ def receipt(path, repository, source_sha, since, captured_at):
     value = C.loads(read_file(path, RESPONSE_BYTES, 'Nightly publish receipt'))
     schema = globals().get('_RECEIPT_SCHEMA')
     if schema is None:
-        schema = C.loads((ROOT / 'schemas/performance-nightly-publish-v1.json').read_bytes())
+        schema = C.loads((ROOT / 'schemas/performance-nightly-publish-v2.json').read_bytes())
     interpreter = globals().get('_CI_SCHEMA') or module(
         'ci_receipt_schema', ROOT / 'scripts/backlog-check-triage.py')
     validator = interpreter.Validator()
@@ -270,7 +270,7 @@ def receipt(path, repository, source_sha, since, captured_at):
         C.require(value['release'] is not None and value['release']['url'] == 'https://github.com/' + repository + '/releases/tag/' + value['tag']
                   and [item['name'] for item in value['assets']] == names, 'Malformed published nightly receipt')
     notification_failed = value['telegram'] is None and value['telegram_reason'] != UNCONFIGURED_TELEGRAM
-    conclusion = 'failure' if notification_failed or value['prune_failures'] or value['foreign'] else (
+    conclusion = 'failure' if notification_failed or value['failures'] or value['prune_failures'] or value['foreign'] else (
         'success' if value['status'] == 'published' else 'skipped')
     return {'identity': C.digest(value), 'conclusion': conclusion}
 
@@ -427,7 +427,9 @@ def collect(github, *, captured_at, main_ref, since, nightly_receipt, release_pr
                             'platform': platform, 'head_sha': sha, 'conclusion': job['conclusion'],
                             'failing_tests': [], 'error_lines': [], 'log_artifacts': [], 'release_blocking': blocking}
                         completed_at = job.get('completed_at')
-                        if completed_at is not None:
+                        if completed_at is None:
+                            omit('missing completion timestamp for job ' + str(job_id))
+                        else:
                             try:
                                 completed_instant = C.instant(completed_at)
                                 C.require(started <= completed_instant <= updated
@@ -515,7 +517,7 @@ def observation_response(snapshot, request=None):
     actual request. Their byte sizes agree, including the nested snapshot's escaping.
     """
     identity = C.digest(snapshot)
-    return {'schema': 'af/scenario-adapter-response@1',
+    return {'schema': 'af/scenario-adapter-response@3',
         'intent_id': request['intent_id'] if request else 'sha256:' + '0' * 64,
         'input_digest': request['input_digest'] if request else 'sha256:' + '0' * 64,
         'outcome': 'done', 'evidence': 'ci_observe_v1 snapshot ' + identity,
@@ -629,7 +631,7 @@ def occurrence_options(options, snapshot_digest):
 def adapter_response(request, options, **transport):
     """Native ci_observe_v1 protocol with an exact snapshot content precondition."""
     C.require(set(request) == {'schema', 'method', 'operation', 'destination', 'intent_id', 'input_digest', 'inputs'}
-              and request['schema'] == 'af/scenario-adapter-request@4'
+              and request['schema'] == 'af/scenario-adapter-request@8'
               and request['method'] == request['operation'] == 'observe'
               and request['destination'] == options['destination'], 'Unsupported read-only observation request')
     for key in ('intent_id', 'input_digest'):
@@ -640,7 +642,7 @@ def adapter_response(request, options, **transport):
               and inputs['subject']['value'] == options['repository']
               and re.fullmatch('ci_observe_v1:sha256:[0-9a-f]{64}', inputs['condition']['value'])
               and re.fullmatch('[0-9a-f]{40}', inputs['revision']['value']), 'Observation scope refused')
-    response = {'schema': 'af/scenario-adapter-response@1', 'intent_id': request['intent_id'],
+    response = {'schema': 'af/scenario-adapter-response@3', 'intent_id': request['intent_id'],
         'input_digest': request['input_digest'], 'outcome': 'failed',
         'evidence': 'ci_observe_v1 evidence unavailable or precondition refused', 'observation': None}
     try:
@@ -676,7 +678,7 @@ def adapter_bytes(options):
     embed('_SCHEMA', (root / 'scripts/backlog-check-triage.py').read_text())
     embed('_CI', (root / 'scripts/ci-health.py').read_text())
     pieces.append('_CI._CI_SCHEMA=_SCHEMA\n')
-    schema = C.loads((root / 'schemas/performance-nightly-publish-v1.json').read_bytes())
+    schema = C.loads((root / 'schemas/performance-nightly-publish-v2.json').read_bytes())
     embed('_PRODUCTION', (root / 'scripts/ci-health-github.py').read_text(),
         '_PRODUCTION._CI=_CI;_PRODUCTION._NIGHTLY=_NIGHTLY;_PRODUCTION._CI_SCHEMA=_SCHEMA;'
         '_PRODUCTION._RECEIPT_SCHEMA=' + repr(schema) + ';_PRODUCTION._OCCURRENCE_SCHEMA='

@@ -91,6 +91,8 @@ pub enum Outcome {
     Pending,
     Absent,
     Failed,
+    NativeProofReady,
+    PublicationPrepared,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -105,12 +107,23 @@ pub struct Response {
 impl Response {
     fn validate(&self, request: &Request) -> Result<()> {
         require(
-            self.schema == "af/scenario-adapter-response@1"
+            self.schema == "af/scenario-adapter-response@3"
                 && self.intent_id == request.intent_id
                 && self.input_digest == request.input_digest,
             "Adapter returned stale or unrelated evidence",
         )?;
         text(&self.evidence)?;
+        if matches!(
+            self.outcome,
+            Outcome::NativeProofReady | Outcome::PublicationPrepared
+        ) {
+            require(
+                request.operation == Operation::PublishImplementationPrV1
+                    && request.method != Method::Observe
+                    && self.observation.is_none(),
+                "Progress is outside scoped native publication",
+            )?;
+        }
         if let Some(o) = &self.observation {
             o.validate()?;
         }
@@ -126,12 +139,17 @@ impl Response {
         )
     }
 }
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Settlement {
     Done(BTreeMap<String, Datum>),
+    TaskTerminal(Box<super::task_outcome::TaskOutcome>),
     TaskDone {
         outputs: BTreeMap<String, Datum>,
         unknown_usage: bool,
+    },
+    Progress {
+        checkpoint: crate::driver::Checkpoint,
+        evidence: String,
     },
     CiDiagnosisDone {
         outputs: BTreeMap<String, Datum>,
@@ -198,10 +216,11 @@ fn call(
 // External effects are reached through the durable runtime, after intent admission.
 pub(crate) fn dispatch(
     host: &dyn crate::Host,
-    policy: &Policy,
+    run: &crate::state::Run,
     dispatch: &Dispatch,
     cancellation: &AtomicBool,
 ) -> Result<Settlement> {
+    let policy = &run.pin.policy;
     match &dispatch.definition.operation {
         Kind::Task { target } => host.run_task(target, dispatch.timeout_ms, cancellation),
         Kind::CiDiagnosis { target } => {
@@ -217,7 +236,7 @@ pub(crate) fn dispatch(
         ),
         Kind::Wait { grant, condition } => {
             let request = Request {
-                schema: "af/scenario-adapter-request@4".into(),
+                schema: "af/scenario-adapter-request@8".into(),
                 method: Method::Observe,
                 intent_id: dispatch.intent.id.clone(),
                 input_digest: dispatch.intent.input_digest.clone(),
@@ -255,6 +274,7 @@ pub(crate) fn dispatch(
         }
         Kind::Action { grant, .. } if grant.adapter == "builtin" => file_action(dispatch, grant),
         Kind::Action { grant, .. } => {
+            super::nightly::validate_dispatch(policy, grant, &dispatch.inputs)?;
             let started = Instant::now();
             let remaining = || {
                 dispatch.timeout_ms.saturating_sub(
@@ -281,7 +301,7 @@ pub(crate) fn dispatch(
                     .get(&scope.evidence_adapter)
                     .ok_or("Missing pinned native evidence adapter")?;
                 let observation_request = Request {
-                    schema: "af/scenario-adapter-request@4".into(),
+                    schema: "af/scenario-adapter-request@8".into(),
                     method: Method::Observe,
                     intent_id: dispatch.intent.id.clone(),
                     input_digest: dispatch.intent.input_digest.clone(),
@@ -312,7 +332,7 @@ pub(crate) fn dispatch(
                 )?;
             }
             let mut request = Request {
-                schema: "af/scenario-adapter-request@4".into(),
+                schema: "af/scenario-adapter-request@8".into(),
                 method: Method::Reconcile,
                 intent_id: dispatch.intent.id.clone(),
                 input_digest: dispatch.intent.input_digest.clone(),
@@ -329,6 +349,14 @@ pub(crate) fn dispatch(
             }
             // Reconciliation is mandatory even for a fresh intent. An absent response is a
             // positive, authoritative no-effect result, not a timeout or a missing response.
+            if grant.operation == Operation::PublishImplementationPrV1 {
+                let scope = policy
+                    .implementation_startup
+                    .as_ref()
+                    .ok_or("Missing admitted implementation scope")?;
+                scope.live(host)?;
+                host.validate_implementation_proof(&request, run, scope)?;
+            }
             let left = remaining();
             require(
                 left > 0,
@@ -374,6 +402,14 @@ pub(crate) fn dispatch(
                     )])))
                 }
                 Outcome::Failed => Ok(Settlement::Failed(r.evidence)),
+                Outcome::NativeProofReady => Ok(Settlement::Progress {
+                    checkpoint: crate::driver::Checkpoint::NativeProofReady,
+                    evidence: r.evidence,
+                }),
+                Outcome::PublicationPrepared => Ok(Settlement::Progress {
+                    checkpoint: crate::driver::Checkpoint::PublicationPrepared,
+                    evidence: r.evidence,
+                }),
                 _ => Ok(Settlement::Waiting(r.evidence)),
             }
         }

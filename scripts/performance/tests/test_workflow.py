@@ -88,6 +88,42 @@ def env(step):
     return out
 
 
+class NobuildLabelEvents(unittest.TestCase):
+    def test_unrelated_label_events_skip_jobs_and_get_unique_concurrency_groups(self):
+        label_event = 'contains(fromJSON(\'["labeled","unlabeled"]\'), github.event.action)'
+        nobuild = "contains(github.event.pull_request.labels.*.name, 'nobuild')"
+        pr_only = "github.event_name == 'pull_request'"
+        for workflow, job in (
+            ("workspace-fixture-benchmark", "benchmark"),
+            ("performance-activation", "verify"),
+            ("release-namespace-proof", "namespace"),
+            ("performance-telemetry", "plan"),
+        ):
+            with self.subTest(workflow=workflow):
+                source = read(os.path.join(ROOT, ".github", "workflows", workflow + ".yml")).decode()
+                triggers, rest = source.split("\non:\n", 1)[1].split("\npermissions:\n", 1)
+                self.assertIn("types: [opened, synchronize, reopened, labeled, unlabeled]", triggers)
+                concurrency = rest.split("\nconcurrency:\n", 1)[1].split("\n\n", 1)[0]
+                group = workflow + "-${{ github.event.pull_request.number }}"
+                cancel = "true"
+                ignore = label_event + " && github.event.label.name != 'nobuild'"
+                run = "!" + nobuild + " && (!" + label_event + " || github.event.label.name == 'nobuild')"
+                if workflow == "performance-telemetry":
+                    for event in ("schedule", "release", "workflow_dispatch"):
+                        self.assertIn("\n  " + event + ":\n", triggers)
+                    group = workflow + "-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}"
+                    cancel = "${{ " + pr_only + " }}"
+                    ignore = pr_only + " && " + ignore
+                    run = "github.event_name != 'pull_request' || (" + run + ")"
+                # A skipped job alone still enters workflow-level concurrency. Each ignored
+                # event needs its own group so it cannot displace any pending or running work.
+                self.assertEqual(concurrency.splitlines(), [
+                    "  group: " + group + "${{ " + ignore + " && format('-ignored-{0}', github.run_id) || '' }}",
+                    "  cancel-in-progress: " + cancel,
+                ])
+                self.assertEqual(key(jobs(source)[job], "if"), "${{ " + run + " }}")
+
+
 class RequiredPythonCompatibility(unittest.TestCase):
     def setUp(self):
         self.text = read(WORKFLOW).decode("utf-8")
@@ -118,6 +154,7 @@ class RequiredPythonCompatibility(unittest.TestCase):
                 uses_python = [i for i, step in enumerate(actions)
                                if any(re.search(r"^\s*(?:run: )?(?:python3?|make)\s", line)
                                       for line in step if "run:" in line or line.startswith("          "))
+                               and "        if: env.NOBUILD == 'true'" not in step
                                and i != setup[0]]
                 self.assertTrue(uses_python)
                 self.assertLess(setup[0], min(uses_python))
@@ -144,7 +181,8 @@ class RequiredPythonCompatibility(unittest.TestCase):
         job = "\n".join(self.jobs["resolve"])
         self.assertIn('--bound "$BOUND_PLAN"', job)
         self.assertIn('--event "$GITHUB_EVENT_PATH"', job)
-        self.assertNotIn("github.event.pull_request.labels", job)
+        self.assertNotIn("github.event.pull_request.labels", "\n".join(
+            line for step in steps(self.jobs["resolve"]) for line in step))
         self.assertNotIn("continue-on-error", job)
 
     def test_telemetry_smoke_is_selected_perf_validation_with_original_containment(self):
@@ -168,6 +206,32 @@ class RequiredPythonCompatibility(unittest.TestCase):
             self.assertIn('python -I -B scripts/performance/tests/' + script, joined)
         self.assertIn("PYTHONDONTWRITEBYTECODE: '1'", joined)
         self.assertIn('validation-telemetry-smoke-${{ github.run_attempt }}', joined)
+
+    def test_measurement_smoke_host_build_has_pinned_rust_and_inherited_wrapper(self):
+        # The first smoke builds in Docker; the measurement smoke additionally builds
+        # the authority supervisor on the host, inheriting the workflow's wrapper.
+        from perflab import toml_file
+        toolchain = toml_file.loads(read(os.path.join(ROOT, 'rust-toolchain.toml')),
+                                    'rust-toolchain.toml')['toolchain']['channel']
+        self.assertIn('  RUSTC_WRAPPER: sccache', self.text.split('jobs:')[0])
+        actions = steps(self.jobs['telemetry-build-smoke'])
+        measurement = next(i for i, step in enumerate(actions)
+                           if 'telemetry_measurement_smoke.py' in '\n'.join(step))
+        install = '        run: rustup toolchain install ' + toolchain + \
+                  ' --profile minimal --component clippy,rustfmt'
+        rust = next(i for i, step in enumerate(actions) if install in step)
+        wrapper_action = ('      - uses: mozilla-actions/sccache-action@'
+                          'fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11')
+        wrapper = next(i for i, step in enumerate(actions) if wrapper_action in step)
+        self.assertLess(rust, measurement)
+        self.assertLess(wrapper, measurement)
+        # Reuse the approved host prerequisites, without suppressing the real build.
+        self.assertIn(install, '\n'.join(self.jobs['base']))
+        self.assertIn(wrapper_action, self.jobs['base'])
+        smoke = read(os.path.join(ROOT, 'scripts/performance/tests/'
+                                  'telemetry_measurement_smoke.py')).decode()
+        self.assertIn('subprocess.run(["cargo", "build", "--locked", "--example", '
+                      '"perf-supervisor"],\n                   cwd=ROOT, check=True)', smoke)
 
     def test_every_action_stays_pinned_to_a_commit(self):
         for line in self.text.splitlines():

@@ -1,5 +1,5 @@
 {
-  "schema": "af.perf-run/7",
+  "schema": "af.perf-run/8",
   "run_id": "schema_fixture_diagnostic",
   "parent_run_id": null,
   "scope": "diagnostic",
@@ -216,7 +216,8 @@
       ],
       "sample_timeout_ms": 30000,
       "budgets": [],
-      "seed": null
+      "seed": null,
+      "execution_class": "standard"
     },
     {
       "instance_id": "synthetic_fast",
@@ -287,7 +288,8 @@
       ],
       "sample_timeout_ms": 30000,
       "budgets": [],
-      "seed": null
+      "seed": null,
+      "execution_class": "standard"
     },
     {
       "instance_id": "synthetic_process__size_1",
@@ -374,7 +376,8 @@
           "applicable": false
         }
       ],
-      "seed": null
+      "seed": null,
+      "execution_class": "standard"
     }
   ],
   "cohort": null,
@@ -390,5 +393,5 @@
     }
   },
   "required_check_eligible": false,
-  "plan_digest": "sha256:a27719d3c330863a668082d86f35db10af9ffc1a0ffe7b55f34603b9e0bae49e"
+  "plan_digest": "sha256:a063bed078d6bd2715481f8da0de24c6aed17bbe5b99aa6b131d6d9cfe0b2958"
 }

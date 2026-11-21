@@ -28,9 +28,6 @@ pub(crate) fn candidate_source(
     let source_id = selected
         .source_id
         .ok_or("Candidate has no original source")?;
-    if let Some(expected) = &request.predecessor_snapshot_id {
-        super::scenario_template::experiment_source_matches(&opened.cas, &source_id, expected)?;
-    }
     let candidate_port = receipt
         .result
         .outputs
@@ -56,14 +53,19 @@ pub(crate) fn candidate_source(
             return Err("Candidate source artifact differs from its Snapshot metadata".into());
         }
     }
-    let (base, old) = af_source_git::task::read_snapshot(&opened.cas, &source_id)?;
+    let task_source_id = source_id.clone();
+    let baseline_id = native_export_baseline(&opened, request, repo, state, &mut BTreeSet::new())?;
+    let (base, old) = af_source_git::task::read_snapshot(&opened.cas, &baseline_id)?;
     let (head, new) = af_source_git::task::read_snapshot(&opened.cas, &selected.snapshot_id)?;
     let origin = af_source_git::task::read_origin(&opened.cas, &base.origin_id)?;
     let head_origin = af_source_git::task::read_origin(&opened.cas, &head.origin_id)?;
     if !af_source_git::task::descends_from(&opened.cas, &selected.snapshot_id, &source_id)? {
         return Err("Candidate does not descend from its Task source".into());
     }
-    if head_origin.repository_id() != origin.repository_id() {
+    if head_origin.repository_id() != origin.repository_id()
+        || (request.predecessor_snapshot_id.is_none()
+            && origin.source_revision() != Some(request.source_commit.as_str()))
+    {
         return Err("Candidate candidate belongs to a different repository".into());
     }
     if new.entries.len() > 32768
@@ -157,10 +159,11 @@ pub(crate) fn candidate_source(
     let tree = scratch.tree("candidate.index", &entries, &blobs)?;
     let transport = scratch.commit(&tree, None, &selected.snapshot_id)?;
     let expected = SourceReceipt {
-        schema: "af/git-candidate-source@1".into(),
+        schema: "af/git-candidate-source@2".into(),
         request_digest: request.digest()?,
         repository_id: origin.repository_id().into(),
-        source_snapshot: source_id,
+        source_snapshot: baseline_id,
+        task_source_snapshot: task_source_id,
         candidate_snapshot: selected.snapshot_id,
         predecessor_snapshot: request.predecessor_snapshot_id.clone(),
         source_content_digest: base.content_digest,
@@ -240,4 +243,96 @@ pub(crate) fn candidate_source(
     ]);
     run_git(fsck, None, "verifying candidate staging objects")?;
     Ok(expected)
+}
+
+/// Source captures may reroot an exact predecessor under a new origin. Follow the native
+/// binding/continuation receipts, rather than assuming Snapshot parent links cross Tasks.
+/// This exports objects only; scoped publication separately checks complete Run membership.
+fn native_export_baseline(
+    opened: &OpenedTask,
+    request: &af_scenario::workspace::SourceRequest,
+    repo: &Path,
+    state: &Path,
+    seen: &mut BTreeSet<String>,
+) -> Result<String, String> {
+    if !seen.insert(opened.task.revision_id.clone()) || seen.len() > 256 {
+        return Err("Candidate original source lineage cycles or exceeds its bound".into());
+    }
+    let source = opened
+        .task
+        .revision
+        .inputs
+        .get("source")
+        .and_then(|p| p.snapshot_id.clone())
+        .ok_or("Candidate predecessor source missing")?;
+    if request
+        .predecessor_snapshot_id
+        .as_ref()
+        .is_some_and(|expected| {
+            super::super::scenario_template::experiment_source_matches(
+                &opened.cas,
+                &source,
+                expected,
+            )
+            .is_ok()
+        })
+    {
+        return Ok(source);
+    }
+    let bindings = recorded_input_bindings(&opened.cas, &opened.task.revision)?;
+    let predecessor = bindings
+        .as_ref()
+        .and_then(|b| b.bindings.get("source"))
+        .and_then(|b| b.task.as_ref());
+    let continuation = super::super::continuation::recorded(&opened.cas, &opened.task.revision)?;
+    let (task, revision, result, snapshot) = if let Some(reference) = predecessor {
+        let bound = &bindings.as_ref().ok_or("Missing native bindings")?.bindings["source"];
+        if reference.port != "snapshot" || reference.acceptance != TaskAcceptanceV1::Satisfied {
+            return Err("Candidate predecessor is not an accepted native Snapshot".into());
+        }
+        (
+            reference.task_id.as_str(),
+            reference.task_revision_id.as_str(),
+            reference.result_id.as_str(),
+            bound
+                .snapshot_id
+                .as_deref()
+                .ok_or("Missing predecessor Snapshot")?,
+        )
+    } else if let Some((_, findings)) = &continuation {
+        super::super::continuation::verify_findings(&opened.cas, &opened.store, findings)?;
+        (
+            &*findings.continues.task_id,
+            &*findings.continues.task_revision_id,
+            &*findings.continues.result_id,
+            &*findings.continues.snapshot_id,
+        )
+    } else {
+        if request.predecessor_snapshot_id.is_some() {
+            return Err(
+                "Candidate lineage does not contain the declared publication predecessor".into(),
+            );
+        }
+        return Ok(source);
+    };
+    super::super::scenario_template::experiment_source_matches(&opened.cas, &source, snapshot)?;
+    let prior = open_task(task, repo, Some(state))?;
+    if prior.task.revision_id != revision
+        || !matches!(&prior.task.phase, TaskPhaseV1::Finished { result_id } if result_id == result)
+    {
+        return Err("Candidate native predecessor revision/result differs".into());
+    }
+    if predecessor.is_some() {
+        let (result, _) = prior.view()?;
+        let result = result.ok_or("Candidate predecessor result missing")?;
+        let selected = select(&prior, None)?;
+        if result.execution != TaskExecutionV1::Completed
+            || result.acceptance != TaskAcceptanceV1::Satisfied
+            || !selected.verified
+            || selected.snapshot_id != snapshot
+        {
+            return Err("Candidate predecessor lacks exact native acceptance".into());
+        }
+    }
+    native_export_baseline(&prior, request, repo, state, seen)
 }

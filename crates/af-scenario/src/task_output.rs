@@ -63,6 +63,25 @@ impl Record {
         Ok(())
     }
 }
+/// Only accepted native values may own replayable diagnosis evidence.
+pub fn accepted_receipt(value: &Datum) -> Result<Option<&TaskReceipt>> {
+    match value {
+        Datum::Task(receipt) => {
+            value.validate()?;
+            Ok(Some(receipt))
+        }
+        Datum::TaskOutcome(outcome) => {
+            outcome.validate()?;
+            if outcome.accepted() {
+                Datum::Task(outcome.receipt.clone()).validate()?;
+                Ok(Some(&outcome.receipt))
+            } else {
+                Ok(None)
+            }
+        }
+        _ => Ok(None),
+    }
+}
 fn target<'a>(run: &'a Run, receipt: &TaskReceipt) -> Result<&'a TaskTarget> {
     let mut targets = run
         .pin
@@ -169,11 +188,11 @@ pub fn read(run: &Run, receipt: &TaskReceipt, port: &str) -> Result<serde_json::
             if !matches!(step.operation, Kind::Task { .. } | Kind::FreshTask { .. }) {
                 continue;
             }
-            if !progress
-                .outputs
-                .values()
-                .any(|d| matches!(d,Datum::Task(t) if t==receipt))
-            {
+            let mut matches = false;
+            for value in progress.outputs.values() {
+                matches |= accepted_receipt(value)? == Some(receipt);
+            }
+            if !matches {
                 continue;
             }
             validate(progress, receipt)?;

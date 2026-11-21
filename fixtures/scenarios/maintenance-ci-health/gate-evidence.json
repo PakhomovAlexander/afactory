@@ -1,10 +1,10 @@
 {
   "documents": [
     {
-      "schema": "af/task-list@4",
+      "schema": "af/task-list@5",
       "tasks": [
         {
-          "schema": "af/task-list-entry@4",
+          "schema": "af/task-list-entry@5",
           "task_id": "gate-1",
           "kind": "af/implement@1",
           "phase": {
@@ -31,7 +31,7 @@
           }
         },
         {
-          "schema": "af/task-list-entry@4",
+          "schema": "af/task-list-entry@5",
           "task_id": "gate-2",
           "kind": "af/implement@1",
           "phase": {

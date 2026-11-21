@@ -133,7 +133,7 @@ impl SourceRequest {
     }
     pub fn validate(&self) -> Result<()> {
         require(
-            self.schema == "af/git-candidate-source-request@1",
+            self.schema == "af/git-candidate-source-request@2",
             "Unsupported workspace source request",
         )?;
         Datum::Task(self.receipt.clone()).validate()?;
@@ -159,6 +159,7 @@ pub struct SourceReceipt {
     pub repository_id: String,
     pub source_snapshot: String,
     pub candidate_snapshot: String,
+    pub task_source_snapshot: String,
     #[serde(deserialize_with = "Option::deserialize")]
     pub predecessor_snapshot: Option<String>,
     pub source_content_digest: String,
@@ -170,7 +171,24 @@ pub struct SourceReceipt {
 
 impl SourceReceipt {
     pub fn read(path: &std::path::Path) -> Result<Self> {
-        serde_json::from_slice(&super::store::read(path, 65536)?).map_err(|e| e.to_string())
+        let receipt: Self =
+            serde_json::from_slice(&super::store::read(path, 65536)?).map_err(|e| e.to_string())?;
+        require(
+            receipt.schema == "af/git-candidate-source@2",
+            "Unsupported native candidate export",
+        )?;
+        for id in [
+            &receipt.request_digest,
+            &receipt.source_snapshot,
+            &receipt.task_source_snapshot,
+            &receipt.candidate_snapshot,
+        ] {
+            require(
+                af_contracts::is_digest(id),
+                "Invalid native candidate export identity",
+            )?;
+        }
+        Ok(receipt)
     }
 }
 
@@ -308,7 +326,7 @@ mod composition_tests {
             &std::fs::read(root.join("fixtures/scenarios/workspace/bundle.json")).unwrap(),
         )
         .unwrap();
-        crate::tests::valid("scenario-bundle-v6.json", &bundle);
+        crate::tests::valid("scenario-bundle-v11.json", &bundle);
         bundle.validate(&crate::tests::TestHost::default()).unwrap();
         assert_eq!(bundle.root, "documentation-update");
         let mut missing_merge = bundle.clone();

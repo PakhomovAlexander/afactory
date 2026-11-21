@@ -42,7 +42,18 @@ the signature and resets its counters only when its selected attempt demonstrabl
 the retained failure. Run IDs and API order are not completion evidence. Older successes and equal
 or missing timestamps cannot close a failure; the observation is incomplete and the failure and
 its release alert remain. Unfinished sibling checks and runs add bounded omissions without
-suppressing independently completed failures. Signature and scope history expire after 14 UTC days.
+suppressing independently completed failures. A completed failed job with an absent, null or invalid
+completion timestamp remains failure evidence with unknown timing even when no green sibling is
+present. Both production normalization and the service fold independently record bounded omissions;
+the snapshot stays incomplete, skips diagnosis and permits only alert-only remedy routing. Valid
+timing in a later capture can recover the occurrence through the ordinary completion rules.
+Signature and scope history expire after 14 UTC days.
+Each live workflow/job/platform/head scope retains its own unknown occurrence identities and the
+maximum actual known failure completion. Recovering an earlier unknown occurrence cannot lower
+that maximum, and an unknown completion on one head cannot block closure on another. Capture time
+never substitutes for completion evidence. Signature records use `af.ci-signature-state/5`, with a
+nullable `completed_at` maximum when no actual completion is known; earlier versions are refused
+without migration, following [ADR-0145](adr/0145-read-only-what-this-release-writes-and-version-every-changed-shape.md).
 The journal's `af.ci-health-state/2` metadata retains only the latest capture's complete service
 digest and exact snapshot. Its receipt commits atomically with the capture's recurrence folds.
 Identical evidence replays that snapshot, preserving each job's original count even when one
@@ -129,7 +140,8 @@ is removed before extracting them. Content digests name the bounded annotation/l
 Missing, malformed or excess evidence retains an unknown failure and a named omission. No full log enters a Task or Scenario input.
 
 `--nightly-receipt` names the actual `builds_root/<date>/publish.json`, validated against the
-shipped `af.nightly-publish/1` schema and publication invariants. The reader checks its exact
+shipped `af.nightly-publish/2` schema and publication invariants, including retained publication
+failures even when the release assets and notification otherwise look successful. The reader checks its exact
 repository and main head, date/tag, asset order, release URL, notification/pruning outcomes and
 publication timestamp in the observation window. It does not substitute a fixture summary or
 select an arbitrary newest file. A receipt of an earlier green head cannot attest newer main;
@@ -288,7 +300,7 @@ observation start/end and notification route as typed scalar inputs. Every step 
 condition checks these values against the exact compiled scope; changing an input cannot reinterpret
 the captured observation or dispatch an effect under another scope.
 
-The CI health fixture uses the explicit `af/scenario@6` Task specialization
+The CI health fixture uses the explicit `af/scenario@11` Task specialization
 `{"kind":"ci_diagnosis","target":{...}}`, with one attempt, the same native Task plan authority,
 reservation, cancellation lease and exact accounting as an ordinary Task. Its `result` port is
 an observation carrying `af/scenario-ci-diagnosis@2`. Accepted settlements retain the accepted
@@ -325,9 +337,11 @@ identity of each original diagnostic. `af/scenario-ci-diagnosis@2` replaces vers
 incorrectly required Attempt IDs to be artifact digests. Version 1 fails closed. Definitions,
 journals, Task receipts and the adapter protocol keep their current versions and shapes.
 
-The changed definitions, bundles, pins, Runs, lists and Ant documents use version 6; the journal
-uses `af/scenario-store@7`. Their previous versions fail closed. Machine policy remains version 5
-and the adapter request protocol remains version 4 because their typed shapes are unchanged.
+The composed definitions and bundles use version 11; pins, Runs and Scenario lists use version 12.
+Ant definitions use version 12, Ant pins/ticks 13, state/list 14 and inspection 9. The journal uses
+`af/scenario-store@18`. Their previous versions fail closed. Current main's machine policy remains
+version 8 and its adapter request/response protocol remains version 8/3; CI Health adds no transport
+authority or new adapter outcome.
 
 The fixture sends findings, an additional diagnosis notification when a Task ran, exactly one
 remedy-intent notification when a failure was selected, then the outcome. Each
@@ -361,6 +375,8 @@ After two hours of grace, missing admission and missing durable skip evidence pr
 A waiting PR does not satisfy a new daily occurrence. A durable busy skip does. A visible pause
 or disable suppresses future due times; it does not erase an occurrence already due.
 The watchdog scans at most 4096 expected dates and retains at most 16384 alert identities.
+It skips dates that no pinned offset can make due yet, without resolving future timezone rules.
+An actual due occurrence needing rules beyond the pinned timezone horizon still fails closed.
 
 The separate outbox persists one identity per Ant, expected occurrence and alert kind before
 notification. Default execution is dry-run: it prints pending `af.maintenance-watchdog-alert/1`
@@ -436,6 +452,22 @@ independent service-health alert remains responsible for a missed watchdog timer
   refuses foreign diagnosis evidence.
 
 These are functional/lifecycle receipts, not live GitHub, paid model or deployment evidence.
+
+The scope-completion correction adds four in-process Python tests and no subprocesses or Rust
+test methods. Its capture-level regressions were run before the reducer fix: the earlier-unknown
+recovery case returned no failures instead of retaining jobs 201 and 404 with their release
+alerts; the cross-head case retained jobs 404 and 201 instead of retaining only release job 404.
+Both assertions failed. After the fix, `python3 -I scripts/test-ci-health.py` passes all 68 tests.
+The four new methods pass together (0.064 seconds in the recorded sandbox run):
+
+- `EvidenceTests.test_recovered_earlier_unknown_never_lowers_later_known_completion_or_loses_release_blockers`
+- `EvidenceTests.test_unknown_release_head_cannot_block_other_head_closure_or_lose_its_alert`
+- `EvidenceTests.test_signature_state_v5_writer_reader_schema_parity_and_old_versions_fail_closed`
+- `EvidenceTests.test_expired_scope_unknown_timing_cannot_poison_new_failure_on_a_retained_signature`
+
+The existing Rust schema inventory, help/schema parity and refusal tests now name version 5;
+the refusal test additionally checks signature-state versions 1 through 4. No gate bounds or
+test-class selections change.
 
 The failed-head and release-alert correction adds four Rust tests in existing binaries and two
 Python test methods. The native fixtures contain three cases: accepted release-head evidence,
@@ -974,3 +1006,7 @@ Workspace all-target Clippy, formatting, test-class audit and changelog checks p
 Markdown lint could not run offline because the npm package was not cached. The enclosing Task
 runs the pinned fast gate and independent review/evaluation after sealing; this Worker does not
 duplicate that whole-suite gate. No live call, activation or publication was performed.
+
+The inactive watchdog reads the current native journal, including driver and capacity records.
+It observes daily Ants only, honors compressed missed-occurrence ranges and capacity skips, and
+does not reinterpret history already compacted into native retention provenance as missing ticks.

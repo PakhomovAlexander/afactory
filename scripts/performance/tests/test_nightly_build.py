@@ -171,7 +171,7 @@ class History(TempDir):
                   "sign_key": self.path("sign.key"), "public_key": self.path("sign.pub"),
                   "required_checks": ["check / lint"], "max_walk": 20}
         values.update(overrides)
-        lines = ['schema = "af.nightly-config/1"']
+        lines = ['schema = "af.nightly-config/2"']
         for key, value in values.items():
             lines.append("%s = %s" % (key, json.dumps(value)))
         with open(self.config, "w") as stream:
@@ -208,6 +208,20 @@ class History(TempDir):
 
 
 class GreenWalk(History):
+    def test_explicit_prerelease_baseline_is_pinned_and_never_falls_back(self):
+        self.write_config(baseline_ref="v0.14.0-rc.3")
+        code, plan, err, _ = self.plan({self.tip: GREEN})
+        self.assertEqual(code, 0, err)
+        self.assertEqual((plan["baseline_tag"], plan["baseline_sha"]), ("v0.14.0-rc.3", self.rc))
+        self.write_config(baseline_ref="v9.9.9-rc.1")
+        code, _, err, _ = self.plan({self.tip: GREEN})
+        self.assertEqual(code, 1)
+        self.assertIn("configured baseline tag is absent", err)
+        self.write_config(baseline_ref="main")
+        code, _, err, _ = self.plan({self.tip: GREEN})
+        self.assertEqual(code, 1)
+        self.assertIn("baseline_ref", err)
+
     def test_a_red_tip_chooses_its_green_parent_and_records_the_tip(self):
         code, plan, err, _ = self.plan({self.tip: LINT_FAILED, self.parent: GREEN})
         self.assertEqual(code, 0, err)
@@ -979,7 +993,11 @@ class ReleaseToolsIgnoreNightlies(TempDir):
         patterns = [item.strip().strip('"') for item in tags.split(",")]
         self.assertTrue(patterns and all(p.startswith("v[0-9]") for p in patterns), patterns)
         repo = Repo(self.path("repo"))
-        head = repo.commit("release", {"Cargo.toml": manifest("0.14.0")})
+        source = repo.commit("reviewed source", {"Cargo.toml": manifest("0.13.0")})
+        declaration = json.loads(read(os.path.join(ROOT, "scripts/release-contract.json")))
+        declaration.update(version="0.14.0", source=source)
+        head = repo.commit("release", {"Cargo.toml": manifest("0.14.0"),
+                                     "scripts/release-contract.json": json.dumps(declaration)})
         env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "GITHUB_SHA": head,
                "GITHUB_REF_TYPE": "tag", "GITHUB_REF_NAME": "nightly-2026.10.29",
                "GITHUB_OUTPUT": self.path("output"), "HOME": self.tmp,
@@ -989,6 +1007,7 @@ class ReleaseToolsIgnoreNightlies(TempDir):
                                 stderr=subprocess.PIPE)
         self.assertEqual(result.returncode, 1)
         self.assertIn(b"tag nightly-2026.10.29 does not match version 0.14.0", result.stderr)
+        self.assertNotIn(b"Traceback", result.stderr)
         self.assertFalse(os.path.exists(self.path("output")))
 
 

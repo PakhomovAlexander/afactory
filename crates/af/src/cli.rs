@@ -521,12 +521,12 @@ af/error@2 document, exit 2. `af help json` explains the vocabulary.",
         subcommand_required = true,
         arg_required_else_help = true,
         long_about = "Print a JSON Schema af ships, by the document ID `af help json` lists.\n\n\
-Every document af prints under --json names its shape in its `schema` field (`af/task-status@2`); \
+Every document af prints under --json names its shape in its `schema` field (`af/task-status@3`); \
 `af schema show ID` prints the schema of that ID, the bytes of `schemas/` this release was built \
 with, and `af schema show` alone lists the IDs with their titles. It reads nothing and writes \
 nothing. Exit codes: 0 printed, 1 an ID this release does not ship (the message names the \
 versions it does ship), 2 usage error.",
-        after_long_help = "Examples:\n  af schema show\n  af schema show af/task-status@2\n  af schema show af/command-catalog@1 | jq .title"
+        after_long_help = "Examples:\n  af schema show\n  af schema show af/task-status@3\n  af schema show af/command-catalog@1 | jq .title"
     )]
     Schema {
         #[command(subcommand)]
@@ -539,7 +539,7 @@ pub(crate) enum SchemaCommand {
     /// Print one shipped JSON Schema by its document ID; without an ID, list the IDs
     #[command(
         long_about = "Print one shipped JSON Schema by its document ID, the `schema` field of \
-the document (`af/task-status@2`), exactly as `schemas/` holds it; without an ID, list every ID \
+the document (`af/task-status@3`), exactly as `schemas/` holds it; without an ID, list every ID \
 this release ships with its schema's title, one per line. An ID it does not ship exits 1.",
         after_long_help = "Examples:\n  af schema show\n  af schema show af/error@2\n  af schema show af/task-status@1   # exit 1"
     )]
@@ -669,7 +669,7 @@ pub(crate) enum ReviewCommand {
         /// Select a recorded Review Round (default: latest)
         round: Option<u64>,
         #[arg(long, value_enum, default_value = "text", conflicts_with = "json")]
-        /// Ledger output format (JSON: af/review-ledger@2)
+        /// Ledger output format (JSON: af/review-ledger@3)
         format: FindingsFormatArg,
         #[command(flatten)]
         inspect: TaskInspectArgs,
@@ -779,7 +779,7 @@ pub(crate) enum ReviewCommand {
     },
 }
 
-/// What `af task findings` prints: text, its `af/task-findings@2` document, or SARIF 2.1.0.
+/// What `af task findings` prints: text, its `af/task-findings@3` document, or SARIF 2.1.0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum FindingsFormatArg {
     Text,
@@ -1297,6 +1297,13 @@ pin=$(af catalog digest .af/task-packages/team/implementer) || exit 1"
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum TaskCommand {
+    /// Opt-in durable original-session wakes (Linux); never runs or resumes a Task
+    Wake {
+        #[command(subcommand)]
+        command: crate::task_commands::wake::WakeCommand,
+        #[command(flatten)]
+        inspect: TaskInspectArgs,
+    },
     /// Capture a Task and preview its plan, as `plan` does; with --execute, also run it
     #[command(
         long_about = "Capture a Task and show its execution plan before any Worker runs.\n\nWithout \
@@ -1536,7 +1543,7 @@ the time since the run started and the tokens charged so far, and every 5 minute
 back. stderr's last line is always the Task's state and the next command: `Task ID: \
 phase/outcome/cause; next: COMMAND` (`af help task-states`).\n\n--detach starts the same run \
 in the background and returns once it holds the Task and its plan is admitted, printing its pid \
-and its log, `runs/<TASK_ID>-<N>.log` in the Task Store (`af/task-detached@3` under --json); a \
+and its log, `runs/<TASK_ID>-<N>.log` in the Task Store (`af/task-detached@4` under --json); a \
 run not admitted within 2 minutes exits 4 with `admitted: false`, and `af task status` is next. \
 The run has no terminal, survives the shell that started it, and is the same process a \
 foreground run is; `af task wait`, `af task status`, `af task events` and `af task cancel` \
@@ -1627,6 +1634,9 @@ af task run NEW_ID --from TASK_ID   # needs: a finished reviewed Task TASK_ID\n 
         /// Run in the background: return once the run holds the Task, with its pid and log
         #[arg(long)]
         detach: bool,
+        /// Commit a wake registration and launch intent before detach; owner-private grant file
+        #[arg(long, value_name = "FILE", requires = "detach")]
+        wake_route: Option<PathBuf>,
         /// Print no progress lines or heartbeat on stderr; the last line still follows
         #[arg(long)]
         quiet: bool,
@@ -1636,7 +1646,7 @@ af task run NEW_ID --from TASK_ID   # needs: a finished reviewed Task TASK_ID\n 
     /// Block until a Task settles, then exit with its exit code
     #[command(
         long_about = "Block until a Task settles — no writer holds it and no run of this host \
-is starting — then print its status line (`af/task-status@2` under --json) and exit with the \
+is starting — then print its status line (`af/task-status@3` under --json) and exit with the \
 Task's exit code: its outcome's (`af help exit-codes`), 4 for a Task that waits for a person. \
 --bell rings terminal stderr when it settles; --notify requests an OS notification, warning \
 without changing the exit code when the notifier is unavailable. \
@@ -1671,7 +1681,7 @@ clock started, one line with tokens reserved, charged and remaining (and unknown
 last comparable Gate duration recorded for this repository, check and code policy when one \
 exists, the run that holds it (run number, pid and host) and \
 who cancelled it, then the next command on its own line, within 100 columns (the terminal's \
-width when narrower) and broken only between arguments. --json prints one `af/task-status@2` \
+width when narrower) and broken only between arguments. --json prints one `af/task-status@3` \
 document. Exits 0: the state is data.",
         after_long_help = "Examples:\n  \
 af task status TASK_ID   # needs: a Task\n  \
@@ -1686,7 +1696,7 @@ af task status TASK_ID --json   # needs: a Task"
     /// Follow a Task as JSON lines: each event of its log, then one terminal record
     #[command(
         long_about = "Print the events a Task's log records as JSON lines on stdout, one \
-`af/task-event@2` document per line, and follow the Task until it settles — no writer holds it \
+`af/task-event@3` document per line, and follow the Task until it settles — no writer holds it \
 and no run of this host is starting — then print one terminal record and exit with the Task's \
 exit code, as `af task wait` does: its outcome's (`af help exit-codes`), 4 for a Task that waits \
 for a person.\n\nAn event line (`record: event`) is one event of the Task's log, in the order \
@@ -1728,7 +1738,7 @@ writer: only that recorded pid is signalled (SIGTERM, and once more after 60 s),
 process found by its name. A writer on another host is refused with its pid and host.\n\n\
 The request is recorded first, with who asked (`runs/<TASK_ID>-<N>.cancel.json`), so the Task \
 shows `abandoned/cancelled/host_cancelled` and `af task show` names the requester. The Task \
-stays resumable: `af task run TASK_ID` continues it. --json prints one `af/task-cancelled@2` \
+stays resumable: `af task run TASK_ID` continues it. --json prints one `af/task-cancelled@3` \
 document. A Task no writer holds is refused (exit 1).",
         after_long_help = "Examples:\n  \
 af task cancel TASK_ID   # needs: a running Task\n  \
@@ -1750,7 +1760,7 @@ command. A round whose reduce step did not run shows each \
 reviewer's reports as recorded, not gathered. A Task that recorded no review round says so, \
 with the state it reached. The round's coverage says which reviewers ran and which paths \
 they read: a reviewer that did not run shows `not reviewed`, never `no findings`.\n\n--json \
-(the same as --format json) prints one `af/task-findings@2` document: each finding carries an \
+(the same as --format json) prints one `af/task-findings@3` document: each finding carries an \
 `agent_prompt` (its location, evidence, the requested change and how verification will judge \
 it), the round its `coverage` and the findings a fix verification record proved fixed on its \
 Snapshot. --format sarif prints the same findings as one SARIF 2.1.0 log. --json cannot be \
@@ -1961,15 +1971,15 @@ af task deliver TASK_ID --repo . --branch af/TASK_ID --worktree ../TASK_ID \\\n 
     #[command(
         long_about = "List every Task of the Store, collected Tasks included, in Task ID order: \
 its state (phase/outcome/cause, `af help task-states`), review round, chargeable tokens, how long \
-ago it last changed and the verb of its next command; with --json, one `af/task-list@4` \
+ago it last changed and the verb of its next command; with --json, one `af/task-list@5` \
 document.\n\n\
 --attention groups the Tasks by what they wait for, read from each Task's state alone: waiting \
 for approval (planned or waiting), a failed gate, findings to answer, verified and ready to \
 deliver, and stopped (abandoned, or a Provider, interrupt, limit or wall clock ended it). Each \
 Task in those groups is printed with its one next command. Running Tasks are named on one line \
 and the Tasks that need nothing (delivered, verified with nothing to deliver, or collected) are \
-counted. With --json, one `af/task-attention@1` document holds all seven groups, `running` and \
-`nothing` included, each Task as its `af/task-list-entry@4`. Nothing is written.",
+counted. With --json, one `af/task-attention@2` document holds all seven groups, `running` and \
+`nothing` included, each Task as its `af/task-list-entry@5`. Nothing is written.",
         after_long_help = "Examples:\n  af task list\n  af task list --attention\n  \
 af task list --attention --json"
     )]
@@ -2019,7 +2029,7 @@ of their whole diagnostic and stderr, and as the last line the one command to ru
 cold, its warm layer (key, lock, source groups, build and test phases, an eviction and its \
 cause), the step that stopped it, the wall the kernel stopped it at (`stopped at its 90 min wall \
 after 88 min`, and what to do next) or `never started`, its failing and flaky tests and the \
-last 40 lines of its stderr; with --json, one `af/task-checks@3` document.",
+last 40 lines of its stderr; with --json, one `af/task-checks@4` document.",
         after_long_help = "Examples:\n  af task show pagination-cli   # needs: Task pagination-cli\n  \
 af task show pagination-cli --checks   # needs: Task pagination-cli\n  \
 af task show pagination-cli --json   # needs: Task pagination-cli"
@@ -2042,7 +2052,7 @@ findings by severity, tokens and active time, and a Total row; then per round it
 time, failed Attempts and per node the Worker, Attempts, tokens, elapsed time and check \
 results.\n\nThe default output is one Markdown block, ready to paste into a pull request \
 description, between these two lines:\n\n  <!-- af-task-report:v1 -->\n  \
-<!-- /af-task-report -->\n\n--json prints one `af/task-report@3` document instead. Tasks \
+<!-- /af-task-report -->\n\n--json prints one `af/task-report@4` document instead. Tasks \
 appear in the order given, numbered as rounds. Active time is the sum of the Task's runs, the \
 writer leases that started an Attempt or recorded a gate retry (`af task run --retry-gate`), so \
 waiting between runs is not counted; wall time runs \

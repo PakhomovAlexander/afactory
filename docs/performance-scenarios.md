@@ -165,9 +165,12 @@ campaign package plan or an unconditional ADR deliverable. The implementation Wo
 the optional typed
 `research_report` Document in its signature and input schema, retains it on both outputs and
 instructs the Worker to consume its recommendation. The generic Workers, defaults and Pipelines
-remain unchanged. Use the existing local `kernel/implementation-reviewed`,
-`kernel/verification-reviewed` and `kernel/report` Pipelines, with these inert slot/provider-only
-bindings:
+remain unchanged. These inert examples name explicit generic fixture Pipelines
+`kernel/implementation-reviewed`, `kernel/verification-reviewed` and `kernel/report`, with the
+slot/provider-only bindings below. Those identities are not installed operator selections. For
+current operator work use the [issue catalog](../fixtures/issue-workflows/README.md), whose
+performance route composes research, `perf/research-experiment-codex` and shared
+`issue-internal/verification`; the old fixture bindings are not substitutions for that route:
 
 | Stage | Bindings file | Effective Workers |
 | --- | --- | --- |
@@ -313,7 +316,7 @@ them. A new evidence selection also requires a reviewed launcher and Scenario pi
    /private/perf/manual/policy.json --json`. Add it with `--confirm-pin REVISION`; add registers
    it disabled. The operator's separate `af ant enable performance-native` authorizes future
    occurrences. Review the inert `af-performance-ant.service.in`/timer before Linux systemd
-   installation. No Mac scheduler is supplied. Overlap and missed occurrences skip; no catch-up
+   installation. No Mac service is installed; native foreground scheduling requires explicit invocation. Overlap and missed occurrences skip; no catch-up
    burst or duplicate complete goal is launched. A completed manual goal is not recycled: this
    one-goal example subsequently skips roadmap admission until the owner reviews genuinely new
    eligible goal scope and updates the pin.
@@ -339,7 +342,7 @@ required. Task delivery and Remote Checks retain their existing authority.
 
 Prepare the installed [workspace/GitHub adapter](scenario-git-workspace.md) outside every checkout.
 Start from the inert `fixtures/scenarios/performance-workspace.example.json`.
-Its owner-only `af/git-workspace-config@2` pins the exact repository numeric identity, native
+Its owner-only `af/git-workspace-config@3` pins the exact repository numeric identity, native
 repository and Task Store, reviewed source commit/content, base, branch namespace, native tools,
 SSH config and author. Set `operations` to `["publish_performance_pr_v1"]` and add:
 

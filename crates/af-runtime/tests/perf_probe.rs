@@ -2551,6 +2551,7 @@ mod calibration_build {
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("LC_ALL", "C")
             .env("HOME", home)
+            .env("AF_TEST_WAKE_ACCOUNT_HOME", home)
             .env("XDG_CONFIG_HOME", home.join("config"))
             .env("XDG_DATA_HOME", home.join("data"))
             .env("XDG_STATE_HOME", home.join("state"))

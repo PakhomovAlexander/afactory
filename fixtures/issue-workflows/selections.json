@@ -1,0 +1,103 @@
+{
+  "schema": "af.issue-workflows/1",
+  "default": "bugfix/light-kimi-terra-sol",
+  "verification": "issue-internal/verification",
+  "selections": {
+    "bugfix/light-kimi-terra-sol": {
+      "pipeline": "bugfix/light-kimi-terra-sol",
+      "light": true,
+      "research_pipeline": null,
+      "stages": [
+        "implementation",
+        "verification"
+      ]
+    },
+    "bugfix/light-codex": {
+      "pipeline": "bugfix/light-codex",
+      "light": true,
+      "research_pipeline": null,
+      "stages": [
+        "implementation",
+        "verification"
+      ]
+    },
+    "bugfix/default-codex": {
+      "pipeline": "bugfix/default-codex",
+      "light": false,
+      "research_pipeline": null,
+      "stages": [
+        "implementation",
+        "verification"
+      ]
+    },
+    "bugfix/research-fix-codex": {
+      "pipeline": "bugfix/research-fix-codex",
+      "light": false,
+      "research_pipeline": "issue-internal/report",
+      "stages": [
+        "diagnosis",
+        "implementation",
+        "verification"
+      ]
+    },
+    "impl/default-codex": {
+      "pipeline": "impl/default-codex",
+      "light": false,
+      "research_pipeline": null,
+      "stages": [
+        "implementation",
+        "verification"
+      ]
+    },
+    "perf/research-experiment-codex": {
+      "pipeline": "perf/research-experiment-codex",
+      "light": false,
+      "research_pipeline": "issue-internal/report",
+      "stages": [
+        "research",
+        "baseline",
+        "implementation",
+        "code review",
+        "measurement",
+        "comparison",
+        "measurement acceptance",
+        "verification"
+      ]
+    },
+    "impl/light-kimi-codex": {
+      "pipeline": "impl/light-kimi-codex",
+      "light": true,
+      "research_pipeline": null,
+      "stages": [
+        "implementation",
+        "verification"
+      ]
+    },
+    "design/astra-kimi": {
+      "pipeline": "design/astra-kimi",
+      "light": false,
+      "research_pipeline": null,
+      "stages": [
+        "design",
+        "Terra challenge",
+        "Kimi challenge",
+        "design acceptance"
+      ]
+    },
+    "perf/research-kimi-codex": {
+      "pipeline": "perf/research-kimi-codex",
+      "light": false,
+      "research_pipeline": "issue-internal/kimi-report",
+      "stages": [
+        "research",
+        "baseline",
+        "implementation",
+        "code review",
+        "measurement",
+        "comparison",
+        "measurement acceptance",
+        "verification"
+      ]
+    }
+  }
+}

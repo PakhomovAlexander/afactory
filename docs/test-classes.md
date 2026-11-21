@@ -177,7 +177,7 @@ python3 scripts/test-quarantine.py scan --state STORE_DIR             # or --lis
 python3 scripts/test-quarantine.py scan --list tasks.json --write    # add them
 ```
 
-It reads one or more `af task list --json` documents (`af/task-list@3` or `af/task-list@4`):
+It reads one or more `af task list --json` documents (`af/task-list@3` or `af/task-list@5`):
 `--list FILE` reads one, `--state DIR` runs `af task list --json --state DIR` (the `af` on `PATH`,
 or `--af PATH`); both repeat, and a Task listed twice counts once. Each row's `task_id`,
 `updated_unix_ms` and `gate.flaky` are read; a row without `gate` adds nothing. A flaky name is
@@ -230,10 +230,17 @@ above before it writes, changes nothing without `--write`, and never runs `gh`.
 
 ## Selection and precedence
 
-Labels are case-sensitive data, passed through JSON or quoted arguments, never evaluated as shell.
+Class and release labels are case-sensitive data, passed through JSON or quoted arguments without
+shell evaluation.
 `test:*`, `no-*`, and `release:*` are reserved namespaces: unknown names in them fail validation.
-Other labels have no selection effect. Both label addition and removal rerun validation and replace
-older PR runs through their existing concurrency group.
+The manual `nobuild` GitHub label takes precedence over all PR validation classes. Use it only
+when the full PR changes no sources, pipelines, build inputs or tests. A change solely to
+`.af/af.lock` qualifies, including on a `release/` branch. Recheck the full diff on updates and
+remove `nobuild` if the PR no longer qualifies. CI uses the label directly. The AF local Task
+gate, main and tag validation continue to use their usual profiles.
+
+Other labels have no selection effect. Adding or removing labels reruns validation and replaces
+older PR runs. Removing `nobuild` restores ordinary class selection.
 
 1. Reject any `test:CLASS` with `no-CLASS`, and reject `release:fast` with `release:full`.
 2. Every PR defaults to functional + e2e + uix, including AF gate PRs targeting `af-gate/**`
@@ -249,7 +256,8 @@ older PR runs through their existing concurrency group.
 
 | Labels | PR selection | Profile |
 | --- | --- | --- |
-| none (any PR) | functional, e2e, uix | fast |
+| none | functional, e2e, uix | fast |
+| `nobuild` | exempt, no suites run | none |
 | `test:functional`, `test:e2e` | functional, e2e | custom |
 | `test:perf` | perf only | custom |
 | `no-uix` | functional, e2e | custom |
@@ -258,10 +266,11 @@ older PR runs through their existing concurrency group.
 | `release:full`, `no-perf` | refused | none |
 | `test:perf`, `no-perf` | refused | none |
 
-Fmt, ordinary and diagnostic-feature clippy, source/catalog/selection validation, release-resolution,
-change-note, quarantine scan and pin policy checks, and the binary version smoke are always-on base work. Their costs are retained
-separately; a perf-only plan still performs this work. Release archive, signature, architecture and
-actual packaged-binary onboarding/planning smoke always run for every shipped target.
+Outside the PR exemption, fmt, ordinary and diagnostic-feature clippy, source/catalog/selection
+validation, release-resolution, change-note, quarantine scan and pin policy checks, and the binary
+version smoke are always-on base work. Their costs are retained separately. A perf-only plan still
+performs this work. Release archive, signature, architecture and actual packaged-binary
+onboarding/planning smoke always run for every shipped target.
 
 `validation / lint` and `validation / check (ubuntu-latest)` retain their exact branch-protection and
 Remote Check names. They are honest aggregation jobs with `always()`. They require resolver and base
@@ -270,6 +279,9 @@ and class, live containers when e2e is selected, and actual telemetry build/meas
 perf is selected. The smoke job uses the same resolver output; fast/no-perf skips it explicitly. Missing outputs, skipped selected work, failure
 and cancellation fail. Class exclusion appears as **NOT RUN**, with its reason, never as a passed test.
 An empty or invalid plan cannot form a self-approving green gate. Releases also aggregate macOS.
+On a `nobuild` PR, the same required names report builds, tests and smoke as **NOT RUN**.
+The `lint` job still runs the direct pin metadata check and can fail on an invalid pin. The
+PR report remains active. Performance reports an exemption and skips all measurement work.
 
 ## Release binding
 
@@ -480,6 +492,7 @@ Before merge, the workflow accepts only `pull_request` events whose changed path
 this proof workflow itself, with exactly one explicit `release:fast` or `release:full` label.
 Other PR paths alone never trigger it. Other `test:*` and `no-*` labels still govern ordinary
 PR validation; they cannot reduce the proof's chosen profile. Conflicting profile labels fail.
+The `nobuild` exemption skips the PR-triggered proof. Manual dispatch still runs its chosen profile.
 Label events reselect a proof plan from that event's labels; a retry uses the original event
 payload. To prove a different profile, change the label or dispatch a new run. No
 `pull_request_target`, credentials persisted by checkout, inherited secrets, write permission,

@@ -43,6 +43,7 @@ Prints a Markdown table, or with `--json` the `af/telemetry-overhead@3` document
 (`schemas/telemetry-overhead-v3.json`); `--report PATH` writes the document as well.
 """
 import argparse
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -62,6 +63,11 @@ import time
 SCHEMA = 'af/telemetry-overhead@3'
 REPOSITORY = Path(__file__).resolve().parent.parent
 FIXTURES_DIR = REPOSITORY / 'fixtures' / 'telemetry-bench'
+sys.dont_write_bytecode = True
+_ACCOUNT_SPEC = importlib.util.spec_from_file_location(
+    'measurement_account', REPOSITORY / 'scripts/performance/perflab/account_isolation.py')
+account = importlib.util.module_from_spec(_ACCOUNT_SPEC)
+_ACCOUNT_SPEC.loader.exec_module(account)
 LEVELS = ('off', 'spans')
 DEFAULT_PAIRS = 20
 DEFAULT_SEED = 20261021
@@ -87,8 +93,6 @@ DRAIN_CLOCK = 'CLOCK_MONOTONIC'
 # two source trees with the same release may accept different formats.
 CURRENT_CONTRACT = 'native-task-review@1'
 CHECK_RECEIPT_CURRENT = 'af/TaskCheckReceipt@2'
-# Explicit release preparation guard; measurement capability still requires schema and planner admission.
-CURRENT_RELEASES = ('0.15.1-rc.1', '0.15.1-rc.2', '0.15.1-rc.3')
 CONTRACT_SCHEMAS = (
     'pipeline-definition-v6.json', 'compiled-task-v6.json', 'task-kind-v3.json',
     'task-check-receipt-v2.json', 'task-review-subject-v3.json',
@@ -269,7 +273,7 @@ def private_env(run, level):
         'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1',
         'AF_TELEMETRY__LEVEL': level,
     })
-    return env
+    return account.fixture_environment(env)
 
 
 def keep_checks(af, repo, count):
@@ -396,7 +400,7 @@ def admit_fixture(af, fixture, repo, environment=None, task=None):
                              + done.stdout.decode('utf-8', errors='replace')[-4000:])
         try:
             document = json.loads(done.stdout)
-            if (document['schema'] != 'af/task-inspection@20'
+            if (document['schema'] != 'af/task-inspection@21'
                     or type(document['attempts']) is not int or document['attempts'] != 0
                     or document['phase'] != {'kind': 'ready'}
                     or document['task_id'] != expected_task
@@ -661,6 +665,16 @@ def main(argv=None):
     parser.add_argument('--judge', metavar='DOCUMENT',
                         help='recompute the figures and the verdict of a recorded document')
     args = parser.parse_args(argv)
+    if not args.judge:
+        if args.work:
+            Path(args.work).mkdir(parents=True, exist_ok=True)
+        isolated = account.run_script(
+            str(Path(__file__).resolve()), sys.argv[1:] if argv is None else argv,
+            inputs=(args.af, REPOSITORY / 'scripts', FIXTURES_DIR),
+            directories=(args.work,) if args.work else (),
+            outputs=(args.report,) if args.report else ())
+        if isolated is not None:
+            return isolated
     if args.pairs < 1:
         parser.error('--pairs must be at least 1')
     # A terminated measurement still removes its temporary work directory.

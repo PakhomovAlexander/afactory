@@ -74,6 +74,7 @@ mod structured;
 mod task_file_home;
 mod task_file_shape;
 pub(super) mod task_report;
+pub(crate) mod wake;
 
 #[derive(Clone)]
 pub(crate) struct ReviewSelectors {
@@ -1341,16 +1342,33 @@ fn start_kind(
 /// `af task run NEW --from TASK` derives from the continued Task's captured one.
 fn start_kind_bytes(
     options: StartOptions,
+    bytes: Vec<u8>,
+    expected_kind: Option<&str>,
+    presentation: Presentation,
+) -> Result<i32, String> {
+    start_kind_bytes_with_authority(options, bytes, expected_kind, presentation, None)
+}
+
+/// Only native Scenario templates supply an already captured authority identity.
+fn start_kind_bytes_with_authority(
+    options: StartOptions,
     mut bytes: Vec<u8>,
     expected_kind: Option<&str>,
     presentation: Presentation,
+    captured_authority: Option<&str>,
 ) -> Result<i32, String> {
     let original = parse_task_file(&options.file, &bytes)?;
     let mut refitted = false;
     // `--fit` plans again at the limits the planner computed; a second refusal can only raise
     // them further (Provider admission is counted once the Workers are bound), so this ends.
     for _ in 0..3 {
-        match start_bytes(options.clone(), bytes.clone(), expected_kind, presentation)? {
+        match start_bytes(
+            options.clone(),
+            bytes.clone(),
+            expected_kind,
+            presentation,
+            captured_authority,
+        )? {
             Started::Code(code) => {
                 if refitted && presentation == Presentation::Print {
                     let fitted = parse_task_file(&options.file, &bytes)?;
@@ -1484,6 +1502,7 @@ fn existing_task(
     options: &StartOptions,
     bytes: &[u8],
     task_id: &str,
+    captured_authority: Option<&str>,
 ) -> Result<Option<Existing>, String> {
     let Some(current) = store
         .task_projection(cas, task_id)
@@ -1510,6 +1529,12 @@ fn existing_task(
             .map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
+    if let Some(id) = captured_authority {
+        if same_file && current.revision.authority.policy_id == id {
+            return Ok(Some(Existing::Same));
+        }
+        return Err("Recorded fresh Task differs from pinned template authority or file".into());
+    }
     let bindings = options
         .bindings
         .as_deref()
@@ -1606,6 +1631,7 @@ fn start_bytes(
     bytes: Vec<u8>,
     expected_kind: Option<&str>,
     presentation: Presentation,
+    captured_authority: Option<&str>,
 ) -> Result<Started, String> {
     let started = clock()?;
     let mut file = parse_task_file(&options.file, &bytes)?;
@@ -1662,7 +1688,14 @@ fn start_bytes(
     crate::storage::owned::prepare(&state, options.state.is_some())?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let store = EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())?;
-    let replace = match existing_task(&cas, &store, &options, &bytes, &file.task_id)? {
+    let replace = match existing_task(
+        &cas,
+        &store,
+        &options,
+        &bytes,
+        &file.task_id,
+        captured_authority,
+    )? {
         None => None,
         Some(Existing::Same) if !options.plan_only => {
             return Err(format!(
@@ -1707,13 +1740,24 @@ fn start_bytes(
             }
         })?;
     let delivery = captured_delivery_policy(&cas, &policy_source.manifest)?;
-    let authority = capture_authority(
-        &cas,
-        &policy_source.manifest,
-        options.bindings.as_deref(),
-        &file.kind,
-        delivery,
-    )?;
+    let authority = if let Some(id) = captured_authority {
+        if options.bindings.is_some() {
+            return Err("Captured authority cannot recapture local bindings".into());
+        }
+        let settings: RunAuthority =
+            serde_json::from_value(cas.get_json(id).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        let compiler = restore_compiler(&cas, id, &settings)?;
+        (id.to_owned(), settings, compiler)
+    } else {
+        capture_authority(
+            &cas,
+            &policy_source.manifest,
+            options.bindings.as_deref(),
+            &file.kind,
+            delivery,
+        )?
+    };
     if expected_kind.is_some()
         && selected_profile(&authority.2, &authority.1, &file.kind, file.verification)?
             != TaskKindProfile::Review
@@ -4248,7 +4292,7 @@ pub(super) fn list_common(state: &Path) -> Result<Vec<serde_json::Value>, String
         // The same state `af task show` prints, from the same derivation.
         let cancelled = runs::cancelled_epoch(Some(state), &task);
         let view = selected_view(&cas, &task, result.as_ref(), now, cancelled)?;
-        Ok(json!({"schema":TASK_LIST_ENTRY_V4,"task_id":task.task_id,"kind":task.revision.kind,"phase":task.phase,
+        Ok(json!({"schema":TASK_LIST_ENTRY_V5,"task_id":task.task_id,"kind":task.revision.kind,"phase":task.phase,
             "state":view.state,
             "round":review_round(&task),
             "chargeable_tokens":task.execution.as_ref().map_or(0,|e| e.budget.committed_tokens()).to_string(),
@@ -4290,7 +4334,7 @@ pub(super) fn list_common(state: &Path) -> Result<Vec<serde_json::Value>, String
 }
 
 /// One entry of `af task list --json`.
-pub(crate) const TASK_LIST_ENTRY_V4: &str = "af/task-list-entry@4";
+pub(crate) const TASK_LIST_ENTRY_V5: &str = "af/task-list-entry@5";
 
 /// The review round a Task is in: the rounds it handed off to a successor plan, plus the one its
 /// current execution recorded; 0 before a review recorded a round.
@@ -4474,7 +4518,7 @@ struct Inspection {
 }
 
 /// The document `af task show --json` and `af task explain --json` print.
-pub(crate) const TASK_INSPECTION_V20: &str = "af/task-inspection@20";
+pub(crate) const TASK_INSPECTION_V21: &str = "af/task-inspection@21";
 
 #[allow(clippy::too_many_arguments)]
 fn present_with_format(
@@ -5441,7 +5485,7 @@ fn inspection(
     let store_dir = store.database_path();
     let cancelled = runs::cancelled_epoch(store_dir.as_deref().and_then(Path::parent), &state);
     let view = selected_view(cas, &state, result.as_ref(), clock()?, cancelled)?;
-    let mut value = json!({"schema":TASK_INSPECTION_V20,"task_id":state.task_id,"revision_id":state.revision_id,"phase":state.phase,"state":view.state,"plan_id":state.plan_id,
+    let mut value = json!({"schema":TASK_INSPECTION_V21,"task_id":state.task_id,"revision_id":state.revision_id,"phase":state.phase,"state":view.state,"plan_id":state.plan_id,
         "chargeable_tokens":state.execution.as_ref().map_or(0,|e|e.budget.committed_tokens()).to_string(),"attempts":state.execution.as_ref().map_or(0,|e|e.budget.begun_attempts())});
     // The wall clock starts at the first admission: the wall the Task has, when its clock
     // started, and the deadline it has since.

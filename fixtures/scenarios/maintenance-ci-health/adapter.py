@@ -17,13 +17,13 @@ raw = sys.stdin.buffer.read(LIMIT + 1)
 if len(raw) > LIMIT:
     raise SystemExit('adapter request bound exceeded')
 request = CI_MODULE.loads(raw)
-if request['schema'] != 'af/scenario-adapter-request@4' or request['destination'] != 'fixture:ci-health':
+if request['schema'] != 'af/scenario-adapter-request@8' or request['destination'] != 'fixture:ci-health':
     raise SystemExit('unsupported protocol or destination')
 if request['operation'] not in ('observe', 'notify'):
     raise SystemExit('Phase 1 refuses mutation')
 inputs = request['inputs']
 config = CI_MODULE.loads((ROOT / 'service.json').read_text())
-response = {'schema': 'af/scenario-adapter-response@1', 'intent_id': request['intent_id'],
+response = {'schema': 'af/scenario-adapter-response@3', 'intent_id': request['intent_id'],
     'input_digest': request['input_digest'], 'outcome': 'absent',
     'evidence': 'authoritative absence in hermetic notification service', 'observation': None}
 native = None

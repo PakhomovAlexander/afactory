@@ -18,10 +18,10 @@
       "const": "af/scenario-ci-diagnosis@2"
     },
     "receipt": {
-      "$ref": "urn:af:schema:scenario:6#/$defs/TaskReceipt"
+      "$ref": "urn:af:schema:scenario:11#/$defs/TaskReceipt"
     },
     "snapshot_id": {
-      "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+      "$ref": "urn:af:schema:scenario:11#/$defs/digest"
     },
     "selection": {
       "$ref": "urn:af:schema:ci-diagnosis-selection:1"
@@ -76,7 +76,7 @@
                     "pattern": "^[A-Za-z0-9]{26}$"
                   },
                   "diagnostic_id": {
-                    "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+                    "$ref": "urn:af:schema:scenario:11#/$defs/digest"
                   },
                   "error_prefix": {
                     "type": "string",

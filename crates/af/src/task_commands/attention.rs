@@ -7,9 +7,9 @@ use af_contracts::task::state::{TaskAttentionV1, TaskStateV1};
 use serde_json::{Value, json};
 
 /// The document `af task list --attention --json` prints.
-pub(crate) const TASK_ATTENTION_V1: &str = "af/task-attention@1";
+pub(crate) const TASK_ATTENTION_V2: &str = "af/task-attention@2";
 
-/// Every group, in [`TaskAttentionV1::ALL`] order, with the `af/task-list-entry@4` entries whose
+/// Every group, in [`TaskAttentionV1::ALL`] order, with the `af/task-list-entry@5` entries whose
 /// state it holds, each group in the order the entries came.
 pub(crate) fn groups(entries: Vec<Value>) -> Result<Vec<(TaskAttentionV1, Vec<Value>)>, String> {
     let mut groups: Vec<(TaskAttentionV1, Vec<Value>)> = TaskAttentionV1::ALL
@@ -35,7 +35,7 @@ pub(crate) fn state_of(entry: &Value) -> Result<TaskStateV1, String> {
     })
 }
 
-/// The `af/task-attention@1` document of `groups`.
+/// The `af/task-attention@2` document of `groups`.
 pub(crate) fn document(groups: &[(TaskAttentionV1, Vec<Value>)]) -> Value {
     let groups: Vec<Value> = groups
         .iter()
@@ -43,7 +43,7 @@ pub(crate) fn document(groups: &[(TaskAttentionV1, Vec<Value>)]) -> Value {
             json!({"group": group.as_str(), "needs_you": group.needs_you(), "tasks": tasks})
         })
         .collect();
-    json!({"schema": TASK_ATTENTION_V1, "groups": groups})
+    json!({"schema": TASK_ATTENTION_V2, "groups": groups})
 }
 
 /// The text of `af task list --attention` at `now`, `width` columns wide: each group that needs
@@ -218,7 +218,7 @@ mod tests {
             ["g-delivered", "h-collected"]
         );
         let document = document(&groups);
-        assert_eq!(document["schema"], "af/task-attention@1");
+        assert_eq!(document["schema"], "af/task-attention@2");
         assert_eq!(document["groups"].as_array().unwrap().len(), 7);
         assert_eq!(document["groups"][5]["group"], "running");
         assert_eq!(document["groups"][5]["needs_you"], false);

@@ -11,7 +11,7 @@ assert request['method'] in ('reconcile', 'execute')
 key = request['intent_id']
 assert key.startswith('sha256:') and len(key) == 71
 receipt = root / (key[7:] + '.json')
-response = {'schema': 'af/scenario-adapter-response@1', 'intent_id': key,
+response = {'schema': 'af/scenario-adapter-response@3', 'intent_id': key,
     'input_digest': request['input_digest'], 'outcome': 'absent',
     'evidence': 'durable fixture notification lookup', 'observation': None}
 if receipt.exists():

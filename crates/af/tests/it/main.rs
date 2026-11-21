@@ -28,6 +28,7 @@ mod doctor;
 mod help_examples;
 mod help_hygiene;
 mod install_script;
+mod issue_workflows;
 mod lock_af_version;
 mod not_found;
 mod onboard;

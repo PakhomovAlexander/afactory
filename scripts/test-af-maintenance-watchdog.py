@@ -29,18 +29,18 @@ DUE = START + 4 * 3600000
 @lru_cache(maxsize=1)
 def ant_pin():
     bundle = json.loads((ROOT / 'fixtures/scenarios/maintenance-ci-health/scenario.json').read_text())
-    policy = {'schema': 'af/scenario-policy@5', 'adapters': {}, 'task_plans': [], 'task_templates': [],
+    policy = {'schema': 'af/scenario-policy@8', 'adapters': {}, 'task_plans': [], 'task_templates': [],
               'decision_keys': {}, 'file_roots': []}
-    scenario = {'schema': 'af/scenario-pin@6', 'bundle': bundle, 'policy': policy,
+    scenario = {'schema': 'af/scenario-pin@12', 'bundle': bundle, 'policy': policy,
                 'definitions': {key: C.digest(value) for key, value in bundle['definitions'].items()},
                 'revision': C.digest([bundle, policy])}
     zone = {'name': 'UTC', 'initial_offset': 0, 'transitions': [], 'valid_until_unix_seconds': None}
-    definition = {'schema': 'af/ant@6', 'id': 'maintenance-ci-health', 'scenario': bundle, 'inputs': json.loads((ROOT / 'fixtures/scenarios/maintenance-ci-health/inputs.json').read_text()),
-        'schedule': {'timezone': 'UTC', 'hour': 4, 'minute': 0, 'start_unix_ms': START},
+    definition = {'schema': 'af/ant@12', 'id': 'maintenance-ci-health', 'scenario': bundle, 'inputs': json.loads((ROOT / 'fixtures/scenarios/maintenance-ci-health/inputs.json').read_text()),
+        'schedule': {'kind': 'daily', 'timezone': 'UTC', 'hour': 4, 'minute': 0, 'start_unix_ms': START},
         'owner': 'owner', 'notification': 'fixture:owner', 'execution': {'overlap': 'skip', 'missed': 'skip',
             'lateness_ms': 1000, 'per_run': {'max_tokens': 2000, 'max_wall_ms': 2 * DAY, 'max_dispatches': 20},
             'rolling_tokens': 2000, 'rolling_window_ms': DAY}}
-    return {'schema': 'af/ant-pin@6', 'definition': definition, 'scenario': scenario, 'zone': zone,
+    return {'schema': 'af/ant-pin@13', 'definition': definition, 'scenario': scenario, 'zone': zone,
             'revision': C.digest([definition, scenario, zone])}
 
 
@@ -58,9 +58,9 @@ def world():
     # Native receipt fields are kept in their native shapes; the Rust domain test below
     # additionally exercises real serialized Ants/Runs and the real SQLite reader.
     pin = copy.deepcopy(ant_pin())
-    return {'schema': 'af/scenario-store@7', 'writer_version': cfg['writer_version'], 'roadmaps': {},
-        'runs': {}, 'ants': {cfg['ant_id']: {'schema': 'af/ant-state@6', 'pin': pin,
-            'state': 'enabled', 'changes': [[START, 'enabled']], 'occurrences': []}}}
+    return {'schema': 'af/scenario-store@18', 'writer_version': cfg['writer_version'], 'roadmaps': {}, 'drivers': {}, 'run_capacity': {},
+        'runs': {}, 'ants': {cfg['ant_id']: {'schema': 'af/ant-state@14', 'pin': pin,
+            'retention': {'through_index': None}, 'state': 'enabled', 'changes': [[START, 'enabled']], 'occurrences': []}}}
 
 
 def occurrence(day=0, kind='started', **extra):
@@ -70,7 +70,7 @@ def occurrence(day=0, kind='started', **extra):
     outcome = {'kind': kind, **extra}
     if kind == 'started':
         outcome.update(run_id='ant-' + identity[7:], reserved_tokens=2000)
-    return {'id': identity, 'local_day': local, 'due_unix_ms': DUE + day * DAY, 'outcome': outcome}
+    return {'id': identity, 'local_day': local, 'through_index': local, 'admitted_unix_ms': DUE + day * DAY, 'due_unix_ms': DUE + day * DAY, 'outcome': outcome}
 
 
 def admitted(value, status='waiting', reported=True):
@@ -78,7 +78,7 @@ def admitted(value, status='waiting', reported=True):
     ant = value['ants'][config()['ant_id']]
     ant['occurrences'].append(receipt)
     run_id = receipt['outcome']['run_id']
-    value['runs'][run_id] = {'schema': 'af/scenario-run@6', 'id': run_id, 'ant': config()['ant_id'],
+    value['runs'][run_id] = {'schema': 'af/scenario-run@12', 'id': run_id, 'ant': config()['ant_id'],
         'pin': copy.deepcopy(ant['pin']['scenario']), 'status': status, 'created_unix_ms': DUE,
         'updated_unix_ms': DUE, 'limits': copy.deepcopy(ant['pin']['definition']['execution']['per_run']),
         'frames': {'root': {'steps': [{'step': 'report-outcome', 'status': 'succeeded', 'skipped': None,
@@ -96,6 +96,17 @@ def journal(path, value):
 
 
 class WatchdogTests(unittest.TestCase):
+    def test_pinned_occurrences_match_native_fixtures(self):
+        cases = json.loads((ROOT / 'fixtures/scenarios/pinned-occurrences.json').read_text())
+        for case in cases:
+            with self.subTest(case=case['name']):
+                args = (case['zone'], case['day'], case['hour'], case['minute'])
+                if case['due_unix_ms'] is None:
+                    with self.assertRaisesRegex(ValueError, 'Pinned timezone horizon exhausted'):
+                        W.due(*args)
+                else:
+                    self.assertEqual(W.due(*args), case['due_unix_ms'])
+
     def test_future_expected_start_has_no_due_occurrence(self):
         cfg = config()
         cfg['start_day'] += 5
@@ -121,6 +132,88 @@ class WatchdogTests(unittest.TestCase):
             self.assertEqual(outbox.pending(), [])
             self.assertEqual(outbox.db.execute('SELECT count(*) FROM alerts').fetchone()[0], 1)
             outbox.close()
+
+    def test_overdue_alert_inside_finite_horizon_survives_future_day_scan(self):
+        cfg, value = config(), world()
+        cfg['zone']['valid_until_unix_seconds'] = (DUE + W.GRACE) // 1000 + 1
+        ant = value['ants'][cfg['ant_id']]
+        ant['pin']['zone'] = copy.deepcopy(cfg['zone'])
+        ant['pin']['revision'] = C.digest([ant['pin']['definition'], ant['pin']['scenario'], cfg['zone']])
+        cfg['ant_revision'] = ant['pin']['revision']
+        alerts = W.findings(cfg, value, DUE + W.GRACE)
+        self.assertEqual([a['expected_date'] for a in alerts], ['2026-11-09'])
+        with tempfile.TemporaryDirectory() as directory:
+            outbox = W.Outbox(Path(directory) / 'outbox.sqlite')
+            outbox.stage(alerts)
+            self.assertEqual(outbox.pending(), alerts)
+            outbox.close()
+
+    def test_actual_due_occurrence_at_finite_horizon_fails_closed(self):
+        cfg, value = config(), world()
+        value['ants'] = {}
+        cfg['zone']['valid_until_unix_seconds'] = DUE // 1000
+        with self.assertRaisesRegex(ValueError, 'Pinned timezone horizon exhausted'):
+            W.findings(cfg, value, DUE + W.GRACE)
+
+    def test_unused_historical_offset_at_or_beyond_horizon_does_not_block_due_alert(self):
+        for horizon in (DUE // 1000 + 3600, DUE // 1000 + 1800):
+            with self.subTest(horizon=horizon):
+                cfg, value = config(), world()
+                cfg['zone'].update(initial_offset=-3600,
+                    transitions=[[START // 1000 - 86400, 0], [horizon, 0]],
+                    valid_until_unix_seconds=horizon)
+                ant = value['ants'][cfg['ant_id']]
+                ant['pin']['zone'] = copy.deepcopy(cfg['zone'])
+                ant['pin']['revision'] = C.digest([ant['pin']['definition'], ant['pin']['scenario'], cfg['zone']])
+                cfg['ant_revision'] = ant['pin']['revision']
+                self.assertEqual(W.due(cfg['zone'], cfg['start_day'], 4, 0), DUE)
+                alerts = W.findings(cfg, value, DUE + W.GRACE)
+                self.assertEqual([a['kind'] for a in alerts], ['missed_occurrence'])
+                self.assertEqual(alerts[0]['expected_date'], '2026-11-09')
+                self.assertEqual(alerts[0]['expected_occurrence'],
+                    C.digest([cfg['ant_id'], cfg['ant_revision'], cfg['start_day']]))
+                with tempfile.TemporaryDirectory() as directory:
+                    outbox = W.Outbox(Path(directory) / 'outbox.sqlite')
+                    try:
+                        outbox.stage(alerts)
+                        self.assertEqual(outbox.pending(), alerts)
+                    finally:
+                        outbox.close()
+
+    def test_pinned_fold_uses_first_match_even_when_second_is_beyond_horizon(self):
+        at = DUE // 1000
+        for horizon in (None, at):
+            zone = {'initial_offset': 3600, 'transitions': [[at, 0]],
+                'valid_until_unix_seconds': horizon}
+            self.assertEqual(W.due(zone, START // DAY, 4, 30), DUE - 1800000)
+
+    def test_pinned_gap_snaps_only_before_exclusive_horizon(self):
+        at = DUE // 1000
+        zone = {'initial_offset': 0, 'transitions': [[at, 3600], [at + 1, 3600]],
+            'valid_until_unix_seconds': at + 1}
+        self.assertEqual(W.due(zone, START // DAY, 4, 30), DUE)
+        zone['valid_until_unix_seconds'] = at
+        zone['transitions'].pop()
+        with self.assertRaisesRegex(ValueError, 'Pinned timezone horizon exhausted'):
+            W.due(zone, START // DAY, 4, 30)
+
+    def test_unpinned_due_occurrence_with_multiple_offsets_fails_closed(self):
+        cfg, value = config(), world()
+        value['ants'] = {}
+        cfg['zone'].update(initial_offset=-3600,
+            transitions=[[START // 1000 - 86400, 0], [DUE // 1000, 0]],
+            valid_until_unix_seconds=DUE // 1000)
+        with self.assertRaisesRegex(ValueError, 'Pinned timezone horizon exhausted'):
+            W.findings(cfg, value, DUE + W.GRACE)
+
+    def test_future_day_shortcut_does_not_hide_invalid_pinned_rules(self):
+        for transitions in ([[0, -86401]], [[2, 0], [1, 0]]):
+            cfg, value = config(), world()
+            value['ants'] = {}
+            cfg['start_day'] += 1
+            cfg['zone']['transitions'] = transitions
+            with self.assertRaisesRegex(ValueError, 'Pinned offset|Malformed pinned zone'):
+                W.findings(cfg, value, START)
 
     def test_skipped_admission_with_and_without_durable_reason(self):
         value = world()
@@ -232,6 +325,20 @@ class WatchdogTests(unittest.TestCase):
             executable.write_text('changed executable')
             with self.assertRaisesRegex(ValueError, 'bytes changed'):
                 W.call_notifier(cfg['notifier'], {})
+
+    def test_current_native_retention_and_compressed_misses_do_not_become_missing_ticks(self):
+        value = world()
+        ant = value['ants'][config()['ant_id']]
+        ant['retention']['through_index'] = config()['start_day']
+        receipt = occurrence(day=1, kind='skipped_missed')
+        receipt['through_index'] += 2
+        ant['occurrences'] = [receipt]
+        self.assertEqual(W.findings(config(), value, DUE + 3 * DAY + W.GRACE), [])
+        ant['occurrences'] = [occurrence(day=1, kind='skipped_capacity')]
+        self.assertEqual(W.findings(config(), value, DUE + DAY + W.GRACE), [])
+        ant['occurrences'][0]['through_index'] += 1
+        with self.assertRaisesRegex(ValueError, 'Malformed occurrence history'):
+            W.findings(config(), value, DUE + 2 * DAY + W.GRACE)
 
     def test_staged_units_run_independently_with_private_authority_and_after_daily_grace(self):
         service = configparser.ConfigParser(interpolation=None)

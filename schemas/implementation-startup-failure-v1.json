@@ -1,0 +1,30 @@
+{
+  "$id": "urn:af:schema:implementation-startup-failure:1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "kind": {
+      "enum": [
+        "transport",
+        "credentials",
+        "refused"
+      ]
+    },
+    "schema": {
+      "const": "af/implementation-startup-failure@1"
+    },
+    "scope_id": {
+      "maxLength": 65536,
+      "minLength": 1,
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "scope_id",
+    "kind"
+  ],
+  "title": "implementation-startup-failure v1",
+  "type": "object"
+}

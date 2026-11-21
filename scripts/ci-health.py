@@ -131,10 +131,10 @@ def schema_documents():
     selection = obj({'schema': {'const': 'af.ci-diagnosis-selection/1'}, 'occurrence_id': ident,
                      'signature_id': ident, 'source_sha': sha})
     scope = obj({'workflow_id': positive, 'job_name': text(256), 'platform': text(128), 'head_sha': sha,
-                 'last_seen_at': timestamp, 'completed_at': timestamp,
+                 'last_seen_at': timestamp, 'completed_at': nullable(timestamp),
                  'completion_unknown': {'type': 'boolean'},
                  'unknown_occurrences': array(ident, MAX_STATE)})
-    state = obj({'schema': {'const': 'af.ci-signature-state/4'}, 'scopes': array(scope, MAX_STATE),
+    state = obj({'schema': {'const': 'af.ci-signature-state/5'}, 'scopes': array(scope, MAX_STATE),
         'first_seen_at': timestamp, 'last_seen_at': timestamp,
         'occurrences': {'type': 'object', 'maxProperties': MAX_STATE,
             'propertyNames': ident, 'additionalProperties': obj({'at': timestamp, 'run': positive, 'attempt': positive})},
@@ -189,7 +189,7 @@ def schema_documents():
             for name, shape in [('ci-health-snapshot', snapshot), ('ci-diagnosis', diagnosis), ('ci-diagnosis-selection', selection),
                 ('ci-signature-state', state), ('ci-health-state', journal),
                 ('ci-observe-service', service), ('ci-health-notification', notification)]
-            for version in [5 if name == 'ci-health-notification' else 4 if name == 'ci-signature-state' else 2 if name == 'ci-health-state' else 1]}
+            for version in [5 if name in ('ci-health-notification', 'ci-signature-state') else 2 if name == 'ci-health-state' else 1]}
 
     documents['scenario-ci-notification-evidence-v2.json'] = notification_evidence_schema()
     return documents
@@ -211,7 +211,7 @@ def structural(value, name):
         for document in schema_documents().values():
             _VALIDATOR.schemas[document['$id']] = document
     errors = _VALIDATOR.errors(value, 'urn:af:schema:' + name
-        + (':5' if name == 'ci-health-notification' else ':4' if name == 'ci-signature-state' else ':2' if name in ('scenario-ci-notification-evidence', 'ci-health-state') else ':1'))
+        + (':5' if name in ('ci-health-notification', 'ci-signature-state') else ':2' if name in ('scenario-ci-notification-evidence', 'ci-health-state') else ':1'))
     require(not errors, '; '.join(errors[:4]))
     require(len(canonical(value)) <= (MAX_BYTES if name in ('ci-health-snapshot', 'ci-diagnosis') else 1_048_576), 'CI evidence exceeds byte bound')
 
@@ -345,7 +345,7 @@ def reviewed_gate_count(documents, inventory, failure, captured_at, evidence_pla
     rows = []
     cutoff = int(instant(captured_at).timestamp() * 1000)
     for document in documents:
-        require(document.get('schema') == 'af/task-list@4', 'Unsupported CI gate evidence list')
+        require(document.get('schema') == 'af/task-list@5', 'Unsupported CI gate evidence list')
         for task_id, updated, flaky in module.list_rows(document, 'CI gate evidence'):
             require(len(rows) < MAX_STATE and len(flaky) <= 100, 'CI gate occurrence bound exceeded')
             if updated <= cutoff:
@@ -447,6 +447,7 @@ class Journal:
                 for scope in state['scopes']:
                     if (all(scope[key] == job[key] for key in ('workflow_id', 'job_name', 'platform', 'head_sha'))
                             and not scope['completion_unknown']
+                            and scope['completed_at'] is not None
                             and completed is not None and completed > instant(scope['completed_at'])
                             and now - instant(scope['last_seen_at']) < dt.timedelta(days=14)):
                         remaining = [s for s in state['scopes'] if not all(
@@ -466,7 +467,7 @@ class Journal:
             # Closure is per signature, never per job scope. Every other failure is retained.
             return sorted(closed_signatures)
         raw = self.db.execute('SELECT document FROM signatures WHERE repository=? AND signature=?', (repository, signature)).fetchone()
-        state = loads(raw[0]) if raw else {'schema': 'af.ci-signature-state/4', 'scopes': [], 'first_seen_at': at,
+        state = loads(raw[0]) if raw else {'schema': 'af.ci-signature-state/5', 'scopes': [], 'first_seen_at': at,
             'last_seen_at': at, 'occurrences': {}, 'transient_count': 0, 'repair_count': 0}
         structural(state, 'ci-signature-state')
         require(now >= instant(state['last_seen_at']), 'Observer clock moved backwards')
@@ -477,24 +478,28 @@ class Journal:
             require(len(state['occurrences']) < MAX_STATE, 'Signature occurrence bound exhausted')
             state['occurrences'][occurrence] = {'at': at, 'run': job['run_id'], 'attempt': job['run_attempt']}
         scope = {key: job[key] for key in ('workflow_id', 'job_name', 'platform', 'head_sha')}
-        previous_completion = max((instant(s['completed_at']) for s in state['scopes']
-            if all(s[key] == scope[key] for key in scope)), default=None)
-        unknown_occurrences = set(state['scopes'][-1]['unknown_occurrences']) if state['scopes'] else set()
-        was_unknown = occurrence in unknown_occurrences
+        previous = next((s for s in state['scopes']
+                         if all(s[key] == scope[key] for key in scope)
+                         and now - instant(s['last_seen_at']) < dt.timedelta(days=14)), None)
+        previous_completion = (instant(previous['completed_at'])
+            if previous is not None and previous['completed_at'] is not None else None)
+        unknown_occurrences = set(previous['unknown_occurrences']) if previous is not None else set()
+        # Actual known completion and unknown timing are independent. Recovering an earlier
+        # occurrence must never lower the maximum known completion for this live scope.
+        event_completion = previous_completion
         if completed is not None:
             # Only recovery for this exact occurrence clears its unknown timing. Another
             # occurrence's completion remains independent evidence and cannot close this one.
             unknown_occurrences.discard(occurrence)
-            event_completion = completed if was_unknown else max(completed, previous_completion or completed)
+            event_completion = max(completed, previous_completion or completed)
         else:
             unknown_occurrences.add(occurrence)
-            event_completion = max(now, previous_completion or now)
         completion_unknown = bool(unknown_occurrences)
         state['scopes'] = [s for s in state['scopes'] if now - instant(s['last_seen_at']) < dt.timedelta(days=14)
             and not all(s[key] == scope[key] for key in scope)]
         require(len(state['scopes']) < MAX_STATE, 'Signature scope bound exhausted')
         state['scopes'].append({**scope, 'last_seen_at': at,
-            'completed_at': event_completion.strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'completed_at': event_completion.strftime('%Y-%m-%dT%H:%M:%SZ') if event_completion is not None else None,
             'completion_unknown': completion_unknown,
             'unknown_occurrences': sorted(unknown_occurrences)})
         state.update(first_seen_at=min(v['at'] for v in state['occurrences'].values()), last_seen_at=at)
@@ -573,6 +578,8 @@ def collect(github, *, captured_at, main_ref, since, nightly_receipt, release_pr
                         'conclusion': job['conclusion'], 'failing_tests': job.get('failing_tests', []),
                         'error_lines': job.get('error_lines', []), 'log_artifacts': job.get('log_artifacts', []),
                         'release_blocking': blocking}
+                    if 'completed_at' in job:
+                        observation['completed_at'] = job['completed_at']
                     ident = occurrence_id(github.repository, observation)
                     if ident in seen:
                         # Main and release may share a head: release blocking always dominates.
@@ -660,19 +667,29 @@ def fold_capture(service, journal, *, snapshot_fits=None):
     green_events = []
     closed_all = set()
     admitted_occurrences = set()
+    # Normalize timing independently of the collector: admitted service input may be
+    # replayed or supplied directly. Unknown timing must retain the job, never use
+    # capture time as completion evidence or silently permit diagnosis.
+    timed_jobs = []
+    for index, job in enumerate(jobs):
+        if isinstance(job, dict):
+            job = dict(job)
+            completed = job.get('completed_at')
+            try:
+                require(instant(completed) <= instant(at), 'Job completion outside capture')
+            except (ValueError, TypeError):
+                kind = 'missing' if completed is None else 'invalid'
+                omissions.append(kind + ' completion timestamp for job ' + str(index))
+                job['completed_at'] = None
+        timed_jobs.append(job)
     def order(item):
         index, job = item
         if not isinstance(job, dict):
             return (at, 0, 0, 0, index)
-        completed = job.get('completed_at', at)
-        try:
-            instant(completed)
-        except (ValueError, TypeError):
-            omissions.append('malformed completion timestamp for job ' + str(index))
-            completed = at
+        completed = job.get('completed_at') or at  # Sorting only; the fold keeps null.
         keys = [job.get(k, 0) for k in ('run_id', 'run_attempt', 'job_id')]
         return (completed, *[v if type(v) is int else 0 for v in keys], index)
-    for index, job in sorted(enumerate(jobs), key=order):
+    for index, job in sorted(enumerate(timed_jobs), key=order):
         try:
             # Validate before touching recurrence state, including green closure evidence.
             require(isinstance(job, dict), 'Job evidence must be an object')

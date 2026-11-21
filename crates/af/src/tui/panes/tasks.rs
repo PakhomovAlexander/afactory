@@ -662,7 +662,7 @@ fn summary_of(document: &Value, stages: &[Stage]) -> Summary {
 /// One Task as `af task list` lists it.
 struct Listed {
     task_id: String,
-    /// The `af/task-list-entry@4` document.
+    /// The `af/task-list-entry@5` document.
     entry: Value,
     summary: Result<Summary, String>,
 }

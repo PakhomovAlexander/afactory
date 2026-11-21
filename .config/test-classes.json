@@ -6,7 +6,9 @@
     "test-af-pin.py",
     "test-changelog-notes.py",
     "test-gate-owner.py",
-    "test-test-quarantine.py"
+    "test-test-quarantine.py",
+    "test-dev-release.py",
+    "test-contract-inventory.py"
   ],
   "binaries": {
     "af::bin/af": "functional",
@@ -62,7 +64,8 @@
     "af-source-issue::sources": "e2e",
     "af-source-issue::transport": "e2e",
     "af-store": "functional",
-    "af-telemetry": "functional"
+    "af-telemetry": "functional",
+    "af-runner::contract_inventory": "functional"
   },
   "exact": {
     "af::bin/af self_optimizer::optimization_adapters::tests::codex_continued_range_adopts_its_first_named_session_as_unverified": "functional",
@@ -101,6 +104,7 @@
     "af-sandbox::seal unchanged_large_tree_sandbox_measurement": "perf",
     "af-source-git::it capture::dirty_capture_large_tree_measurement": "perf",
     "af-store cas::tests::bench_put_throughput": "perf",
+    "af::it telemetry_bench::telemetry_final_child_cannot_open_external_account_authority": "e2e",
     "af::it telemetry_bench::unstarted_check_keeps_its_original_disk_refusal_without_empty_runtime_evidence": "e2e",
     "af-scenario tests::ci_health_near_maximum_snapshot_and_maximal_refusal_diagnostics_complete_native_lifecycle": "e2e",
     "af-scenario tests::ci_health_watchdog_reads_native_journal_without_a_tick_or_a_report": "e2e"
@@ -211,6 +215,7 @@
       "task_starters": "e2e",
       "task_structured_acceptance": "e2e",
       "task_triage": "e2e",
+      "issue_workflows": "e2e",
       "task_warm_checks": "e2e",
       "telemetry": "e2e",
       "telemetry_bench": "perf",
@@ -342,6 +347,7 @@
     "test-release-contract.py": "functional",
     "test-backlog-check-triage.py": "functional",
     "test-backlog-labels.py": "functional",
+    "test-issue-workflows.py": "functional",
     "test-backlog-triage.py": "functional",
     "test-changelog-notes.py": "functional",
     "test-check-pr-report.py": "functional",
@@ -366,6 +372,9 @@
     "test-workspace-fixtures.py": "functional",
     "test-workspace-fixture-benchmark.py": "perf",
     "test-scenario-merge-watch.py": "e2e",
+    "test-task-wake-probe.py": "functional",
+    "test-dev-release.py": "e2e",
+    "test-contract-inventory.py": "functional",
     "test-ci-health.py": "functional",
     "test-af-maintenance-watchdog.py": "e2e"
   },

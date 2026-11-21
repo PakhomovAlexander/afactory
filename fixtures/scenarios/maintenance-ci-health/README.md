@@ -2,7 +2,7 @@
 
 This is the inert Phase 1 `maintenance-ci-health` vertical slice. The
 [operator guide](../../../docs/ci-health-maintenance.md) explains the contracts and boundaries.
-`scenario.json` is an `af/scenario-bundle@6` example with placeholder native Task identities;
+`scenario.json` is an `af/scenario-bundle@11` example with placeholder native Task identities;
 `inputs.json` supplies its exact typed repository/ref/release/window/notification scope.
 It does not register an Ant, install systemd, dispatch a remedy or grant publication.
 

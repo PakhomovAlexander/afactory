@@ -130,8 +130,8 @@ fn author_contract(contract: &PipelineContractV1) -> bool {
 }
 
 /// Whether `contract` is an admissible report verifier: it declares `requirements`,
-/// `document`, `checks` and `source`, optionally `sources`, `comparison`, `measurements` and `research_report`, and
-/// one evaluation bound to the source Snapshot.
+/// `document`, `checks` and `source`, optionally the standard Worker inputs,
+/// any required source-bound prior evaluations, and one evaluation output.
 fn verifier_contract(contract: &PipelineContractV1) -> bool {
     let mut inputs = worker_inputs();
     inputs.insert("document", same_source(DOCUMENT_V1, false));
@@ -142,7 +142,10 @@ fn verifier_contract(contract: &PipelineContractV1) -> bool {
         && contract
             .inputs
             .iter()
-            .all(|(name, declared)| inputs.get(name.as_str()) == Some(declared))
+            .all(|(name, declared)| match inputs.get(name.as_str()) {
+                Some(expected) => declared == expected,
+                None => *declared == same_source(REPORT_EVALUATION_V1, false),
+            })
         && contract.outputs
             == BTreeMap::from([("result".into(), same_source(REPORT_EVALUATION_V1, false))])
 }
@@ -712,6 +715,28 @@ impl ReportTaskDomain {
         }
         Ok(evaluation)
     }
+    fn verifier_output(&self, cas: &Cas, input: &TaskInvocationV1, id: &str) -> Result<(), String> {
+        let evaluation = self.evaluation(cas, input, id)?;
+        if evaluation.requirements_id != input_id(input, "requirements", "af/Requirements@1", None)?
+        {
+            return Err("Report verifier changed its requirements identity".into());
+        }
+        let artifact = envelope(cas, id)?;
+        for (port, declared) in &self.graph.nodes[&input.node].contract.inputs {
+            if declared.artifact_type == REPORT_EVALUATION_V1 {
+                let dependency = input_id(
+                    input,
+                    port,
+                    REPORT_EVALUATION_V1,
+                    Some(&evaluation.source_snapshot_id),
+                )?;
+                if !artifact.input_artifacts.iter().any(|id| id == dependency) {
+                    return Err("Report verifier lost an exact evaluation dependency".into());
+                }
+            }
+        }
+        Ok(())
+    }
     fn verification(
         &self,
         cas: &Cas,
@@ -782,7 +807,54 @@ impl ReportTaskDomain {
             }
             None => {}
         }
-        input_id(input, "requirements", "af/Requirements@1", None)?;
+        let requirements = input_id(input, "requirements", "af/Requirements@1", None)?;
+        // Typed dependencies and their exact producers come from the captured graph.
+        let definition = self
+            .graph
+            .nodes
+            .get(&input.node)
+            .ok_or("Unknown report verifier")?;
+        let mut seen = BTreeSet::new();
+        for (port, declared) in &definition.contract.inputs {
+            if declared.artifact_type != REPORT_EVALUATION_V1 {
+                continue;
+            }
+            if *declared != same_source(REPORT_EVALUATION_V1, false) {
+                return Err(
+                    "Report evaluation dependency must be required, singular and source-bound"
+                        .into(),
+                );
+            }
+            let id = input_id(
+                input,
+                port,
+                REPORT_EVALUATION_V1,
+                Some(&checks.source_snapshot_id),
+            )?;
+            if !seen.insert(id) {
+                return Err("Report dependencies must be distinct evaluations".into());
+            }
+            let expected = definition
+                .inputs
+                .get(port)
+                .ok_or("Report evaluation dependency has no graph producer")?;
+            let artifact = envelope(cas, id)?;
+            if !matches!(&artifact.producer, Producer::Attempt { node_id, .. } if node_id == &expected.node)
+                || expected.port != "result"
+            {
+                return Err(
+                    "Report evaluation dependency differs from its exact graph producer".into(),
+                );
+            }
+            let evaluation = self.evaluation(cas, input, id)?;
+            if evaluation.requirements_id != requirements
+                || evaluation.outcome != ReceiptOutcomeV1::Passed
+            {
+                return Err(
+                    "Report evaluation dependency failed or judged different requirements".into(),
+                );
+            }
+        }
         Ok(checks)
     }
 
@@ -1172,6 +1244,24 @@ impl TaskOperatorHost for ReportTaskDomain {
     }
 }
 impl TaskDomain for ReportTaskDomain {
+    fn admit_worker_signature(&self, signature: &OperatorSignature) -> Result<(), String> {
+        if verifier_contract(&signature.contract) {
+            for (port, declared) in &signature.contract.inputs {
+                if declared.artifact_type == REPORT_EVALUATION_V1
+                    && !signature
+                        .retains
+                        .get("result")
+                        .is_some_and(|ports| ports.contains(port))
+                {
+                    return Err(format!(
+                        "Report verifier result must retain evaluation dependency {port}"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The report policy, verbatim, after the author's package instructions (ADR-0208): what
     /// its draft is validated against before it is sealed.
     fn worker_instructions(
@@ -1387,12 +1477,7 @@ impl TaskDomain for ReportTaskDomain {
             }
             TaskOperatorV1::Verify { .. } => {
                 let id = output_id("result", REPORT_EVALUATION_V1)?;
-                let evaluation = self.evaluation(cas, input, &id)?;
-                if evaluation.requirements_id
-                    != input_id(input, "requirements", "af/Requirements@1", None)?
-                {
-                    return Err("Report verifier changed its requirements identity".into());
-                }
+                self.verifier_output(cas, input, &id)?;
             }
             TaskOperatorV1::ReportSeal {} => {
                 let actual: DocumentV1 = read(

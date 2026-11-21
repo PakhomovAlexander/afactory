@@ -170,6 +170,10 @@ impl TaskEnvironment for EmptyTaskEnvironment {
 /// Domain operators retain their own receipt semantics. This interface cannot create an
 /// Attempt, execute a child graph, authorize a plan, or change the parent's allowance.
 pub trait TaskDomain: TaskOperatorHost {
+    /// Check a captured Worker's retention authority before admitting any invocation.
+    fn admit_worker_signature(&self, _signature: &OperatorSignature) -> Result<(), String> {
+        Ok(())
+    }
     /// Refuse, before any Attempt, a captured check this machine cannot run: one whose Rust
     /// toolchain does not resolve here (ADR-0205). `af` asks once, before it admits the plan,
     /// so a Task whose gate could only run cold, or not at all, stops before its implementer
@@ -716,6 +720,7 @@ impl<'a> CapturedTaskHost<'a> {
         let capture_worker = |slot: &str| -> Result<std::sync::Arc<CapturedWorker<'a>>, String> {
             let name = &graph.slots[slot].worker;
             let manifest = compiler.worker(name).ok_or("Missing captured Worker")?;
+            domain.admit_worker_signature(&manifest.signature)?;
             let transport = match &manifest.runner {
                 TaskWorkerRunner::Command { command } => WorkerTransport::Command(command.build()),
                 TaskWorkerRunner::Model { provider_kind, .. } => {
@@ -1466,6 +1471,13 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
 }
 
 impl TaskDomain for CapturedTaskHost<'_> {
+    fn admit_worker_signature(
+        &self,
+        signature: &af_graph::task::OperatorSignature,
+    ) -> Result<(), String> {
+        self.domain.admit_worker_signature(signature)
+    }
+
     fn validate_experiment_preparation(
         &self,
         cas: &Cas,

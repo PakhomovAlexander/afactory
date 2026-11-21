@@ -65,7 +65,7 @@ pub(crate) const TOPICS: &[(&str, &str, &str)] = &[
     ),
     (
         "scenarios",
-        "Durable Scenarios, bounded adapters and daily Ant scheduling",
+        "Durable Scenarios, Ant schedules and recorded results",
         include_str!("../../../docs/scenarios.md"),
     ),
 ];
@@ -384,7 +384,7 @@ Task       One piece of work with typed inputs, required outputs and limits, run
 Scenario   A typed ordered definition coordinating Tasks, children, actions, decisions and waits.
 Run        One pinned Scenario execution with durable progress and completion evidence.
 Ant        An owner's scheduled Scenario binding, admitted locally by `af ant tick`.
-           `af help scenarios` explains its authority, daily timezone and spending limits.
+           `af help scenarios` explains its authority, interval/daily schedules and spending limits.
 Worker     A packaged reviewer, implementer or evaluator: a model (claude, codex) or a command,
            with its prompt and declared inputs. `af onboard` lists a repository's reviewers.
 Attempt    One execution of one Worker or check, charged against its budget; a failed one is
@@ -439,7 +439,8 @@ dependencies are available-only, and Worker caches never supply Gate evidence. S
 
   version = 2
   [project]        name = \"myrepo\"      min_af = \"0.7\"
-  [task.defaults]  pipeline = \"kernel/implementation-reviewed\"
+  # Illustrative project configuration; your project chooses the Pipeline.
+  [task.defaults]  pipeline = \"team/implementation\"
 
 The user file is `~/.config/af/config.toml` (XDG on macOS too). It holds what belongs to the
 person and the machine, never to the project: the `[self]` update policy, the `[storage]`
@@ -569,7 +570,7 @@ af/provider-setup@2, af/pi-provider-setup@4 and af/provider-models@4; none carri
 a credential or the Provider CLI's own words.
 
 One command prints JSON lines instead and takes no --json: `af task events ID` writes one
-af/task-event@2 document per line while it follows a Task, and its refusal or usage error is one
+af/task-event@3 document per line while it follows a Task, and its refusal or usage error is one
 af/error@2 line with the same exit code.
 
 Documents carry `kind@version` identifiers where they describe persisted records; a payload shape
@@ -579,13 +580,13 @@ never under --json.
 
 Native Review commands use current Task and Ledger documents:
 
-  af review inspect TASK_ID --json    af/task-inspection@20
-  af review show TASK_ID --json       af/task-inspection@20
-  af review ledger TASK_ID --json     af/review-ledger@2
+  af review inspect TASK_ID --json    af/task-inspection@21
+  af review show TASK_ID --json       af/task-inspection@21
+  af review ledger TASK_ID --json     af/review-ledger@3
   af review ledger TASK_ID --format sarif   SARIF 2.1.0, af/findings-sarif@1
-  af review report TASK_ID --json     af/task-report@3
+  af review report TASK_ID --json     af/task-report@4
   af review decision-context ID --json    af/review-decision-context@1
-  af review decide NEW --from ID --file BATCH --json   af/task-inspection@20 or af/task-selection@3
+  af review decide NEW --from ID --file BATCH --json   af/task-inspection@21 or af/task-selection@3
   af review export TASK_ID PROPOSAL_ID      exact patch bytes, no JSON envelope
 
 The Ledger carries the complete selected canonical Finding Set and original Report envelopes,
@@ -597,64 +598,68 @@ Campaign selectors and their inspection documents are retired. Review plan captu
 Task plan; --authority selects trusted authority independently of source/base selectors.
 
 Scenario and Ant documents (ADR-0274; `af help scenarios`):
-  scenario validate: af/scenario-pin@6; start, show, resume, decide, cancel: af/scenario-run@6.
-  scenario decision-payload: af/scenario-decision@1; list: af/scenario-list@6.
-  ant validate: af/ant-pin@6; add, show, enable, pause, disable: af/ant-state@6;
-  ant list: af/ant-list@6; tick: af/ant-tick@6.
-  Definitions and machine policy: af/scenario@6, af/scenario-bundle@6, af/scenario-policy@5,
-  af/ant@6; signed envelopes: af/scenario-signed-decision@1.
+  scenario validate: af/scenario-pin@12; start, show, resume, decide, cancel: af/scenario-run@12.
+  scenario decision-payload: af/scenario-decision@1; list: af/scenario-list@12.
+  ant validate: af/ant-pin@13; add, enable, pause, disable: af/ant-state@14;
+  ant show: af/ant-inspection@9; ant scheduler status/stop: af/ant-scheduler@1;
+  ant list: af/ant-list@14; tick: af/ant-tick@13.
+  Result presentation: af/result-document@1; rendered metadata: af/result-snapshot@1.
+  CI Health Phase 1: af.ci-health-snapshot/1, af.ci-health-state/2, af.ci-diagnosis/1,
+  af.ci-diagnosis-selection/1, af.ci-health-notification/5, af.ci-signature-state/5,
+  af.ci-observe-occurrence/1, af.ci-observe-service/1, af.maintenance-watchdog-config/1 and
+  af.maintenance-watchdog-alert/1. Native diagnosis and notification records:
+  af/scenario-ci-diagnosis@2, af/scenario-ci-notification-evidence@2 and
+  af/scenario-task-output-field@1. Remedies are report-only; the watchdog is inactive.
+  Definitions and machine policy: af/scenario@11, af/scenario-bundle@11, af/scenario-policy@8,
+  Scoped implementation publication: af/implementation-pr-proof@1, af/implementation-pr-live@1.
+  Startup scope: af/implementation-startup-scope@2.
+  af/ant@12; signed envelopes: af/scenario-signed-decision@1.
   Roadmaps: af/scenario-roadmap-proposal@2 (input), af/scenario-roadmap-revision@2 (validate),
-  af/scenario-roadmap@2 (create, show, revise), af/scenario-roadmap-list@2 (list).
-  Fresh templates: af/scenario-task-template@1; capture: af/scenario-template-pin@1.
-  Journal: af/scenario-store@7. Owned file envelope: af/scenario-owned-file@1.
-  Admitted structured field records: af/scenario-task-output-field@1.
-  Native CI diagnosis settlements: af/scenario-ci-diagnosis@2.
-  Native CI notification transport evidence: af/scenario-ci-notification-evidence@2.
+  af/scenario-roadmap@3 (create, show, revise), af/scenario-roadmap-list@3 (list).
+  Fresh templates: af/scenario-task-template@2; capture: af/scenario-template-pin@2.
+  Driver status: af/scenario-driver@2. Journal: af/scenario-store@18.
+  Owned file envelope: af/scenario-owned-file@1.
   Research evidence: af/scenario-evidence-source@1.
   Experiment source: af/scenario-experiment-source-request@1 and af/scenario-experiment-source@1.
-  Accepted Git candidates: af/git-candidate-source-request@1 and af/git-candidate-source@1.
+  Accepted Git candidates: af/git-candidate-source-request@2 and af/git-candidate-source@2.
   Performance publication: af/performance-pr-proof-request@1, af/performance-pr-proof@1,
   af/performance-pr-content@1, af/performance-publication-activation@1, af/github-performance-pr@1.
-  Installed Git workspaces: af/git-workspace-config@2, af/git-workspace-content@1,
-  af/git-workspace-prepared@1 and af/git-workspace-state@2.
-  Bounded adapters: af/scenario-adapter-request@4 and af/scenario-adapter-response@1.
-  CI health Phase 1: af.ci-health-snapshot/1, af.ci-diagnosis/1, af.ci-diagnosis-selection/1,
-  af.ci-health-notification/5,
-  af.ci-observe-occurrence/1 and af.ci-observe-service/1,
-  af.ci-signature-state/4, af.ci-health-state/2, af.maintenance-watchdog-config/1 and
-  af.maintenance-watchdog-alert/1.
+  Installed Git workspaces: af/git-workspace-config@3, af/git-workspace-content@1,
+  af/git-workspace-prepared@1 and af/git-workspace-state@6.
+  Native nightly service: af/nightly-service@1, af/nightly-job@1, af/nightly-completion@1.
+  Bounded adapters: af/scenario-adapter-request@8 and af/scenario-adapter-response@3.
   `af schema show ID` prints each schema; semantic admission additionally checks authority,
   exact bindings, signatures, budgets, lifecycle and transitive identity.
 
 The Task documents, each named by its `schema`:
 
-  af task show --json                  af/task-inspection@20; a collected Task:
-                                       af/task-collected-inspection@3
-  af task show --checks --json         af/task-checks@3
-  af task list --json                  af/task-list@4, one af/task-list-entry@4 per Task
-  af task list --attention --json      af/task-attention@1: seven groups by what each Task
-                                       waits for, each Task its af/task-list-entry@4
-  af task report --json                af/task-report@3
-  af task findings --json              af/task-findings@2, each finding with its agent_prompt,
+  af task show --json                  af/task-inspection@21; a collected Task:
+                                       af/task-collected-inspection@4
+  af task show --checks --json         af/task-checks@4
+  af task list --json                  af/task-list@5, one af/task-list-entry@5 per Task
+  af task list --attention --json      af/task-attention@2: seven groups by what each Task
+                                       waits for, each Task its af/task-list-entry@5
+  af task report --json                af/task-report@4
+  af task findings --json              af/task-findings@3, each finding with its agent_prompt,
                                        the round with its coverage and verified_fixed
   af task findings --format sarif      SARIF 2.1.0, profile af/findings-sarif@1
   af task diff --json                  af/task-diff@1
   af task materialize --json           af/task-materialized@1
-  af task status --json, wait --json   af/task-status@2
-  af task events                       JSON lines, no --json: one af/task-event@2 per event
+  af task status --json, wait --json   af/task-status@3
+  af task events                       JSON lines, no --json: one af/task-event@3 per event
                                        of the Task's log, with the Store's gap-free
                                        `sequence` (--after N resumes), then one terminal
                                        record with the Task's state and exit_code
-  af task run --detach --json          af/task-detached@3
-  af task cancel --json                af/task-cancelled@2
+  af task run --detach --json          af/task-detached@4
+  af task cancel --json                af/task-cancelled@3
   af task plan --json, refused         af/task-selection@3, exit 1, with `error`, `exit_code`
                                        and `next_action`; an infeasible plan carries
                                        planning_diagnostic.required_limits and .reserves
 
-af/task-inspection@20, af/task-collected-inspection@3, af/task-checks@3, each
-af/task-list-entry@4, the groups of af/task-attention@1, af/task-report@3, af/task-findings@2,
-af/task-status@2, af/task-detached@3, af/task-cancelled@2 and the terminal record of
-af/task-event@2 carry the Task's `state` (`af help task-states`), its `next_action` carrying the
+af/task-inspection@21, af/task-collected-inspection@4, af/task-checks@4, each
+af/task-list-entry@5, the groups of af/task-attention@2, af/task-report@4, af/task-findings@3,
+af/task-status@3, af/task-detached@4, af/task-cancelled@3 and the terminal record of
+af/task-event@3 carry the Task's `state` (`af help task-states`), its `next_action` carrying the
 selectors the command was given (a report, pasted into a pull request, names no Store path); the
 diff, the materialized candidate and the refused selection describe no Task state. A previous
 version is refused, never read.
@@ -706,7 +711,7 @@ Examples:
   af task list --json
   af task show nope --json   # exit 1
   af help task run --json
-  af schema show af/task-status@2";
+  af schema show af/task-status@3";
 
 const TASK_STATES: &str = "\
 Every af task command that shows a Task prints one state for it, in text and under --json alike:
@@ -752,7 +757,7 @@ names who cancelled it. `af help agents` walks the whole loop.
 `af task list --attention` groups the Tasks by what they wait for, read from each state alone and
 never recorded; the browser's Tasks folder opens on the same groups. The first five need a person
 and print each Task with its next command; running Tasks are named on one line and the Tasks that
-need nothing are counted. Under --json, `af/task-attention@1` holds all seven groups.";
+need nothing are counted. Under --json, `af/task-attention@2` holds all seven groups.";
 
 const TASK_FILE: &str = "\
 A Task file (JSON, or TOML for any other extension) is what `af task plan --file` and `af task
@@ -767,20 +772,28 @@ Project defaults: what a Task file omits comes from `[task.defaults]` of `.af/af
 committed Authority Snapshot: `limits` (tokens, max_attempts, wall_ms and the verification
 reserve), `pipeline` and its `fallback`. A field the Task file names wins whole; the default
 Pipeline applies only to a Task of a kind it accepts. `af task plan` prints on stderr what came
-from the defaults (`defaults: limits (...), pipeline kernel/implementation-reviewed (fallback
+from the defaults (`defaults: limits (...), pipeline team/implementation (fallback
 refuse) from .af/af.toml [task.defaults]`). Without `limits` in either place the plan is refused.
 
   [task.defaults]
-  pipeline = \"kernel/implementation-reviewed\"
+  pipeline = \"team/implementation\"
   fallback = \"refuse\"
   [task.defaults.limits]
-  tokens = 6000000
-  max_attempts = 16
-  wall_ms = 10800000
+  tokens = 100000
+  max_attempts = 6
+  wall_ms = 600000
   [task.defaults.limits.verification]
-  tokens = 2000000
-  attempts = 8
-  wall_ms = 3600000
+  tokens = 40000
+  attempts = 2
+  wall_ms = 240000
+
+These configuration values are illustrative, not global defaults or budgets. Effective defaults,
+Worker bindings and Pipelines come from the consuming project's captured `.af/` settings and
+catalog, under its exact authority. Projects choose their own packages and resource limits.
+Use `af config show --origin` to inspect configuration layers, then
+`af task plan --file task.json --json` to inspect the captured effective plan without execution.
+Use `af task explain TASK_ID --tree` for its compiled graph and bindings. `af catalog test --help`
+describes checking a project's declared catalog contracts; it does not select an operator catalog.
 
 Context: each `context` entry names a file of the Task's source tree, with an optional
 `#section`. The Worker's requirements end with a \"Read first\" list naming the Snapshot the

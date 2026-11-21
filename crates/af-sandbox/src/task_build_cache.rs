@@ -1067,7 +1067,11 @@ fn open_key(
         return Err("the Task build cache root must be an absolute directory".into());
     }
     if let Some(parent) = root.parent() {
-        std::fs::create_dir_all(parent)
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(parent)
             .map_err(|error| format!("creating the Task build cache parent: {error}"))?;
     }
     let root_fd = open_root(root)?;

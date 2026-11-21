@@ -1,5 +1,5 @@
 {
-  "schema": "af.perf-supervisor-request/4",
+  "schema": "af.perf-supervisor-request/5",
   "argv": [
     "/Users/lab/target/performance/run/build/artifacts/baseline/perf-probe"
   ],
@@ -24,5 +24,6 @@
         "perf-probe-task"
       ]
     }
-  ]
+  ],
+  "evidence_paths": []
 }

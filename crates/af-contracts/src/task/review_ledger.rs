@@ -4,7 +4,7 @@ use crate::{ArtifactEnvelope, FindingSetV1};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub const REVIEW_LEDGER_V2: &str = "af/review-ledger@2";
+pub const REVIEW_LEDGER_V3: &str = "af/review-ledger@3";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -21,8 +21,8 @@ pub struct ReviewLedgerV2 {
 impl ReviewLedgerV2 {
     pub fn validate(&self) -> Result<(), String> {
         require(
-            self.schema == REVIEW_LEDGER_V2,
-            "Expected af/review-ledger@2",
+            self.schema == REVIEW_LEDGER_V3,
+            "Expected af/review-ledger@3",
         )?;
         self.inspection.validate()?;
         let Some(frame) = &self.finding_set else {

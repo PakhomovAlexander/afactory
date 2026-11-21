@@ -664,7 +664,7 @@ fn native_scenario_projects_the_exact_custom_output_without_an_extra_worker() {
     )
     .unwrap();
     crate::schemas::valid(
-        &crate::schemas::validator("scenario-bundle-v6.json"),
+        &crate::schemas::validator("scenario-bundle-v11.json"),
         &bundle,
     );
     bundle["definitions"]["triage"]["steps"][0]["operation"]["target"] = json!({"repo":f.repo,"state":f.state,"task_id":"triage-one","plan_id":planned["plan_id"],"revision_id":planned["revision_id"],"max_tokens":150000});
@@ -674,10 +674,10 @@ fn native_scenario_projects_the_exact_custom_output_without_an_extra_worker() {
     let policy = f.root.path().join("policy.json");
     write(
         &policy,
-        &json!({"schema":"af/scenario-policy@5","adapters":{},"task_plans":[planned["plan_id"]],"task_templates":[],"decision_keys":{},"file_roots":[]}),
+        &json!({"schema":"af/scenario-policy@8","adapters":{},"task_plans":[planned["plan_id"]],"task_templates":[],"decision_keys":{},"file_roots":[]}),
     );
     crate::schemas::valid(
-        &crate::schemas::validator("scenario-policy-v5.json"),
+        &crate::schemas::validator("scenario-policy-v8.json"),
         &serde_json::from_slice(&std::fs::read(&policy).unwrap()).unwrap(),
     );
     std::fs::set_permissions(&policy, std::fs::Permissions::from_mode(0o600)).unwrap();
@@ -1133,7 +1133,7 @@ print(json.dumps({'observation_service':service,'github_service':github}))
         let rendered: Value = serde_json::from_slice(&output.stdout).unwrap();
         let bundle = rendered["bundle"].clone();
         crate::schemas::valid(
-            &crate::schemas::validator("scenario-bundle-v6.json"),
+            &crate::schemas::validator("scenario-bundle-v11.json"),
             &bundle,
         );
         let path = self.root.path().join("ci-scenario.json");
@@ -1146,7 +1146,7 @@ print(json.dumps({'observation_service':service,'github_service':github}))
         );
         write(
             &policy,
-            &json!({"schema":"af/scenario-policy@5","adapters":{"ci-health":{
+            &json!({"schema":"af/scenario-policy@8","adapters":{"ci-health":{
             "executable":adapter,"digest":digest,"operations":["observe","notify"],"destinations":["fixture:ci-health"],
             "max_wall_ms":30000,"max_output_bytes":65536}},"task_plans":bundle["definitions"]["maintenance-ci-health"]["authority"]["task_plans"],
             "task_templates":[],"decision_keys":{},"file_roots":[]}),

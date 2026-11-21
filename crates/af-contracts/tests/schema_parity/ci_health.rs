@@ -321,7 +321,7 @@ fn ci_health_gate_occurrence_fixtures_use_current_native_task_list_documents() {
     )
     .unwrap();
     for document in value["documents"].as_array().unwrap() {
-        assert_valid("task-list-v4.json", document);
+        assert_valid("task-list-v5.json", document);
     }
 }
 

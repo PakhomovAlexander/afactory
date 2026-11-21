@@ -14,6 +14,25 @@ use std::sync::atomic::AtomicBool;
 /// Template document validation is called during admission *and* journal replay. The domain
 /// owns Scenario structure; the application owns its native Task-file grammar and diagnostics.
 pub trait Host: Send + Sync {
+    /// Trusted live authorization clock; inspection clocks cannot supply this value.
+    fn authorization_time(&self) -> Result<u64> {
+        crate::runtime::now()
+    }
+    fn preflight_implementation_template(
+        &self,
+        _: &Template,
+        _: &BTreeMap<String, crate::implementation::ModelBinding>,
+    ) -> Result<()> {
+        Err("Host does not support implementation startup admission".into())
+    }
+    fn preflight_implementation_adapter(
+        &self,
+        _: &crate::contract::Adapter,
+        _: &crate::implementation::Scope,
+    ) -> crate::implementation::PreflightResult {
+        Err("Host does not support implementation adapter preflight".into())
+    }
+
     fn validate_template(
         &self,
         document: &serde_json::Value,
@@ -42,6 +61,9 @@ pub trait Host: Send + Sync {
         performance: bool,
         predecessors: &BTreeMap<String, (TaskReceipt, String)>,
     ) -> Result<TaskTarget>;
+    fn check_repair(&self, _: &Template, _: &crate::task_outcome::TaskOutcome) -> Result<()> {
+        Err("Host does not support checked native repair".into())
+    }
     fn run_task(
         &self,
         target: &TaskTarget,
@@ -72,6 +94,14 @@ pub trait Host: Send + Sync {
     fn cancel_task_run(&self, target: &TaskTarget, expected: u64) -> Result<()>;
     /// Missing, unreadable, running or mismatched Tasks retain the full reservation (`None`).
     fn task_charge(&self, target: &TaskTarget) -> Result<Option<(u64, bool)>>;
+    fn validate_implementation_proof(
+        &self,
+        _: &crate::adapter::Request,
+        _: &crate::state::Run,
+        _: &crate::implementation::Scope,
+    ) -> Result<()> {
+        Err("Host does not support scoped native publication".into())
+    }
     fn validate_performance_proof(&self, request: &ProofRequest, scope: &Scope) -> Result<()>;
 
     fn default_store_path(&self) -> Result<PathBuf>;

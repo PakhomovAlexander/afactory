@@ -3,7 +3,7 @@
 `history --inputs DIR... --output OUT` reads run directories and archive roots, recomputes every
 run's verdict from its evidence (an archived run is rebuilt from its rehashed objects; one whose
 bundles lost members to retention is shown from its archived summary, with what expired), and
-writes `history.html`, the matching `history.json` (`af.perf-history/1`) and, below `runs/`, each
+writes `history.html`, the matching `history.json` (`af.perf-history/2`) and, below `runs/`, each
 run's own report by the same trusted renderer, so history links to complete runs.
 
 A group holds one case instance under one identity: its declared workload (case, parameters,
@@ -179,7 +179,7 @@ def _terminal_as_shard(terminal):
 
 
 def build(entries, unavailable):
-    """The `af.perf-history/1` document of loaded entries."""
+    """The `af.perf-history/2` document of loaded entries."""
     runs, groups = [], {}
     for entry in sorted(entries, key=lambda item: (item.started is None, item.started or 0,
                                                    item.doc["run_id"])):

@@ -20,6 +20,8 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
 sha2 = "0.11.0"
+sha2-seal = { package = "sha2", version = "0.10.9" }
+hmac = "0.12.1"
 tempfile = "3.27.0"
 reflink-copy = "0.1.30"
 # fsync(2) without unsafe in this crate: nix wraps the libc call behind a safe API. The CAS

@@ -345,15 +345,15 @@ pub enum WorkerStorageBackendV1 {
 /// A Worker never sees this file or supplies its runtime/name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct WorkerStorageLeaseV1 {
+pub struct WorkerStorageLeaseV2 {
     pub schema: String,
     pub runtime: String,
     pub name: String,
 }
-impl WorkerStorageLeaseV1 {
+impl WorkerStorageLeaseV2 {
     pub fn validate(&self) -> Result<(), String> {
         require(
-            self.schema == "af.worker-storage/1"
+            self.schema == "af.worker-storage/2"
                 && canonical_program(&self.runtime)
                 && self.name.starts_with("af-storage-")
                 && self.name.len() > "af-storage-".len()

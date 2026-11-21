@@ -26,7 +26,7 @@
 # change like any other. `criticality = "advisory"` cases are measured and reported as
 # exploratory and never enter the corrected gate family.
 
-schema = "af.perf-suite/4"
+schema = "af.perf-suite/6"
 suite_id = "af_performance"
 description = "Paired same-host comparisons of the AF product's critical operations."
 
@@ -874,3 +874,39 @@ warmup_pairs = 2
 sample_timeout_seconds = 30
 budgets = []
 probe = { contract_id = "persistence_fs_v3", repetitions = 1 }
+
+[tiers.e2e_long_running]
+# Only this opt-in tier uses the hard maximum for cold native builds.
+build_minutes = 45
+description = "Long-running development workflows with fixed small-N comparisons."
+profiles = [
+  { environment = "linux_x86_64_gnu_hosted", recipe = "linux_gnu_native_release" },
+]
+shards = 2
+concurrent_jobs = 2
+shard_sampling_minutes = 90
+run_total_minutes = 180
+
+[cases.dev_default_light_smoke]
+family = "af_dev_e2e"
+execution_class = "long_running"
+description = "Three real default-light Tasks with two repair continuations and deterministic mock Providers."
+kind = "process"
+requires_linux_containment = true
+timing = { boundary = "child_process_lifetime", description = "Supervisor clock from driver launch through the third accepted Task and its public inspection reads." }
+cache = { process = "fresh", store = "fresh", projection = "not_applicable", os_page_cache = "warm" }
+oracle = { kind = "cli_task_outcome", state = "available", description = "Exact Task/continuation graph, role counts, final semantics and cold/primed Cargo freshness from the driver's public evidence (cli.toml)." }
+# Long-running comparisons freeze eight measured pairs per instance, retaining warmups,
+# Sentinels and the existing shard and total deadlines.
+execution = { state = "supported", pending = "" }
+parameters = { initial_cache = { kind = "enum", values = ["cold", "primed"] } }
+tiers = ["e2e_long_running"]
+criticality = "critical"
+primary_metric = "wall_ms"
+optional_metrics = ["user_cpu_ms", "system_cpu_ms", "cgroup_peak_memory_bytes"]
+policy = "wall_time_default"
+pairs = { e2e_long_running = 8 }
+warmup_pairs = 2
+sample_timeout_seconds = 120
+budgets = []
+af_environment = { AF_STORAGE__MIN_FREE_BYTES = "268435456" }

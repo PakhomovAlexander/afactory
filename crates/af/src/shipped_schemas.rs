@@ -41,28 +41,36 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     service_schema!("ci-health-state", 2),
     service_schema!("ci-observe-occurrence", 1),
     service_schema!("ci-observe-service", 1),
-    service_schema!("ci-signature-state", 4),
+    service_schema!("ci-signature-state", 5),
     service_schema!("maintenance-watchdog-alert", 1),
     service_schema!("maintenance-watchdog-config", 1),
-    schema!("ant-list", 6),
-    schema!("ant-pin", 6),
-    schema!("ant-state", 6),
-    schema!("ant-tick", 6),
-    schema!("ant", 6),
+    schema!("ant-inspection", 9),
+    schema!("ant-list", 14),
+    schema!("ant-pin", 13),
+    schema!("ant-scheduler", 1),
+    schema!("ant-state", 14),
+    schema!("ant-tick", 13),
+    schema!("ant", 12),
     schema!("command-catalog", 1),
     schema!("error", 2),
     schema!("findings-sarif", 1),
-    schema!("git-candidate-source-request", 1),
-    schema!("git-candidate-source", 1),
-    schema!("git-workspace-config", 2),
+    schema!("git-candidate-source-request", 2),
+    schema!("git-candidate-source", 2),
+    schema!("git-workspace-config", 3),
     schema!("git-workspace-content", 1),
     schema!("git-workspace-prepared", 1),
-    schema!("git-workspace-state", 2),
+    schema!("git-workspace-state", 6),
     schema!("github-performance-pr", 1),
     schema!("help-topic", 1),
+    schema!("implementation-pr-live", 1),
+    schema!("implementation-pr-proof", 1),
+    schema!("implementation-startup-scope", 2),
     schema!("issue-triage-hold", 1),
     schema!("issue-triage-merged", 1),
     schema!("issue-triage", 1),
+    schema!("nightly-completion", 1),
+    schema!("nightly-job", 1),
+    schema!("nightly-service", 1),
     schema!("performance-pr-content", 1),
     schema!("performance-pr-proof-request", 1),
     schema!("performance-pr-proof", 1),
@@ -72,47 +80,50 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("provider-models", 4),
     schema!("provider-setup", 2),
     schema!("provider-status", 6),
+    schema!("result-document", 1),
+    schema!("result-snapshot", 1),
     schema!("review-decision-context", 1),
-    schema!("review-ledger", 2),
-    schema!("scenario-adapter-request", 4),
-    schema!("scenario-adapter-response", 1),
-    schema!("scenario-bundle", 6),
+    schema!("review-ledger", 3),
+    schema!("scenario-adapter-request", 8),
+    schema!("scenario-adapter-response", 3),
+    schema!("scenario-bundle", 11),
     schema!("scenario-ci-diagnosis", 2),
     schema!("scenario-ci-notification-evidence", 2),
     schema!("scenario-decision", 1),
+    schema!("scenario-driver", 2),
     schema!("scenario-evidence-source", 1),
     schema!("scenario-experiment-source-request", 1),
     schema!("scenario-experiment-source", 1),
-    schema!("scenario-list", 6),
+    schema!("scenario-list", 12),
     schema!("scenario-owned-file", 1),
-    schema!("scenario-pin", 6),
-    schema!("scenario-policy", 5),
-    schema!("scenario-roadmap-list", 2),
+    schema!("scenario-pin", 12),
+    schema!("scenario-policy", 8),
+    schema!("scenario-roadmap-list", 3),
     schema!("scenario-roadmap-proposal", 2),
     schema!("scenario-roadmap-revision", 2),
-    schema!("scenario-roadmap", 2),
-    schema!("scenario-run", 6),
+    schema!("scenario-roadmap", 3),
+    schema!("scenario-run", 12),
     schema!("scenario-signed-decision", 1),
-    schema!("scenario-store", 7),
+    schema!("scenario-store", 18),
     schema!("scenario-task-output-field", 1),
-    schema!("scenario-task-template", 1),
-    schema!("scenario-template-pin", 1),
-    schema!("scenario", 6),
-    schema!("task-attention", 1),
-    schema!("task-cancelled", 2),
-    schema!("task-checks", 3),
-    schema!("task-collected-inspection", 3),
-    schema!("task-detached", 3),
+    schema!("scenario-task-template", 2),
+    schema!("scenario-template-pin", 2),
+    schema!("scenario", 11),
+    schema!("task-attention", 2),
+    schema!("task-cancelled", 3),
+    schema!("task-checks", 4),
+    schema!("task-collected-inspection", 4),
+    schema!("task-detached", 4),
     schema!("task-diff", 1),
-    schema!("task-event", 2),
-    schema!("task-findings", 2),
-    schema!("task-inspection", 20),
-    schema!("task-list-entry", 4),
-    schema!("task-list", 4),
+    schema!("task-event", 3),
+    schema!("task-findings", 3),
+    schema!("task-inspection", 21),
+    schema!("task-list-entry", 5),
+    schema!("task-list", 5),
     schema!("task-materialized", 1),
-    schema!("task-report", 3),
+    schema!("task-report", 4),
     schema!("task-selection", 3),
-    schema!("task-status", 2),
+    schema!("task-status", 3),
 ];
 
 /// `af schema show [ID]`: the schema `id` names, byte for byte, or without an id every id with
@@ -269,14 +280,14 @@ mod tests {
     fn an_unshipped_id_names_the_versions_that_are_shipped() {
         assert_eq!(
             refusal("af/task-status@1"),
-            "this af ships no schema af/task-status@1, only af/task-status@2; run af schema \
-             show af/task-status@2"
+            "this af ships no schema af/task-status@1, only af/task-status@3; run af schema \
+             show af/task-status@3"
         );
         assert_eq!(
-            refusal("task-status-v2.json"),
-            "this af ships no schema task-status-v2.json; `af schema show` lists the ids it ships"
+            refusal("task-status-v3.json"),
+            "this af ships no schema task-status-v3.json; `af schema show` lists the ids it ships"
         );
-        assert!(refusal("af/task-inspection@18").contains("only af/task-inspection@20"));
+        assert!(refusal("af/task-inspection@18").contains("only af/task-inspection@21"));
         assert_eq!(
             refusal("af.ci-diagnosis/0"),
             "this af ships no schema af.ci-diagnosis/0, only af.ci-diagnosis/1; run af schema \
@@ -293,13 +304,17 @@ mod tests {
         let listing = listing();
         assert_eq!(listing.lines().count(), SCHEMAS.len());
         assert!(
-            listing.starts_with("af.ci-diagnosis-selection/1  "),
-            "{listing}"
+            listing
+                .lines()
+                .any(|line| line.starts_with("af/ant-inspection@9  "))
         );
         assert!(
             listing
                 .lines()
-                .any(|line| line.starts_with("af/ant-list@6  ")),
+                .any(|line| line.starts_with("af/ant-list@14  "))
+        );
+        assert!(
+            listing.starts_with("af.ci-diagnosis-selection/1  "),
             "{listing}"
         );
     }

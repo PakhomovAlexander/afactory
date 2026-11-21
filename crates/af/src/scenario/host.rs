@@ -11,6 +11,88 @@ use std::time::Duration;
 
 pub(crate) struct AfHost;
 impl Host for AfHost {
+    fn preflight_implementation_template(
+        &self,
+        template: &Template,
+        expected: &BTreeMap<String, af_scenario::implementation::ModelBinding>,
+    ) -> Result<()> {
+        crate::task_commands::scenario_template::preflight_implementation(template, expected)
+    }
+    fn preflight_implementation_adapter(
+        &self,
+        adapter: &Adapter,
+        scope: &af_scenario::implementation::Scope,
+    ) -> af_scenario::implementation::PreflightResult {
+        require(
+            digest(&af_scenario::store::read(&adapter.executable, MAX_BYTES)?) == adapter.digest,
+            "Startup adapter executable changed",
+        )?;
+        let scope_id = hash(scope)?;
+        let bytes = serde_json::to_vec(&serde_json::json!({"schema":"af/implementation-startup-preflight@2", "scope_id":scope_id, "scope":scope})).map_err(|e| e.to_string())?;
+        let mut command = std::process::Command::new(&adapter.executable);
+        command.current_dir(
+            adapter
+                .executable
+                .parent()
+                .ok_or("Startup adapter location missing")?,
+        );
+        let result = af_process::run_supervised_captured_bounded(
+            &mut command,
+            Some(bytes),
+            Duration::from_millis(adapter.max_wall_ms),
+            af_process::ExitPolicy::KillDescendants,
+            None,
+            adapter.max_output_bytes as usize,
+        );
+        require(
+            result.status.as_ref().is_ok_and(|status| status.success()),
+            "Startup adapter failed without a typed prerequisite receipt",
+        )?;
+        let response: serde_json::Value = serde_json::from_slice(&result.stdout)
+            .map_err(|_| "Invalid startup adapter receipt")?;
+        if response.get("schema").and_then(|s| s.as_str())
+            == Some("af/implementation-startup-failure@1")
+        {
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Failure {
+                schema: String,
+                scope_id: String,
+                kind: String,
+            }
+            let failure: Failure =
+                serde_json::from_value(response).map_err(|_| "Invalid startup failure receipt")?;
+            require(
+                failure.schema == "af/implementation-startup-failure@1"
+                    && failure.scope_id == scope_id,
+                "Startup failure scope differs",
+            )?;
+            use af_scenario::implementation::PreflightError;
+            return Err(match failure.kind.as_str() {
+                "transport" => {
+                    PreflightError::Transport("read-only prerequisite unavailable".into())
+                }
+                "credentials" => {
+                    PreflightError::Credentials("confirmed adapter credential refusal".into())
+                }
+                "refused" => PreflightError::Refused("Startup adapter prerequisite refused".into()),
+                _ => return Err("Invalid startup failure kind".into()),
+            });
+        }
+        require(
+            response
+                == serde_json::json!({"schema":"af/implementation-startup-ready@2", "scope_id":scope_id}),
+            "Startup adapter scope differs",
+        ).map_err(Into::into)
+    }
+
+    fn check_repair(
+        &self,
+        template: &Template,
+        outcome: &af_scenario::task_outcome::TaskOutcome,
+    ) -> Result<()> {
+        crate::task_commands::scenario_template::check_repair(template, outcome)
+    }
     fn run_task(
         &self,
         target: &TaskTarget,
@@ -66,11 +148,11 @@ impl Host for AfHost {
             let _ = capture;
         }
         let task = checked(target)?;
-        let (result, _) = task.view()?;
+        let (result, view) = task.view()?;
         let Some(result) = result else {
             return Ok(Settlement::Waiting(format!(
-                "Task {} has no accepted result yet",
-                target.task_id
+                "Task {} has no terminal result: {:?}, {:?}, {:?}",
+                target.task_id, view.state.phase, view.state.outcome, view.state.cause
             )));
         };
         let charged_tokens = task.task.execution.as_ref().map_or(Ok(0), |e| {
@@ -81,18 +163,6 @@ impl Host for AfHost {
                 .iter()
                 .any(|a| a.unknown_usage.is_some())
         });
-        if result.acceptance != af_contracts::task::TaskAcceptanceV1::Satisfied
-            || result.execution != af_contracts::task::TaskExecutionV1::Completed
-        {
-            return Ok(Settlement::TaskFailed {
-                diagnostic: format!(
-                    "Task {} did not satisfy acceptance: {:?}",
-                    target.task_id, result.acceptance
-                ),
-                charged_tokens,
-                unknown_usage,
-            });
-        }
         let af_contracts::task::TaskPhaseV1::Finished { result_id } = &task.task.phase else {
             return Err("Task result lacks durable completion".into());
         };
@@ -104,10 +174,13 @@ impl Host for AfHost {
             charged_tokens,
             result,
         };
-        Ok(Settlement::TaskDone {
-            outputs: BTreeMap::from([("result".into(), Datum::Task(receipt))]),
-            unknown_usage,
-        })
+        Ok(Settlement::TaskTerminal(Box::new(
+            crate::task_commands::scenario_template::terminal_outcome(
+                &task,
+                receipt,
+                unknown_usage,
+            )?,
+        )))
     }
 
     fn run_ci_diagnosis(
@@ -121,6 +194,14 @@ impl Host for AfHost {
         // durable answered/refused diagnosis is converted into a reporting observation.
         let settlement = self.run_task(target, timeout_ms, cancellation)?;
         let (charged_tokens, unknown_usage, accepted) = match &settlement {
+            Settlement::TaskTerminal(outcome) => {
+                outcome.validate()?;
+                (
+                    outcome.receipt.charged_tokens,
+                    outcome.unknown_usage,
+                    outcome.accepted(),
+                )
+            }
             Settlement::TaskDone {
                 outputs,
                 unknown_usage,
@@ -401,6 +482,14 @@ impl Host for AfHost {
     ) -> Result<TaskTarget> {
         crate::task_commands::scenario_template::plan(template, document, performance, predecessors)
     }
+    fn validate_implementation_proof(
+        &self,
+        request: &af_scenario::adapter::Request,
+        run: &af_scenario::state::Run,
+        scope: &af_scenario::implementation::Scope,
+    ) -> Result<()> {
+        crate::task_commands::candidate::implementation::proof(request, run, scope).map(|_| ())
+    }
     fn validate_performance_proof(&self, request: &ProofRequest, scope: &Scope) -> Result<()> {
         crate::task_commands::candidate::performance::proof(request, &scope.repo, &scope.task_state)
             .map(|_| ())
@@ -464,7 +553,7 @@ mod tests {
             AfHost
                 .validate_template(&document, Some(&bindings), 20)
                 .unwrap_err()
-                .contains("never mutable local packages")
+                .contains("af.task-bindings/1")
         );
     }
 }

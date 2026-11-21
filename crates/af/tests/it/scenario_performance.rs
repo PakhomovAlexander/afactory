@@ -85,7 +85,7 @@ fn copy_mutable_fixture_file(source: &Path, target: &Path) {
     std::fs::set_permissions(target, permissions).unwrap();
 }
 
-// Operator authority is copied into this disposable consuming repository before editing.
+// Explicit generic contract authority is copied into a disposable consuming repository.
 // Sealed gate inputs stay read-only; only the copies gain their owner-write bit.
 fn copy_operator_authority(source: &Path, repo: &Path) {
     for name in ["task-catalog.toml", "report-policy.toml"] {
@@ -134,7 +134,7 @@ struct Performance {
 }
 impl Performance {
     fn new() -> Self {
-        Self::from_source(&workspace())
+        Self::from_source(&workspace().join("fixtures/native-catalog-contracts"))
     }
     fn from_source(source: &Path) -> Self {
         let f = Fixture::bare();
@@ -192,7 +192,10 @@ impl Performance {
             toml::from_str(&std::fs::read_to_string(source.join(".af/task-catalog.toml")).unwrap())
                 .unwrap();
         let committed: toml::Value = toml::from_str(
-            &std::fs::read_to_string(workspace().join(".af/task-catalog.toml")).unwrap(),
+            &std::fs::read_to_string(
+                workspace().join("fixtures/native-catalog-contracts/.af/task-catalog.toml"),
+            )
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(fixture["review"], shipped["review"]);
@@ -222,6 +225,7 @@ if sys.argv[1:2]==['app-server']:
   if r.get('id')==2: print(json.dumps({'id':2,'result':{'account':{'type':'chatgpt','email':'scenario@example.invalid'}}}),flush=True)
  sys.exit(0)
 request=sys.stdin.read()
+with (home/'calls.jsonl').open('a') as f: f.write(json.dumps({'probe':request==PROBE_INPUT})+'\n')
 if request==PROBE_INPUT:
  message='OK'
 else:
@@ -246,16 +250,37 @@ else:
    text+=' Final report retains research artifact '+i['research_report'][0]['artifact_id']+' and its evidence: '+i['research_report'][0]['payload']['text']
   reply={'draft':[{'schema':'af.document-draft/3','title':'Research chain','sections':[{'heading':'Findings','body':text},{'heading':'Recommendation','body':text}],'citations':[{'kind':'repository','location':{'path':'subject.txt','line':1}}]}]}
  elif 'report' in ports:
-  assert 'DISTINCT-RESEARCH' in i['research_report'][0]['payload']['text']
+  if not (home/'scoped-mode').exists(): assert 'DISTINCT-RESEARCH' in i['research_report'][0]['payload']['text']
   root=pathlib.Path(sys.argv[sys.argv.index('-C')+1]) if '-C' in sys.argv else pathlib.Path.cwd()
-  (root/'optimized.txt').write_text('cache decoded manifest by exact digest\n')
+  if (home/'scoped-mode').exists() and (root/'optimized.txt').exists(): (root/'repair.txt').write_text('independently accepted same-PR repair\n')
+  mode=(home/'scoped-mode').read_text() if (home/'scoped-mode').exists() else ''
+  if mode in ('gate-review','verifier'):
+   stage=int((root/'lifecycle-stage').read_text())+1 if (root/'lifecycle-stage').exists() else 0
+   if stage:
+    evidence=i['requirements'][0]['payload']['specification']['scenario_native_outcome']
+    findings=i['findings'][0]['payload']
+    assert findings['continues']['result_id']==evidence['receipt']['result_id']
+    assert findings['continues']['snapshot_id']==evidence['repair']['snapshot_id']
+    (root/'seen-findings.json').write_text(json.dumps(findings))
+   (root/'lifecycle-stage').write_text(str(stage))
+  (root/'optimized.txt').write_text('wrong initial gate output\n' if mode=='gate-review' and stage==0 else 'cache decoded manifest by exact digest\n')
   reply={'report':[{'summary':'Constructed the exact accepted research recommendation.'}]}
  else:
-  reply={'result':[{'outcome':'passed','reason':'exact source independently checked'}]}
+  outcome='passed'
+  mode=(home/'scoped-mode').read_text() if (home/'scoped-mode').exists() else ''
+  if mode in ('gate-review','verifier'):
+   root=pathlib.Path(sys.argv[sys.argv.index('-C')+1]) if '-C' in sys.argv else pathlib.Path.cwd()
+   stage=int((root/'lifecycle-stage').read_text())
+   counter=home/'evaluation-count'
+   count=int(counter.read_text())+1 if counter.exists() else 1
+   counter.write_text(str(count))
+   if mode=='gate-review' and stage==1 or mode=='verifier' and count==2:
+    outcome='failed'
+  reply={'result':[{'outcome':outcome,'reason':'native independent evaluator finding; repair the whole original goal' if outcome=='failed' else 'exact source independently checked'}]}
  message=json.dumps({'schema':'af.worker-reply/1','outputs':reply})
 if '-o' in sys.argv: pathlib.Path(sys.argv[sys.argv.index('-o')+1]).write_text(message)
 print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':message}}))
-print(json.dumps({'type':'turn.completed','usage':{'input_tokens':3,'cached_input_tokens':0,'output_tokens':2}}))
+print(json.dumps({'type':'turn.completed','usage':{'input_tokens':8000001 if (home/'scoped-mode').exists() and (home/'scoped-mode').read_text()=='budget' and request!=PROBE_INPUT else 3,'cached_input_tokens':0,'output_tokens':2}}))
 "#;
         std::fs::write(
             bin.join("codex"),
@@ -274,7 +299,8 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':3,'cached_inpu
             path,
             task_state,
             commit,
-            packet_source: source.join("fixtures/performance/schema/evidence-packet/valid.json"),
+            packet_source: workspace()
+                .join("fixtures/performance/schema/evidence-packet/valid.json"),
         }
     }
     fn output(&self, state: &Path, args: &[&str]) -> Output {
@@ -367,7 +393,7 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':3,'cached_inpu
 import json,sys,pathlib
 root=pathlib.Path({root:?})
 r=json.load(sys.stdin); i=r['inputs']; method=r['method']
-o=dict(schema='af/scenario-adapter-response@1',intent_id=r['intent_id'],input_digest=r['input_digest'],outcome='done',evidence='native fixture receipt',observation=None)
+o=dict(schema='af/scenario-adapter-response@3',intent_id=r['intent_id'],input_digest=r['input_digest'],outcome='done',evidence='native fixture receipt',observation=None)
 if method=='observe':
  condition=i['condition']['value']
  ready=True
@@ -445,6 +471,9 @@ print(json.dumps(o))
         bundle
     }
     fn start(&self, label: &str, bundle: &Value) -> Value {
+        self.start_recorded(label, bundle, true)
+    }
+    fn start_recorded(&self, label: &str, bundle: &Value, execute: bool) -> Value {
         write(&self.f.bundle, bundle);
         let pin = self.cli(
             &self.f.state,
@@ -471,7 +500,11 @@ print(json.dumps(o))
                 self.f.inputs.to_str().unwrap(),
                 "--confirm-pin",
                 pin["revision"].as_str().unwrap(),
-                "--execute",
+                if execute {
+                    "--execute"
+                } else {
+                    "--require-startup-scope"
+                },
             ],
         )
     }
@@ -529,7 +562,7 @@ fn assert_owner_performance_instruction_contracts(repo: &Path, candidate: &Value
 /// the shipped Worker signatures; diff_subject is optional kernel-derived context.
 #[test]
 fn owner_judge_evidence_matches_candidate_and_verification_input_contracts() {
-    let repo = workspace();
+    let repo = workspace().join("fixtures/native-catalog-contracts");
     let pipeline = |name: &str| -> toml::Value {
         toml::from_str(
             &std::fs::read_to_string(
@@ -694,15 +727,17 @@ sys.exit(99)
         let template = &step["operation"]["template"];
         assert_eq!(template["authority_commit"], p.commit);
         let bindings = &template["bindings"];
-        assert!(bindings.get("packages").is_none());
-        assert_eq!(bindings.as_object().unwrap().len(), 3);
         let document = &template["document"];
         let kind = document["kind"].as_str().unwrap();
+        let binding_file = p.bindings(kind);
+        let mut expected_bindings: Value =
+            serde_json::from_slice(&std::fs::read(&binding_file).unwrap()).unwrap();
+        expected_bindings["packages"] = json!({});
+        assert_eq!(bindings, &expected_bindings, "{stage}");
         if kind == "implement" {
             assert_owner_performance_instruction_contracts(&p.f.repo, document);
         }
         let file = p.f.machine.join(format!("{stage}-template.json"));
-        let binding_file = p.bindings(kind);
         let planned = p.cli(
             &p.task_state,
             &[
@@ -874,7 +909,12 @@ fn shipped_performance_loop_delivers_research_and_publishes_verified_improvement
     // Keep every copied input's bytes and mode to prove only disposable consumer files change.
     let source = tempfile::tempdir().unwrap();
     for directory in [".af", "fixtures/performance/schema/evidence-packet"] {
-        crate::task_cli::copy_tree(&workspace().join(directory), &source.path().join(directory));
+        let input = if directory == ".af" {
+            workspace().join("fixtures/native-catalog-contracts/.af")
+        } else {
+            workspace().join(directory)
+        };
+        crate::task_cli::copy_tree(&input, &source.path().join(directory));
     }
     let mut sealed = Vec::new();
     let mut stack = vec![source.path().to_path_buf()];
@@ -918,7 +958,7 @@ fn shipped_performance_loop_delivers_research_and_publishes_verified_improvement
     let history = &mut bundle["definitions"]["performance"]["steps"][0];
     history["inputs"]["subject"]["value"]["value"] = packet["index_digest"].clone();
     history["inputs"]["revision"]["value"]["value"] = packet["compatibility"].clone();
-    valid("scenario-bundle-v6.json", &bundle);
+    valid("scenario-bundle-v11.json", &bundle);
     write(&p.f.bundle, &bundle);
     let pin = p.cli(
         &p.f.state,
@@ -988,7 +1028,9 @@ fn shipped_performance_loop_delivers_research_and_publishes_verified_improvement
     let capture = || {
         // Exercise the shipped Python/native bridge, including its distinct request and CAS
         // digest domains. Replacing this bridge with a fake capture would miss that mismatch.
-        let output = std::process::Command::new("/usr/bin/python3").arg("-I").arg("-c")
+        // Do not cache these inline probes' imports in the shared measurement library:
+        // later fixtures copy it as authority and correctly refuse bytecode caches.
+        let output = std::process::Command::new("/usr/bin/python3").arg("-IB").arg("-c")
             .arg("import json,pathlib,sys; sys.path.insert(0,sys.argv[1]); from perflab import scenario_source; from perflab.values import canonical_digest; c=json.loads(pathlib.Path(sys.argv[2]).read_text()); p=sys.argv[3]; r=json.loads((pathlib.Path(p)/'source-request.json').read_text()); print(json.dumps(scenario_source.capture(c,p,canonical_digest(r))))")
             .arg(workspace().join("scripts/performance")).arg(&source_config).arg(&source_intent)
             .output().unwrap();
@@ -1043,7 +1085,7 @@ fn shipped_performance_loop_delivers_research_and_publishes_verified_improvement
     // the installed configuration. This fixture uses an unchanged frozen configuration.
     completion["request"]["configuration_digest"] = experiment["configuration_digest"].clone();
     write(&p.f.machine.join("completion.json"), &completion);
-    let checked = std::process::Command::new("/usr/bin/python3").arg("-I").arg("-c")
+    let checked = std::process::Command::new("/usr/bin/python3").arg("-IB").arg("-c")
         .arg("import pathlib,sys; sys.path.insert(0,sys.argv[1]); from perflab import contracts; contracts.read_json(pathlib.Path(sys.argv[2]).read_bytes(),'scenario-completion')")
         .arg(workspace().join("scripts/performance")).arg(p.f.machine.join("completion.json")).output().unwrap();
     assert!(
@@ -1065,7 +1107,7 @@ fn shipped_performance_loop_delivers_research_and_publishes_verified_improvement
         }
     }
     assert_eq!(done["status"], "succeeded", "{done:#}");
-    valid("scenario-run-v6.json", &done);
+    valid("scenario-run-v12.json", &done);
     let steps = done["frames"]["root"]["steps"].as_array().unwrap();
     let research = &steps[1]["outputs"]["result"]["value"];
     let id = research["result"]["outputs"]["report"]["artifact_ids"][0]
@@ -1399,7 +1441,7 @@ def observe(records):
     a.config['evidence_index'] = research_evidence.retain(evidence, current, 'evidence-index')
     a.config['evidence_index_digest'] = canonical_digest(current)
     text = lambda v: dict(type='text', value=v)
-    return a.request(dict(schema='af/scenario-adapter-request@4', method='observe',
+    return a.request(dict(schema='af/scenario-adapter-request@8', method='observe',
         operation='observe', destination='native:claw', intent_id=digest, input_digest=digest,
         inputs=dict(subject=text(canonical_digest(current)), revision=text(records[0]['compatibility']),
                     condition=text('bounded_evidence'))))
@@ -1701,4 +1743,1054 @@ fn performance_publication_proof_and_installed_adapter(
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+#[test]
+fn implementation_startup_admits_personal_native_pool_without_inference_and_reuses_unpaid_plans() {
+    let p = Performance::new();
+    let marker = p.home.join("unexpected-startup-inference");
+    let trap = format!(
+        r#"#!/usr/bin/python3 -B
+import json,sys,pathlib
+if sys.argv[1:]==['--version']:
+ print('codex-cli 0.121.0'); sys.exit(0)
+if sys.argv[1:2]==['app-server']:
+ for line in sys.stdin:
+  r=json.loads(line)
+  if r.get('id')==1: print(json.dumps({{'id':1,'result':{{}}}}),flush=True)
+  if r.get('id')==2: print(json.dumps({{'id':2,'result':{{'account':{{'type':'chatgpt','email':'scenario@example.invalid'}}}}}}),flush=True)
+ sys.exit(0)
+pathlib.Path({marker:?}).write_text('unexpected inference')
+sys.exit(99)
+"#,
+        marker = marker.display().to_string()
+    );
+    for name in ["codex", "claude"] {
+        let executable = p.f.machine.join("bin").join(name);
+        std::fs::write(&executable, crate::provider_cli::with_help(name, &trap)).unwrap();
+        std::fs::set_permissions(executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let original = p.bundle();
+    let template = original["definitions"]["performance"]["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|step| step["operation"]["template"]["document"]["kind"] == "implement")
+        .unwrap()["operation"]["template"]
+        .clone();
+    let template: af_scenario::template::Template = serde_json::from_value(template).unwrap();
+    let template_id = template.id().unwrap();
+    let limits =
+        json!({"max_tokens":template.max_tokens,"max_wall_ms":604800000,"max_dispatches":64});
+    let bundle: af_scenario::contract::Bundle = serde_json::from_value(json!({"schema":"af/scenario-bundle@11","root":"startup","definitions":{"startup":{
+        "schema":"af/scenario@11","inputs":{},"outputs":{"ok":"boolean"},"steps":[step("implement",json!({"kind":"fresh_task","template":template,"bindings":{}}),json!({}),"task")],
+        "result":{"ok":literal("boolean",json!(true))},"completion":[literal("boolean",json!(true))],
+        "authority":{"task_plans":[],"task_templates":[template_id],"grants":[],"decision_owners":[]},"limits":limits,"admission":null}}})).unwrap();
+    let models: std::collections::BTreeMap<_, _> = [
+        ("implementer", "gpt-6.1-sol", "medium"), ("bugs", "gpt-6.1-terra", "high"),
+        ("correctness", "gpt-6.1-terra", "high"), ("evaluator", "gpt-6.1-terra", "medium")
+    ].into_iter().map(|(role, model, effort)| (format!("owner-default/{role}"), json!({"provider":"codex-personal","provider_kind":"codex","model":model,"effort":effort}))).collect();
+    let scope = json!({"schema":"af/implementation-startup-scope@2", "owner":"owner", "recipe_id":af_scenario::contract::hash(&bundle).unwrap(),
+        "repo":p.f.repo, "task_state":p.task_state, "repository_id":template.repository_id, "source_commit":template.authority_commit,"source_content_digest":template.source_content_digest,
+        "repository":"owner/project","destination_repository_id":1,"actor_id":2,"actor_login":"owner","branch_prefix":"implementation/","base":"main","grants":[],
+        "templates":{template_id.clone():models},"limits":limits,"max_repairs":0,"expires_unix_ms":8_000_000_000_000_u64});
+    let mut policy: Value = serde_json::from_slice(&std::fs::read(&p.f.policy).unwrap()).unwrap();
+    policy["implementation_startup"] = scope.clone();
+    write(&p.f.policy, &policy);
+    write(&p.f.bundle, &serde_json::to_value(&bundle).unwrap());
+    let pin = p.cli(
+        &p.f.state,
+        &[
+            "scenario",
+            "validate",
+            "--file",
+            p.f.bundle.to_str().unwrap(),
+            "--authority",
+            p.f.policy.to_str().unwrap(),
+        ],
+    );
+    for id in ["startup-first", "startup-second"] {
+        let run = p.cli(
+            &p.f.state,
+            &[
+                "scenario",
+                "start",
+                id,
+                "--require-startup-scope",
+                "--file",
+                p.f.bundle.to_str().unwrap(),
+                "--authority",
+                p.f.policy.to_str().unwrap(),
+                "--inputs",
+                p.f.inputs.to_str().unwrap(),
+                "--confirm-pin",
+                pin["revision"].as_str().unwrap(),
+            ],
+        );
+        assert_eq!(run["pin"]["policy"]["implementation_startup"], scope);
+        assert_eq!(run["dispatches"], 0);
+        assert_eq!(run["fresh_tasks"], json!({}));
+    }
+    policy["implementation_startup"]["templates"][&template_id]["owner-default/implementer"]["effort"] =
+        json!("high");
+    write(&p.f.policy, &policy);
+    let changed_pin = p.cli(
+        &p.f.state,
+        &[
+            "scenario",
+            "validate",
+            "--file",
+            p.f.bundle.to_str().unwrap(),
+            "--authority",
+            p.f.policy.to_str().unwrap(),
+        ],
+    );
+    assert_ne!(changed_pin["revision"], pin["revision"]);
+    let refused = p.output(
+        &p.f.state,
+        &[
+            "scenario",
+            "start",
+            "wrong-effective-pool",
+            "--require-startup-scope",
+            "--file",
+            p.f.bundle.to_str().unwrap(),
+            "--authority",
+            p.f.policy.to_str().unwrap(),
+            "--inputs",
+            p.f.inputs.to_str().unwrap(),
+            "--confirm-pin",
+            changed_pin["revision"].as_str().unwrap(),
+        ],
+    );
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("pool differs"));
+    let startup_id = format!("startup-{}", template_id.trim_start_matches("sha256:"));
+    let planned = p.cli(&p.task_state, &["task", "show", &startup_id]);
+    assert_eq!(planned["attempts"], 0);
+    assert_eq!(planned["chargeable_tokens"], "0");
+    assert!(
+        !marker.exists(),
+        "startup admission must never invoke inference"
+    );
+}
+
+#[test]
+fn native_scoped_implementation_publishes_and_repairs_one_pr_without_a_decision() {
+    native_scoped_implementation(false, false, false, None, "native");
+}
+
+#[test]
+fn native_scoped_implementation_refuses_an_accepted_narrow_verifier() {
+    native_scoped_implementation(true, false, false, None, "native");
+}
+
+#[test]
+fn native_scoped_default30s_service_publishes_one_pr_with_exact_native_accounting() {
+    native_scoped_implementation(false, true, false, None, "native");
+}
+
+#[test]
+fn native_scoped_default30s_service_recovers_a_killed_driver_reservation() {
+    native_scoped_implementation(false, true, true, None, "native");
+}
+
+#[test]
+fn native_scoped_fresh_guards_refuse_boundaries_in_independent_runs() {
+    for fault in ["actor", "destination", "source", "base"] {
+        native_scoped_implementation(false, false, false, Some(fault), "native");
+    }
+}
+
+#[test]
+fn native_scoped_default30s_routes_gate_and_review_findings_through_two_fresh_repairs() {
+    native_scoped_implementation(false, true, false, None, "gate-review");
+}
+
+#[test]
+fn native_scoped_default30s_repairs_rejected_whole_goal_verification_before_publication() {
+    native_scoped_implementation(false, true, false, None, "verifier");
+}
+
+#[test]
+fn native_scoped_driver_recovers_transient_preflight_after_process_restart() {
+    native_scoped_implementation(false, true, true, None, "transport");
+}
+
+#[test]
+fn native_scoped_driver_stops_on_native_budget_exhaustion_with_exact_charge() {
+    native_scoped_implementation(false, true, false, None, "budget");
+}
+
+#[test]
+fn native_scoped_driver_retains_startup_scope_refusal_before_any_task_dispatch() {
+    native_scoped_implementation(false, true, false, None, "scope-startup");
+}
+
+#[test]
+fn native_scoped_driver_retains_a_credential_boundary_before_any_task_dispatch() {
+    native_scoped_implementation(false, true, false, None, "credentials");
+}
+
+fn native_scoped_implementation(
+    narrow: bool,
+    continuous: bool,
+    interrupt: bool,
+    fault: Option<&str>,
+    native_mode: &str,
+) {
+    let p = Performance::new();
+    std::fs::write(p.home.join("scoped-mode"), native_mode).unwrap();
+    let fixture: Value = serde_json::from_slice(include_bytes!(
+        "../../../../fixtures/scenarios/performance-candidate.json"
+    ))
+    .unwrap();
+    let steps = fixture["definitions"]["performance"]["steps"]
+        .as_array()
+        .unwrap();
+    let mut pins = Vec::new();
+    for kind in ["implement", "verification"] {
+        let mut document = steps
+            .iter()
+            .find(|s| s["operation"]["template"]["document"]["kind"] == kind)
+            .unwrap()["operation"]["template"]["document"]
+            .clone();
+        document["goal"] = json!("Complete the original whole implementation goal");
+        document["requirements"] = json!({"acceptance":["Keep the subject and construct the accepted candidate with independent whole-change verification"]});
+        if kind == "verification" {
+            document["base"] = json!({"commit":p.commit});
+        }
+        let file = p.f.machine.join(format!("scoped-{kind}.json"));
+        write(&file, &document);
+        let binding = p.bindings(kind);
+        let pin = p.cli(
+            &p.f.state,
+            &[
+                "scenario",
+                "template-pin",
+                "--file",
+                file.to_str().unwrap(),
+                "--repo",
+                p.f.repo.to_str().unwrap(),
+                "--task-state",
+                p.task_state.to_str().unwrap(),
+                "--authority-commit",
+                &p.commit,
+                "--bindings",
+                binding.to_str().unwrap(),
+            ],
+        );
+        write(&p.f.machine.join(format!("scoped-{kind}-pin.json")), &pin);
+        pins.push(pin);
+    }
+    let body = p.f.machine.join("body.md");
+    std::fs::write(&body, "Native scoped implementation fixture").unwrap();
+    std::fs::remove_file(&p.f.bundle).unwrap();
+    let output = std::process::Command::new("/usr/bin/python3")
+        .arg("-I")
+        .arg(workspace().join("scripts/scenario-impl.py"))
+        .args(["bundle", "--pin"])
+        .arg(p.f.machine.join("scoped-implement-pin.json"))
+        .arg("--verification-pin")
+        .arg(p.f.machine.join("scoped-verification-pin.json"))
+        .args([
+            "--destination",
+            "github:octo/project",
+            "--title",
+            "Native scoped change",
+            "--body-file",
+        ])
+        .arg(&body)
+        .args([
+            "--repairs",
+            if native_mode == "native" { "1" } else { "2" },
+            "--output",
+        ])
+        .arg(&p.f.bundle)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut authored: Value = serde_json::from_slice(&std::fs::read(&p.f.bundle).unwrap()).unwrap();
+    if narrow {
+        let mut document = pins[1]["template"]["document"].clone();
+        document["goal"] = json!("Verify only the new file, omitting the original whole goal");
+        let file = p.f.machine.join("narrow-verifier.json");
+        write(&file, &document);
+        let binding = p.bindings("verification");
+        let pin = p.cli(
+            &p.f.state,
+            &[
+                "scenario",
+                "template-pin",
+                "--file",
+                file.to_str().unwrap(),
+                "--repo",
+                p.f.repo.to_str().unwrap(),
+                "--task-state",
+                p.task_state.to_str().unwrap(),
+                "--authority-commit",
+                &p.commit,
+                "--bindings",
+                binding.to_str().unwrap(),
+            ],
+        );
+        pins[1] = pin;
+        let root = &mut authored["definitions"]["impl"];
+        root["authority"]["task_templates"] =
+            json!([pins[0]["template_id"], pins[1]["template_id"]]);
+        for step in root["steps"].as_array_mut().unwrap() {
+            if step["operation"]["kind"] == "fresh_task"
+                && step["operation"]["template"]["document"]["kind"] == "verification"
+            {
+                step["operation"]["template"] = pins[1]["template"].clone();
+            }
+        }
+    }
+    let bundle: af_scenario::contract::Bundle = serde_json::from_value(authored).unwrap();
+    assert!(bundle.definitions.values().all(|d| {
+        d.steps
+            .iter()
+            .all(|s| !matches!(s.operation, af_scenario::contract::Kind::Decision { .. }))
+    }));
+    let remote = p.f.machine.join("remote.git");
+    for args in [
+        vec!["init", "--bare", "-q", remote.to_str().unwrap()],
+        vec![
+            "-C",
+            p.f.repo.to_str().unwrap(),
+            "push",
+            "-q",
+            remote.to_str().unwrap(),
+            &format!("{}:refs/heads/main", p.commit),
+        ],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+    let (binary, binary_digest) = installed_native_reader(&p.f.machine);
+    let git = std::fs::canonicalize("/usr/bin/git").unwrap();
+    let state_dir = p.f.machine.join("publication");
+    let worktrees = p.f.machine.join("worktrees");
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&worktrees)
+        .unwrap();
+    let token = p.f.machine.join("token");
+    std::fs::write(&token, "controlled-test-token\n").unwrap();
+    let ssh = p.f.machine.join("ssh-config");
+    std::fs::write(&ssh, "Host github.com\n  BatchMode yes\n").unwrap();
+    for file in [&token, &ssh] {
+        std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let template = &pins[0]["template"];
+    let config = json!({"schema":"af/git-workspace-config@3", "repository":"octo/project", "repository_id":17,
+        "actor":{"id":7,"login":"owner"},"token_file":token,"state_dir":state_dir,"repo":p.f.repo,
+        "task_store":p.task_state,"worktree_root":worktrees,"base":"main","branch_prefix":"implementation",
+        "source_commit":p.commit,"source_content_digest":template["source_content_digest"],"af":binary,"af_digest":binary_digest,
+        "git":git,"git_digest":executable_digest(&git),"ssh_config":ssh,"ssh_config_digest":executable_digest(&ssh),
+        "author_name":"Owner","author_email":"owner@example.invalid","required_checks":[{"kind":"check","name":"CI","app_id":4}],
+        "reviewers":[],"publication_mode":"exclusive_owned_writer","operations":["prepare_candidate_v1","publish_implementation_pr_v1","observe","cleanup_workspace_v1"],
+        "implementation_state":p.f.state});
+    let config_file = p.f.machine.join("workspace-config.json");
+    write(&config_file, &config);
+    std::fs::set_permissions(&config_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let service_file = p.f.machine.join("remote-service.json");
+    let launcher = p.f.machine.join("scoped-adapter");
+    let helper = workspace().join("fixtures/scenarios/impl/native-publication.py");
+    let program = format!(
+        "#!/usr/bin/python3 -B\nimport sys,runpy\nsys.argv={:?}\nrunpy.run_path({:?},run_name='__main__')\n",
+        vec![
+            helper.display().to_string(),
+            workspace().display().to_string(),
+            config_file.display().to_string(),
+            remote.display().to_string(),
+            service_file.display().to_string()
+        ],
+        helper.display().to_string()
+    );
+    std::fs::write(&launcher, &program).unwrap();
+    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let root = &bundle.definitions[&bundle.root];
+    let models = |kind: &str| -> Value {
+        [ ("bugs", "gpt-6.1-terra", "high"), ("correctness", "gpt-6.1-terra", "high"), ("evaluator", "gpt-6.1-terra", "medium"), ("implementer", "gpt-6.1-sol", "medium") ].into_iter()
+        .filter(|(role,_,_)| kind == "implement" || *role != "implementer")
+        .map(|(role,model,effort)| (format!("owner-default/{role}"), json!({"provider":"codex-personal","provider_kind":"codex","model":model,"effort":effort}))).collect::<serde_json::Map<_,_>>().into()
+    };
+    let scope = json!({"schema":"af/implementation-startup-scope@2","owner":"owner","recipe_id":af_scenario::contract::hash(&bundle).unwrap(),
+        "repo":p.f.repo,"task_state":p.task_state,"repository_id":template["repository_id"],"source_commit":p.commit,"source_content_digest":template["source_content_digest"],
+        "repository":"octo/project","destination_repository_id":17,"actor_id":7,"actor_login":"owner","branch_prefix":"implementation/","base":"main",
+        "grants":root.authority.grants,"templates":{pins[0]["template_id"].as_str().unwrap():models("implement"),pins[1]["template_id"].as_str().unwrap():models("verification")},
+        "limits":root.limits,"max_repairs":if native_mode == "native" { 1 } else { 2 },"expires_unix_ms":8_000_000_000_000_u64});
+    let mut policy: Value = serde_json::from_slice(&std::fs::read(&p.f.policy).unwrap()).unwrap();
+    policy["task_templates"] = json!([pins[0]["template_id"], pins[1]["template_id"]]);
+    policy["decision_keys"] = json!({});
+    policy["implementation_startup"] = scope;
+    policy["adapters"] = json!({"workspace":{"executable":launcher,"digest":executable_digest(&launcher),"operations":config["operations"],
+        "destinations":["github:octo/project"],"max_wall_ms":30000,"max_output_bytes":65536}});
+    write(&p.f.policy, &policy);
+    let preflight = json!({"schema":"af/implementation-startup-preflight@2", "scope_id":af_scenario::contract::hash(&policy["implementation_startup"]).unwrap(), "scope":policy["implementation_startup"]});
+    let mut child = std::process::Command::new(&launcher)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::io::Write::write_all(
+        &mut child.stdin.take().unwrap(),
+        &serde_json::to_vec(&preflight).unwrap(),
+    )
+    .unwrap();
+    let checked = child.wait_with_output().unwrap();
+    assert!(
+        checked.status.success(),
+        "{}",
+        String::from_utf8_lossy(&checked.stderr)
+    );
+    write(
+        &service_file,
+        &json!({"prs":[], "posts":0, "pushes":0, "lose_post":true,
+        "faults":fault.into_iter().collect::<Vec<_>>(), "delayed_ci":continuous, "interrupt_checkpoint":interrupt, "first_checks_pass":native_mode != "native"}),
+    );
+    write(&p.f.bundle, &serde_json::to_value(&bundle).unwrap());
+    let pin = p.cli(
+        &p.f.state,
+        &[
+            "scenario",
+            "validate",
+            "--file",
+            p.f.bundle.to_str().unwrap(),
+            "--authority",
+            p.f.policy.to_str().unwrap(),
+        ],
+    );
+    let before = p.cli(&p.task_state, &["task", "list"]);
+    let refused = p.output(
+        &p.f.state,
+        &[
+            "scenario",
+            "start",
+            "incompatible",
+            "--file",
+            p.f.bundle.to_str().unwrap(),
+            "--authority",
+            p.f.policy.to_str().unwrap(),
+            "--inputs",
+            p.f.inputs.to_str().unwrap(),
+            "--confirm-pin",
+            pin["revision"].as_str().unwrap(),
+            "--poll-ms",
+            "60000",
+            "--execute",
+        ],
+    );
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("incompatible with publication step")
+    );
+    assert_eq!(p.cli(&p.task_state, &["task", "list"]), before);
+    assert!(!p.home.join("requests.jsonl").exists());
+    assert!(!p.home.join("calls.jsonl").exists());
+    let mut run = p.start_recorded(
+        "scoped",
+        &serde_json::to_value(&bundle).unwrap(),
+        !continuous,
+    );
+    if let Some(fault) = fault {
+        for _ in 0..2 {
+            run = p.cli(&p.f.state, &["scenario", "resume", "scoped"]);
+        }
+        let state: Value = serde_json::from_slice(&std::fs::read(&service_file).unwrap()).unwrap();
+        assert_eq!(state["refusals"], json!([fault]), "{state}; {run}");
+        assert_eq!(state["posts"], 0);
+        assert_eq!(state["pushes"], 0);
+        assert!(state.get("bad_guard_success").is_none());
+        assert_eq!(run["waiting"]["step"], "root/publish");
+        let cancelled = p.cli(
+            &p.f.state,
+            &[
+                "scenario",
+                "cancel",
+                "scoped",
+                "--reason",
+                "Independent boundary regression complete",
+            ],
+        );
+        assert_eq!(cancelled["status"], "cancelled");
+        return;
+    }
+    if matches!(native_mode, "budget" | "credentials" | "scope-startup") {
+        if matches!(native_mode, "credentials" | "scope-startup") {
+            let mut state: Value =
+                serde_json::from_slice(&std::fs::read(&service_file).unwrap()).unwrap();
+            if native_mode == "credentials" {
+                state["credentials_unavailable"] = json!(true);
+            } else {
+                state["actor_id"] = json!(99);
+            }
+            write(&service_file, &state);
+        }
+        let stopped = p.cli(&p.f.state, &["scenario", "drive", "scoped"]);
+        assert_eq!(stopped["status"], "failed", "{}", stopped["failure"]);
+        let driver = p.cli(&p.f.state, &["scenario", "driver-status", "scoped"]);
+        assert_eq!(driver["blocker"]["kind"], "boundary");
+        let state: Value = serde_json::from_slice(&std::fs::read(&service_file).unwrap()).unwrap();
+        assert_eq!(state["pushes"], 0);
+        assert_eq!(state["posts"], 0);
+        if native_mode == "budget" {
+            assert_eq!(stopped["fresh_tasks"].as_object().unwrap().len(), 1);
+            let target = stopped["fresh_tasks"]
+                .as_object()
+                .unwrap()
+                .values()
+                .next()
+                .unwrap();
+            let task = p.cli(
+                &p.task_state,
+                &["task", "show", target["task_id"].as_str().unwrap()],
+            );
+            let charge = task["chargeable_tokens"]
+                .as_str()
+                .unwrap()
+                .parse::<u64>()
+                .unwrap();
+            let reservation = stopped["task_charges"]
+                .as_object()
+                .unwrap()
+                .values()
+                .next()
+                .unwrap();
+            assert_eq!(reservation["charged"], charge);
+            assert!(charge > reservation["maximum"].as_u64().unwrap());
+            assert_eq!(reservation["unknown_usage"], false);
+        } else {
+            assert!(stopped["fresh_tasks"].as_object().unwrap().is_empty());
+            assert!(!p.home.join("requests.jsonl").exists());
+            assert!(!p.home.join("calls.jsonl").exists());
+        }
+        let resumed = p.cli(&p.f.state, &["scenario", "resume", "scoped"]);
+        assert_eq!(resumed["fresh_tasks"], stopped["fresh_tasks"]);
+        assert_eq!(resumed["task_charges"], stopped["task_charges"]);
+        return;
+    }
+    if continuous {
+        assert_eq!(run["status"], "ready");
+        assert!(run["fresh_tasks"].as_object().unwrap().is_empty());
+        run = drive_native_scoped(&p, &service_file, interrupt);
+        assert_native_scoped_accounting(&p, &run, &service_file);
+        return;
+    }
+    if narrow {
+        let publication = run["frames"]["root"]["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["step"] == "publish")
+            .unwrap();
+        assert!(
+            publication["diagnostic"]
+                .as_str()
+                .unwrap()
+                .contains("original whole goal and requirements"),
+            "{run}"
+        );
+        assert_eq!(run["fresh_tasks"].as_object().unwrap().len(), 2);
+        let remote: Value = serde_json::from_slice(&std::fs::read(&service_file).unwrap()).unwrap();
+        assert_eq!(remote["pushes"], 0);
+        assert_eq!(remote["posts"], 0);
+        return;
+    }
+    let publication = run["frames"]["root"]["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|step| step["step"] == "publish")
+        .unwrap();
+    let intent = publication["intents"].as_array().unwrap().last().unwrap()["id"]
+        .as_str()
+        .unwrap();
+    let request_file = state_dir.join(format!(
+        "{}.implementation.json",
+        intent.trim_start_matches("sha256:")
+    ));
+    let request: Value = serde_json::from_slice(&std::fs::read(&request_file).unwrap()).unwrap();
+    let proof = p.cli(
+        &p.f.state,
+        &[
+            "scenario",
+            "implementation-proof",
+            "--file",
+            request_file.to_str().unwrap(),
+        ],
+    );
+    valid("implementation-pr-proof-v1.json", &proof);
+    assert!(
+        proof["task_report"]
+            .as_str()
+            .unwrap()
+            .contains("<!-- af-task-report:v1 -->")
+    );
+    let live = p.cli(
+        &p.f.state,
+        &[
+            "scenario",
+            "implementation-proof",
+            "--file",
+            request_file.to_str().unwrap(),
+            "--live-only",
+        ],
+    );
+    valid("implementation-pr-live-v1.json", &live);
+    let negative = p.f.machine.join("negative-proof.json");
+    for fault in [
+        "unaccepted",
+        "foreign",
+        "stale",
+        "affinity",
+        "verifier",
+        "destination",
+        "missing",
+        "retired",
+    ] {
+        let mut wrong = request.clone();
+        match fault {
+            "unaccepted" => {
+                wrong["inputs"]["candidate"]["value"]["result"]["acceptance"] = json!("unsatisfied")
+            }
+            "foreign" => wrong["inputs"]["candidate"]["value"]["task_id"] = json!("foreign"),
+            "stale" => {
+                wrong["inputs"]["verification"]["value"]["result_id"] =
+                    json!(format!("sha256:{}", "0".repeat(64)))
+            }
+            "affinity" => {
+                wrong["inputs"]["candidate"]["value"]["result"]["outputs"]["snapshot"]["snapshot_id"] =
+                    proof["source_snapshot"].clone()
+            }
+            "verifier" => wrong["inputs"]["verification"] = wrong["inputs"]["candidate"].clone(),
+            "destination" => wrong["destination"] = json!("github:foreign/repository"),
+            "missing" => {
+                wrong["inputs"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("verification");
+            }
+            _ => wrong["schema"] = json!("af/scenario-adapter-request@5"),
+        }
+        write(&negative, &wrong);
+        let refused = p.output(
+            &p.f.state,
+            &[
+                "scenario",
+                "implementation-proof",
+                "--file",
+                negative.to_str().unwrap(),
+            ],
+        );
+        assert!(
+            !refused.status.success(),
+            "accepted {fault}: {}",
+            String::from_utf8_lossy(&refused.stdout)
+        );
+    }
+    let captured: af_scenario::state::Run = serde_json::from_value(run.clone()).unwrap();
+    let typed_request: af_scenario::adapter::Request =
+        serde_json::from_value(request.clone()).unwrap();
+    let world = af_scenario::store::World {
+        schema: "af/scenario-store@18".into(),
+        writer_version: env!("CARGO_PKG_VERSION").into(),
+        runs: std::collections::BTreeMap::from([(captured.id.clone(), captured.clone())]),
+        run_capacity: Default::default(),
+        drivers: Default::default(),
+        ants: Default::default(),
+        roadmaps: Default::default(),
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    af_scenario::implementation::authorize(&world, &typed_request, now, true).unwrap();
+    for fault in [
+        "expiry",
+        "cancel",
+        "fence",
+        "inactive",
+        "foreign-plan",
+        "deadline",
+    ] {
+        let mut changed = world.clone();
+        let changed = changed.runs.get_mut("scoped").unwrap();
+        match fault {
+            "expiry" => {
+                changed
+                    .pin
+                    .policy
+                    .implementation_startup
+                    .as_mut()
+                    .unwrap()
+                    .expires_unix_ms = now
+            }
+            "cancel" => {
+                changed.cancellation = Some(af_scenario::state::Cancellation {
+                    requested_unix_ms: now,
+                    reason: "owner cancellation".into(),
+                    child_requests: Default::default(),
+                })
+            }
+            "inactive" => changed.status = af_scenario::state::Status::Failed,
+            "foreign-plan" => changed.fresh_tasks.clear(),
+            other => {
+                let progress = changed
+                    .frames
+                    .get_mut("root")
+                    .unwrap()
+                    .steps
+                    .iter_mut()
+                    .find(|s| s.step == "publish")
+                    .unwrap();
+                if other == "deadline" {
+                    progress.deadline_unix_ms = now;
+                } else {
+                    progress.intents.last_mut().unwrap().phase = af_scenario::state::Phase::Done;
+                }
+            }
+        }
+        let refused = af_scenario::store::World {
+            runs: std::collections::BTreeMap::from([("scoped".into(), changed.clone())]),
+            ..world.clone()
+        };
+        assert!(
+            af_scenario::implementation::authorize(&refused, &typed_request, now, true).is_err(),
+            "live scope accepted {fault}"
+        );
+    }
+    run = drive_native_scoped(&p, &service_file, false);
+    assert_native_scoped_accounting(&p, &run, &service_file);
+    let remote_state: Value =
+        serde_json::from_slice(&std::fs::read(&service_file).unwrap()).unwrap();
+    assert_eq!(remote_state["posts"], 1, "{remote_state}");
+    assert_eq!(remote_state["pushes"], 2, "{remote_state}");
+    assert_eq!(remote_state["patches"], 1, "{remote_state}");
+    let body = remote_state["prs"][0]["body"].as_str().unwrap();
+    assert_eq!(body.matches("<!-- af-task-report:v1 -->").count(), 1);
+    for target in run["fresh_tasks"].as_object().unwrap().values() {
+        assert!(body.contains(target["task_id"].as_str().unwrap()), "{body}");
+    }
+    assert_eq!(run["fresh_tasks"].as_object().unwrap().len(), 4);
+    assert!(
+        run["frames"]["root"]["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["decision"].is_null())
+    );
+    let resumed = p.cli(&p.f.state, &["scenario", "resume", "scoped"]);
+    assert_eq!(resumed["fresh_tasks"], run["fresh_tasks"]);
+    let again: Value = serde_json::from_slice(&std::fs::read(&service_file).unwrap()).unwrap();
+    assert_eq!(again["posts"], 1);
+    assert_eq!(again["pushes"], 2);
+}
+
+fn assert_native_scoped_accounting(p: &Performance, run: &Value, service_file: &Path) {
+    let service: Value = serde_json::from_slice(&std::fs::read(service_file).unwrap()).unwrap();
+    assert_eq!(service["posts"], 1, "{service}");
+    let mode = std::fs::read_to_string(p.home.join("scoped-mode")).unwrap();
+    let ci_repair = mode == "native";
+    // The transport regression isolates the interrupted publication of one independently
+    // verified candidate. The existing native/gate/review modes retain all repair coverage.
+    let expected_tasks = if mode == "transport" { 2 } else { 4 };
+    assert_eq!(
+        service["pushes"],
+        if ci_repair { 2 } else { 1 },
+        "{service}"
+    );
+    assert_eq!(
+        service["patches"].as_u64().unwrap_or(0),
+        u64::from(ci_repair),
+        "{service}"
+    );
+    assert_eq!(service["prs"].as_array().unwrap().len(), 1);
+    assert_eq!(service["prs"][0]["merged"], false);
+    assert_eq!(
+        run["fresh_tasks"].as_object().unwrap().len(),
+        expected_tasks
+    );
+    let outcomes = run["frames"]["root"]["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["outputs"]["result"]["value"]["outcome"].as_str())
+        .collect::<Vec<_>>();
+    let expected = match mode.as_str() {
+        "transport" => vec!["verified", "verified"],
+        "gate-review" => vec!["gate_failed", "changes_requested", "verified", "verified"],
+        "verifier" => vec!["verified", "changes_requested", "verified", "verified"],
+        _ => vec!["verified", "verified", "verified", "verified"],
+    };
+    assert_eq!(outcomes, expected);
+    for entry in std::fs::read_dir(p.f.machine.join("publication")).unwrap() {
+        let path = entry.unwrap().path();
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "source")
+        {
+            let exported: Value =
+                serde_json::from_slice(&std::fs::read(path.join("source.json")).unwrap()).unwrap();
+            valid("git-candidate-source-v2.json", &exported);
+            if !matches!(mode.as_str(), "native" | "transport") {
+                assert_ne!(
+                    exported["source_snapshot"], exported["task_source_snapshot"],
+                    "a native repair exports its whole original baseline, separately from its immediate source"
+                );
+            }
+        }
+    }
+    let mut total = 0u64;
+    let mut model_calls = 0u64;
+    for target in run["fresh_tasks"].as_object().unwrap().values() {
+        let task = p.cli(
+            &p.task_state,
+            &["task", "show", target["task_id"].as_str().unwrap()],
+        );
+        let charge = task["chargeable_tokens"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        total += charge;
+        let settled = task["execution_records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| &r["record"])
+            .filter(|r| r["kind"] == "settled")
+            .collect::<Vec<_>>();
+        let mut ids = std::collections::BTreeSet::new();
+        let ledger = settled
+            .iter()
+            .map(|r| {
+                assert!(ids.insert(r["attempt_id"].as_str().unwrap()));
+                let tokens = r["charged_tokens"]
+                    .as_str()
+                    .unwrap()
+                    .parse::<u64>()
+                    .unwrap();
+                assert!(
+                    tokens == 0 || tokens == 5,
+                    "Unexpected native fixture charge: {r}"
+                );
+                if tokens == 5 {
+                    model_calls += 1;
+                }
+                tokens
+            })
+            .sum::<u64>();
+        assert_eq!(
+            charge, ledger,
+            "native cumulative charge must equal distinct settled Attempt receipts"
+        );
+        assert!(task.get("unknown_usage_attempts").is_none(), "{task}");
+    }
+    let charges = run["task_charges"].as_object().unwrap();
+    assert_eq!(charges.len(), expected_tasks);
+    assert_eq!(
+        charges
+            .values()
+            .map(|c| c["charged"].as_u64().unwrap())
+            .sum::<u64>(),
+        total
+    );
+    assert!(charges.values().all(|c| c["unknown_usage"] == false));
+    assert!(total > 0);
+    let requests = std::fs::read_to_string(p.home.join("requests.jsonl")).unwrap();
+    assert!(requests.lines().count() as u64 <= model_calls);
+    let calls = std::fs::read_to_string(p.home.join("calls.jsonl")).unwrap();
+    assert_eq!(calls.lines().count() as u64, model_calls);
+    assert_eq!(total, model_calls * 5);
+    let status = p.cli(&p.f.state, &["scenario", "driver-status", "scoped"]);
+    valid("scenario-driver-v2.json", &status);
+    assert_eq!(status["poll_ms"], 30_000);
+    assert_eq!(
+        status["frontiers"].as_object().unwrap().len(),
+        if ci_repair { 2 } else { 1 }
+    );
+    assert!(status["acknowledged"].as_array().unwrap().len() <= 4);
+    assert!(status["resumes"].as_u64().unwrap() < 32);
+    for step in run["frames"]["root"]["steps"].as_array().unwrap() {
+        assert!(step["decision"].is_null());
+        if step["step"].as_str().unwrap().starts_with("publish") {
+            assert_eq!(
+                step["deadline_unix_ms"].as_u64().unwrap()
+                    - step["started_unix_ms"].as_u64().unwrap(),
+                120_000
+            );
+            assert_eq!(step["status"], "succeeded");
+        }
+    }
+}
+
+fn drive_native_scoped(p: &Performance, service_file: &Path, interrupt: bool) -> Value {
+    struct Service(std::process::Child);
+    impl Drop for Service {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let spawn = || {
+        Service(
+            crate::common::af()
+                .current_dir(&p.f.repo)
+                .env("HOME", &p.home)
+                .env("PATH", &p.path)
+                .env("AF_PROVIDERS_FILE", p.home.join("providers.toml"))
+                .args(["scenario", "drive", "scoped", "--json", "--state"])
+                .arg(&p.f.state)
+                .stdout(std::fs::File::create(p.f.machine.join("driver-stdout")).unwrap())
+                .stderr(std::fs::File::create(p.f.machine.join("driver-stderr")).unwrap())
+                .spawn()
+                .unwrap(),
+        )
+    };
+    let mut service = spawn();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(240);
+    let mut interrupted = false;
+    let run = loop {
+        if interrupt && !interrupted && service_file.with_extension("barrier").exists() {
+            let before = p.cli(&p.f.state, &["scenario", "driver-status", "scoped"]);
+            service.0.kill().unwrap();
+            service.0.wait().unwrap();
+            let retained = p.cli(&p.f.state, &["scenario", "driver-status", "scoped"]);
+            assert_eq!(
+                retained, before,
+                "killing the CLI must not refund its reservation"
+            );
+            let before_run = p.cli(&p.f.state, &["scenario", "show", "scoped"]);
+            let transport =
+                std::fs::read_to_string(p.home.join("scoped-mode")).unwrap() == "transport";
+            if transport {
+                let mut state: Value =
+                    serde_json::from_slice(&std::fs::read(service_file).unwrap()).unwrap();
+                state["transport_unavailable"] = json!(true);
+                write(service_file, &state);
+            }
+            service = spawn();
+            if std::fs::read_to_string(p.home.join("scoped-mode")).unwrap() == "transport" {
+                let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+                let retained = loop {
+                    let status = p.cli(&p.f.state, &["scenario", "driver-status", "scoped"]);
+                    if status["preflight_wait"] == "transport" {
+                        break status;
+                    }
+                    assert!(service.0.try_wait().unwrap().is_none());
+                    assert!(std::time::Instant::now() < until, "{status}");
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                };
+                let waiting = p.cli(&p.f.state, &["scenario", "show", "scoped"]);
+                assert!(before_run["dispatches"].as_u64().unwrap() > 0);
+                for key in ["execution_id", "dispatches", "fresh_tasks", "task_charges"] {
+                    assert_eq!(
+                        waiting[key], before_run[key],
+                        "preflight must not duplicate native work: {key}"
+                    );
+                }
+                assert_eq!(
+                    retained["resumes"].as_u64().unwrap(),
+                    before["resumes"].as_u64().unwrap() + 1
+                );
+                service.0.kill().unwrap();
+                service.0.wait().unwrap();
+                assert_eq!(
+                    p.cli(&p.f.state, &["scenario", "driver-status", "scoped"]),
+                    retained
+                );
+                // A standalone restart before the due tick neither dispatches nor refunds the reservation.
+                p.cli(&p.f.state, &["scenario", "drive", "scoped", "--once"]);
+                assert_eq!(
+                    p.cli(&p.f.state, &["scenario", "driver-status", "scoped"]),
+                    retained
+                );
+                let mut state: Value =
+                    serde_json::from_slice(&std::fs::read(service_file).unwrap()).unwrap();
+                assert_eq!(state["posts"], 0);
+                assert_eq!(state["pushes"], 0);
+                state["transport_unavailable"] = json!(false);
+                write(service_file, &state);
+                service = spawn();
+            }
+            interrupted = true;
+        }
+        let run = p.cli(&p.f.state, &["scenario", "show", "scoped"]);
+        assert_ne!(
+            run["status"],
+            "failed",
+            "{run}; {}",
+            std::fs::read_to_string(p.f.machine.join("driver-stderr")).unwrap()
+        );
+        if run["waiting"]["step"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("root/prepare"))
+        {
+            let fixture: Value =
+                serde_json::from_slice(&std::fs::read(service_file).unwrap()).unwrap();
+            assert!(
+                fixture.get("last_error").is_none(),
+                "native preparation fixture failed: {}",
+                fixture["last_error"]
+            );
+        }
+        if run["status"] == "waiting" && run["waiting"]["step"] == "root/merged" {
+            break run;
+        }
+        assert!(
+            service.0.try_wait().unwrap().is_none(),
+            "service exited: {}",
+            std::fs::read_to_string(p.f.machine.join("driver-stderr")).unwrap()
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "driver did not settle: status={}, waiting={}, fixture={}",
+            run["status"],
+            run["waiting"],
+            std::fs::read_to_string(service_file).unwrap_or_default()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    assert_eq!(interrupted, interrupt);
+    let cancelled = p.cli(
+        &p.f.state,
+        &[
+            "scenario",
+            "cancel",
+            "scoped",
+            "--reason",
+            "Human merge remains external",
+        ],
+    );
+    assert_eq!(cancelled["status"], "cancelled");
+    let retained = p.cli(&p.f.state, &["scenario", "driver-status", "scoped"]);
+    // Cancellation must settle without consuming or refunding a dispatch reservation.
+    while service.0.try_wait().unwrap().is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "cancelled driver did not settle: retained={}, stderr={}",
+            p.cli(&p.f.state, &["scenario", "driver-status", "scoped"]),
+            std::fs::read_to_string(p.f.machine.join("driver-stderr")).unwrap()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert_eq!(
+        p.cli(&p.f.state, &["scenario", "driver-status", "scoped"]),
+        retained,
+        "cancellation shutdown must preserve the retained driver reservation"
+    );
+    run
 }

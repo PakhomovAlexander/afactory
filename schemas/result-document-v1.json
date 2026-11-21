@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:result-document:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "observed_unix_ms",
+    "stale_after_ms",
+    "blocks"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/result-document@1"
+    },
+    "observed_unix_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8640000000000
+    },
+    "stale_after_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8640000000000
+    },
+    "blocks": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "content"
+            ],
+            "properties": {
+              "kind": {
+                "const": "markdown"
+              },
+              "content": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "title",
+              "columns",
+              "rows"
+            ],
+            "properties": {
+              "kind": {
+                "const": "table"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 65536
+              },
+              "columns": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 32,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 65536
+                }
+              },
+              "rows": {
+                "type": "array",
+                "maxItems": 512,
+                "items": {
+                  "type": "array",
+                  "maxItems": 32
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "title": "result-document v1",
+  "description": "Semantic validation additionally enforces row width, native numeric admission/canonical formatting, terminal control refusal and a 64 KiB document bound."
+}

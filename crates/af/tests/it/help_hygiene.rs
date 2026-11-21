@@ -330,7 +330,7 @@ fn json_help_names_the_documents_that_carry_a_state() {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
         .join("schemas");
-    // `af/task-list-entry@4` -> `task-list-entry-v4.json`.
+    // `af/task-list-entry@5` -> `task-list-entry-v5.json`.
     let file = |document: &str| {
         let (kind, version) = document.trim_start_matches("af/").split_once('@').unwrap();
         schemas.join(format!("{kind}-v{version}.json"))
@@ -369,5 +369,36 @@ fn json_help_names_the_documents_that_carry_a_state() {
                 "omits"
             }
         );
+    }
+}
+
+#[test]
+fn task_help_separates_product_from_consuming_project_policy() {
+    for topic in ["config", "task-file"] {
+        let help = out(&af(&["help", topic]));
+        assert!(
+            help.contains("Illustrative") || help.contains("illustrative"),
+            "{help}"
+        );
+        for owner in [
+            "kimi",
+            "Terra",
+            "astra",
+            "issue-internal",
+            "8000000",
+            "43200000",
+        ] {
+            assert!(!help.contains(owner), "{owner}: {help}");
+        }
+        if topic == "task-file" {
+            for guidance in [
+                "consuming project's captured",
+                "af task plan --file task.json --json",
+                "af task explain TASK_ID --tree",
+                "af catalog test --help",
+            ] {
+                assert!(help.contains(guidance), "{help}");
+            }
+        }
     }
 }

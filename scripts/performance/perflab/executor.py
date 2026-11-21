@@ -935,7 +935,7 @@ class Journal:
         env = environment(c)
         if cohort is not None:
             contracts.validate_cohort(cohort)
-            require(cohort["schema"] == "af.perf-local-cohort/1" and c["backend"] == "local",
+            require(cohort["schema"] == "af.perf-local-cohort/2" and c["backend"] == "local",
                     "local dispatch accepts only a separately declared local cohort")
             require(cohort["dispatch"] == {"journal_id": c["journal_id"], "machine_id": c["machine_id"],
                     "environment_digest": env, "producer_digest": produced}, "local cohort dispatch authority mismatch")

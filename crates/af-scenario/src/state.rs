@@ -172,6 +172,15 @@ impl Run {
     ) -> Result<Self> {
         name(&id)?;
         pin.validate(host)?;
+        if pin.policy.implementation_startup.is_some() {
+            crate::driver::validate_run_schedule(&pin, &limits, crate::driver::DEFAULT_POLL_MS)?;
+        }
+        super::implementation::preflight(host, &pin)?;
+        let now = if pin.policy.implementation_startup.is_some() {
+            host.authorization_time()?
+        } else {
+            now
+        };
         limits.validate()?;
         require(
             now > 0
@@ -196,7 +205,7 @@ impl Run {
             outputs: None,
         };
         Ok(Self {
-            schema: "af/scenario-run@6".into(),
+            schema: "af/scenario-run@12".into(),
             id,
             execution_id: execution_id()?,
             pin,
@@ -215,9 +224,11 @@ impl Run {
             fresh_tasks: BTreeMap::new(),
         })
     }
-    pub fn tokens(&self) -> Result<u64> {
-        self.task_charges.values().try_fold(0_u64, |n, c| {
-            n.checked_add(c.committed())
+    /// Exact committed usage (recorded charges plus unresolved reservations).
+    /// Native overruns can exceed u64 across Tasks; durable individual charges stay u64.
+    pub fn tokens(&self) -> Result<u128> {
+        self.task_charges.values().try_fold(0_u128, |n, c| {
+            n.checked_add(u128::from(c.committed()))
                 .ok_or_else(|| "Scenario accounting overflow".into())
         })
     }
@@ -226,11 +237,11 @@ impl Run {
             .as_ref()
             .map_or(self.limits.max_tokens, |c| c.allowance)
     }
-    pub fn accounted_tokens(&self) -> Result<u64> {
+    pub fn accounted_tokens(&self) -> Result<u128> {
         let used = self.tokens()?;
         Ok(
             if self.goal_claim.is_some() && self.task_charges.values().any(TaskCharge::uncertain) {
-                used.max(self.token_allowance())
+                used.max(u128::from(self.token_allowance()))
             } else {
                 used
             },
@@ -238,7 +249,7 @@ impl Run {
     }
     pub fn validate(&self, host: &dyn crate::Host) -> Result<()> {
         require(
-            self.schema == "af/scenario-run@6" && af_contracts::is_digest(&self.execution_id),
+            self.schema == "af/scenario-run@12" && af_contracts::is_digest(&self.execution_id),
             "Unsupported Run version",
         )?;
         name(&self.id)?;
@@ -261,7 +272,7 @@ impl Run {
                     .checked_add(self.limits.max_wall_ms)
                     .is_some_and(|n| n <= af_contracts::json::SAFE_INTEGER_MAX as u64)
                 && self.dispatches <= self.limits.max_dispatches
-                && (self.tokens()? <= self.token_allowance()
+                && (self.tokens()? <= u128::from(self.token_allowance())
                     || matches!(self.status, Status::Failed | Status::Cancelled)),
             "Corrupt Run limits, time or accounting",
         )?;
@@ -376,7 +387,7 @@ impl Run {
                         Kind::Task { .. } | Kind::CiDiagnosis { .. } | Kind::FreshTask { .. }
                     ) {
                         for value in p.outputs.values() {
-                            if let Datum::Task(receipt) = value {
+                            if let Some(receipt) = super::task_output::accepted_receipt(value)? {
                                 super::task_output::validate(p, receipt)?;
                             }
                         }
@@ -468,6 +479,7 @@ impl Run {
             }
             require(found, "Fresh Task plan has no durable intent")?;
         }
+        let mut implementation_reservations = 0_u64;
         for (key, charge) in &self.task_charges {
             require(
                 paths.contains(&charge.step)
@@ -491,6 +503,9 @@ impl Run {
                     "Task charge identity differs",
                 )?,
                 Kind::FreshTask { template, .. } => {
+                    if template.document["kind"] == "implement" {
+                        implementation_reservations += 1;
+                    }
                     let progress = frame
                         .steps
                         .iter()
@@ -506,6 +521,12 @@ impl Run {
                 }
                 _ => return Err("Charge belongs to a non-Task step".into()),
             }
+        }
+        if let Some(scope) = &self.pin.policy.implementation_startup {
+            require(
+                implementation_reservations <= u64::from(scope.max_repairs) + 1,
+                "Shared implementation repair allowance exhausted",
+            )?;
         }
         require(
             self.status != Status::Succeeded || self.frames["root"].outputs.is_some(),
@@ -605,8 +626,10 @@ impl Run {
             Kind::FreshTask { .. } | Kind::Task { .. } => {
                 let target = super::template::targets(self, p, step)
                     .ok_or("Completed fresh Task lacks its recorded native plan")?;
-                let Some(Datum::Task(receipt)) = p.outputs.get("result") else {
-                    return Err("Task completion has no typed receipt".into());
+                let receipt = match p.outputs.get("result") {
+                    Some(Datum::Task(receipt)) => receipt,
+                    Some(Datum::TaskOutcome(outcome)) => &outcome.receipt,
+                    _ => return Err("Task completion has no typed receipt".into()),
                 };
                 require(
                     receipt.task_id == target.task_id
@@ -722,7 +745,12 @@ impl Run {
                 .find(|p| &p.step == step && p.complete() && p.skipped.is_none())
                 .and_then(|p| p.outputs.get(port)),
         }
-        .ok_or("Binding refers to missing, skipped or incomplete evidence")?;
+        .ok_or_else(|| match binding {
+            Binding::Step { step, port } => format!(
+                "Binding refers to missing, skipped or incomplete evidence: {path}/{step}.{port}"
+            ),
+            _ => "Binding refers to missing, skipped or incomplete evidence".into(),
+        })?;
         Ok(value.clone())
     }
     /// Resolve the producing Decision invocation, following only the pinned port bindings.
@@ -1015,7 +1043,14 @@ impl Run {
             intent.input_digest == input_digest,
             "Intent inputs changed across recovery",
         )?;
-        self.reserve_dispatch(&full)?;
+        // Re-observing the same scoped Wait is an idle poll, not a new dispatch.
+        // Resume reservations and wall/step deadlines still bound it.
+        if !(self.pin.policy.implementation_startup.is_some()
+            && matches!(step.operation, Kind::Wait { .. })
+            && intent.phase == Phase::Uncertain)
+        {
+            self.reserve_dispatch(&full)?;
+        }
         let p = &mut self.frames.get_mut(path).unwrap().steps[i];
         p.intents = intents;
         p.status = Status::Running;
@@ -1073,10 +1108,36 @@ impl Run {
     }
     fn reserve_charge(&mut self, path: &str, key: String, maximum: u64) -> Result<()> {
         if !self.task_charges.contains_key(&key) {
+            if let Some(scope) = &self.pin.policy.implementation_startup {
+                let repair_step = |full: &str| -> bool {
+                    full.rsplit_once('/')
+                        .and_then(|(frame, id)| {
+                            self.frames.get(frame).and_then(|f| {
+                                self.pin.bundle.definitions[&f.scenario]
+                                    .steps
+                                    .iter()
+                                    .find(|s| s.id == id)
+                            })
+                        })
+                        .is_some_and(|s| {
+                            matches!(&s.operation, Kind::FreshTask { template, .. } if template.document["kind"] == "implement")
+                        })
+                };
+                if repair_step(path) {
+                    require(
+                        self.task_charges
+                            .values()
+                            .filter(|c| repair_step(&c.step))
+                            .count()
+                            <= scope.max_repairs as usize,
+                        "Shared implementation repair allowance exhausted",
+                    )?;
+                }
+            }
             require(
                 self.tokens()?
-                    .checked_add(maximum)
-                    .is_some_and(|n| n <= self.token_allowance()),
+                    .checked_add(u128::from(maximum))
+                    .is_some_and(|n| n <= u128::from(self.token_allowance())),
                 "Scenario token allowance exhausted",
             )?;
             // Check every containing Scenario's own allowance; root accounting is shared once.
@@ -1086,15 +1147,17 @@ impl Run {
                         .task_charges
                         .values()
                         .filter(|c| c.step.starts_with(&format!("{frame_path}/")))
-                        .try_fold(0_u64, |n, c| {
-                            n.checked_add(c.committed())
+                        .try_fold(0_u128, |n, c| {
+                            n.checked_add(u128::from(c.committed()))
                                 .ok_or("Child accounting overflow")
                         })?;
                     require(
-                        used.checked_add(maximum).is_some_and(|n| {
-                            n <= self.pin.bundle.definitions[&frame.scenario]
-                                .limits
-                                .max_tokens
+                        used.checked_add(u128::from(maximum)).is_some_and(|n| {
+                            n <= u128::from(
+                                self.pin.bundle.definitions[&frame.scenario]
+                                    .limits
+                                    .max_tokens,
+                            )
                         }),
                         "Child token allowance exhausted",
                     )?;
@@ -1131,7 +1194,7 @@ impl Run {
             Kind::Task { .. } | Kind::CiDiagnosis { .. } | Kind::FreshTask { .. }
         ) {
             for value in outputs.values() {
-                if let Datum::Task(receipt) = value {
+                if let Some(receipt) = super::task_output::accepted_receipt(value)? {
                     captured.extend(super::task_output::capture(host, self, receipt)?);
                 }
             }

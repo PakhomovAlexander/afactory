@@ -1,0 +1,29 @@
+name: Release namespace proof
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/release-namespace-proof.yml'
+      - '.github/workflows/release.yml'
+      - 'scripts/prepare-linux-release-smoke.sh'
+      - 'scripts/performance/perflab/account_isolation.py'
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-namespace-proof-${{ github.event.pull_request.number }}${{ contains(fromJSON('["labeled","unlabeled"]'), github.event.action) && github.event.label.name != 'nobuild' && format('-ignored-{0}', github.run_id) || '' }}
+  cancel-in-progress: true
+
+jobs:
+  namespace:
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'nobuild') && (!contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || github.event.label.name == 'nobuild') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Prove the release runner's private account namespace
+        run: bash scripts/prepare-linux-release-smoke.sh

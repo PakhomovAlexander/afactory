@@ -55,6 +55,49 @@ class EvidenceTests(unittest.TestCase):
         result.update(category='product_bug', rationale='Exact assertion evidence', **changes)
         return result
 
+    def test_service_failed_job_without_completion_is_retained_incomplete_and_alert_only(self):
+        for timing in ('absent', None, 'not-a-time', '2099-01-01T00:00:00Z'):
+            with self.subTest(timing=timing):
+                self.journal.close()
+                self.journal = C.Journal(Path(self.temp.name) / ('timing-' + str(timing) + '.sqlite'))
+                self.addCleanup(self.journal.close)
+                raw = service()
+                job, = raw['jobs']  # No green sibling can expose the unknown timestamp.
+                job.pop('completed_at')
+                if timing != 'absent':
+                    job['completed_at'] = timing
+                original = copy.deepcopy(raw)
+                observed = self.observe(raw)
+                self.assertEqual(raw, original)
+                self.assertFalse(observed['complete'])
+                self.assertTrue(any('completion timestamp' in reason for reason in observed['omissions']))
+                failure, = observed['failures']
+                self.assertEqual(failure['occurrence_id'], C.occurrence_id(raw['repository'], job))
+                self.assertEqual(failure['conclusion'], 'failure')
+                state = C.loads(self.journal.db.execute('SELECT document FROM signatures').fetchone()[0])
+                scope, = state['scopes']
+                self.assertIsNone(scope['completed_at'])
+                self.assertTrue(scope['completion_unknown'])
+                for category in ('transient', 'product_bug', 'test_bug'):
+                    diagnosis = self.diagnosis(observed)
+                    diagnosis['category'] = category
+                    result, invoked = C.diagnose(C.digest(observed), observed, failure, diagnosis)
+                    self.assertFalse(invoked)
+                    self.assertEqual(result['category'], 'unknown')
+                    self.assertEqual(C.remedy(observed, failure, diagnosis,
+                        small_repair=True, eligible_gate_occurrences=2), (1, 'alert_only'))
+                self.assertEqual(self.observe(raw), observed)  # Exact evidence replay stays incomplete.
+        valid = self.observe(service())
+        self.assertTrue(valid['complete'], valid['omissions'])
+        failure, = valid['failures']
+        diagnosis = self.diagnosis(valid)
+        _, invoked = C.diagnose(C.digest(valid), valid, failure, diagnosis)
+        self.assertTrue(invoked)
+        self.assertEqual(C.remedy(valid, failure, diagnosis, small_repair=True), (6, 'repair_intended'))
+        state = C.loads(self.journal.db.execute('SELECT document FROM signatures').fetchone()[0])
+        self.assertEqual(state['scopes'][0]['completed_at'], service()['jobs'][0]['completed_at'])
+        self.assertFalse(state['scopes'][0]['completion_unknown'])
+
     def test_ci_observe_v1_uses_bounded_gets_for_exact_heads_and_run_attempts(self):
         fixture = json.loads((FIXTURE / 'github-service.json').read_text())
         raw = service()
@@ -265,7 +308,7 @@ class EvidenceTests(unittest.TestCase):
                     C.structural(message, 'ci-health-notification')
                     inputs = {key: value['value'] for key, value in step['inputs'].items() if value['source'] == 'literal'}
                     inputs['subject'] = {'type': 'text', 'value': C.digest(snapshot['repository'])}
-                    request = {'schema': 'af/scenario-adapter-request@4', 'operation': 'notify', 'method': 'reconcile',
+                    request = {'schema': 'af/scenario-adapter-request@8', 'operation': 'notify', 'method': 'reconcile',
                         'intent_id': C.digest(step['id']), 'input_digest': C.digest(inputs),
                         'destination': 'fixture:ci-health', 'inputs': inputs}
                     self.assertLessEqual(len(C.canonical(request)), 65536)
@@ -312,7 +355,7 @@ class EvidenceTests(unittest.TestCase):
                         self.assertNotIn('deterministic_diagnosis', body)
                     else:
                         C.validate_diagnosis(body['deterministic_diagnosis'], C.digest(snapshot), snapshot)
-                    request = {'schema': 'af/scenario-adapter-request@4', 'operation': 'notify', 'method': 'execute',
+                    request = {'schema': 'af/scenario-adapter-request@8', 'operation': 'notify', 'method': 'execute',
                         'intent_id': C.digest(step['id']), 'input_digest': C.digest(inputs),
                         'destination': 'fixture:ci-health', 'inputs': inputs}
                     self.assertLessEqual(len(C.canonical(request)), 65536)
@@ -390,7 +433,7 @@ class EvidenceTests(unittest.TestCase):
                     category={'type': 'text', 'value': 'unknown'},
                     signature_id={'type': 'text', 'value': selected['signature_id']},
                     diagnosis_settlement={'type': 'text', 'value': C.canonical(transport).decode()})
-                request = {'schema': 'af/scenario-adapter-request@4', 'operation': 'notify', 'method': 'execute',
+                request = {'schema': 'af/scenario-adapter-request@8', 'operation': 'notify', 'method': 'execute',
                     'intent_id': C.digest(step['id']), 'input_digest': C.digest(inputs),
                     'destination': 'fixture:ci-health', 'inputs': inputs}
                 old = copy.deepcopy(request)
@@ -487,14 +530,14 @@ class EvidenceTests(unittest.TestCase):
                     inputs = {key: {'type': 'text', 'value': value} for key, value in {
                         'subject': C.digest(snapshot['repository']) if operation == 'notify' else snapshot['repository'],
                         'revision': snapshot['source_sha'], **values}.items()}
-                    request = {'schema': 'af/scenario-adapter-request@4', 'operation': operation,
+                    request = {'schema': 'af/scenario-adapter-request@8', 'operation': operation,
                         'method': method, 'intent_id': C.digest(identity), 'input_digest': C.digest(inputs),
                         'destination': 'fixture:ci-health', 'inputs': inputs}
                     result = subprocess.run([str(executable)], input=C.canonical(request), capture_output=True, check=True)
                     response = C.loads(result.stdout)
                     self.assertEqual(response['intent_id'], request['intent_id'])
                     self.assertEqual(response['input_digest'], request['input_digest'])
-                    self.assertEqual(response['schema'], 'af/scenario-adapter-response@1')
+                    self.assertEqual(response['schema'], 'af/scenario-adapter-response@3')
                     return response
 
                 observed = invoke('observe', 'observe', 'observe', condition='ci_observe_v1:' + C.digest(snapshot))
@@ -582,7 +625,7 @@ class EvidenceTests(unittest.TestCase):
         for step in findings:
             inputs = {key: value['value'] for key, value in step['inputs'].items() if value['source'] == 'literal'}
             inputs['subject'] = {'type': 'text', 'value': C.digest(snapshot['repository'])}
-            request = {'schema': 'af/scenario-adapter-request@4', 'operation': 'notify', 'method': 'reconcile',
+            request = {'schema': 'af/scenario-adapter-request@8', 'operation': 'notify', 'method': 'reconcile',
                 'intent_id': C.digest(step['id']), 'input_digest': C.digest(inputs),
                 'destination': 'fixture:ci-health', 'inputs': inputs}
             self.assertLess(len(C.canonical(request)), 65536)
@@ -603,7 +646,7 @@ class EvidenceTests(unittest.TestCase):
         request_inputs = {'subject': module.scope_inputs(long_scope)['repository'],
                           'revision': {'type': 'text', 'value': long_scope['source_sha']},
                           'body': {'type': 'text', 'value': body}}
-        request = {'schema': 'af/scenario-adapter-request@4', 'operation': 'notify', 'method': 'reconcile',
+        request = {'schema': 'af/scenario-adapter-request@8', 'operation': 'notify', 'method': 'reconcile',
             'intent_id': C.digest('long-scope'), 'input_digest': C.digest(request_inputs),
             'destination': 'fixture:ci-health', 'inputs': request_inputs}
         self.assertGreater(len(C.canonical(request)), 16384)
@@ -758,6 +801,68 @@ class EvidenceTests(unittest.TestCase):
             with self.subTest(state=state), self.assertRaisesRegex(ValueError, 'observer state'):
                 C.Journal(path)
             self.assertEqual(path.read_bytes(), before)
+
+    def test_signature_state_v5_writer_reader_schema_parity_and_old_versions_fail_closed(self):
+        raw = service()
+        unknown = {**raw['jobs'][0], 'release_blocking': True, 'completed_at': None}
+        self.observe(dict(raw, jobs=[unknown]))
+        def record():
+            return C.loads(self.journal.db.execute('SELECT document FROM signatures').fetchone()[0])
+        state = record()
+        self.assertEqual(state['schema'], 'af.ci-signature-state/5')
+        scope, = state['scopes']
+        self.assertIsNone(scope['completed_at'])
+        self.assertTrue(scope['completion_unknown'])
+        self.assertEqual(scope['unknown_occurrences'], [C.occurrence_id(raw['repository'], unknown)])
+        schema = C.loads((ROOT / 'schemas/ci-signature-state-v5.json').read_bytes())
+        validator = type(C._VALIDATOR)()
+        validator.schemas[schema['$id']] = schema
+        self.assertEqual(validator.errors(state, schema['$id']), [])
+        C.structural(state, 'ci-signature-state')
+
+        known = {**unknown, 'job_id': 404, 'run_attempt': 2,
+                 'completed_at': '2026-11-09T03:00:00Z'}
+        self.observe(dict(raw, jobs=[known]))
+        state = record()
+        scope, = state['scopes']
+        self.assertEqual(scope['completed_at'], known['completed_at'])
+        self.assertTrue(scope['completion_unknown'])
+        self.assertEqual(validator.errors(state, schema['$id']), [])
+
+        # The current writer's unknown set and actual maximum survive a journal reopen.
+        self.journal.close()
+        self.journal = C.Journal(Path(self.temp.name) / 'observer.sqlite')
+        self.addCleanup(self.journal.close)
+        recovered = {**unknown, 'completed_at': '2026-11-09T01:00:00Z'}
+        self.observe(dict(raw, jobs=[recovered]))
+        state = record()
+        scope, = state['scopes']
+        self.assertEqual(scope['completed_at'], known['completed_at'])
+        self.assertFalse(scope['completion_unknown'])
+        self.assertEqual(scope['unknown_occurrences'], [])
+        C.structural(state, 'ci-signature-state')
+        self.assertEqual(validator.errors(state, schema['$id']), [])
+
+        invalid = [{**state, 'schema': 'af.ci-signature-state/' + str(version)}
+                   for version in range(1, 5)]
+        for field, value in (('completed_at', 'not-a-time'), ('completion_unknown', None),
+                             ('unknown_occurrences', ['not-an-identity'])):
+            invalid.append({**state, 'scopes': [{**scope, field: value}]})
+        missing = {**scope}
+        del missing['completed_at']
+        invalid.append({**state, 'scopes': [missing]})
+        for malformed in invalid:
+            with self.subTest(state=malformed):
+                self.assertTrue(validator.errors(malformed, schema['$id']))
+                with self.assertRaises(ValueError):
+                    C.structural(malformed, 'ci-signature-state')
+                with self.journal.db:
+                    self.journal.db.execute('UPDATE signatures SET document=?',
+                                            (C.canonical(malformed).decode(),))
+                before = self.journal.db.execute('SELECT * FROM signatures').fetchall()
+                with self.assertRaises(ValueError):
+                    self.journal.fold(raw['repository'], known, raw['captured_at'])
+                self.assertEqual(self.journal.db.execute('SELECT * FROM signatures').fetchall(), before)
 
     def test_capture_receipt_and_recurrence_folds_roll_back_together_on_refusal(self):
         captured = self.observe()
@@ -977,7 +1082,87 @@ class EvidenceTests(unittest.TestCase):
         self.assertTrue(any(f['release_blocking'] for f in observed['failures']))
         self.assertEqual(self.observe(dict(raw, jobs=[other, success])), observed)
 
-    def test_recovered_completion_replaces_synthetic_unknown_and_closes_only_when_proven(self):
+    def test_recovered_earlier_unknown_never_lowers_later_known_completion_or_loses_release_blockers(self):
+        raw = service()
+        raw['nightly_receipt']['conclusion'] = 'success'
+        raw['release_pr'] = {'number': 7, 'head_sha': raw['source_sha']}
+        unknown = {**raw['jobs'][0], 'release_blocking': True, 'completed_at': None}
+        later = {**unknown, 'job_id': 404, 'run_attempt': 2,
+                 'completed_at': '2026-11-09T03:00:00Z'}
+        self.observe(dict(raw, jobs=[unknown, later]))
+
+        # Recovery has an earlier execution time, although it arrives in a later capture.
+        recovered = {**unknown, 'completed_at': '2026-11-09T01:00:00Z'}
+        older_success = {**later, 'job_id': 405, 'run_attempt': 3, 'conclusion': 'success',
+                         'completed_at': '2026-11-09T02:00:00Z'}
+        raw['captured_at'] = '2026-11-09T05:00:00Z'
+        observed = self.observe(dict(raw, jobs=[recovered, older_success]))
+        self.assertEqual(sorted(f['job_id'] for f in observed['failures']), [201, 404])
+        self.assertTrue(all(f['release_blocking'] for f in observed['failures']))
+        self.assertFalse(observed['complete'])
+        self.assertTrue(any('green closure' in reason for reason in observed['omissions']))
+        self.assertEqual(self.observe(dict(raw, jobs=[recovered, older_success])), observed)
+
+        # A strictly later actual completion still closes the whole scope.
+        success = {**older_success, 'job_id': 406, 'run_attempt': 4,
+                   'completed_at': '2026-11-09T04:00:00Z'}
+        closed = self.observe(dict(raw, jobs=[success]))
+        self.assertEqual(closed['failures'], [])
+        self.assertTrue(closed['complete'], closed['omissions'])
+
+    def test_unknown_release_head_cannot_block_other_head_closure_or_lose_its_alert(self):
+        raw = service()
+        raw['nightly_receipt']['conclusion'] = 'success'
+        raw['release_pr'] = {'number': 7, 'head_sha': 'b' * 40}
+        main = {**raw['jobs'][0], 'completed_at': '2026-11-09T01:00:00Z'}
+        release = {**raw['jobs'][0], 'head_sha': 'b' * 40, 'job_id': 404,
+                   'run_attempt': 2, 'release_blocking': True}
+        self.observe(dict(raw, jobs=[main, release]))
+        success = {**main, 'conclusion': 'success', 'job_id': 405, 'run_attempt': 3,
+                   'completed_at': '2026-11-09T02:00:00Z'}
+        # Re-observation must find main's scope, even though release was appended last.
+        raw['captured_at'] = '2026-11-09T05:00:00Z'
+        observed = self.observe(dict(raw, jobs=[main, success]))
+        self.assertEqual([f['job_id'] for f in observed['failures']], [release['job_id']])
+        failure, = observed['failures']
+        self.assertEqual(failure['head_sha'], release['head_sha'])
+        self.assertEqual(failure['job_id'], release['job_id'])
+        self.assertTrue(failure['release_blocking'])
+        self.assertFalse(observed['complete'])
+        self.assertEqual(self.observe(dict(raw, jobs=[main, success])), observed)
+
+        # Another success on the unknown release head still has no closure authority.
+        release_success = {**success, 'head_sha': release['head_sha'], 'job_id': 406,
+                           'completed_at': '2026-11-09T03:00:00Z'}
+        retained = self.observe(dict(raw, jobs=[release_success]))
+        self.assertEqual(retained['failures'], observed['failures'])
+        self.assertFalse(retained['complete'])
+
+    def test_expired_scope_unknown_timing_cannot_poison_new_failure_on_a_retained_signature(self):
+        raw = service()
+        raw['nightly_receipt']['conclusion'] = 'success'
+        raw['release_pr'] = {'number': 7, 'head_sha': 'b' * 40}
+        release = {**raw['jobs'][0], 'head_sha': 'b' * 40, 'release_blocking': True}
+        self.observe(dict(raw, jobs=[release]))
+        raw['captured_at'] = '2026-11-10T04:00:00Z'
+        main = {**raw['jobs'][0], 'job_id': 404, 'completed_at': '2026-11-10T03:00:00Z'}
+        self.observe(dict(raw, jobs=[main]))
+
+        # The signature is live through main, but release's scope is exactly 14 days old.
+        raw['captured_at'] = '2026-11-23T04:00:00Z'
+        current = {**release, 'job_id': 405, 'run_attempt': 2,
+                   'completed_at': '2026-11-23T01:00:00Z'}
+        success = {**current, 'job_id': 406, 'run_attempt': 3, 'conclusion': 'success',
+                   'completed_at': '2026-11-23T02:00:00Z'}
+        observed = self.observe(dict(raw, jobs=[current, success]))
+        self.assertEqual([f['job_id'] for f in observed['failures']], [main['job_id']])
+        self.assertFalse(observed['failures'][0]['release_blocking'])
+        self.assertFalse(observed['complete'])
+        state = C.loads(self.journal.db.execute('SELECT document FROM signatures').fetchone()[0])
+        self.assertEqual([s['head_sha'] for s in state['scopes']], [main['head_sha']])
+        self.assertEqual(state['scopes'][0]['completed_at'], main['completed_at'])
+
+    def test_recovered_completion_closes_only_when_proven(self):
         raw = service()
         failure = copy.deepcopy(raw['jobs'][0])
         failure['completed_at'] = None
@@ -1359,7 +1544,7 @@ class ProductionTests(unittest.TestCase):
         snapshot, _ = self.install_occurrence()
         inputs = {key: {'type': 'text', 'value': value} for key, value in {
             'subject': 'octo/project', 'revision': 'a' * 40, 'condition': 'ci_observe_v1:' + C.digest(snapshot)}.items()}
-        return {'schema': 'af/scenario-adapter-request@4', 'method': 'observe', 'operation': 'observe',
+        return {'schema': 'af/scenario-adapter-request@8', 'method': 'observe', 'operation': 'observe',
             'destination': self.options['destination'], 'intent_id': C.digest('observe'),
             'input_digest': C.digest(inputs), 'inputs': inputs, **changes}
 
@@ -1580,6 +1765,12 @@ class ProductionTests(unittest.TestCase):
             summary = self.P.receipt(self.receipt, 'octo/project', 'a' * 40,
                                     self.options['since'], self.options['captured_at'])
             self.assertEqual(summary['conclusion'], conclusion)
+        for stage in ('notification', 'pruning', 'foreign'):
+            self.receipt.write_bytes(C.canonical({**self.publish,
+                'failures': [{'stage': stage, 'reason': 'retained current-main publication failure'}]}))
+            summary = self.P.receipt(self.receipt, 'octo/project', 'a' * 40,
+                                    self.options['since'], self.options['captured_at'])
+            self.assertEqual(summary['conclusion'], 'failure')
         self.receipt.unlink()
         self.receipt.symlink_to(self.root / 'missing')
         with self.assertRaises(ValueError):
@@ -1748,7 +1939,7 @@ class ProductionTests(unittest.TestCase):
                     inputs = {'subject': {'type': 'text', 'value': C.digest(snapshot['repository'])},
                         'revision': {'type': 'text', 'value': snapshot['source_sha']},
                         'body': step['inputs']['body']['value']}
-                    notify = {'schema': 'af/scenario-adapter-request@4', 'method': 'execute', 'operation': 'notify',
+                    notify = {'schema': 'af/scenario-adapter-request@8', 'method': 'execute', 'operation': 'notify',
                         'destination': 'fixture:ci-health', 'intent_id': C.digest(step['id']),
                         'input_digest': C.digest(inputs), 'inputs': inputs}
                     reported = subprocess.run([str(executable)], input=C.canonical(notify), capture_output=True, check=True)
@@ -1969,7 +2160,7 @@ class ProductionTests(unittest.TestCase):
         inputs = {key: {'type': 'text', 'value': value} for key, value in {
             'subject': 'octo/project', 'revision': 'a' * 40,
             'condition': 'ci_observe_v1:' + C.digest(snapshot)}.items()}
-        return {'schema': 'af/scenario-adapter-request@4', 'method': 'observe', 'operation': 'observe',
+        return {'schema': 'af/scenario-adapter-request@8', 'method': 'observe', 'operation': 'observe',
                 'destination': self.options['destination'], 'intent_id': C.digest('observe'),
                 'input_digest': C.digest(inputs), 'inputs': inputs}
 
@@ -2174,6 +2365,33 @@ class ProductionTests(unittest.TestCase):
         self.assertEqual([f['job_id'] for f in snapshot['failures']], [403])
         self.assertFalse(snapshot['complete'])
         self.assertTrue(any('green closure' in reason for reason in snapshot['omissions']))
+
+    def test_production_failed_job_without_completion_and_no_green_sibling_is_incomplete(self):
+        jobs_key = 'repos/octo/project/actions/runs/301/attempts/2/jobs?per_page=100'
+        for timing in ('absent', None, 'not-a-time', '2099-01-01T00:00:00Z'):
+            with self.subTest(timing=timing):
+                routes = production_routes()
+                job, = routes[jobs_key]['jobs']
+                job.pop('completed_at')
+                if timing != 'absent':
+                    job['completed_at'] = timing
+                # Check normalization itself, before the independent service guard.
+                collected = self.P.collect(self.P.Github('octo/project', opener=Transport(routes)),
+                    captured_at=self.options['captured_at'], main_ref='main', since=self.options['since'],
+                    nightly_receipt=str(self.receipt), release_pr=7)
+                failed, = [j for j in collected['jobs'] if j['conclusion'] == 'failure']
+                self.assertIsNone(failed.get('completed_at'))
+                self.assertTrue(any('completion timestamp' in reason for reason in collected['omissions']))
+                snapshot = self.P.observe(self.options, opener=Transport(routes))
+                self.assertFalse(snapshot['complete'])
+                failure, = snapshot['failures']
+                self.assertEqual((failure['run_id'], failure['run_attempt'], failure['job_id']), (301, 2, 403))
+                self.assertTrue(failure['release_blocking'])
+                self.assertEqual(failure['conclusion'], 'failure')
+                self.assertEqual(self.P.observe(self.options, opener=Transport(routes)), snapshot)
+        valid = self.P.observe(self.options, opener=Transport(production_routes()))
+        self.assertTrue(valid['complete'], valid['omissions'])
+        self.assertEqual(valid['failures'][0]['job_id'], 403)
 
     def test_malformed_or_future_completion_cannot_abort_or_close_release_failure(self):
         prefix = 'repos/octo/project/'

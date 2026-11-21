@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:implementation-startup-ready:2",
+  "title": "Implementation startup ready v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "scope_id"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/implementation-startup-ready@2"
+    },
+    "scope_id": {
+      "$ref": "urn:af:schema:scenario:11#/$defs/digest"
+    }
+  }
+}

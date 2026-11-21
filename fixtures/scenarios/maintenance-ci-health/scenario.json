@@ -1,9 +1,9 @@
 {
-  "schema": "af/scenario-bundle@6",
+  "schema": "af/scenario-bundle@11",
   "root": "maintenance-ci-health",
   "definitions": {
     "maintenance-ci-health": {
-      "schema": "af/scenario@6",
+      "schema": "af/scenario@11",
       "admission": null,
       "inputs": {
         "repository": "text",

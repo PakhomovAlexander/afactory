@@ -744,6 +744,9 @@ fn main() {
 fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
     let command = project::resolve_task_workspace(command)?;
     match command {
+        cli::TaskCommand::Wake { command, inspect } => {
+            task_commands::wake::execute(command, &inspect)
+        }
         cli::TaskCommand::Start {
             file,
             execute,
@@ -869,9 +872,10 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
         cli::TaskCommand::Run {
             task_id,
             detach: true,
+            wake_route,
             inspect,
             ..
-        } => task_commands::runs::detach(&task_id, &inspect),
+        } => task_commands::runs::detach(&task_id, &inspect, wake_route.as_deref()),
         // `--from` conflicts with `--detach` at parse time (cli.rs), so the detach arm never
         // sees a `--from`; the continue arm precedes the foreground arm, which matches `..`.
         cli::TaskCommand::Run {
@@ -1120,7 +1124,13 @@ fn runs_task_work(command: &cli::Command) -> bool {
             scenario::ScenarioCommand::Start { execute: true, .. }
                 | scenario::ScenarioCommand::Resume { .. }
         ),
-        cli::Command::Ant { command } => matches!(command, scenario::AntCommand::Tick { .. }),
+        cli::Command::Ant { command } => matches!(
+            command,
+            scenario::AntCommand::Tick { .. }
+                | scenario::AntCommand::Scheduler {
+                    command: scenario::SchedulerCommand::Run { .. }
+                }
+        ),
         _ => false,
     }
 }
@@ -1184,6 +1194,14 @@ fn collects_after_run(command: &cli::Command) -> bool {
 
 fn needs_interrupt_handling(command: &cli::Command) -> bool {
     runs_task_work(command)
+        || matches!(
+            command,
+            cli::Command::Ant {
+                command: scenario::AntCommand::Output { .. }
+            } | cli::Command::Scenario {
+                command: scenario::ScenarioCommand::Output { .. }
+            }
+        )
         || matches!(
             command,
             cli::Command::Provider {

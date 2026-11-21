@@ -3,7 +3,7 @@ use super::*;
 use af_scenario::contract::TaskReceipt;
 use af_scenario::performance::{Proof, ProofRequest};
 
-fn accepted(
+pub(super) fn accepted(
     receipt: &TaskReceipt,
     repo: &Path,
     state: &Path,
@@ -11,7 +11,11 @@ fn accepted(
 ) -> Result<OpenedTask, String> {
     let opened = open_task(&receipt.task_id, repo, Some(state))?;
     let (result, view) = opened.view()?;
-    if opened.task.revision_id != receipt.revision_id
+    let charged = opened.task.execution.as_ref().map_or(Ok(0), |e| {
+        u64::try_from(e.budget.committed_tokens()).map_err(|_| "Publication charge exceeds u64")
+    })?;
+    if receipt.charged_tokens != charged
+        || opened.task.revision_id != receipt.revision_id
         || opened.task.plan_id.as_deref() != Some(&receipt.plan_id)
         || !matches!(&opened.task.phase, TaskPhaseV1::Finished { result_id } if result_id == &receipt.result_id)
         || result.as_ref() != Some(&receipt.result)
@@ -57,7 +61,7 @@ fn accepted(
     Ok(opened)
 }
 
-fn source_tree(opened: &OpenedTask, port: &ArtifactInputV1) -> Result<String, String> {
+pub(super) fn source_tree(opened: &OpenedTask, port: &ArtifactInputV1) -> Result<String, String> {
     let [id] = port.artifact_ids.as_slice() else {
         return Err("Publication needs one exact SourceTree artifact".into());
     };
@@ -70,7 +74,7 @@ fn source_tree(opened: &OpenedTask, port: &ArtifactInputV1) -> Result<String, St
     }
     Ok(snapshot)
 }
-fn source(opened: &OpenedTask) -> Result<String, String> {
+pub(super) fn source(opened: &OpenedTask) -> Result<String, String> {
     source_tree(
         opened,
         opened
@@ -83,7 +87,7 @@ fn source(opened: &OpenedTask) -> Result<String, String> {
 }
 
 /// Require both the bound Snapshot and exact native predecessor Task/result/artifact receipt.
-fn predecessor(
+pub(super) fn predecessor(
     opened: &OpenedTask,
     receipt: &TaskReceipt,
     expected: &str,

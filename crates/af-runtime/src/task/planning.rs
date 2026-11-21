@@ -253,6 +253,13 @@ impl TaskOperatorHost for PlanningTaskHost<'_> {
     }
 }
 impl TaskDomain for PlanningTaskHost<'_> {
+    fn admit_worker_signature(
+        &self,
+        signature: &af_graph::task::OperatorSignature,
+    ) -> Result<(), String> {
+        self.inner.admit_worker_signature(signature)
+    }
+
     fn validate_retry(
         &self,
         cas: &Cas,

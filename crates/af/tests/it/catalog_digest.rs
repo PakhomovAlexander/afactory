@@ -92,6 +92,19 @@ fn every_published_package_pin_reproduces() {
     let own = assert_reproduces(&root, &root.join(".af/task-catalog.toml"));
     assert!(own >= 10, "AF's catalog publishes {own} pins");
 
+    assert_eq!(
+        assert_reproduces(
+            &root.join("fixtures/native-catalog-contracts"),
+            &root.join("fixtures/native-catalog-contracts/.af/task-catalog.toml")
+        ),
+        24
+    );
+    for catalog in [
+        "fixtures/issue-workflows/catalog.toml",
+        "fixtures/issue-triage/catalog.toml",
+    ] {
+        assert_reproduces(&root, &root.join(catalog));
+    }
     let fixtures = root.join("fixtures/task-runtime");
     let mut checked = 0;
     for entry in std::fs::read_dir(&fixtures).unwrap() {
@@ -218,7 +231,10 @@ fn recorded_codex_models() -> Vec<serde_json::Value> {
             .collect::<Vec<_>>(),
         ["gpt-6.1-sol", "gpt-6.1-terra"]
     );
-    models.clone()
+    // The historical projection selects only the two 6.1 models. Audit replacement roles
+    // against the complete authenticated raw observation, which also lists Sol and Astra.
+    let raw: serde_json::Value = serde_json::from_slice(RAW_CODEX_MODELS).unwrap();
+    raw["providers"][0]["models"].as_array().unwrap().clone()
 }
 
 #[test]
@@ -312,18 +328,81 @@ fn assert_recorded_codex_support(
     );
 }
 
-/// Audit every shipped Task package, including packages not used by today's default, against
-/// the supported Codex catalog. Judges share Terra, while source/document authors use Sol.
+/// Exact approved replacement Workers, including personal accounts and independent roles.
 #[test]
 fn every_shipped_model_worker_uses_supported_61_models_and_independent_judges() {
     use af_pipeline_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
-
     let root = workspace();
     let catalog: toml::Value =
         toml::from_str(&std::fs::read_to_string(root.join(".af/task-catalog.toml")).unwrap())
             .unwrap();
+    let expected = BTreeMap::from([
+        ("backlog/triage-author", ("gpt-6.1-sol", "medium", "author")),
+        (
+            "backlog/triage-verifier",
+            ("gpt-6.1-terra", "medium", "verify"),
+        ),
+        (
+            "issue-internal/implementer",
+            ("gpt-6.1-sol", "medium", "implement"),
+        ),
+        (
+            "issue-internal/researched-implementer",
+            ("gpt-6.1-sol", "medium", "implement"),
+        ),
+        ("issue-internal/kimi", ("k3.1-pro", "high", "implement")),
+        (
+            "issue-internal/kimi-implementer",
+            ("k3.1-pro", "high", "implement"),
+        ),
+        (
+            "issue-internal/kimi-researcher",
+            ("k3.1-pro", "high", "author"),
+        ),
+        (
+            "issue-internal/kimi-challenger",
+            ("k3.1-pro", "high", "verify"),
+        ),
+        (
+            "issue-internal/design-acceptor",
+            ("gpt-6.1-sol", "medium", "verify"),
+        ),
+        (
+            "issue-internal/codex-light-evaluator",
+            ("gpt-6-astra", "medium", "evaluate"),
+        ),
+        ("issue-internal/bugs", ("gpt-6.1-terra", "high", "review")),
+        (
+            "issue-internal/correctness",
+            ("gpt-6.1-terra", "high", "review"),
+        ),
+        (
+            "issue-internal/evaluator",
+            ("gpt-6-astra", "medium", "evaluate"),
+        ),
+        (
+            "issue-internal/light-evaluator",
+            ("gpt-6.1-sol", "medium", "evaluate"),
+        ),
+        (
+            "issue-internal/experiment-evaluator",
+            ("gpt-6-astra", "medium", "evaluate"),
+        ),
+        (
+            "issue-internal/investigator",
+            ("gpt-6.1-sol", "high", "author"),
+        ),
+        (
+            "issue-internal/designer",
+            ("gpt-6-astra", "medium", "author"),
+        ),
+        (
+            "issue-internal/report-verifier",
+            ("gpt-6.1-terra", "high", "verify"),
+        ),
+    ]);
     let models = recorded_codex_models();
-    let mut checked = 0;
+    let mut checked = std::collections::BTreeSet::new();
     for (name, pin) in catalog["packages"].as_table().unwrap() {
         let package = root.join(pin["path"].as_str().unwrap());
         let path = package.join("worker.toml");
@@ -336,71 +415,57 @@ fn every_shipped_model_worker_uses_supported_61_models_and_independent_judges() 
         assert_eq!(
             pin["version"].as_str(),
             Some(worker.version.as_str()),
-            "{}",
-            worker.name
+            "{name}"
         );
         assert_eq!(
             pin["digest"].as_str().unwrap(),
-            af_pipeline_config::lock::package_digest(&worker.name, &package).unwrap(),
-            "{}",
-            worker.name
+            af_pipeline_config::lock::package_digest(name, &package).unwrap(),
+            "{name}"
         );
-        let TaskWorkerRunner::Model {
-            provider_kind,
-            model,
-            effort,
-        } = &worker.runner
-        else {
-            continue;
-        };
-        if provider_kind == "pi" {
-            assert_eq!(worker.name, "pi-light/implementer");
-            assert_eq!((model.as_str(), effort.as_str()), ("k3", "high"));
-            assert_eq!(catalog["providers"][&worker.name].as_str(), Some("pi-kimi"));
-            continue;
-        }
-        assert_eq!(provider_kind, "codex", "{}", worker.name);
-        let author = worker
-            .signature
-            .roles
-            .iter()
-            .any(|role| role == "implement" || role == "author");
+        let &(model, effort, role) = expected
+            .get(name.as_str())
+            .unwrap_or_else(|| panic!("unapproved Worker {name}"));
         assert_eq!(
-            model,
-            if author {
-                "gpt-6.1-sol"
-            } else {
-                "gpt-6.1-terra"
-            },
-            "{}",
-            worker.name
+            worker.signature.roles,
+            std::collections::BTreeSet::from([role.to_owned()]),
+            "{name}"
         );
-        if worker
-            .signature
-            .roles
-            .iter()
-            .any(|role| role == "implement")
-        {
-            // Owner performance authority already uses Sol/medium; only the replaced
-            // Claude implementers require high effort.
-            assert_eq!(
-                effort,
-                if worker.name == "owner-default/implementer" {
-                    "medium"
-                } else {
-                    "high"
-                },
-                "{}",
-                worker.name
-            );
+        let pi = matches!(
+            name.as_str(),
+            "issue-internal/kimi"
+                | "issue-internal/kimi-implementer"
+                | "issue-internal/kimi-researcher"
+                | "issue-internal/kimi-challenger"
+        );
+        assert_eq!(
+            worker.runner,
+            TaskWorkerRunner::Model {
+                provider_kind: if pi { "pi" } else { "codex" }.into(),
+                model: model.into(),
+                effort: effort.into(),
+            },
+            "{name}"
+        );
+        assert_eq!(
+            catalog["providers"][name].as_str(),
+            Some(if pi { "pi-personal" } else { "codex-personal" }),
+            "{name}"
+        );
+        if !pi {
+            assert_recorded_codex_support(&models, name, model, effort);
         }
-        if let Some(provider) = catalog["providers"].get(worker.name.as_str()) {
-            assert_eq!(provider.as_str(), Some("codex-main"), "{}", worker.name);
-        }
-        assert_recorded_codex_support(&models, &worker.name, model, effort);
-        checked += 1;
+        checked.insert(name.as_str());
     }
-    assert!(checked >= 25, "audited only {checked} model Workers");
+    assert_eq!(checked, expected.keys().copied().collect());
+    assert_eq!(
+        catalog["providers"]
+            .as_table()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>(),
+        checked
+    );
     assert_eq!(
         catalog["independence"]["distinct_models"].as_bool(),
         Some(true)
@@ -422,9 +487,12 @@ fn selected_light_workers() -> (
         toml::from_str(&std::fs::read_to_string(root.join(".af/task-catalog.toml")).unwrap())
             .unwrap();
     let package = |name: &str| root.join(catalog["packages"][name]["path"].as_str().unwrap());
+    let config: toml::Value =
+        toml::from_str(&std::fs::read_to_string(root.join(".af/af.toml")).unwrap()).unwrap();
+    let selected = config["task"]["defaults"]["pipeline"].as_str().unwrap();
+    assert_eq!(selected, "bugfix/light-kimi-terra-sol");
     let pipeline = af_pipeline_config::task::parse_task_pipeline(
-        &std::fs::read_to_string(package("default-light/implementation").join("pipeline.toml"))
-            .unwrap(),
+        &std::fs::read_to_string(package(selected).join("pipeline.toml")).unwrap(),
     )
     .unwrap();
     let workers = LIGHT_ROLES
@@ -473,22 +541,31 @@ fn validate_small_issue_rubrics(
         else {
             return Err(format!("{slot_name}: must select a model Worker"));
         };
-        let expected_model = if role == "implement" {
-            "gpt-6.1-sol"
-        } else {
-            "gpt-6.1-terra"
+        let (expected_provider, expected_model, expected_effort) = match role {
+            "implement" => ("pi", "k3.1-pro", "high"),
+            "review" => ("codex", "gpt-6.1-terra", "high"),
+            "evaluate" => ("codex", "gpt-6.1-sol", "medium"),
+            _ => unreachable!(),
         };
-        if provider_kind != "codex" || model != expected_model || effort != "high" {
+        if provider_kind != expected_provider
+            || model != expected_model
+            || effort != expected_effort
+        {
             return Err(format!(
-                "{slot_name}: expected codex {expected_model}/high, got {provider_kind} {model}/{effort}"
+                "{slot_name}: expected {expected_provider} {expected_model}/{expected_effort}, got {provider_kind} {model}/{effort}"
             ));
         }
-        expected.push(format!("{label}: `{model}` {effort}"));
+        let display_model = if provider_kind == "pi" {
+            format!("Pi `kimi-coding/{model}`")
+        } else {
+            format!("`{model}`")
+        };
+        expected.push(format!("{label}: {display_model} {effort}"));
     }
     let expected = expected.join("; ");
     for path in [
-        ".af/task-packages/backlog/triage-author/instructions.md",
-        ".af/task-packages/backlog/triage-verifier/instructions.md",
+        "fixtures/issue-workflows/task-packages/backlog/triage-author/instructions.md",
+        "fixtures/issue-workflows/task-packages/backlog/triage-verifier/instructions.md",
         "fixtures/issue-triage/task-packages/backlog/triage-author/instructions.md",
         "fixtures/issue-triage/task-packages/backlog/triage-verifier/instructions.md",
         "fixtures/custom-tasks/triage/worker/instructions.md",
@@ -513,7 +590,7 @@ fn validate_small_issue_rubrics(
         if cells.len() != 6 {
             return Err(format!("{path}: expected size/S rubric columns"));
         }
-        if cells[3] != format!("`light` (`{}`, ADR-0262)", pipeline.name) {
+        if cells[3] != format!("`light` (`{}`)", pipeline.name) {
             return Err(format!("{path}: selected pipeline differs"));
         }
         if cells[4] != expected {
@@ -526,7 +603,7 @@ fn validate_small_issue_rubrics(
     Ok(())
 }
 
-/// All six current size/S rubrics and the staged example agree with actual selected roles,
+/// All staged size/S rubrics, active docs and the example agree with actual selected roles,
 /// models and efforts, rather than merely matching hard-coded display labels.
 #[test]
 fn every_small_issue_rubric_matches_the_selected_light_worker_models_efforts_and_roles() {
@@ -539,6 +616,31 @@ fn small_issue_rubric_audit_rejects_slot_and_worker_role_mutations_independently
     let (pipeline, workers) = selected_light_workers();
     validate_small_issue_rubrics(&pipeline, &workers).unwrap();
     for (slot_name, role, _) in LIGHT_ROLES {
+        for field in ["provider", "model", "effort"] {
+            let mut wrong_workers = workers.clone();
+            let worker = wrong_workers
+                .get_mut(&pipeline.slots[slot_name].worker)
+                .unwrap();
+            let af_pipeline_config::task::catalog::TaskWorkerRunner::Model {
+                provider_kind,
+                model,
+                effort,
+            } = &mut worker.runner
+            else {
+                unreachable!()
+            };
+            match field {
+                "provider" => *provider_kind = "wrong-provider".into(),
+                "model" => *model = "wrong-model".into(),
+                "effort" => *effort = "wrong-effort".into(),
+                _ => unreachable!(),
+            }
+            let error = validate_small_issue_rubrics(&pipeline, &wrong_workers).unwrap_err();
+            assert!(
+                error.starts_with(&format!("{slot_name}: expected ")),
+                "{field}: {error}"
+            );
+        }
         let wrong_role = if role == "implement" {
             "review"
         } else {
@@ -592,9 +694,9 @@ fn private_copies_of_a_read_only_package_are_writable() {
 #[test]
 fn digest_relevant_mutations_change_the_digest_and_the_package_is_left_unchanged() {
     let root = workspace();
-    let (_, pin, path) = pins(&root.join(".af/task-catalog.toml"))
+    let (_, pin, path) = pins(&root.join("fixtures/issue-workflows/catalog.toml"))
         .into_iter()
-        .find(|(name, ..)| name == "kernel/bugs")
+        .find(|(name, ..)| name == "issue-internal/bugs")
         .unwrap();
     let source = root.join(path);
     let original_source = tree(&source);
@@ -642,7 +744,7 @@ fn digest_relevant_mutations_change_the_digest_and_the_package_is_left_unchanged
 fn invalid_or_incomplete_packages_fail_closed() {
     let root = workspace();
     let dir = tempfile::tempdir().unwrap();
-    let source = root.join(".af/task-packages/kernel/bugs");
+    let source = root.join("fixtures/issue-workflows/task-packages/issue-internal/bugs");
     let refuses = |package: &Path, needle: &str| {
         let before = tree(dir.path());
         let output = digest(dir.path(), package);
@@ -668,7 +770,10 @@ fn invalid_or_incomplete_packages_fail_closed() {
     copy(&source, &twice);
     std::fs::write(
         twice.join("pipeline.toml"),
-        std::fs::read(root.join(".af/task-packages/kernel/review-light/pipeline.toml")).unwrap(),
+        std::fs::read(root.join(
+            "fixtures/issue-workflows/task-packages/issue-internal/light-review/pipeline.toml",
+        ))
+        .unwrap(),
     )
     .unwrap();
     refuses(&twice, "found pipeline.toml, worker.toml");
@@ -677,7 +782,7 @@ fn invalid_or_incomplete_packages_fail_closed() {
     copy(&source, &broken);
     let manifest = broken.join("worker.toml");
     let text = std::fs::read_to_string(&manifest).unwrap();
-    std::fs::write(&manifest, text.replace("[signature]", "[signature")).unwrap();
+    std::fs::write(&manifest, text.replace("[\"signature\"]", "[\"signature\"")).unwrap();
     refuses(&broken, "worker.toml");
 
     let floating = dir.path().join("floating");
@@ -685,32 +790,18 @@ fn invalid_or_incomplete_packages_fail_closed() {
     let manifest = floating.join("worker.toml");
     let text = std::fs::read_to_string(&manifest).unwrap();
     // Whatever release the package is at, its version cut to `major.minor`.
-    let version = text
-        .lines()
-        .find_map(|line| line.strip_prefix("version = \""))
-        .and_then(|rest| rest.strip_suffix('"'))
-        .unwrap();
-    let floating_version = version.rsplit_once('.').unwrap().0;
-    std::fs::write(
-        &manifest,
-        text.replacen(
-            &format!("version = \"{version}\""),
-            &format!("version = \"{floating_version}\""),
-            1,
-        ),
-    )
-    .unwrap();
+    let mut value: toml::Value = toml::from_str(&text).unwrap();
+    let version = value["version"].as_str().unwrap();
+    let floating_version = version.rsplit_once('.').unwrap().0.to_owned();
+    value["version"] = toml::Value::String(floating_version);
+    std::fs::write(&manifest, toml::to_string(&value).unwrap()).unwrap();
     refuses(&floating, "is not one exact major.minor.patch release");
 
     let invalid = dir.path().join("invalid");
     copy(&source, &invalid);
     let manifest = invalid.join("worker.toml");
     let text = std::fs::read_to_string(&manifest).unwrap();
-    std::fs::write(
-        &manifest,
-        text.replace("schema = \"af.worker/1\"", "schema = \"x\""),
-    )
-    .unwrap();
+    std::fs::write(&manifest, text.replace("af.worker/1", "x")).unwrap();
     refuses(
         &invalid,
         "Worker manifest has incompatible identity or protocol",
@@ -808,7 +899,8 @@ fn the_digest_never_dispatches_installs_or_schedules_an_update_check() {
         "[self]\nauto_update = \"always\"\n",
     );
     let repo = sandbox.pinned_repo("repo", &Sandbox::lock("0.8.1", Some(&digest)));
-    let package = workspace().join(".af/task-packages/kernel/implementer");
+    let package =
+        workspace().join("fixtures/issue-workflows/task-packages/issue-internal/implementer");
     let expected = out(&digest_of(&package));
     let log = sandbox.path("checks.log");
     let before = (
@@ -870,44 +962,53 @@ fn digest_of(package: &Path) -> Output {
 /// `../base` beside a judge's tree and injects the Diff Subject on the port.
 #[test]
 fn every_package_declaring_diff_subject_tells_its_worker_to_read_the_input() {
-    let packages = workspace().join(".af/task-packages");
-    let mut declaring = 0;
-    for owner in std::fs::read_dir(&packages).unwrap() {
-        let owner = owner.unwrap().path();
-        if !owner.is_dir() {
+    let root = workspace();
+    let mut declaring = std::collections::BTreeSet::new();
+    for (name, _, path) in pins(&root.join(".af/task-catalog.toml")) {
+        let package = root.join(path);
+        let worker = package.join("worker.toml");
+        if !worker.is_file() {
             continue;
         }
-        for package in std::fs::read_dir(&owner).unwrap() {
-            let package = package.unwrap().path();
-            let worker = package.join("worker.toml");
-            if !worker.is_file() {
-                continue;
-            }
-            let manifest = std::fs::read_to_string(&worker).unwrap();
-            if !manifest.contains("[signature.contract.inputs.diff_subject]") {
-                continue;
-            }
-            declaring += 1;
-            let instructions = std::fs::read_to_string(package.join("instructions.md")).unwrap();
-            assert!(
-                instructions.contains("`diff_subject` input"),
-                "{} declares diff_subject but its instructions never name the input",
-                package.display()
-            );
-            assert!(
-                !instructions.contains("diff-subject.json"),
-                "{} declares diff_subject but its instructions still name the retired sidecar",
-                package.display()
-            );
+        let manifest: af_pipeline_config::task::catalog::TaskWorkerManifest =
+            toml::from_str(&std::fs::read_to_string(worker).unwrap()).unwrap();
+        if !manifest
+            .signature
+            .contract
+            .inputs
+            .contains_key("diff_subject")
+        {
+            continue;
         }
+        declaring.insert(name);
+        let instructions = std::fs::read_to_string(package.join("instructions.md")).unwrap();
+        assert!(
+            instructions.contains("`diff_subject` input"),
+            "{}",
+            package.display()
+        );
+        assert!(
+            !instructions.contains("diff-subject.json"),
+            "{}",
+            package.display()
+        );
     }
-    assert!(
-        declaring >= 8,
-        "expected the kernel's and the default reviewer packages, found {declaring}"
+    assert_eq!(
+        declaring,
+        [
+            "issue-internal/bugs",
+            "issue-internal/correctness",
+            "issue-internal/codex-light-evaluator",
+            "issue-internal/evaluator",
+            "issue-internal/light-evaluator"
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
     );
 }
 
-/// Check the whole shipped catalog, including defaults, warm and light packages, rather
+/// Check the whole installed catalog, including every public and internal Pipeline, rather
 /// than only the kernel pipelines selected by the performance Scenario.
 #[test]
 fn complete_catalog_captures_current_contracts_and_consistent_child_slots() {
@@ -1077,11 +1178,13 @@ fn staged_catalog_contract_fixtures_match_native_interfaces() {
 /// Shipped Pi schemas must accept native predecessor envelopes and omitted optional ports,
 /// while retaining closed input objects, exact artifact types and Snapshot requirements.
 #[test]
-fn pi_light_input_schemas_match_contracts_and_preserve_predecessor_snapshots() {
+fn fixture_pi_input_schemas_match_contracts_and_preserve_predecessor_snapshots() {
     use serde_json::{Value, json};
 
     for name in ["implementer", "correctness", "evaluator"] {
-        let package = workspace().join(".af/task-packages/pi-light").join(name);
+        let package = workspace()
+            .join("fixtures/native-catalog-contracts/.af/task-packages/pi-light")
+            .join(name);
         let worker: af_pipeline_config::task::catalog::TaskWorkerManifest =
             toml::from_str(&std::fs::read_to_string(package.join("worker.toml")).unwrap()).unwrap();
         let schema: Value =

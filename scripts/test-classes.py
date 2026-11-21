@@ -70,10 +70,11 @@ def quarantine_today():
     raise ValueError(f'AF_TEST_QUARANTINE_TODAY={value!r} is not a YYYY-MM-DD date')
 
 
-def quarantine(cat=None, today=None, value=None):
+def quarantine(cat=None, today=None, value=None, *, allow_expired=False):
     """Validate the quarantine file and return its tests: identity -> entry.
 
-    Every refusal names the entry and the fix. The inventory guard runs in partition."""
+    Every refusal names the entry and the fix. The inventory guard runs in partition.
+    Only confirm/apply recovery inputs may allow expiry; resulting catalogs stay strict."""
     cat = cat or catalog()
     today = today or quarantine_today()
     if value is None:
@@ -134,7 +135,7 @@ def quarantine(cat=None, today=None, value=None):
                    'list the Tasks whose structured check reports show the test flaky')
         if 'issue' in entry and (type(entry['issue']) is not int or entry['issue'] < 1):
             refuse(f'issue {entry["issue"]!r} is not a positive integer', 'write the GitHub issue number')
-        if expires < today:
+        if expires < today and not allow_expired:
             refuse(f'expired on {expires} (today is {today})',
                    'fix the test and remove the entry, or confirm it again and renew since and expires')
         if identity in cat['ignored']:

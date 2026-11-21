@@ -264,14 +264,14 @@ fn the_configurations_parse_as_afs_own_schemas() {
 
 #[test]
 fn the_cache_freshness_is_read_only_from_a_bounded_regular_file() {
-    let home = tempfile::tempdir().unwrap();
+    let home = crate::providers::fixture_fs::tempdir().unwrap();
     assert_eq!(cache_fetched_at(home.path()), None);
-    std::fs::write(home.path().join("models_cache.json"), CACHE).unwrap();
+    crate::providers::fixture_fs::write(home.path().join("models_cache.json"), CACHE).unwrap();
     assert_eq!(
         cache_fetched_at(home.path()).as_deref(),
         Some("2026-10-15T09:58:12Z")
     );
-    std::fs::write(
+    crate::providers::fixture_fs::write(
         home.path().join("models_cache.json"),
         r#"{"fetched_at":"$(rm -rf /)"}"#,
     )

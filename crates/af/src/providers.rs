@@ -43,6 +43,8 @@ pub mod auth_handoff;
 pub mod availability;
 pub(crate) mod compatibility;
 pub mod detect;
+#[cfg(test)]
+mod fixture_fs;
 mod installation;
 pub mod models;
 mod pi;
@@ -6199,6 +6201,66 @@ mod tests {
     use super::*;
 
     #[test]
+    fn private_provider_fixtures_work_under_varied_umasks_and_keep_unsafe_parents_refused() {
+        const CHILD: &str = "AF_TEST_PRIVATE_PROVIDER_FIXTURE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            for mask in ["0002", "0022", "0077"] {
+                let output = Command::new("/bin/sh")
+                    .args(["-c", "umask \"$1\"; exec \"$2\" --exact \"$3\" --nocapture", "fixture", mask])
+                    .arg(std::env::current_exe().unwrap())
+                    .arg("providers::tests::private_provider_fixtures_work_under_varied_umasks_and_keep_unsafe_parents_refused")
+                    .env(CHILD, "1")
+                    .output().unwrap();
+                assert!(
+                    output.status.success(),
+                    "umask {mask}: {}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed;"));
+            }
+            return;
+        }
+        let root = fixture_fs::tempdir().unwrap();
+        let auth = root.path().join("auth");
+        fixture_fs::create_dir(&auth).unwrap();
+        let config = root.path().join("config/af");
+        fixture_fs::create_dir_all(&config).unwrap();
+        for path in [root.path(), &auth, &root.path().join("config"), &config] {
+            assert_eq!(
+                fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+        let registry = config.join("providers.toml");
+        fixture_fs::write(&registry, "version = 4\nproviders = []\n").unwrap();
+        assert_eq!(
+            fs::metadata(&registry).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        add_to_registry_inner(&registry, "codex-main", ProviderKind::Codex, &auth, false).unwrap();
+        assert!(read_registry(&registry).unwrap().is_some());
+        fs::set_permissions(&registry, fs::Permissions::from_mode(0o664)).unwrap();
+        fixture_fs::write(&registry, "version = 4\nproviders = []\n").unwrap();
+        assert_eq!(
+            fs::metadata(&registry).unwrap().permissions().mode() & 0o777,
+            0o664
+        );
+        assert!(read_registry(&registry).is_err());
+        fs::set_permissions(&auth, fs::Permissions::from_mode(0o775)).unwrap();
+        assert!(validate_private_auth_directory(&auth).is_err());
+        let unsafe_parent = root.path().join("unsafe");
+        fixture_fs::create_dir(&unsafe_parent).unwrap();
+        fs::set_permissions(&unsafe_parent, fs::Permissions::from_mode(0o775)).unwrap();
+        assert!(create_dir_all_durable(&unsafe_parent.join("config/af")).is_err());
+        assert!(!unsafe_parent.join("config").exists());
+        assert_eq!(
+            fs::metadata(&unsafe_parent).unwrap().permissions().mode() & 0o777,
+            0o775
+        );
+    }
+
+    #[test]
     fn pi_registry_requires_explicit_backend_syntax_and_installed_sdk() {
         for backend in [
             "",
@@ -6265,11 +6327,11 @@ mod tests {
 
     #[test]
     fn conditional_registry_replace_preserves_a_noncooperating_replacement() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let path = root.path().join("providers.toml");
         let original = "version = 4\nproviders = []\n";
         let external = "version = 4\n# external change\nproviders = []\n";
-        fs::write(&path, external).unwrap();
+        crate::providers::fixture_fs::write(&path, external).unwrap();
         assert!(write_registry(&path, b"version = 1\n", Some(original)).is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), external);
         assert!(!registry_transaction_path(&path).exists());
@@ -6278,13 +6340,17 @@ mod tests {
 
     #[test]
     fn crash_between_exchange_and_validation_fails_closed_with_both_files() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let path = root.path().join("providers.toml");
         let stage = root.path().join(".provider-stage");
         let transaction = registry_transaction_path(&path);
-        fs::write(&path, "candidate\n").unwrap();
-        fs::write(&stage, "displaced\n").unwrap();
-        fs::write(&transaction, "version = 1\nstage = \".provider-stage\"\n").unwrap();
+        crate::providers::fixture_fs::write(&path, "candidate\n").unwrap();
+        crate::providers::fixture_fs::write(&stage, "displaced\n").unwrap();
+        crate::providers::fixture_fs::write(
+            &transaction,
+            "version = 1\nstage = \".provider-stage\"\n",
+        )
+        .unwrap();
 
         let error = read_registry(&path).unwrap_err();
         assert!(
@@ -6297,14 +6363,14 @@ mod tests {
 
     #[test]
     fn marker_created_during_a_read_blocks_the_tentative_value() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let path = root.path().join("providers.toml");
         let transaction = registry_transaction_path(&path);
-        fs::write(&path, "version = 4\nproviders = []\n").unwrap();
+        crate::providers::fixture_fs::write(&path, "version = 4\nproviders = []\n").unwrap();
 
         ensure_no_registry_transaction(&path).unwrap();
         let tentative = read_registry_unchecked(&path).unwrap();
-        fs::write(&transaction, "version = 1\n").unwrap();
+        crate::providers::fixture_fs::write(&transaction, "version = 1\n").unwrap();
 
         assert!(tentative.is_some());
         assert!(ensure_no_registry_transaction(&path).is_err());
@@ -6315,12 +6381,13 @@ mod tests {
     fn symlinked_registry_checks_the_marker_beside_the_resolved_target() {
         use std::os::unix::fs::symlink;
 
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let path = root.path().join("providers.toml");
         let alias = root.path().join("providers-alias.toml");
-        fs::write(&path, "version = 4\nproviders = []\n").unwrap();
+        crate::providers::fixture_fs::write(&path, "version = 4\nproviders = []\n").unwrap();
         symlink(&path, &alias).unwrap();
-        fs::write(registry_transaction_path(&path), "version = 1\n").unwrap();
+        crate::providers::fixture_fs::write(registry_transaction_path(&path), "version = 1\n")
+            .unwrap();
 
         let error = read_registry(&alias).unwrap_err();
         assert!(
@@ -6334,15 +6401,17 @@ mod tests {
     fn reader_rechecks_a_leaf_symlink_retargeted_to_a_fenced_registry() {
         use std::os::unix::fs::symlink;
 
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let first = root.path().join("providers-first.toml");
         let second = root.path().join("providers-second.toml");
         let alias = root.path().join("providers-alias.toml");
-        fs::write(&first, "version = 4\n# first\nproviders = []\n").unwrap();
-        fs::write(&second, "version = 4\n# second\nproviders = []\n").unwrap();
+        crate::providers::fixture_fs::write(&first, "version = 4\n# first\nproviders = []\n")
+            .unwrap();
+        crate::providers::fixture_fs::write(&second, "version = 4\n# second\nproviders = []\n")
+            .unwrap();
         symlink(&first, &alias).unwrap();
         let second_transaction = registry_transaction_path(&second);
-        fs::write(&second_transaction, "version = 1\n").unwrap();
+        crate::providers::fixture_fs::write(&second_transaction, "version = 1\n").unwrap();
 
         let error = read_registry_with_hooks(
             &alias,
@@ -6366,17 +6435,19 @@ mod tests {
     fn reader_rejects_a_candidate_that_is_exchanged_and_rolled_back_mid_read() {
         use rustix::fs::{CWD, RenameFlags, renameat_with};
 
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let path = root.path().join("providers.toml");
         let stage = root.path().join("stage");
         let transaction = registry_transaction_path(&path);
-        fs::write(&path, "version = 4\n# original\nproviders = []\n").unwrap();
-        fs::write(&stage, "version = 4\n# candidate\nproviders = []\n").unwrap();
+        crate::providers::fixture_fs::write(&path, "version = 4\n# original\nproviders = []\n")
+            .unwrap();
+        crate::providers::fixture_fs::write(&stage, "version = 4\n# candidate\nproviders = []\n")
+            .unwrap();
 
         let result = read_registry_with_hooks(
             &path,
             || {
-                fs::write(&transaction, "version = 1\n").unwrap();
+                crate::providers::fixture_fs::write(&transaction, "version = 1\n").unwrap();
                 renameat_with(CWD, &stage, CWD, &path, RenameFlags::EXCHANGE).unwrap();
             },
             || {
@@ -6397,9 +6468,9 @@ mod tests {
     fn rollback_race_preserves_the_second_replacement_at_the_stage_path() {
         use rustix::fs::{CWD, RenameFlags, renameat_with};
 
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let path = root.path().join("providers.toml");
-        fs::write(&path, "candidate\n").unwrap();
+        crate::providers::fixture_fs::write(&path, "candidate\n").unwrap();
         let candidate = File::open(&path).unwrap();
         let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
         stage.write_all(b"first external replacement\n").unwrap();
@@ -6408,7 +6479,7 @@ mod tests {
 
         assert!(same_file(&path, &candidate).unwrap());
         let second = root.path().join("second");
-        fs::write(&second, "second external replacement\n").unwrap();
+        crate::providers::fixture_fs::write(&second, "second external replacement\n").unwrap();
         fs::rename(&second, &path).unwrap();
         renameat_with(CWD, &stage_path, CWD, &path, RenameFlags::EXCHANGE).unwrap();
         let _ = stage.keep();
@@ -6427,11 +6498,11 @@ mod tests {
     fn recovery_hardlink_preserves_late_writes_after_stage_replacement() {
         use rustix::fs::{CWD, RenameFlags, renameat_with};
 
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let path = root.path().join("providers.toml");
         let original = "version = 4\nproviders = []\n";
         let candidate = "version = 4\n# candidate\nproviders = []\n";
-        fs::write(&path, original).unwrap();
+        crate::providers::fixture_fs::write(&path, original).unwrap();
         let mut displaced = OpenOptions::new()
             .read(true)
             .append(true)
@@ -6448,7 +6519,7 @@ mod tests {
         renameat_with(CWD, &stage_path, CWD, &path, RenameFlags::EXCHANGE).unwrap();
         let external = "version = 4\n# second replacement\nproviders = []\n";
         let second = root.path().join("second");
-        fs::write(&second, external).unwrap();
+        crate::providers::fixture_fs::write(&second, external).unwrap();
         fs::rename(&second, &stage_path).unwrap();
         displaced.write_all(b"# late concurrent write\n").unwrap();
         displaced.sync_all().unwrap();
@@ -6461,11 +6532,11 @@ mod tests {
 
     #[test]
     fn successful_replace_records_and_preserves_recovery_versions() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let path = root.path().join("providers.toml");
         let original = "version = 4\nproviders = []\n";
         let candidate = "version = 4\n# candidate\nproviders = []\n";
-        fs::write(&path, original).unwrap();
+        crate::providers::fixture_fs::write(&path, original).unwrap();
 
         let preserved = write_registry(&path, candidate.as_bytes(), Some(original))
             .unwrap()
@@ -6486,11 +6557,11 @@ mod tests {
 
     #[test]
     fn recovery_archives_only_a_hash_validated_precommit_marker() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let path = root.path().join("providers.toml");
         let original = "version = 4\nproviders = []\n";
         let candidate = "version = 4\n# candidate\nproviders = []\n";
-        fs::write(&path, original).unwrap();
+        crate::providers::fixture_fs::write(&path, original).unwrap();
         let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
         stage.write_all(candidate.as_bytes()).unwrap();
         stage.as_file().sync_all().unwrap();
@@ -6521,11 +6592,11 @@ mod tests {
     fn recovery_rejects_a_symlinked_candidate_and_retains_the_marker() {
         use std::os::unix::fs::symlink;
 
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let path = root.path().join("providers.toml");
         let original = "version = 4\nproviders = []\n";
         let candidate = "version = 4\n# candidate\nproviders = []\n";
-        fs::write(&path, original).unwrap();
+        crate::providers::fixture_fs::write(&path, original).unwrap();
         let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
         stage.write_all(candidate.as_bytes()).unwrap();
         stage.as_file().sync_all().unwrap();
@@ -6546,11 +6617,11 @@ mod tests {
 
     #[test]
     fn recovery_revalidates_held_files_immediately_before_archival() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let path = root.path().join("providers.toml");
         let original = "version = 4\nproviders = []\n";
         let candidate = "version = 4\n# candidate\nproviders = []\n";
-        fs::write(&path, original).unwrap();
+        crate::providers::fixture_fs::write(&path, original).unwrap();
         let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
         stage.write_all(candidate.as_bytes()).unwrap();
         stage.as_file().sync_all().unwrap();
@@ -6565,7 +6636,7 @@ mod tests {
         let replacement = recovery.directory.join("replacement-candidate");
 
         let error = recover_registry_with_hook(&path, || {
-            fs::write(&replacement, candidate).unwrap();
+            crate::providers::fixture_fs::write(&replacement, candidate).unwrap();
             fs::set_permissions(&replacement, fs::Permissions::from_mode(0o600)).unwrap();
             fs::rename(&recovery.candidate_copy, &replaced).unwrap();
             fs::rename(&replacement, &recovery.candidate_copy).unwrap();
@@ -6577,11 +6648,11 @@ mod tests {
 
     #[test]
     fn recovery_revalidates_marker_bytes_immediately_before_archival() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let path = root.path().join("providers.toml");
         let original = "version = 4\nproviders = []\n";
         let candidate = "version = 4\n# candidate\nproviders = []\n";
-        fs::write(&path, original).unwrap();
+        crate::providers::fixture_fs::write(&path, original).unwrap();
         let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
         stage.write_all(candidate.as_bytes()).unwrap();
         stage.as_file().sync_all().unwrap();
@@ -6607,14 +6678,14 @@ mod tests {
     fn recovery_rejects_parent_replaced_by_a_symlink_to_the_held_directory() {
         use std::os::unix::fs::symlink;
 
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let parent = root.path().join("registry");
         let displaced_parent = root.path().join("registry-held");
-        fs::create_dir(&parent).unwrap();
+        crate::providers::fixture_fs::create_dir(&parent).unwrap();
         let path = parent.join("providers.toml");
         let original = "version = 4\nproviders = []\n";
         let candidate = "version = 4\n# candidate\nproviders = []\n";
-        fs::write(&path, original).unwrap();
+        crate::providers::fixture_fs::write(&path, original).unwrap();
         let mut stage = tempfile::NamedTempFile::new_in(&parent).unwrap();
         stage.write_all(candidate.as_bytes()).unwrap();
         stage.as_file().sync_all().unwrap();
@@ -6639,12 +6710,12 @@ mod tests {
     fn recovery_through_an_alias_handles_the_marker_that_fences_reads() {
         use std::os::unix::fs::symlink;
 
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let path = root.path().join("providers.toml");
         let alias = root.path().join("providers-alias.toml");
         let original = "version = 4\nproviders = []\n";
         let candidate = "version = 4\n# candidate\nproviders = []\n";
-        fs::write(&path, original).unwrap();
+        crate::providers::fixture_fs::write(&path, original).unwrap();
         symlink(&path, &alias).unwrap();
         let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
         stage.write_all(candidate.as_bytes()).unwrap();
@@ -6669,16 +6740,16 @@ mod tests {
     fn recovery_deduplicates_a_registry_reached_through_a_symlinked_ancestor() {
         use std::os::unix::fs::symlink;
 
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let directory = root.path().join("registry");
         let alias_directory = root.path().join("registry-alias");
-        fs::create_dir(&directory).unwrap();
+        crate::providers::fixture_fs::create_dir(&directory).unwrap();
         symlink(&directory, &alias_directory).unwrap();
         let path = directory.join("providers.toml");
         let alias = alias_directory.join("providers.toml");
         let original = "version = 4\nproviders = []\n";
         let candidate = "version = 4\n# candidate\nproviders = []\n";
-        fs::write(&path, original).unwrap();
+        crate::providers::fixture_fs::write(&path, original).unwrap();
         let mut stage = tempfile::NamedTempFile::new_in(&directory).unwrap();
         stage.write_all(candidate.as_bytes()).unwrap();
         stage.as_file().sync_all().unwrap();
@@ -6701,17 +6772,17 @@ mod tests {
     fn recovery_revalidates_a_symlinked_ancestor_after_acquiring_locks() {
         use std::os::unix::fs::symlink;
 
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let first = root.path().join("registry-first");
         let second = root.path().join("registry-second");
         let alias_directory = root.path().join("registry-alias");
-        fs::create_dir(&first).unwrap();
-        fs::create_dir(&second).unwrap();
+        crate::providers::fixture_fs::create_dir(&first).unwrap();
+        crate::providers::fixture_fs::create_dir(&second).unwrap();
         symlink(&first, &alias_directory).unwrap();
         let alias = alias_directory.join("providers.toml");
         let second_registry = second.join("providers.toml");
         let second_transaction = registry_transaction_path(&second_registry);
-        fs::write(&second_transaction, "version = 1\n").unwrap();
+        crate::providers::fixture_fs::write(&second_transaction, "version = 1\n").unwrap();
 
         let error = recover_configured_registry_with_hook(&alias, || {
             fs::remove_file(&alias_directory).unwrap();
@@ -6730,13 +6801,15 @@ mod tests {
     fn recovery_through_an_alias_refuses_two_competing_markers() {
         use std::os::unix::fs::symlink;
 
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let path = root.path().join("providers.toml");
         let alias = root.path().join("providers-alias.toml");
-        fs::write(&path, "version = 4\nproviders = []\n").unwrap();
+        crate::providers::fixture_fs::write(&path, "version = 4\nproviders = []\n").unwrap();
         symlink(&path, &alias).unwrap();
-        fs::write(registry_transaction_path(&path), "version = 1\n").unwrap();
-        fs::write(registry_transaction_path(&alias), "version = 1\n").unwrap();
+        crate::providers::fixture_fs::write(registry_transaction_path(&path), "version = 1\n")
+            .unwrap();
+        crate::providers::fixture_fs::write(registry_transaction_path(&alias), "version = 1\n")
+            .unwrap();
 
         let error = recover_configured_registry(&alias).unwrap_err();
         assert!(error.contains("refusing ambiguous recovery"), "{error}");
@@ -6749,11 +6822,11 @@ mod tests {
         use rustix::fs::{CWD, RenameFlags, renameat_with};
 
         for tamper in [false, true] {
-            let root = tempfile::tempdir().unwrap();
+            let root = crate::providers::fixture_fs::tempdir().unwrap();
             let path = root.path().join("providers.toml");
             let original = "version = 4\nproviders = []\n";
             let candidate = "version = 4\n# candidate\nproviders = []\n";
-            fs::write(&path, original).unwrap();
+            crate::providers::fixture_fs::write(&path, original).unwrap();
             let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
             stage.write_all(candidate.as_bytes()).unwrap();
             stage.as_file().sync_all().unwrap();
@@ -6772,7 +6845,11 @@ mod tests {
             drop(marker_file);
             renameat_with(CWD, &stage_path, CWD, &path, RenameFlags::EXCHANGE).unwrap();
             if tamper {
-                fs::write(&path, "version = 4\n# unknown\nproviders = []\n").unwrap();
+                crate::providers::fixture_fs::write(
+                    &path,
+                    "version = 4\n# unknown\nproviders = []\n",
+                )
+                .unwrap();
                 let error = recover_registry(&path).unwrap_err();
                 assert!(
                     error.contains("matches neither transaction hash"),
@@ -6790,9 +6867,10 @@ mod tests {
 
     #[test]
     fn a_marker_beside_a_missing_registry_still_fails_closed() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let path = root.path().join("providers.toml");
-        fs::write(registry_transaction_path(&path), "version = 1\n").unwrap();
+        crate::providers::fixture_fs::write(registry_transaction_path(&path), "version = 1\n")
+            .unwrap();
 
         let error = read_registry(&path).unwrap_err();
         assert!(
@@ -6803,9 +6881,10 @@ mod tests {
 
     #[test]
     fn add_rejects_a_marker_beside_a_missing_registry() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let path = root.path().join("providers.toml");
-        fs::write(registry_transaction_path(&path), "version = 1\n").unwrap();
+        crate::providers::fixture_fs::write(registry_transaction_path(&path), "version = 1\n")
+            .unwrap();
 
         let error =
             add_to_registry_inner(&path, "codex-main", ProviderKind::Codex, root.path(), false)
@@ -6820,10 +6899,10 @@ mod tests {
 
     #[test]
     fn first_registry_publication_never_clobbers_an_external_file() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let path = root.path().join("providers.toml");
         let external = "version = 4\n# external creation\nproviders = []\n";
-        fs::write(&path, external).unwrap();
+        crate::providers::fixture_fs::write(&path, external).unwrap();
         assert!(write_registry(&path, b"version = 1\n", None).is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), external);
     }
@@ -6836,7 +6915,7 @@ mod tests {
 
     #[test]
     fn durable_directory_creation_builds_the_complete_hierarchy() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let directory = root.path().join("config/af");
         create_dir_all_durable(&directory).unwrap();
         assert!(directory.is_dir());
@@ -6845,9 +6924,9 @@ mod tests {
 
     #[test]
     fn directory_creation_rejects_an_unsafe_ancestor_without_side_effects() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let shared = root.path().join("shared");
-        fs::create_dir(&shared).unwrap();
+        crate::providers::fixture_fs::create_dir(&shared).unwrap();
         fs::set_permissions(&shared, fs::Permissions::from_mode(0o777)).unwrap();
         let auth = shared.join("new/auth");
         let registry = shared.join("new-config/af");
@@ -6885,10 +6964,10 @@ mod tests {
     fn auth_lock_rejects_a_directory_replaced_while_waiting() {
         use std::sync::mpsc;
 
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let auth = root.path().join("auth");
         let displaced = root.path().join("old-auth");
-        fs::create_dir(&auth).unwrap();
+        crate::providers::fixture_fs::create_dir(&auth).unwrap();
         fs::set_permissions(&auth, fs::Permissions::from_mode(0o700)).unwrap();
         let locks = root.path().join("state/af/locks");
         let first = auth_context_lock_in(&locks, ProviderKind::Codex, &auth, || {}).unwrap();
@@ -6901,7 +6980,7 @@ mod tests {
         });
         ready_rx.recv().unwrap();
         fs::rename(&auth, &displaced).unwrap();
-        fs::create_dir(&auth).unwrap();
+        crate::providers::fixture_fs::create_dir(&auth).unwrap();
         fs::set_permissions(&auth, fs::Permissions::from_mode(0o700)).unwrap();
         drop(first);
 
@@ -6917,10 +6996,10 @@ mod tests {
         use std::os::unix::fs::symlink;
         use std::sync::mpsc;
 
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let auth = root.path().join("auth");
         let displaced = root.path().join("old-auth");
-        fs::create_dir(&auth).unwrap();
+        crate::providers::fixture_fs::create_dir(&auth).unwrap();
         fs::set_permissions(&auth, fs::Permissions::from_mode(0o700)).unwrap();
         let locks = root.path().join("state/af/locks");
         let first = auth_context_lock_in(&locks, ProviderKind::Codex, &auth, || {}).unwrap();
@@ -6955,11 +7034,11 @@ id = "claude-personal"
 kind = "claude"
 auth_dir = "/profiles/claude-personal"
 "#;
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let work = root.path().join("claude-work");
         let personal = root.path().join("claude-personal");
-        fs::create_dir_all(&work).unwrap();
-        fs::create_dir_all(&personal).unwrap();
+        crate::providers::fixture_fs::create_dir_all(&work).unwrap();
+        crate::providers::fixture_fs::create_dir_all(&personal).unwrap();
         let registry = registry
             .replace("/profiles/claude-work", work.to_str().unwrap())
             .replace("/profiles/claude-personal", personal.to_str().unwrap());
@@ -6974,7 +7053,7 @@ auth_dir = "/profiles/claude-personal"
 
     #[test]
     fn registry_rejects_ids_reserved_for_ambient_discovery() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         for (id, kind) in [("claude-ambient", "claude"), ("codex-ambient", "codex")] {
             let registry = format!(
                 "version = 4\n[[providers]]\nid = {id:?}\nkind = {kind:?}\nauth_dir = {:?}\n",
@@ -6992,10 +7071,10 @@ auth_dir = "/profiles/claude-personal"
     fn registry_rejects_a_symlinked_auth_context_before_canonicalization() {
         use std::os::unix::fs::symlink;
 
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let target = root.path().join("real-auth");
         let linked = root.path().join("linked-auth");
-        fs::create_dir(&target).unwrap();
+        crate::providers::fixture_fs::create_dir(&target).unwrap();
         symlink(&target, &linked).unwrap();
         let registry = format!(
             "version = 4\n[[providers]]\nid = \"codex-main\"\nkind = \"codex\"\nauth_dir = {:?}\n",
@@ -7022,9 +7101,9 @@ kind = "codex"
 auth_dir = "/profiles/two"
 "#;
         assert!(parse_registry(duplicate_id, Path::new("/registry.toml")).is_err());
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let shared = root.path().join("shared");
-        fs::create_dir_all(&shared).unwrap();
+        crate::providers::fixture_fs::create_dir_all(&shared).unwrap();
         let duplicate_context = format!(
             r#"version = 4
 [[providers]]
@@ -7215,9 +7294,9 @@ auth_dir = "{}"
     fn claude_usage_probe_reads_the_fixed_screen_and_reaps_the_session() {
         use std::os::unix::fs::PermissionsExt;
 
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::providers::fixture_fs::tempdir().unwrap();
         let program = directory.path().join("claude");
-        fs::write(
+        crate::providers::fixture_fs::write(
             &program,
             "#!/bin/sh\n[ \"$3\" = /usage ] || exit 2\nprintf 'Current week (all models)\\r\\n42%%used\\r\\nExtra usage\\r\\n'\nsleep 30\n",
         )
@@ -7248,9 +7327,9 @@ auth_dir = "{}"
     fn claude_usage_cache_skips_a_second_interactive_probe() {
         use std::os::unix::fs::PermissionsExt;
 
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::providers::fixture_fs::tempdir().unwrap();
         let program = directory.path().join("claude");
-        fs::write(
+        crate::providers::fixture_fs::write(
             &program,
             "#!/bin/sh\nprintf x >> \"$0.count\"\nprintf 'Current week (all models)\\r\\n42%%used\\r\\nExtra usage\\r\\n'\nsleep 30\n",
         )
@@ -7359,7 +7438,7 @@ auth_dir = "{}"
     fn codex_subscription_probe_starts_the_bare_app_server_and_reports_an_early_exit() {
         use std::os::unix::fs::PermissionsExt;
 
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::providers::fixture_fs::tempdir().unwrap();
         let program = directory.path().join("codex");
         let limits = include_str!("../tests/fixtures/providers/codex-0.149.0-rate-limits.json")
             .replace('\n', "");
@@ -7375,7 +7454,7 @@ auth_dir = "{}"
              IFS= read -r _\n\
              cat <<'JSON'\n{limits}\nJSON\n"
         );
-        fs::write(&program, script).unwrap();
+        crate::providers::fixture_fs::write(&program, script).unwrap();
         fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
         let spec = ProviderSpec {
             pi: None,
@@ -7397,7 +7476,7 @@ auth_dir = "{}"
         .unwrap();
         assert!(!snapshot.limits.is_empty());
 
-        fs::write(
+        crate::providers::fixture_fs::write(
             &program,
             "#!/bin/sh\nprintf '%s\\n' \"error: unexpected argument '--stdio' found\" '' 'Usage: codex app-server [OPTIONS]' >&2\nexit 2\n",
         )
@@ -7424,7 +7503,7 @@ auth_dir = "{}"
     fn codex_subscription_probe_reaps_descendants_after_an_early_exit() {
         use std::os::unix::fs::PermissionsExt;
 
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::providers::fixture_fs::tempdir().unwrap();
         let program = directory.path().join("codex");
         let pid_file = directory.path().join("descendant.pid");
         let script = format!(
@@ -7438,7 +7517,7 @@ auth_dir = "{}"
              exit 0\n",
             pid_file.display()
         );
-        fs::write(&program, script).unwrap();
+        crate::providers::fixture_fs::write(&program, script).unwrap();
         let mut permissions = fs::metadata(&program).unwrap().permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(&program, permissions).unwrap();
@@ -7687,7 +7766,7 @@ auth_dir = "{}"
     #[test]
     fn a_premature_id_2_response_never_answers_the_identity_or_usage_probe() {
         use std::os::unix::fs::PermissionsExt;
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::providers::fixture_fs::tempdir().unwrap();
         let spec = ProviderSpec {
             pi: None,
             id: "codex-test".to_string(),
@@ -7707,7 +7786,7 @@ auth_dir = "{}"
                 || "while IFS= read -r _; do :; done".to_string(),
                 |line| format!("printf '%s\\n' '{line}'\nwhile IFS= read -r _; do :; done"),
             );
-            fs::write(
+            crate::providers::fixture_fs::write(
                 &program,
                 format!(
                     "#!/bin/sh\nIFS= read -r _\nprintf '%s\\n' '{premature}' '{{\"id\":1,\"result\":{{}}}}'\nIFS= read -r _\nIFS= read -r _\n{answer}\n"
@@ -7803,7 +7882,7 @@ auth_dir = "{}"
     #[test]
     fn a_malformed_line_before_the_id_2_answer_refuses_at_once() {
         use std::os::unix::fs::PermissionsExt;
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::providers::fixture_fs::tempdir().unwrap();
         let program = directory.path().join("codex");
         let spec = ProviderSpec {
             pi: None,
@@ -7816,7 +7895,7 @@ auth_dir = "{}"
         };
         let probe_path = sanitized_path();
         for line in [r#"{"id":2,"foo":"bar"}"#, "[1,2]", "not json"] {
-            fs::write(
+            crate::providers::fixture_fs::write(
                 &program,
                 format!(
                     "#!/bin/sh

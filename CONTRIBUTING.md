@@ -18,6 +18,9 @@ npx (for `markdownlint-cli2`), minisign, and 30 GiB
 free on the volume `target/` builds on. It installs and changes nothing,
 and exits 0 when everything is present, 1 otherwise (`scripts/prereqs.py`, issue #161).
 
+`release-check` requires real minisign for its signed release recovery regression. The shared
+CI base job installs it before running those checks, using apt on Linux and Homebrew on macOS.
+
 ## Toolchain
 
 `rust-toolchain.toml` pins the toolchain (`1.88.0`, with `clippy` and `rustfmt`); `rustup`
@@ -426,8 +429,15 @@ then `make check-classes`. The JSON file has the GitHub event shape
 `{"pull_request":{"labels":[{"name":"test:functional"},{"name":"test:e2e"}]}}`.
 Selective e2e includes live containers and requires Docker. Fmt/lint and policy checks always run.
 
-Every PR defaults to functional + e2e + uix, including AF gate and release PRs. Any positive
-`test:functional`, `test:e2e`, `test:uix`, `test:perf`
+Apply the GitHub `nobuild` label manually only when the entire PR changes no sources, pipelines,
+build inputs or tests. A PR that changes only `.af/af.lock` qualifies, including one from
+`release/pin-vVERSION`. Recheck the full diff after each update and remove `nobuild` as soon as the
+PR no longer qualifies. The exemption skips hosted builds, tests, smoke and performance work.
+The direct pin check, exemption summaries and PR report still run. Removing the label restores
+ordinary selection. The AF local Task gate still verifies the candidate.
+
+Without `nobuild`, every PR defaults to functional + e2e + uix, including AF gate and release PRs.
+Any positive `test:functional`, `test:e2e`, `test:uix`, `test:perf`
 labels replace that default with an explicit allowlist. `no-functional`, `no-e2e`, `no-uix`, `no-perf`
 exclude from defaults. Contradictions, unknown reserved labels and empty selections fail. Skipped
 classes are reported as NOT RUN. `no-perf` also exempts the separate Performance measurement workflow;
@@ -452,7 +462,8 @@ manual measurement: run `make perf-kernel-measure` before a pull request changin
 `crates/af-runtime/build.rs`, the experiment runtime or kernel receipts
 ([ADR-0252](docs/adr/0252-keep-the-kernel-experiment-measurement-out-of-every-gate.md)).
 
-`make release VERSION=X.Y.Z COMPAT='...'` opens a release PR with `release:fast` by default;
+`make release` (or `./dev release rc --repo PakhomovAlexander/afactory`) reserves the next RC
+and opens a normal release PR with `release:fast` by default;
 `PROFILE=full` selects all classes. Provision the ten canonical labels with `make test-labels` (dry-run),
 then explicitly `make test-labels APPLY=1`; no PR labels are assigned by that setup command.
 Release preparation checks the profile label exists before changing source, committing or pushing.
@@ -467,11 +478,11 @@ selections. Direct unbound tags run full. All selected Linux/macOS gates and pac
 architecture and signature smoke remain mandatory. Fast/custom release notes state their scope.
 The post-publication Performance measurement is asynchronous, not a publication gate.
 
-Every validation profile, including fast and `no-perf`, runs the cheap offline
+Every ordinary validation profile, including fast and `no-perf`, runs the cheap offline
 `python3 -I scripts/release-contract.py` in `release-check`/`base-check`. Release preparation
 runs it after changing the workspace version and before committing or publishing its PR.
-Declare that exact version under the compatible telemetry fixture contract in
-`scripts/telemetry-overhead.py` with source/fixture evidence; unknown versions are refused.
+Preparation generates `scripts/release-contract.json` for the exact version and source,
+retaining the reviewed schema/fixture capability digest; undeclared versions and drift are refused.
 Lab schema parity excludes only the four exact Rust publication schemas, and still refuses
 missing, stale and retired lab schemas. This is contract validation, not a performance measurement.
 
@@ -479,6 +490,13 @@ After the release PR merges and publication succeeds, the release workflow opens
 PR from `release/pin-vVERSION` to `main`. **Review its CI and merge that PR too**: publication
 alone does not pin this repository. The pin binds every target's exact signed archive digest;
 only `.af/af.lock`'s `[af]` and `[af.digests]` may change. No release automation pushes to main.
+`scripts/prepare-release-pin.py` reads the explicitly selected published release through GitHub,
+verifies `SHA256SUMS` with the repository's trusted Minisign key and its signed version comment,
+and checks the complete target inventory. Archive-only signed releases such as RC3 are supported;
+when provenance is declared, its signed digest and repository/version identity must also match.
+It atomically replaces only the two pin tables, preserving all other lock bytes, policy, catalog
+and Worker pins. It never runs `af onboard`, requires a managed receipt, or installs or activates
+a release.
 See the [binding release decision](docs/adr/2026-11-09-review-release-contracts-and-pins-before-merge.md).
 
 Provision the repository Actions secret **`RELEASE_PIN_TOKEN`** with a fine-grained PAT restricted
@@ -509,3 +527,9 @@ put the lock more than one non-yanked release behind (`scripts/af-pin.py --check
 See [the complete class design](docs/test-classes.md) for precedence, catalog policy, retained evidence
 and `scripts/test-classes.py report --replay` commands. Real class timing reports keep wall time,
 summed test-seconds and runner cost separate; replay scenarios are estimates, not measured savings.
+
+## Developer release CLI
+
+Use the repository-owned `./dev release` commands for deterministic release preparation and
+recovery. See [setup, authorization, examples and recovery](docs/dev-release.md). `make release`
+delegates to this same path; it does not invoke the product CLI or models.

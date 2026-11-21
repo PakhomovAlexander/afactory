@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:ant:12",
+  "title": "ant v12",
+  "description": "ADR-0274. Cross-port types, identity, authority, budget, signature and lifecycle invariants also require semantic admission.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "id",
+    "scenario",
+    "inputs",
+    "schedule",
+    "owner",
+    "notification",
+    "execution"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/ant@12"
+    },
+    "id": {
+      "$ref": "urn:af:schema:scenario:11#/$defs/name"
+    },
+    "scenario": {
+      "$ref": "urn:af:schema:scenario:11#/$defs/Bundle"
+    },
+    "inputs": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:scenario:11#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "urn:af:schema:scenario:11#/$defs/Datum"
+      }
+    },
+    "schedule": {
+      "$ref": "urn:af:schema:scenario:11#/$defs/Schedule"
+    },
+    "owner": {
+      "$ref": "urn:af:schema:scenario:11#/$defs/name"
+    },
+    "notification": {
+      "$ref": "urn:af:schema:scenario:11#/$defs/text"
+    },
+    "execution": {
+      "$ref": "urn:af:schema:scenario:11#/$defs/Execution"
+    },
+    "occurrence_inputs": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:scenario:11#/$defs/name"
+      },
+      "additionalProperties": {
+        "enum": [
+          "scheduled_nightly_tag"
+        ]
+      },
+      "maxProperties": 32
+    }
+  }
+}

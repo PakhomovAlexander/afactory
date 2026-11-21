@@ -162,9 +162,6 @@
       "type": "array",
       "uniqueItems": true
     },
-    "release_unavailable": {
-      "type": "boolean"
-    },
     "release_pr": {
       "anyOf": [
         {
@@ -190,6 +187,9 @@
           "type": "object"
         }
       ]
+    },
+    "release_unavailable": {
+      "type": "boolean"
     },
     "repository": {
       "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",

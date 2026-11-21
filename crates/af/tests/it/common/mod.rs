@@ -7,6 +7,15 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+pub fn workspace() -> PathBuf {
+    std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+}
+
+#[path = "../../../src/providers/fixture_fs.rs"]
+pub mod provider_fixture_fs;
+
 #[path = "../../../../af-process/tests/support/executables.rs"]
 mod executables;
 
@@ -177,6 +186,7 @@ pub fn private_home_env() -> Vec<(&'static str, PathBuf)> {
     });
     vec![
         ("HOME", home.clone()),
+        ("AF_TEST_WAKE_ACCOUNT_HOME", home.clone()),
         ("XDG_CONFIG_HOME", home.join(".config")),
         ("XDG_STATE_HOME", home.join(".local/state")),
         ("XDG_CACHE_HOME", home.join(".cache")),
@@ -317,6 +327,7 @@ impl Sandbox {
         let mut command = Command::new(binary);
         command
             .env("HOME", self.path("home"))
+            .env("AF_TEST_WAKE_ACCOUNT_HOME", self.path("home"))
             .env("XDG_CONFIG_HOME", self.path("config"))
             .env("XDG_DATA_HOME", self.path("data"))
             .env("XDG_STATE_HOME", self.path("state"))
@@ -777,6 +788,27 @@ pub fn af_claim(parent: &Path, pid: u32) -> PathBuf {
     let claim = parent.join(af_sandbox::claim_name(pid, identity));
     std::fs::rename(&made, &claim).unwrap();
     claim
+}
+
+/// A narrowly injected libc account resolver, not an AF production override. Tests exercise
+/// the actual getpwuid_r path for an unmapped numeric UID and I/O errors without host changes.
+#[cfg(target_os = "linux")]
+pub fn account_resolver(directory: &Path) -> PathBuf {
+    let library = directory.join("account-resolver.so");
+    let source = workspace().join("fixtures/task-wake-probe/account-resolver.c");
+    let output = Command::new("cc")
+        .args(["-shared", "-fPIC", "-Wall", "-Wextra", "-Werror"])
+        .arg(source)
+        .args(["-ldl", "-o"])
+        .arg(&library)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    library
 }
 
 #[cfg(test)]

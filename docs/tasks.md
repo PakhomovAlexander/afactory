@@ -125,7 +125,7 @@ refused, naming both.
 
 ```toml
 [task.defaults]
-pipeline = "default/implementation"
+pipeline = "bugfix/light-kimi-terra-sol"
 fallback = "refuse"
 
 [task.defaults.limits]
@@ -141,7 +141,7 @@ wall_ms = 18000000
 
 This is the table of this repository's `.af/af.toml`: its bounds are those of
 [the default pipeline](#the-default-pipeline) and leave room for the compiled reviewers,
-evaluator and repository checks of `default/implementation`; plan another Pipeline against its
+evaluator and repository checks of `bugfix/light-kimi-terra-sol`; plan another Pipeline against its
 own declared allowances.
 
 A goal can stay short and point at what it needs. `context` names files of the Task's source
@@ -241,7 +241,7 @@ Task's state and next command, `Task ID: phase/outcome/cause; next: COMMAND`, in
 `--json`.
 
 `af task run ID --detach` runs the same command in the background and returns once that run holds
-the Task and its plan is admitted, printing its pid, its host and its log (`af/task-detached@3`
+the Task and its plan is admitted, printing its pid, its host and its log (`af/task-detached@4`
 under `--json`, `admitted: true`). A run that is not admitted within 2 minutes is not claimed to
 run: the command exits 4 with `admitted: false` and `af task status ID` as the next command. The
 run has no terminal, survives the shell that started it, and writes its
@@ -263,7 +263,7 @@ last comparable recorded Gate duration when available, and the run that holds th
 It puts the next command on its own line, broken between its arguments to fit 100 columns.
 `af task wait ID` blocks
 until the Task settles and exits with its exit code, or with 124 when `--timeout S` passes first;
-both print `af/task-status@2` under `--json`. A comparable Gate uses the same check name, captured
+both print `af/task-status@3` under `--json`. A comparable Gate uses the same check name, captured
 code policy and source repository; no recorded check span means no hint. `af task wait --bell`
 rings terminal stderr on completion. `--notify` tries the OS notifier and warns if unavailable
 while preserving the Task exit code. `af task cancel ID` stops the `af task run` the Task's
@@ -271,7 +271,7 @@ writer lease names: it finds the process by the lease's writer in the run record
 another host with its pid and host, records who asked in `runs/ID-N.cancel.json`, and signals that
 recorded pid only, which stops its Worker processes as Ctrl-C does. The Task is then
 `abandoned/cancelled/host_cancelled`, `af task show` names who cancelled it, and `af task run ID`
-resumes it. `af task events ID` follows the Task as JSON lines, one `af/task-event@2` document per
+resumes it. `af task events ID` follows the Task as JSON lines, one `af/task-event@3` document per
 event of its log with the Store's own gap-free `sequence`, and once the Task settles one terminal
 record with its state and exit code; `--after N` prints only the events after sequence N, so a
 follower that reconnects gets the rest, and the command takes no `--json`
@@ -286,6 +286,13 @@ state is `phase/outcome/cause`, for example `finished/gate_failed/check_failed`;
 present once the Task ended and `cause` once that outcome is not `verified`. Under `--json` it is
 the `state` object: `phase`, `outcome`, `cause` and `next_action`, `null` where absent
 (`af help task-states` prints the same tables).
+
+A native operation that fails before review completes, such as binding a candidate identical to
+its Diff Base, ends `execution_failed/kernel_execution`, with exit 8. `af task show ID` names
+the failed node and its diagnostic; inspect and correct the Task inputs or pipeline before
+planning a new Task. Passing checks do not admit an empty Diff Subject or complete the review.
+A failed kernel operation uses its typed failure class and recorded execution facts; its
+diagnostic does not establish budget exhaustion.
 
 ```text
   planned --af task run--> running --> finished
@@ -308,6 +315,7 @@ the `state` object: `phase`, `outcome`, `cause` and `next_action`, `null` where 
 | `verified` | 0 | all declared acceptance obligations met; inspect the domain conclusion |
 | `changes_requested` | 3 | the review or the evaluator ran to completion and asked for changes |
 | `gate_failed` | 5 | a required check of the gate failed or could not run |
+| `execution_failed` | 8 | a kernel operation failed before execution could complete |
 | `provider_failed` | 6 | a Worker's Provider or process failed, or its reply was not admissible |
 | `cancelled` | 4 | the run stopped before it finished; `af task run` resumes it |
 | `exhausted` | 4 | a token, Attempt or verification-reserve limit ran out |
@@ -320,6 +328,7 @@ the `state` object: `phase`, `outcome`, `cause` and `next_action`, `null` where 
 | `check_failed` | `gate_failed` | a required check ran and failed, or the kernel stopped it at its wall |
 | `check_flaky_then_failed` | `gate_failed` | a required check failed; some of its tests were flaky before |
 | `preflight_failed` | `gate_failed` | a required check stopped at a step before its tests, or never started |
+| `kernel_execution` | `execution_failed` | a kernel operation failed; inspect its recorded diagnostic and correct the Task inputs or pipeline |
 | `malformed_reply` | `provider_failed` | a Worker's process failed or its reply broke its output contract |
 | `provider_network` | `provider_failed` | a request to the Provider failed on the network |
 | `provider_capacity` | `provider_failed` | the Provider's model was at capacity or its rate limit was reached |
@@ -363,7 +372,7 @@ warm or cold directories, its warm layer when the policy has `[warm]` (the key, 
 by it, the source groups it rebuilt, its build and test phases and an eviction with its cause,
 [Warm checks](task-execution/warm-checks.md)), the step that stopped it, its failing and flaky
 tests and the last 40 lines of its stderr; `--json` prints one
-[`af/task-checks@3`](../schemas/task-checks-v3.json) document. The gate's failed and flaky tests
+[`af/task-checks@4`](../schemas/task-checks-v4.json) document. The gate's failed and flaky tests
 and the step that stopped a check come from its report when the check writes one, and from the
 text scan of its output only for a check without one (absent or refused): the runner's `FAIL`,
 `TIMEOUT` and `SIGABRT` lines, its `flaky:` lines and its step log. A check line that prints this
@@ -436,7 +445,7 @@ command) each time the Store is read; nothing is recorded. Each Task is in exact
 | `gate_failed` | Failed gate | yes | gate_failed: a required check failed or could not run |
 | `findings` | Findings to answer | yes | changes_requested: reviewer findings or the evaluator |
 | `deliver` | Verified, ready to deliver | yes | verified, with `af task deliver` as its next command |
-| `stopped` | Stopped | yes | abandoned, provider_failed, cancelled, exhausted, expired |
+| `stopped` | Stopped | yes | abandoned, provider_failed, execution_failed, cancelled, exhausted, expired |
 | `running` | Running | no | a writer holds its lease; no next command until it ends |
 | `nothing` | Nothing to do | no | delivered, verified with nothing to deliver, or collected |
 
@@ -454,9 +463,9 @@ Running (1): docs-index
 Nothing to do (2): `af task list` shows every Task
 ```
 
-`--json` prints one [`af/task-attention@1`](../schemas/task-attention-v1.json) document with all
+`--json` prints one [`af/task-attention@2`](../schemas/task-attention-v2.json) document with all
 seven groups in this order, the `running` and `nothing` groups included, each with its `group`,
-`needs_you` and `tasks`, every Task the same `af/task-list-entry@4` that `af task list --json`
+`needs_you` and `tasks`, every Task the same `af/task-list-entry@5` that `af task list --json`
 prints. `--attention` lists no sizes: with `--sizes` it is a usage error (exit 2). In the
 browser (`af` alone at a terminal) the Tasks folder opens on the same groups under `NEEDS YOU`
 ([TUI design](design/tui.md#55-tasks)).
@@ -526,7 +535,7 @@ and when the plan's approval or deadline has passed or the limits leave no room.
 severity, confidence, title, location, the quoted evidence and the proposed fix, grouped by
 severity, then the evaluator's verdict on that round (the one the Task log recorded after it)
 and its reason; `--round N` reads an earlier round with its own verdict, and `--json` prints
-`af/task-findings@2`, whose findings each carry an `agent_prompt` and whose round says what it
+`af/task-findings@3`, whose findings each carry an `agent_prompt` and whose round says what it
 covered: a reviewer that did not run shows as `not reviewed`, never as `no findings`.
 `--format sarif` prints the same findings as SARIF 2.1.0
 ([ADR-0248](adr/0248-hand-review-findings-to-the-agent-that-will-fix-them.md)). `af task diff ID` prints the candidate's change against the
@@ -575,12 +584,11 @@ af task run pagination-2 --from pagination-cli --round 1 --goal goal.md --execut
 A Task file says the same with `"continue": {"task": "pagination-cli", "round": 1}`; it excludes
 `inputs.source` and `inputs.findings`. TASK must be finished and must have recorded a review
 round, or have kept the edits of a Worker its Attempt wall stopped (below), and for a reviewed
-round the selected Pipeline must declare `findings` (the kernel's
-`kernel/implementation-reviewed`, `kernel/implementation-ux` and `kernel/review-light` do, and so
-do [`default/implementation`](#the-default-pipeline) and
-[`default-light/implementation`](#the-light-default-pipeline)), or the
+round the selected Pipeline must declare `findings` (the installed
+[`bugfix/default-codex`](#the-default-pipeline) and
+[`bugfix/light-codex`](#the-light-default-pipeline) do), or the
 plan is refused with the reason. `af task show NEW` prints `continues TASK round N`, `--json`
-carries `continues` (`af/task-inspection@20`), and `af task report` names it in NEW's row.
+carries `continues` (`af/task-inspection@21`), and `af task report` names it in NEW's row.
 
 ### An Attempt wall keeps the edits
 
@@ -613,127 +621,48 @@ the goal is visible before the Task runs.
 
 ## The default pipeline
 
-A change to Afactory that is not small and local enough for
-[the light default pipeline](#the-light-default-pipeline) runs through the default Task pipeline
-that this repository's own catalog, `.af/task-catalog.toml`, pins
-([ADR-0253](adr/0253-the-default-task-pipeline-lives-in-the-catalog.md)), so any checkout plans
-it. `default/implementation` is `kernel/implementation-ux` with its five slots bound to the
-`default/*` Worker packages: one implementing iteration, the project's local gate on the sealed
-candidate, two bound reviewers whose findings count (bugs, correctness), one advisory reviewer
-for gate time and quality and an independent evaluator. It declares `findings`, so
-`af task run NEW --from TASK` continues it. `default/verification` is
-`kernel/verification-ux` with the same four judging slots and no implementer: it judges an
-existing candidate read-only.
+Afactory's staged operator catalog selects `bugfix/light-kimi-terra-sol`. For implementation work
+select `impl/default-codex`; uncertain causes require `bugfix/research-fix-codex`, design work
+uses design-only `design/astra-kimi`; measured performance uses `perf/research-kimi-codex` for
+small known bottlenecks or `perf/research-experiment-codex` for broader research.
+The [versioned operator runbook](../fixtures/issue-workflows/README.md) lists all nine choices,
+accepted research/design handoffs, exact roles and native Scenario composition. The table below
+describes Sol-written default/research implementation, separate from the Kimi light default.
 
-| Slot | Package | Model | Effort | What it does |
-|---|---|---|---|---|
-| `implementer` | `default/implementer` | `gpt-6.1-sol` | `high` | one implementing iteration (`default/implementation` only) |
-| `bugs` | `default/bugs` | `gpt-6.1-terra` | `high` | reviewer bound here, advisory in the catalog's policy: concrete functional defects |
-| `correctness` | `default/correctness` | `gpt-6.1-terra` | `high` | required reviewer: requirements, contracts and architecture |
-| `uix` | `default/advisor` | `gpt-6.1-terra` | `medium` | advisory reviewer: gate time and quality |
-| `evaluator` | `default/evaluator` | `gpt-6.1-terra` | `high` | independent evaluator of the requirements |
+| Slot | Package | Model | Effort |
+|---|---|---|---|
+| `implementer` | `issue-internal/implementer` | `gpt-6.1-sol` | `medium` |
+| `bugs` | `issue-internal/bugs` | `gpt-6.1-terra` | `high` |
+| `correctness` | `issue-internal/correctness` | `gpt-6.1-terra` | `high` |
+| `evaluator` | `issue-internal/evaluator` | `gpt-6-astra` | `medium` |
 
-The catalog's `[review.reviewers]` marks the `uix` slot advisory, and the `bugs` slot advisory
-so that [the light default pipeline](#the-light-default-pipeline) may leave it unbound.
-`default/implementation` binds `bugs`, so its findings count and its missing result leaves the
-round incomplete, as for a required reviewer; only a benchmark Demand it files is now advisory,
-so an open one no longer keeps the round from converging. The `uix` reviewer judges the time a
-change adds to every future gate and pull-request validation, and the quality a maintainer cares
-about, and files each finding at its honest severity. In this release its reports still count
-toward convergence like any reviewer's: an open `blocker` or `major` of the bound advisory
-reviewer keeps the round from converging, as a required reviewer's does; a kernel change that
-stops them from counting is planned. The reviewers and the evaluator never receive the
-implementer's summary: the tree, `../base`, the requirements and the check receipts are their
-evidence.
+Research selections use `issue-internal/researched-implementer`, with the same model and effort
+and a required accepted `research_report`. Every bound reviewer must return for closure. The
+shared policy's optional bugs entry permits light's single reviewer; it does not waive a bound
+result. There is no advisory/uix Worker. Every Codex Worker uses `codex-personal`; the Kimi
+implementer uses `pi-personal`. Local bindings must not override models, slots or packages.
 
-To run it, name it in the Task file; `default/verification` takes a Task of `"kind":
-"verification"` whose `inputs.source` binds the candidate it judges
-([agents](agents.md#6-run-another-round)). The repository's `.af/af.toml` names
-`default/implementation` and these limits in `[task.defaults]`, so a Task file of this
-repository may omit both; the example spells them out. They fit the pipeline's declared Attempt
-allowances, and `af task plan --fit` prints the smallest that do:
-
-```json
-{
-  "task_id": "issue-123",
-  "kind": "implement",
-  "goal": "Fix issue 123 as its text describes.",
-  "pipeline": { "name": "default/implementation", "fallback": "refuse" },
-  "limits": {
-    "tokens": 8000000,
-    "max_attempts": 16,
-    "wall_ms": 43200000,
-    "verification": { "tokens": 2000000, "attempts": 9, "wall_ms": 18000000 }
-  }
-}
-```
-
-The catalog binds all five `default/*` model packages to the Provider label `codex-main`.
-When your machine-local registry does not carry that label, map the packages
-in a [local bindings](task-execution/local-bindings.md) file and pass it with `--bindings FILE`:
-
-```toml
-schema = "af.task-bindings/1"
-
-[providers]
-"default/implementer" = "codex-personal"
-"default/bugs" = "codex-personal"
-"default/correctness" = "codex-personal"
-"default/advisor" = "codex-personal"
-"default/evaluator" = "codex-personal"
-```
+`issue-internal/verification` is the shared independent read-only verification Pipeline. Bind its
+`source` to the implementation Task's candidate and preserve the original Base. Use native
+composition for accepted research/design and final verification. Keep cumulative ancestry and
+charges across manually authorized continuations; existing Tasks retain their captured pins.
 
 ## The light default pipeline
 
-For small, local changes the catalog pins a lighter variant of the default pipeline
-([ADR-0262](adr/0262-offer-a-light-default-pipeline-for-small-changes.md)):
-`default-light/implementation` runs one implementing iteration, the project's local gate on the
-sealed candidate, one required reviewer (correctness) and the independent evaluator, through the
-review Pipeline `default-light/review`. It declares `findings`, so `af task run NEW --from TASK`
-continues it. `default-light/verification` judges an existing candidate read-only with the same
-two judging slots and no implementer.
+`bugfix/light-kimi-terra-sol` is the staged default: Pi `kimi-coding/k3.1-pro` high
+implements, Terra6.1 high reviews and Sol6.1 medium evaluates. `bugfix/light-codex` uses Sol6.1
+medium implementation, Terra6.1 high review and Astra6 medium evaluation. Both require known
+cause, deterministic regression and narrow non-authority scope. `impl/light-kimi-codex` uses the
+Kimi roles for a specified small implementation with deterministic acceptance checks; it does
+not require an existing bug. Sensitive or uncertain scope requires explicit escalation.
 
-| Slot | Package | Model | Effort | Attempt allowance |
-|---|---|---|---|---|
-| `implementer` | `default-light/implementer` | `gpt-6.1-sol` | `high` | 1,000,000 tokens, 2 h (`default-light/implementation` only) |
-| `correctness` | `default-light/correctness` | `gpt-6.1-terra` | `high` | 300,000 tokens, 30 min |
-| `evaluator` | `default-light/evaluator` | `gpt-6.1-terra` | `high` | 200,000 tokens, 20 min |
-
-It gives up the bug-bounty reviewer (`bugs`) and the gate-time and quality reviewer (`uix`). The
-correctness reviewer's prompt makes the concrete functional defects on the paths the change
-touches its own, beside requirements, contracts and architecture; the implementer's prompt makes
-testing the edge cases of every changed path and counting what the change adds to every future
-gate its own, since no judge estimates that. A change that is not small and local runs through
-the default pipeline.
-
-These Task limits fit it; the local gate alone reserves 2 h 10 min of the wall:
-
-```json
-{
-  "task_id": "issue-124",
-  "kind": "implement",
-  "goal": "Fix issue 124 as its text describes.",
-  "pipeline": { "name": "default-light/implementation", "fallback": "refuse" },
-  "limits": {
-    "tokens": 2500000,
-    "max_attempts": 7,
-    "wall_ms": 18600000,
-    "verification": { "tokens": 1200000, "attempts": 5, "wall_ms": 11100000 }
-  }
-}
-```
-
-The catalog binds the implementer and both judges to `codex-main`; map them in your local
-bindings file as for the default pipeline:
-
-```toml
-schema = "af.task-bindings/1"
-
-[providers]
-"default-light/implementer" = "codex-personal"
-"default-light/correctness" = "codex-personal"
-"default-light/evaluator" = "codex-personal"
-```
+The [supported local launch recipe](../fixtures/issue-workflows/README.md#bounded-pilot-recipes)
+uses `scripts/issue-workflows.py` for versioned selection and exact-plan validation, followed by
+native confirmation. It replaces private `step.py`/`mk_task.py` choices. The launcher never
+executes Tasks or dispatches a backlog. One implementation Attempt is allowed, with no automatic
+repair; a manual repair requires owner authorization and retained cumulative accounting. Old
+`default/*`, `default-light/*`, `pi-light/*`, `warm/*`, `kernel/*` and `owner-default/*` operator
+selections are refused. Generic product API profiles and onboarding examples remain separate.
 
 ## The tree before the change
 
@@ -801,10 +730,8 @@ Attempt accounting. Provider Admission remains separate; see
   instructions state the report policy verbatim; its size and citations are judged by the
   report check after sealing, as before.
 
-The shipped reviewer and evaluator slots (`kernel/implementation-reviewed`,
-`kernel/verification-reviewed`, `kernel/verification`, `kernel/report`, `kernel/gate-bench`,
-`kernel/experiment` and `kernel/experiment-trial`) allow two Attempts each, so a Worker whose
-reply fails twice in one Attempt still has a second Attempt with typed feedback (issue #283).
+The installed issue catalog's reviewer and evaluator slots allow two Attempts each, so a Worker
+whose reply fails twice in one Attempt still has a second Attempt with typed feedback (issue #283).
 Every Provider event is in `af task show --json` as `provider_events`; for each failed node,
 `af task show` prints `NODE: CAUSE: FIRST LINE` (a retry history that ran out reads
 `provider_capacity`, `provider_network` or `provider_timeout`), and a node that failed only
@@ -1209,7 +1136,7 @@ after a heading, a thematic break, a fence, an HTML block or a list item. Provid
 and a recorded model that is not a model identity (a path or a URL, say) reads `unknown`: the
 report never carries a Provider label, a path, a credential, a prompt or Worker output.
 `--json` prints the same figures as one
-[`af/task-report@3`](../schemas/task-report-v3.json) document, with exact decimal tokens and
+[`af/task-report@4`](../schemas/task-report-v4.json) document, with exact decimal tokens and
 times in milliseconds, the `pipelines` with their steps, and each Task's `round`, `state`,
 `detail` and `findings`;
 an unknown figure is absent there.

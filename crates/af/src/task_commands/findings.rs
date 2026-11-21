@@ -1,7 +1,7 @@
 //! `af task findings` (ADR-0211): the review findings of a Task's last (or Nth) review round,
 //! per reviewer — each with its severity, confidence, title, location, the quoted evidence and
 //! the proposed fix — then the evaluator's verdict and its reason. Text is grouped by severity;
-//! `--json` prints one `af/task-findings@2` document, whose findings each carry the prompt an
+//! `--json` prints one `af/task-findings@3` document, whose findings each carry the prompt an
 //! agent that will fix them needs and whose round says what it covered (ADR-0248); `--format
 //! sarif` prints the same findings as SARIF 2.1.0. Read-only: it reads what `af task report`
 //! reads, the Task's recorded rounds, their Subjects, Finding Sets, reviewer results and repair
@@ -432,7 +432,7 @@ fn selected_document(
         }
     };
     let document = TaskFindingsV2 {
-        schema: TASK_FINDINGS_V2.into(),
+        schema: TASK_FINDINGS_V3.into(),
         task_id: id.clone(),
         state: view.state,
         rounds: count,
@@ -747,7 +747,7 @@ mod tests {
             change_scope: None,
         };
         TaskFindingsV2 {
-            schema: TASK_FINDINGS_V2.into(),
+            schema: TASK_FINDINGS_V3.into(),
             task_id: "t".into(),
             state: TaskStateV1::ended(TaskStatePhaseV1::Finished, TaskOutcomeV1::Verified, None),
             rounds: 1,

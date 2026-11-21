@@ -15,7 +15,9 @@ use std::os::unix::fs::PermissionsExt;
 /// every assertion.
 fn non_utf8_dir(root: &Path, name: &[u8]) -> Option<std::path::PathBuf> {
     let path = root.join(std::ffi::OsString::from_vec(name.to_vec()));
-    std::fs::create_dir(&path).ok().map(|()| path)
+    crate::common::provider_fixture_fs::create_dir(&path)
+        .ok()
+        .map(|()| path)
 }
 
 fn af(home: &Path, args: &[&str]) -> Output {
@@ -36,19 +38,23 @@ fn stderr(output: &Output) -> String {
 /// replace it or start a stock CLI; malformed profiles remain untouched.
 #[test]
 fn pi_registration_requires_explicit_authority_before_starting_or_changing_a_profile() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let home = root.path();
     let bin = home.join("bin");
     let auth = home.join(".pi/agent");
-    std::fs::create_dir_all(&bin).unwrap();
-    std::fs::create_dir_all(&auth).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(&bin).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(&auth).unwrap();
     let marker = auth.join("auth.json");
     let original = b"synthetic profile marker, never parsed";
-    std::fs::write(&marker, original).unwrap();
+    crate::common::provider_fixture_fs::write(&marker, original).unwrap();
     // Every candidate CLI is a trap; a fallback to an existing adapter is forbidden too.
     for name in ["pi", "claude", "codex"] {
         let path = bin.join(name);
-        std::fs::write(&path, "#!/bin/sh\n: > \"$HOME/cli-started\"\nexit 99\n").unwrap();
+        crate::common::provider_fixture_fs::write(
+            &path,
+            "#!/bin/sh\n: > \"$HOME/cli-started\"\nexit 99\n",
+        )
+        .unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     for (verb, extra) in [("setup", &[][..]), ("add", &["--unverified"][..])] {
@@ -104,9 +110,10 @@ fn pi_registration_requires_explicit_authority_before_starting_or_changing_a_pro
 /// declaring every option af passes (ADR-0146).
 fn fake_provider(root: &Path, name: &str, script: &str) -> std::path::PathBuf {
     let bin = root.join("bin");
-    std::fs::create_dir_all(&bin).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(&bin).unwrap();
     let path = bin.join(name);
-    std::fs::write(&path, crate::provider_cli::with_help(name, script)).unwrap();
+    crate::common::provider_fixture_fs::write(&path, crate::provider_cli::with_help(name, script))
+        .unwrap();
     let mut permissions = std::fs::metadata(&path).unwrap().permissions();
     permissions.set_mode(0o755);
     std::fs::set_permissions(&path, permissions).unwrap();
@@ -267,7 +274,7 @@ fn setup_in_terminal(
 
 #[test]
 fn status_leaves_out_a_logged_out_default_context_once_its_kind_is_registered() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let home = root.path();
     let bin = fake_provider(
         home,
@@ -302,15 +309,15 @@ exit 64
     let default = home.join(".claude");
     let auth = home.join("claude-main");
     for dir in [&default, &auth, &home.join(".codex")] {
-        std::fs::create_dir(dir).unwrap();
+        crate::common::provider_fixture_fs::create_dir(dir).unwrap();
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
     // Each directory holds its CLI's login marker, so status asks the CLI about it.
     for dir in [&default, &auth] {
-        std::fs::write(dir.join("settings.json"), "{}").unwrap();
+        crate::common::provider_fixture_fs::write(dir.join("settings.json"), "{}").unwrap();
     }
-    std::fs::write(home.join(".codex/config.toml"), "").unwrap();
-    std::fs::write(auth.join("logged-in"), "").unwrap();
+    crate::common::provider_fixture_fs::write(home.join(".codex/config.toml"), "").unwrap();
+    crate::common::provider_fixture_fs::write(auth.join("logged-in"), "").unwrap();
     let run = |args: &[&str]| {
         crate::common::af()
             .args(args)
@@ -353,14 +360,14 @@ exit 64
         .unwrap_or_else(|| panic!("codex-ambient is listed: {after}"));
     assert!(codex.contains("not authenticated"), "{after}");
     // A login there brings it back: it is a login the operator may register.
-    std::fs::write(default.join("logged-in"), "").unwrap();
+    crate::common::provider_fixture_fs::write(default.join("logged-in"), "").unwrap();
     let again = status();
     assert!(again.contains("claude-ambient"), "{again}");
 }
 
 #[test]
 fn status_keeps_a_default_context_whose_status_probe_failed() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let home = root.path();
     let bin = fake_provider(
         home,
@@ -386,11 +393,11 @@ exit 64
     let default = home.join(".codex");
     let auth = home.join("codex-main");
     for dir in [&default, &auth] {
-        std::fs::create_dir(dir).unwrap();
+        crate::common::provider_fixture_fs::create_dir(dir).unwrap();
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
-        std::fs::write(dir.join("config.toml"), "").unwrap();
+        crate::common::provider_fixture_fs::write(dir.join("config.toml"), "").unwrap();
     }
-    std::fs::write(auth.join("registered"), "").unwrap();
+    crate::common::provider_fixture_fs::write(auth.join("registered"), "").unwrap();
     let run = |args: &[&str]| {
         crate::common::af()
             .args(args)
@@ -432,7 +439,7 @@ exit 64
 
 #[test]
 fn setup_owns_claude_login_registration_and_idempotent_recheck() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let auth = root.path().join("claude auth");
     let bin = fake_provider(
         root.path(),
@@ -524,7 +531,7 @@ exit 64
 fn a_caller_holding_a_pseudo_terminal_reaches_the_login() {
     use std::ffi::OsStr;
 
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let auth = root.path().join("claude-auth");
     let bin = fake_provider(
         root.path(),
@@ -590,10 +597,10 @@ exit 64
 /// The login child must land in the auth directory `af` was told to use, not an ambient one.
 #[test]
 fn interactive_login_selects_exactly_the_named_auth_directory() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let ambient = root.path().join("ambient-claude");
     let chosen = root.path().join("chosen-claude");
-    std::fs::create_dir(&ambient).unwrap();
+    crate::common::provider_fixture_fs::create_dir(&ambient).unwrap();
     let bin = fake_provider(
         root.path(),
         "claude",
@@ -644,7 +651,7 @@ exit 64
 
 #[test]
 fn setup_owns_codex_login_and_reads_its_stderr_status() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let auth = root.path().join("codex-home");
     let bin = fake_provider(
         root.path(),
@@ -687,7 +694,7 @@ exit 64
 fn setup_repairs_auth_directory_and_lock_modes_under_a_restrictive_umask() {
     use std::ffi::OsStr;
 
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let auth = root.path().join("nested/codex-home");
     let bin = fake_provider(
         root.path(),
@@ -756,7 +763,7 @@ exit 64
 
 #[test]
 fn setup_never_registers_a_failed_login() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let auth = root.path().join("claude-auth");
     let bin = fake_provider(
         root.path(),
@@ -791,9 +798,9 @@ exit 64
 
 #[test]
 fn explicit_registration_rejects_an_auth_directory_writable_by_other_users() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let auth = root.path().join("shared-auth");
-    std::fs::create_dir(&auth).unwrap();
+    crate::common::provider_fixture_fs::create_dir(&auth).unwrap();
     let mut permissions = std::fs::metadata(&auth).unwrap().permissions();
     permissions.set_mode(0o777);
     std::fs::set_permissions(&auth, permissions).unwrap();
@@ -842,9 +849,9 @@ fn explicit_registration_rejects_an_auth_directory_writable_by_other_users() {
 
 #[test]
 fn status_revalidates_auth_directory_safety_after_registration() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let auth = root.path().join("codex-auth");
-    std::fs::create_dir(&auth).unwrap();
+    crate::common::provider_fixture_fs::create_dir(&auth).unwrap();
     let mut permissions = std::fs::metadata(&auth).unwrap().permissions();
     permissions.set_mode(0o700);
     std::fs::set_permissions(&auth, permissions).unwrap();
@@ -892,10 +899,10 @@ fn status_revalidates_auth_directory_safety_after_registration() {
 fn setup_rejects_a_symlinked_auth_directory() {
     use std::os::unix::fs::symlink;
 
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let target = root.path().join("real-auth");
     let auth = root.path().join("linked-auth");
-    std::fs::create_dir(&target).unwrap();
+    crate::common::provider_fixture_fs::create_dir(&target).unwrap();
     symlink(&target, &auth).unwrap();
 
     let output = af(
@@ -921,7 +928,7 @@ fn setup_rejects_a_symlinked_auth_directory() {
 
 #[test]
 fn setup_rejects_a_non_utf8_auth_directory_before_creating_it() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let auth = root
         .path()
         .join(std::ffi::OsString::from_vec(b"codex-auth-\xff".to_vec()));
@@ -950,7 +957,7 @@ fn setup_rejects_a_non_utf8_auth_directory_before_creating_it() {
 fn setup_rejects_a_utf8_alias_to_a_non_utf8_parent_before_creating_the_leaf() {
     use std::os::unix::fs::symlink;
 
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let Some(target) = non_utf8_dir(root.path(), b"auth-parent-\xff") else {
         return;
     };
@@ -977,9 +984,9 @@ fn setup_rejects_a_utf8_alias_to_a_non_utf8_parent_before_creating_the_leaf() {
 
 #[test]
 fn setup_rejects_authenticated_output_from_a_failed_status_command() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let auth = root.path().join("codex-auth");
-    std::fs::create_dir(&auth).unwrap();
+    crate::common::provider_fixture_fs::create_dir(&auth).unwrap();
     let bin = fake_provider(
         root.path(),
         "codex",
@@ -1018,9 +1025,9 @@ exit 64
 
 #[test]
 fn concurrent_identical_setup_is_idempotent() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let auth = root.path().join("codex-auth");
-    std::fs::create_dir(&auth).unwrap();
+    crate::common::provider_fixture_fs::create_dir(&auth).unwrap();
     let bin = fake_provider(
         root.path(),
         "codex",
@@ -1089,9 +1096,9 @@ exit 64
 
 #[test]
 fn add_creates_a_machine_local_registry_and_refuses_ambiguous_duplicates() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let auth = root.path().join("codex-auth");
-    std::fs::create_dir(&auth).unwrap();
+    crate::common::provider_fixture_fs::create_dir(&auth).unwrap();
 
     let output = af(
         root.path(),
@@ -1147,11 +1154,11 @@ fn add_creates_a_machine_local_registry_and_refuses_ambiguous_duplicates() {
 #[test]
 fn add_creates_private_registry_state_even_with_a_wide_umask() {
     for umask in ["0002", "0177", "0777"] {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::common::provider_fixture_fs::tempdir().unwrap();
         let auth = root.path().join("codex-auth");
         let second_auth = root.path().join("second-codex-auth");
-        std::fs::create_dir(&auth).unwrap();
-        std::fs::create_dir(&second_auth).unwrap();
+        crate::common::provider_fixture_fs::create_dir(&auth).unwrap();
+        crate::common::provider_fixture_fs::create_dir(&second_auth).unwrap();
         let script = format!(
             "umask {umask}; exec \"$1\" provider add codex-main --kind codex --auth-dir \"$2\" --unverified"
         );
@@ -1241,13 +1248,14 @@ fn add_creates_private_registry_state_even_with_a_wide_umask() {
 #[test]
 fn add_rejects_registry_state_writable_by_other_users() {
     for unsafe_target in ["directory", "registry"] {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::common::provider_fixture_fs::tempdir().unwrap();
         let auth = root.path().join("codex-auth");
         let directory = root.path().join("config/af");
         let registry = directory.join("providers.toml");
-        std::fs::create_dir(&auth).unwrap();
-        std::fs::create_dir_all(&directory).unwrap();
-        std::fs::write(&registry, "version = 4\nproviders = []\n").unwrap();
+        crate::common::provider_fixture_fs::create_dir(&auth).unwrap();
+        crate::common::provider_fixture_fs::create_dir_all(&directory).unwrap();
+        crate::common::provider_fixture_fs::write(&registry, "version = 4\nproviders = []\n")
+            .unwrap();
         let target = if unsafe_target == "directory" {
             &directory
         } else {
@@ -1286,11 +1294,11 @@ fn add_rejects_registry_state_writable_by_other_users() {
 
 #[test]
 fn add_rejects_a_nonsticky_writable_rename_ancestor() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let shared = root.path().join("shared");
     let auth = shared.join("owned-auth");
-    std::fs::create_dir(&shared).unwrap();
-    std::fs::create_dir(&auth).unwrap();
+    crate::common::provider_fixture_fs::create_dir(&shared).unwrap();
+    crate::common::provider_fixture_fs::create_dir(&auth).unwrap();
     let mut shared_permissions = std::fs::metadata(&shared).unwrap().permissions();
     shared_permissions.set_mode(0o777);
     std::fs::set_permissions(&shared, shared_permissions).unwrap();
@@ -1321,9 +1329,9 @@ fn add_rejects_a_nonsticky_writable_rename_ancestor() {
 
 #[test]
 fn add_uses_the_active_cli_directory_by_default() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let auth = root.path().join("codex-home");
-    std::fs::create_dir(&auth).unwrap();
+    crate::common::provider_fixture_fs::create_dir(&auth).unwrap();
     let output = crate::common::af()
         .args([
             "provider",
@@ -1349,9 +1357,9 @@ fn add_uses_the_active_cli_directory_by_default() {
 
 #[test]
 fn add_refuses_ids_reserved_for_ambient_discovery() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let auth = root.path().join("codex-auth");
-    std::fs::create_dir(&auth).unwrap();
+    crate::common::provider_fixture_fs::create_dir(&auth).unwrap();
     let output = af(
         root.path(),
         &[
@@ -1376,13 +1384,13 @@ fn add_refuses_ids_reserved_for_ambient_discovery() {
 
 #[test]
 fn concurrent_adds_are_serialized_without_losing_entries() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let barrier = Arc::new(Barrier::new(8));
     let mut handles = Vec::new();
     for index in 0..8 {
         let home = root.path().to_path_buf();
         let auth = home.join(format!("codex-auth-{index}"));
-        std::fs::create_dir(&auth).unwrap();
+        crate::common::provider_fixture_fs::create_dir(&auth).unwrap();
         let barrier = Arc::clone(&barrier);
         handles.push(std::thread::spawn(move || {
             barrier.wait();
@@ -1423,13 +1431,13 @@ fn concurrent_adds_are_serialized_without_losing_entries() {
 #[test]
 fn add_normalizes_valid_inline_and_empty_provider_arrays() {
     for existing in [true, false] {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::common::provider_fixture_fs::tempdir().unwrap();
         let config = root.path().join("config/af");
         let first = root.path().join("codex-first");
         let second = root.path().join("codex-second");
-        std::fs::create_dir_all(&config).unwrap();
-        std::fs::create_dir(&first).unwrap();
-        std::fs::create_dir(&second).unwrap();
+        crate::common::provider_fixture_fs::create_dir_all(&config).unwrap();
+        crate::common::provider_fixture_fs::create_dir(&first).unwrap();
+        crate::common::provider_fixture_fs::create_dir(&second).unwrap();
         let registry = if existing {
             format!(
                 "version = 4\nproviders = [{{ id = \"codex-first\", kind = \"codex\", auth_dir = {:?} }}]\n",
@@ -1438,7 +1446,7 @@ fn add_normalizes_valid_inline_and_empty_provider_arrays() {
         } else {
             "version = 4\nproviders = []\n".to_string()
         };
-        std::fs::write(config.join("providers.toml"), registry).unwrap();
+        crate::common::provider_fixture_fs::write(config.join("providers.toml"), registry).unwrap();
         let output = af(
             root.path(),
             &[
@@ -1472,22 +1480,22 @@ fn add_normalizes_valid_inline_and_empty_provider_arrays() {
 #[test]
 fn add_refuses_to_exceed_the_registry_entry_limit() {
     const LIMIT: usize = 32;
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let config = root.path().join("config/af");
-    std::fs::create_dir_all(&config).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(&config).unwrap();
     let mut registry = "version = 4\n".to_string();
     for index in 0..LIMIT {
         let auth = root.path().join(format!("auth-{index}"));
-        std::fs::create_dir(&auth).unwrap();
+        crate::common::provider_fixture_fs::create_dir(&auth).unwrap();
         registry.push_str(&format!(
             "[[providers]]\nid = \"codex-{index}\"\nkind = \"codex\"\nauth_dir = {:?}\n",
             auth.canonicalize().unwrap().to_str().unwrap()
         ));
     }
     let path = config.join("providers.toml");
-    std::fs::write(&path, &registry).unwrap();
+    crate::common::provider_fixture_fs::write(&path, &registry).unwrap();
     let extra = root.path().join("auth-extra");
-    std::fs::create_dir(&extra).unwrap();
+    crate::common::provider_fixture_fs::create_dir(&extra).unwrap();
     let output = af(
         root.path(),
         &[
@@ -1510,18 +1518,18 @@ fn add_refuses_to_exceed_the_registry_entry_limit() {
 /// with a comment above the file and above every entry.
 fn commented_registry(root: &Path, ids: &[&str]) -> (std::path::PathBuf, String) {
     let config = root.join("config/af");
-    std::fs::create_dir_all(&config).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(&config).unwrap();
     let mut registry = "# machine-local\nversion = 4\n".to_string();
     for id in ids {
         let auth = root.join(format!("{id}-auth"));
-        std::fs::create_dir(&auth).unwrap();
+        crate::common::provider_fixture_fs::create_dir(&auth).unwrap();
         registry.push_str(&format!(
             "\n# the {id} login\n[[providers]]\nid = \"{id}\"\nkind = \"codex\"\nauth_dir = {:?}\n",
             auth.canonicalize().unwrap().to_str().unwrap()
         ));
     }
     let path = config.join("providers.toml");
-    std::fs::write(&path, &registry).unwrap();
+    crate::common::provider_fixture_fs::write(&path, &registry).unwrap();
     (path, registry)
 }
 
@@ -1537,7 +1545,7 @@ fn registered_ids(path: &Path) -> Vec<String> {
 
 #[test]
 fn remove_drops_the_named_entry_and_touches_nothing_else() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let (path, registry) = commented_registry(root.path(), &["codex-first", "codex-second"]);
 
     let output = af(root.path(), &["provider", "remove", "codex-first"]);
@@ -1594,7 +1602,7 @@ fn remove_drops_the_named_entry_and_touches_nothing_else() {
 #[test]
 fn remove_refuses_what_is_not_a_registry_entry() {
     // No registry: nothing is registered, and asking creates neither the registry nor its lock.
-    let empty = tempfile::tempdir().unwrap();
+    let empty = crate::common::provider_fixture_fs::tempdir().unwrap();
     let output = af(empty.path(), &["provider", "remove", "codex-main"]);
     assert_eq!(output.status.code(), Some(1));
     let error = stderr(&output);
@@ -1607,7 +1615,7 @@ fn remove_refuses_what_is_not_a_registry_entry() {
     assert!(!config.join("providers.toml").exists());
     assert!(!config.join("providers.toml.lock").exists());
 
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let (path, registry) = commented_registry(root.path(), &["codex-main"]);
     for (ids, refusal) in [
         (&["codex-other"][..], "Provider `codex-other` not found in"),
@@ -1647,14 +1655,14 @@ fn remove_refuses_what_is_not_a_registry_entry() {
 
 #[test]
 fn remove_repairs_a_registry_whose_auth_directories_are_gone() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let ids = ["codex-kept", "codex-gone", "codex-lost"];
     let (path, registry) = commented_registry(root.path(), &ids);
     std::fs::remove_dir(root.path().join("codex-gone-auth")).unwrap();
     std::fs::remove_dir(root.path().join("codex-lost-auth")).unwrap();
     // One missing auth directory makes the whole registry invalid: nothing can be added.
     let extra = root.path().join("codex-extra-auth");
-    std::fs::create_dir(&extra).unwrap();
+    crate::common::provider_fixture_fs::create_dir(&extra).unwrap();
     let add = |root: &Path| {
         let extra = extra.to_str().unwrap();
         let args = [

@@ -160,7 +160,7 @@ def bundle(snapshot, snapshot_id, target, run_id='ci-health-fixture', *, exhaust
                           for key, value in {'subject': observer.digest(subject), 'revision': revision, 'body': body}.items()}
         # Reconcile is the longer of the two Action methods. Native intent/input digests
         # always have this fixed width; every other byte is the concrete request's value.
-        return len(observer.canonical({'schema': 'af/scenario-adapter-request@4',
+        return len(observer.canonical({'schema': 'af/scenario-adapter-request@8',
             'operation': 'notify', 'method': 'reconcile', 'intent_id': 'sha256:' + '0' * 64,
             'input_digest': 'sha256:' + '0' * 64, 'destination': destination, 'inputs': request_inputs}))
 
@@ -223,8 +223,8 @@ def bundle(snapshot, snapshot_id, target, run_id='ci-health-fixture', *, exhaust
     steps.append(step('watch', wait('merged'), inputs, 'observation', watch_condition))
     for declared_step in steps:
         declared_step['when'] = all_of([scope_guard, declared_step['when'] or lit(True)])
-    return {'schema': 'af/scenario-bundle@6', 'root': 'maintenance-ci-health', 'definitions': {
-        'maintenance-ci-health': {'schema': 'af/scenario@6', 'admission': None, 'inputs': {key: 'text' for key in concrete},
+    return {'schema': 'af/scenario-bundle@11', 'root': 'maintenance-ci-health', 'definitions': {
+        'maintenance-ci-health': {'schema': 'af/scenario@11', 'admission': None, 'inputs': {key: 'text' for key in concrete},
             'outputs': {'outcome': 'action'}, 'steps': steps, 'result': {'outcome': previous('report-outcome')},
             'completion': [scope_guard], 'authority': {'task_plans': [target['plan_id']] if diagnose else [],
                 'task_templates': [], 'grants': grants, 'decision_owners': []},

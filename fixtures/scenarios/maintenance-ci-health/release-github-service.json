@@ -27,6 +27,7 @@
           "name": "functional",
           "platform": "linux",
           "conclusion": "failure",
+          "completed_at": "2026-11-09T03:01:00Z",
           "failing_tests": [
             "ci_health::ci_health_current_contracts_roundtrip_and_refuse_missing_malformed_and_old_shapes"
           ],
@@ -66,6 +67,7 @@
           "name": "release-validation",
           "platform": "macos",
           "conclusion": "failure",
+          "completed_at": "2026-11-09T03:01:00Z",
           "failing_tests": [
             "ci_health::ci_health_current_contracts_roundtrip_and_refuse_missing_malformed_and_old_shapes"
           ],

@@ -9,6 +9,8 @@ from math import comb
 from .values import ContractError
 
 ALGORITHM = "paired_median_tolerance_v2"
+LONG_ALGORITHM = "paired_median_tolerance_long_running_v1"
+ALGORITHMS = (ALGORITHM, LONG_ALGORITHM)
 HEALTH_RULE = "sentinel_start_end_v1"
 
 REGRESSION = "regression"

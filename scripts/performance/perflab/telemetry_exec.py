@@ -44,7 +44,7 @@ import subprocess
 import sys
 import time
 
-from . import builds, supervise
+from . import account_isolation, builds, supervise
 from .values import ContractError, require
 
 POLL_SECONDS = 0.05
@@ -320,10 +320,27 @@ class TrustedLocal(Executor):
         self.python = python
 
     def launch(self, execution, stdout, stderr):
-        return _LocalProcess(subprocess.Popen(
-            execution.argv, cwd=execution.cwd, env=execution.env, stdin=subprocess.DEVNULL,
-            stdout=stdout, stderr=stderr, preexec_fn=_limit_files(execution.file_bytes),
-            close_fds=True))
+        namespace = None
+        argv = execution.argv
+        # Parsed execution metadata, rather than command syntax, names every resource.
+        # Keep setup outside the script's AF timers and retain it through group teardown.
+        if account_isolation.FIXTURE in execution.env and not account_isolation.in_private_account_namespace():
+            namespace = account_isolation.namespace_argv(
+                execution.env["HOME"], argv, env=execution.env, cwd=execution.cwd,
+                inputs=execution.readable,
+                directories=execution.writable + [execution.capture])
+            argv = namespace.__enter__()
+        try:
+            process = _LocalProcess(subprocess.Popen(
+                argv, cwd=execution.cwd, env=execution.env, stdin=subprocess.DEVNULL,
+                stdout=stdout, stderr=stderr, preexec_fn=_limit_files(execution.file_bytes),
+                close_fds=True))
+        except BaseException:
+            if namespace is not None:
+                namespace.__exit__(*sys.exc_info())
+            raise
+        process.namespace = namespace
+        return process
 
     def prepare(self, execution):
         if sys.platform != "linux" and sys.platform != "darwin":
@@ -371,6 +388,9 @@ class TrustedLocal(Executor):
             time.sleep(min(POLL_SECONDS, max(0, until - time.monotonic())))
         # This is the only reap. No signal or scan of the group follows it.
         process.reap()
+        namespace = getattr(process, 'namespace', None)
+        if namespace is not None:
+            namespace.__exit__(None, None, None)
         if process.problem:
             notes.insert(0, process.problem)
         if not gone:
@@ -591,8 +611,18 @@ class Contained(Executor):
             argv += ["--mount", "type=bind,src=%s,dst=%s%s" % (
                 path, path, "" if writable else ",readonly")]
         require(execution.cwd in execution.writable, "the working directory is writable state")
+        # Install the private OS account at the existing container boundary. Scripts
+        # validate the real NSS file/identity and need no nested user namespace or added
+        # capability inside the no-new-privileges, cap-drop-ALL container.
+        home = execution.env["HOME"]
+        require(any(home == path or home.startswith(path + os.sep) for path in execution.writable),
+                "the container account home lies in its own writable execution state")
+        passwd, nsswitch = account_isolation.account_files(home, self.uid, self.gid)
+        for source, destination in ((passwd, "/etc/passwd"), (nsswitch, "/etc/nsswitch.conf")):
+            argv += ["--mount", "type=bind,src=%s,dst=%s,readonly" % (source, destination)]
+        env = dict(execution.env, PERFLAB_ACCOUNT_FILE=str(passwd))
         argv += ["--entrypoint", "/usr/bin/env", self.image.reference, "-i"]
-        argv += ["%s=%s" % item for item in sorted(execution.env.items())]
+        argv += ["%s=%s" % item for item in sorted(env.items())]
         return argv + execution.argv
 
     def prepare(self, execution):

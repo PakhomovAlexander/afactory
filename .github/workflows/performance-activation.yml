@@ -18,6 +18,7 @@ name: Performance activation
 on:
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
     paths:
       - "fixtures/performance/**"
 
@@ -25,7 +26,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: performance-activation-${{ github.event.pull_request.number }}
+  group: performance-activation-${{ github.event.pull_request.number }}${{ contains(fromJSON('["labeled","unlabeled"]'), github.event.action) && github.event.label.name != 'nobuild' && format('-ignored-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
 env:
@@ -34,6 +35,7 @@ env:
 jobs:
   verify:
     name: verify proposed activation
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'nobuild') && (!contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || github.event.label.name == 'nobuild') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

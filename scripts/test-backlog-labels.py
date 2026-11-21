@@ -69,6 +69,11 @@ ISSUES = [(1, ['Agent UX Improvement', 'bug']), (2, ['test-perf']), (3, ['enhanc
 
 
 class Definitions(unittest.TestCase):
+    def test_default_pipeline_label_advertises_both_terra_high_review_roles(self):
+        descriptions = {name: description for name, _, description in labels.definitions()}
+        self.assertEqual(descriptions['pipeline/default'],
+                         'bugfix/default-codex: Sol medium; Terra high bugs/correctness; Astra medium evaluation')
+
     def test_the_24_labels_are_the_namespaces_and_values_of_the_design(self):
         design = (ROOT / 'docs' / 'design' / 'issue-triage.md').read_text(encoding='utf-8')
         expected = set()

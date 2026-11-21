@@ -1,5 +1,5 @@
 {
-  "schema": "af.nightly-publish/1",
+  "schema": "af.nightly-publish/2",
   "status": "published",
   "date": "2026-10-29",
   "tag": "nightly-2026.10.29",
@@ -62,5 +62,6 @@
   ],
   "foreign": [],
   "amendments": 0,
-  "published_unix_ms": 1761710400000
+  "published_unix_ms": 1761710400000,
+  "failures": []
 }

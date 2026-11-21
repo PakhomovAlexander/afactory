@@ -93,8 +93,8 @@ def read_world(path, writer_version):
         raw, expected = db.execute('SELECT document,digest FROM journal WHERE id=1').fetchone()
     C.require('sha256:' + hashlib.sha256(raw.encode()).hexdigest() == expected, 'Native journal checksum mismatch')
     world = C.loads(raw)
-    C.require(set(world) == {'schema', 'writer_version', 'ants', 'runs', 'roadmaps'} and
-              world['schema'] == 'af/scenario-store@7' and world['writer_version'] == writer_version,
+    C.require(set(world) == {'schema', 'writer_version', 'ants', 'runs', 'roadmaps', 'drivers', 'run_capacity'} and
+              world['schema'] == 'af/scenario-store@18' and world['writer_version'] == writer_version,
               'Unsupported native journal version')
     C.require(isinstance(world['ants'], dict) and isinstance(world['runs'], dict), 'Malformed native journal')
     C.require(len(world['ants']) <= 4096 and len(world['runs']) <= 16384, 'Native receipt count bound exhausted')
@@ -109,18 +109,22 @@ def due(zone, day, hour, minute, prepared=None):
         {zone['initial_offset'], *(offset for _, offset in transitions)}, [t for t, _ in transitions])
     C.require(len(offsets) <= 256 and all(abs(o) <= 86400 for o in offsets), 'Pinned offset out of bounds')
     local = day * 86400 + hour * 3600 + minute * 60
+    horizon = zone['valid_until_unix_seconds']
     def offset(at):
-        C.require(zone['valid_until_unix_seconds'] is None or at < zone['valid_until_unix_seconds'], 'Pinned timezone horizon exhausted')
         index = bisect.bisect_right(times, at)
         return transitions[index - 1][1] if index else zone['initial_offset']
-    matches = [local - o for o in offsets if offset(local - o) == o]
+    # A historical offset is only a hypothesis. Match inside the pinned interval
+    # before treating an unused candidate beyond its exclusive horizon as missing rules.
+    matches = [local - o for o in offsets
+               if (horizon is None or local - o < horizon) and offset(local - o) == o]
     if matches:
         return min(matches) * 1000
     before = zone['initial_offset']
     for at, after in transitions:
-        if after > before and at + before <= local < at + after:
+        if (horizon is None or at < horizon) and after > before and at + before <= local < at + after:
             return at * 1000
         before = after
+    C.require(horizon is None or all(local - o < horizon for o in offsets), 'Pinned timezone horizon exhausted')
     raise ValueError('Unresolvable pinned expected occurrence')
 
 
@@ -131,23 +135,27 @@ def findings(config, world, now, deadline=None):
     ant = world['ants'].get(config['ant_id'])
     if ant is not None:
         pin = ant['pin']
-        C.require(ant['schema'] == 'af/ant-state@6' and pin['revision'] == config['ant_revision']
+        C.require(ant['schema'] == 'af/ant-state@14' and pin['revision'] == config['ant_revision']
             and pin['definition']['id'] == config['ant_id'] and pin['zone'] == config['zone']
+            and pin['definition']['schedule']['kind'] == 'daily'
             and pin['definition']['schedule']['hour'] == config['hour']
             and pin['definition']['schedule']['minute'] == config['minute'], 'Watchdog expected Ant pin changed')
-        C.require(pin['schema'] == 'af/ant-pin@6'
+        C.require(pin['schema'] == 'af/ant-pin@13'
             and pin['revision'] == C.digest([pin['definition'], pin['scenario'], pin['zone']])
-            and pin['scenario']['schema'] == 'af/scenario-pin@6'
+            and pin['scenario']['schema'] == 'af/scenario-pin@12'
             and pin['scenario']['revision'] == C.digest([pin['scenario']['bundle'], pin['scenario']['policy']]),
             'Corrupt pinned Ant/Scenario identity')
         changes = ant['changes']
         C.require(len(changes) <= 16384 and all(type(t) is int and t <= now and mode in ('enabled', 'paused', 'disabled') for t, mode in changes)
                   and all(a[0] <= b[0] for a, b in zip(changes, changes[1:])), 'Malformed durable Ant mode history')
         occurrences = ant['occurrences']
-        C.require(len(occurrences) <= MAX_DAYS and len({o['local_day'] for o in occurrences}) == len(occurrences), 'Malformed occurrence history')
+        C.require(len(occurrences) <= MAX_DAYS and all(o['local_day'] <= o['through_index'] and
+            (o['local_day'] == o['through_index'] or o['outcome']['kind'] == 'skipped_missed') for o in occurrences)
+            and all(a['through_index'] < b['local_day'] for a, b in zip(occurrences, occurrences[1:])), 'Malformed occurrence history')
     else:
         changes, occurrences = [], []
-    receipts = {o['local_day']: o for o in occurrences}
+    # Compacted history is provenance, not evidence of a missing occurrence.
+    through = ant['retention']['through_index'] if ant is not None else None
     # UTC date plus a day covers every permitted pinned offset. due() decides eligibility.
     last = now // DAY + 1
     if last < config['start_day']:
@@ -157,8 +165,17 @@ def findings(config, world, now, deadline=None):
     zone = config['zone']
     prepared_zone = ({zone['initial_offset'], *(o for _, o in zone['transitions'])}, [t for t, _ in zone['transitions']])
     C.require(len(prepared_zone[0]) <= 256, 'Pinned zone type bound exhausted')
-    for day in range(config['start_day'], last + 1):
+    C.require(all(abs(o) <= 86400 for o in prepared_zone[0]), 'Pinned offset out of bounds')
+    C.require(all(a[0] < b[0] for a, b in zip(zone['transitions'], zone['transitions'][1:])),
+              'Malformed pinned zone')
+    for day in range(max(config['start_day'], through + 1 if through is not None else config['start_day']), last + 1):
         C.require(time.monotonic() < deadline, 'Watchdog observation wall bound exhausted')
+        # No pinned offset can make this local occurrence due yet. Avoid asking
+        # for tomorrow's rules beyond the finite horizon; due dates still fail closed.
+        earliest = (day * 86400 + config['hour'] * 3600 + config['minute'] * 60
+                    - max(prepared_zone[0])) * 1000
+        if now < earliest:
+            continue
         at = due(config['zone'], day, config['hour'], config['minute'], prepared_zone)
         if now < at:
             continue
@@ -167,12 +184,15 @@ def findings(config, world, now, deadline=None):
         if mode != 'enabled':
             continue
         occurrence = C.digest([config['ant_id'], config['ant_revision'], day])
-        receipt = receipts.get(day)
+        receipt = next((o for o in occurrences if o['local_day'] <= day <= o['through_index']), None)
+        if receipt is not None and day > receipt['local_day']:
+            # The first index validates the range's identity and due time.
+            continue
         kind, run_id = None, None
         if receipt is not None:
             C.require(receipt['id'] == occurrence and receipt['due_unix_ms'] == at, 'Stale occurrence receipt')
             outcome = receipt['outcome']
-            if outcome['kind'] in ('skipped_busy', 'skipped_missed', 'skipped_paused', 'skipped_disabled', 'skipped_budget', 'skipped_missing_time'):
+            if outcome['kind'] in ('skipped_busy', 'skipped_missed', 'skipped_paused', 'skipped_disabled', 'skipped_budget', 'skipped_capacity', 'skipped_missing_time'):
                 continue
             if outcome['kind'] == 'skipped_roadmap' and isinstance(outcome.get('reason'), str) and outcome['reason'].strip():
                 continue
@@ -184,7 +204,7 @@ def findings(config, world, now, deadline=None):
                         continue
                     kind = 'run_stalled'
                 else:
-                    C.require(run['schema'] == 'af/scenario-run@6' and run['id'] == run_id
+                    C.require(run['schema'] == 'af/scenario-run@12' and run['id'] == run_id
                         and run['ant'] == config['ant_id'] and run['pin'] == ant['pin']['scenario'], 'Unrelated admitted Run')
                     C.require(at <= run['created_unix_ms'] <= run['updated_unix_ms'] <= now,
                               'Invalid admitted Run interval')
@@ -319,7 +339,7 @@ def call_notifier(grant, request):
             C.require(code == 0, 'Notification outcome uncertain: adapter exit')
             value = C.loads(response)
             C.require(set(value) == {'schema', 'intent_id', 'input_digest', 'outcome', 'evidence', 'observation'}
-                and value['schema'] == 'af/scenario-adapter-response@1'
+                and value['schema'] == 'af/scenario-adapter-response@3'
                 and value['intent_id'] == request['intent_id'] and value['input_digest'] == request['input_digest']
                 and value['outcome'] in ('absent', 'pending', 'done', 'failed')
                 and value['observation'] is None and isinstance(value['evidence'], str)
@@ -346,7 +366,7 @@ def deliver(outbox, config, deadline=None):
         inputs = {key: {'type': 'text', 'value': value} for key, value in {
             'subject': alert['ant_id'], 'revision': alert['ant_revision'],
             'body': C.canonical(alert).decode()}.items()}
-        request = {'schema': 'af/scenario-adapter-request@4', 'method': 'reconcile',
+        request = {'schema': 'af/scenario-adapter-request@8', 'method': 'reconcile',
             'intent_id': alert['alert_id'], 'input_digest': C.digest(inputs),
             'operation': 'notify', 'destination': config['notification'], 'inputs': inputs}
         outcome = call_notifier(grant, request)

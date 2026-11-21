@@ -10,7 +10,7 @@
                                      [--evidence-platform macos|linux] [--inventory FILE]
                                      [--today YYYY-MM-DD]
 
-`scan` reads `af task list --json` documents (`af/task-list@3` or `@4`), resolves each row's
+`scan` reads `af task list --json` documents (`af/task-list@3` or `@5`), resolves each row's
 `gate.flaky` names against the default-feature nextest inventory and proposes, as `quarantined`,
 every identity flaky in at least 2 distinct Tasks updated within the 7 days ending at the end of
 today (UTC). Without --write it changes nothing; --write adds the proposals to
@@ -22,8 +22,8 @@ a loop beside them unless --load none, and writes one af.test-quarantine-confirm
 `flaky` (failed in some runs), `always_fails` (failed in every run) or `clean` (never failed).
 A run without a JUnit, or whose JUnit lacks an identity, writes no report.
 
-`apply` applies such a report to the quarantine file: `flaky` becomes `state: flaky` for 14
-days, `always_fails` and `clean` are removed, except that a clean report from a host other than
+`apply` admits reports at most 14 days old and no earlier than each entry’s current since
+date. `flaky` becomes `state: flaky` until the report date + 14 days, `always_fails` and `clean` are removed, except that a clean report from a host other than
 the evidence platform (--evidence-platform, default macos) keeps the entry. --write writes the
 file and, into --issues DIR, one issue body per flaky and always-failing entry; without it
 nothing changes. It never runs gh.
@@ -53,7 +53,7 @@ GATE_SPEC = importlib.util.spec_from_file_location('nextest_gate', ROOT / 'scrip
 ng = importlib.util.module_from_spec(GATE_SPEC)
 GATE_SPEC.loader.exec_module(ng)
 
-LISTS = ('af/task-list@3', 'af/task-list@4')
+LISTS = ('af/task-list@3', 'af/task-list@5')
 SCAN = 'af.test-quarantine-scan/1'
 MIN_TASKS = 2
 WINDOW_DAYS = 7
@@ -385,7 +385,7 @@ def run_confirm(args):
         raise ValueError(f'confirm: {report} exists; fix: name a new report file')
     today = parse_today(args.today)
     cat = tc.catalog()
-    held = tc.quarantine(cat, today, tc.read(args.quarantine))
+    held = tc.quarantine(cat, today, tc.read(args.quarantine), allow_expired=True)
     absent = sorted(set(args.only) - set(held))
     if absent:
         raise ValueError(f'confirm: --only {absent[0]} is not in {args.quarantine}')
@@ -393,12 +393,13 @@ def run_confirm(args):
     if not identities:
         raise ValueError(f'confirm: {args.quarantine} lists no test to confirm')
     commit = git_commit()
+    inventory = tc.read(args.inventory) if args.inventory else default_inventory(args.cargo)
+    entries = tc.partition(inventory, cat, held)
     expression = None
     if args.load == 'functional':
-        inventory = tc.read(args.inventory) if args.inventory else default_inventory(args.cargo)
         # The gate's own selection: the functional class of the audited inventory, which no held
         # identity is in, because each classifies as quarantine.
-        expression = tc.filterset(tc.partition(inventory, cat, held), ['functional'])
+        expression = tc.filterset(entries, ['functional'])
     work = Path(tempfile.mkdtemp(prefix='af-quarantine-confirm-'))
     try:
         results, load_runs = confirm(identities, args.runs, args.test_threads, args.cargo,
@@ -522,7 +523,7 @@ def issue_body(identity, result, report, entry, expires=None):
     return '\n'.join(lines)
 
 
-def applied(report, current, today, evidence_platform):
+def applied(report, current, reported, evidence_platform):
     """(tests, actions): the quarantine file's tests after the report, and one action per
     reported identity."""
     tests = dict(current['tests'])
@@ -532,14 +533,17 @@ def applied(report, current, today, evidence_platform):
                          'fix: confirm the current entries again')
     evidence = EVIDENCE_PLATFORMS[evidence_platform]
     system = report['host']['system']
-    expires = (today + dt.timedelta(days=tc.QUARANTINE_DAYS)).isoformat()
+    expires = (reported + dt.timedelta(days=tc.QUARANTINE_DAYS)).isoformat()
     actions = []
     for identity in sorted(report['tests']):
         result, entry = report['tests'][identity], tests[identity]
+        if reported < dt.date.fromisoformat(entry['since']):
+            raise ValueError(f'apply: {identity}: report date {reported} predates current since '
+                             f'{entry["since"]}; fix: confirm the current entry again')
         kind = result['classification']
         action = {'identity': identity, 'classification': kind, 'result': result, 'entry': entry}
         if kind == 'flaky':
-            tests[identity] = {**entry, 'state': 'flaky', 'since': today.isoformat(),
+            tests[identity] = {**entry, 'state': 'flaky', 'since': reported.isoformat(),
                                'expires': expires}
             action.update(change='flaky', new=tests[identity], issue=f'flaky-{slug(identity)}.md',
                           body=issue_body(identity, result, report, entry, expires),
@@ -598,11 +602,14 @@ def run_apply(args):
     if reported > today:
         raise ValueError(f'apply: the report is from {reported}, later than today ({today}); '
                          'fix: apply it on or after the day confirm wrote it')
+    if today - reported > dt.timedelta(days=tc.QUARANTINE_DAYS):
+        raise ValueError(f'apply: report date {reported} is older than {tc.QUARANTINE_DAYS} days '
+                         f'(today is {today}); fix: confirm the current entries again')
     cat = tc.catalog()
     path = Path(args.quarantine)
     current = tc.read(path)
-    tc.quarantine(cat, today, current)
-    tests, actions = applied(report, current, today, args.evidence_platform)
+    tc.quarantine(cat, today, current, allow_expired=True)
+    tests, actions = applied(report, current, reported, args.evidence_platform)
     if args.write:
         issued = [action for action in actions if 'issue' in action]
         if issued and not args.issues:
@@ -616,6 +623,7 @@ def run_apply(args):
         value = {'schema': current['schema'], 'tests': tests}
         tc.quarantine(cat, today, value)
         inventory = tc.read(args.inventory) if args.inventory else default_inventory()
+        tc.partition(inventory, cat, current['tests'])
         tc.partition(inventory, cat, tests)
         for action, target in zip(issued, targets):
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -657,7 +665,7 @@ def main(argv=None):
                        help='run the functional class in a loop beside the runs (default), or nothing')
     check.add_argument('--cargo', default='cargo', metavar='PATH',
                        help='the cargo every nextest run starts (default: cargo on PATH)')
-    check.add_argument('--inventory', metavar='FILE', help=inventory_help + ', for the load')
+    check.add_argument('--inventory', metavar='FILE', help=inventory_help)
     check.add_argument('--today', metavar='YYYY-MM-DD', help=today_help)
     check.add_argument('--quarantine', default=str(tc.QUARANTINE), metavar='FILE',
                        help='the quarantine file (default: .config/test-quarantine.json)')

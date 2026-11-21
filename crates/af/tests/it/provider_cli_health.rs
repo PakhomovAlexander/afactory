@@ -46,11 +46,11 @@ struct Machine {
 impl Machine {
     /// A home whose registry holds `codex-main`, registered while a working CLI was installed.
     fn registered() -> Self {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::common::provider_fixture_fs::tempdir().unwrap();
         let auth = root.path().join("codex-auth");
-        std::fs::create_dir(&auth).unwrap();
+        crate::common::provider_fixture_fs::create_dir(&auth).unwrap();
         // A Codex home's login marker: status hands no directory without one to its CLI.
-        std::fs::write(auth.join("config.toml"), "").unwrap();
+        crate::common::provider_fixture_fs::write(auth.join("config.toml"), "").unwrap();
         let machine = Self { root, auth };
         machine.install("codex", &with_help("codex", WORKING_CODEX), 0o755);
         let added = machine.af(&[
@@ -71,9 +71,9 @@ impl Machine {
     }
 
     fn install(&self, name: &str, script: &str, mode: u32) -> PathBuf {
-        std::fs::create_dir_all(self.bin()).unwrap();
+        crate::common::provider_fixture_fs::create_dir_all(self.bin()).unwrap();
         let path = self.bin().join(name);
-        std::fs::write(&path, script).unwrap();
+        crate::common::provider_fixture_fs::write(&path, script).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
         // The resolved program is reported by its canonical path.
         std::fs::canonicalize(&path).unwrap()
@@ -222,14 +222,14 @@ fn status_passes_a_working_cli_and_keeps_a_logged_out_one_an_authentication_answ
 
 #[test]
 fn a_claude_cli_that_cannot_start_is_reported_the_same_way() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let auth = root.path().join("claude-auth");
-    std::fs::create_dir(&auth).unwrap();
-    std::fs::write(auth.join("settings.json"), "{}").unwrap();
+    crate::common::provider_fixture_fs::create_dir(&auth).unwrap();
+    crate::common::provider_fixture_fs::write(auth.join("settings.json"), "{}").unwrap();
     let bin = root.path().join("bin");
-    std::fs::create_dir(&bin).unwrap();
+    crate::common::provider_fixture_fs::create_dir(&bin).unwrap();
     let program = bin.join("claude");
-    std::fs::write(
+    crate::common::provider_fixture_fs::write(
         &program,
         "#!/bin/sh\nprintf '%s\\n' 'Error: Cannot find module ../cli.js' 'Reinstall Claude Code: npm install -g @anthropic-ai/claude-code' >&2\nexit 1\n",
     )
@@ -262,7 +262,7 @@ fn setup_refuses_a_cli_that_cannot_start_as_a_missing_provider_cli() {
     let machine = Machine::registered();
     machine.install("codex", &broken_codex(), 0o755);
     let other = machine.root.path().join("codex-other");
-    std::fs::create_dir(&other).unwrap();
+    crate::common::provider_fixture_fs::create_dir(&other).unwrap();
     let setup = machine.af(&[
         "provider",
         "setup",
@@ -317,12 +317,12 @@ exit 64
         .filter(|line| !line.contains("--safe-mode") && !line.contains("--restricted"))
         .map(|line| format!("{line}\n"))
         .collect();
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let auth = root.path().join("claude-auth");
-    std::fs::create_dir(&auth).unwrap();
-    std::fs::write(auth.join("settings.json"), "{}").unwrap();
+    crate::common::provider_fixture_fs::create_dir(&auth).unwrap();
+    crate::common::provider_fixture_fs::write(auth.join("settings.json"), "{}").unwrap();
     let bin = root.path().join("bin");
-    std::fs::create_dir(&bin).unwrap();
+    crate::common::provider_fixture_fs::create_dir(&bin).unwrap();
     let program = bin.join("claude");
     let status = |page: &str, version: &str| {
         let script = with_page(
@@ -330,7 +330,7 @@ exit 64
             &AUTHENTICATED_CLAUDE.replace("$VERSION_FIXTURE", version),
             page,
         );
-        std::fs::write(&program, script).unwrap();
+        crate::common::provider_fixture_fs::write(&program, script).unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
         let run = |args: &[&str]| {
             crate::common::af()
@@ -425,7 +425,7 @@ exit 64
     assert_eq!(provider["usage"]["state"], "available");
     assert_eq!(provider["usage"]["windows"][0]["used_percent"], 37);
 
-    std::fs::write(machine.auth.join("app-server-broken"), b"").unwrap();
+    crate::common::provider_fixture_fs::write(machine.auth.join("app-server-broken"), b"").unwrap();
     let human = machine.af(&["provider", "status", "--usage"]);
     assert_eq!(code(&human), 4, "{}", err(&human));
     let stdout = out(&human);
@@ -583,7 +583,7 @@ fn a_codex_whose_app_server_exits_before_initialize_is_incompatible_on_status_an
     }
 
     let other = machine.root.path().join("codex-other");
-    std::fs::create_dir(&other).unwrap();
+    crate::common::provider_fixture_fs::create_dir(&other).unwrap();
     let setup = machine.af(&[
         "provider",
         "setup",
@@ -686,7 +686,7 @@ fn denied_codex_probe_is_distinct_on_status_and_detect_with_or_without_sandbox_m
         }
     }
     let other = machine.root.path().join("codex-denied-setup");
-    std::fs::create_dir(&other).unwrap();
+    crate::common::provider_fixture_fs::create_dir(&other).unwrap();
     let setup = machine.af(&[
         "provider",
         "setup",
@@ -966,7 +966,7 @@ exit 64
     assert!(!out(&human).contains("91%"), "{}", out(&human));
     assert!(!out(&human).contains("ChatGPT Pro"), "{}", out(&human));
 
-    std::fs::write(machine.auth.join("answers-in-order"), b"").unwrap();
+    crate::common::provider_fixture_fs::write(machine.auth.join("answers-in-order"), b"").unwrap();
     let in_order = machine.af(&["provider", "status", "--json", "--usage"]);
     assert_eq!(code(&in_order), 0, "{}", err(&in_order));
     let reported = document(&in_order);
@@ -1033,7 +1033,7 @@ fn a_refused_initialize_is_incompatible_on_status_and_setup_with(
     }
 
     let other = machine.root.path().join("codex-other");
-    std::fs::create_dir(&other).unwrap();
+    crate::common::provider_fixture_fs::create_dir(&other).unwrap();
     let setup = af(&[
         "provider",
         "setup",
@@ -1053,7 +1053,7 @@ fn a_refused_initialize_is_incompatible_on_status_and_setup_with(
     assert!(!registry.contains("codex-other"), "{registry}");
 
     // A result object, however empty, proves the protocol.
-    std::fs::write(machine.auth.join("initialize-result"), b"").unwrap();
+    crate::common::provider_fixture_fs::write(machine.auth.join("initialize-result"), b"").unwrap();
     let json = af(&["provider", "status", "--json"]);
     assert_eq!(code(&json), 0, "{}", err(&json));
     assert_eq!(
@@ -1077,7 +1077,7 @@ fn setup_refuses_an_incompatible_cli_before_any_login() {
         .collect();
     machine.install("codex", &with_page("codex", WORKING_CODEX, &old), 0o755);
     let other = machine.root.path().join("codex-other");
-    std::fs::create_dir(&other).unwrap();
+    crate::common::provider_fixture_fs::create_dir(&other).unwrap();
     let setup = machine.af(&[
         "provider",
         "setup",
