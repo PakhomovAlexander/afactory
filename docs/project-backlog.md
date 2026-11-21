@@ -397,6 +397,8 @@ and Jira use the same scheduler. Set `scenario_id` to the digest of the reviewed
 bytes. Set the daily time, timezone, start, lateness and spending limits in the batch policy.
 Schedule the first cutoff after enrollment and use a checkout at the reviewed commit.
 Keep all state paths and any Provider alias bindings local to the receiver.
+Use `af help ant backlog` for the command list and `af help ant backlog --json` for the
+options and effects of each command.
 
 ### One-time setup
 
@@ -424,6 +426,9 @@ jq . "$private/review.json"
 Review the Project, checkout commit, artifact, intake and batch policy pins, destination, native
 Task authority and limits. Confirmation authorizes fresh private assessments and publication
 within that scope for future Project batches. The review spends no model tokens.
+`validate` records the native template pin in the Task Store. `enroll` rechecks the scope,
+prepares the Scenario Store and records the confirmed enrollment in the Project Store.
+The foreground scheduler or an explicit tick drives the enrolled batches.
 
 ```bash
 pin=$(jq -er .revision "$private/review.json")

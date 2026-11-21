@@ -41,25 +41,32 @@ pub(crate) enum Command {
         #[command(flatten)]
         receiver: Receiver,
     },
-    /// Enroll the reviewed scope once for this Project
+    /// Enroll the reviewed scope for this Project
+    #[command(
+        override_usage = "af ant backlog enroll --file <FILE> --task-state <TASK_STATE>\n                      --owner <OWNER> --confirm-pin <REVISION> [OPTIONS]"
+    )]
     Enroll {
         #[command(flatten)]
         receiver: Receiver,
-        #[arg(long)]
+        /// Exact revision printed by validate for the reviewed receiver scope
+        #[arg(long, value_name = "REVISION")]
         confirm_pin: String,
     },
     /// Inspect the local enrollment and its pause state
     Show {
+        /// Receiver's registered checkout
         #[arg(long, default_value = ".")]
         repo: PathBuf,
     },
     /// Pause future batch admission while outstanding Runs can still settle
     Pause {
+        /// Receiver's registered checkout
         #[arg(long, default_value = ".")]
         repo: PathBuf,
     },
-    /// Enable future daily occurrences
+    /// Record due paused slots and enable future daily occurrences
     Resume {
+        /// Receiver's registered checkout
         #[arg(long, default_value = ".")]
         repo: PathBuf,
     },

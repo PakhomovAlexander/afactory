@@ -112,6 +112,9 @@ const CODEX_MODELS: When = Some("a Codex Provider");
 /// queue/session state is machine-local; any host inference uses the separate follow-up grant.
 const CODEX_WAKE: When = Some("an eligible Codex route under its owner follow-up grant");
 
+/// The scheduler advances the receiving Project's journal for an enrolled backlog.
+const RECURRING_BACKLOG: When = Some("an enrolled Project backlog");
+
 /// Every runnable command and what it may do, by the command as typed. A runnable command is a
 /// visible one without subcommands, or a namespace that also runs on its own (`af`, `af review`,
 /// `af storage`).
@@ -329,6 +332,20 @@ pub(crate) const EFFECTS: &[(&str, Effects)] = &[
     ("af ant add", writes(&[(Store, None)])),
     ("af ant show", READS),
     ("af ant output", writes(&[(Files, Some("--output"))])),
+    ("af ant backlog validate", writes(&[(Store, None)])),
+    (
+        "af ant backlog enroll",
+        Effects {
+            human: &[(
+                Approval,
+                Some("exact revision confirmation with --confirm-pin"),
+            )],
+            ..writes(&[(Store, None), (Machine, None)])
+        },
+    ),
+    ("af ant backlog show", READS),
+    ("af ant backlog pause", writes(&[(Machine, None)])),
+    ("af ant backlog resume", writes(&[(Machine, None)])),
     ("af ant scheduler status", READS),
     ("af ant scheduler stop", writes(&[(Store, None)])),
     (
@@ -337,6 +354,7 @@ pub(crate) const EFFECTS: &[(&str, Effects)] = &[
             tokens: Tokens::Charges(None),
             writes: &[
                 (Store, None),
+                (Machine, RECURRING_BACKLOG),
                 (Files, Some("authorized file action")),
                 (Remote, Some("authorized publication adapter")),
             ],
@@ -353,6 +371,7 @@ pub(crate) const EFFECTS: &[(&str, Effects)] = &[
             tokens: Tokens::Charges(None),
             writes: &[
                 (Store, None),
+                (Machine, RECURRING_BACKLOG),
                 (Files, Some("authorized file action")),
                 (Remote, Some("authorized publication adapter")),
             ],
