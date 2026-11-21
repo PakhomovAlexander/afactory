@@ -12,14 +12,14 @@ pub const MAX_TEXT_BYTES: usize = 8192;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "schema", deny_unknown_fields)]
-pub enum BacklogRecordV1 {
+pub enum BacklogRecordV2 {
     #[serde(rename = "af/BacklogReport@1")]
     Report(Report),
     #[serde(rename = "af/BacklogItemRevision@1")]
     ItemRevision(ItemRevision),
-    #[serde(rename = "af/BacklogBatch@1")]
+    #[serde(rename = "af/BacklogBatch@2")]
     Batch(Batch),
-    #[serde(rename = "af/BacklogDecision@1")]
+    #[serde(rename = "af/BacklogDecision@2")]
     Decision(Decision),
     #[serde(rename = "af/BacklogPublication@1")]
     Publication(Publication),
@@ -91,6 +91,8 @@ pub struct Batch {
     pub report_ids: Vec<String>,
     pub scenario_id: String,
     pub policy_id: String,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub settlement_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,6 +106,15 @@ pub struct Decision {
     pub disposition: Disposition,
     pub reason: String,
     pub evidence_ids: Vec<String>,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub local_match: Option<LocalMatch>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalMatch {
+    pub item_id: String,
+    pub revision_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -191,7 +202,7 @@ fn digests(ids: &[String]) -> bool {
     ids.iter().all(|id| is_digest(id))
 }
 
-impl BacklogRecordV1 {
+impl BacklogRecordV2 {
     pub fn project_id(&self) -> &str {
         match self {
             Self::Report(record) => &record.project_id,
@@ -206,64 +217,75 @@ impl BacklogRecordV1 {
         if !is_digest(self.project_id()) {
             return Err("invalid backlog Project identity".into());
         }
-        let valid = match self {
-            Self::Report(report) => return report.validate(),
-            Self::ItemRevision(item) => {
-                is_digest(&item.item_id)
-                    && !item.report_ids.is_empty()
-                    && item.report_ids.iter().all(|id| is_report_id(id))
-                    && valid_text(&item.claim, MAX_TEXT_BYTES, true)
-                    && digests(&item.evidence_ids)
-                    && is_commit_id(&item.source_revision)
-                    && valid_text(&item.proposed.title, MAX_TITLE_BYTES, false)
-                    && valid_text(&item.proposed.body, MAX_TEXT_BYTES, true)
-            }
-            Self::Batch(batch) => {
-                [&batch.authority_id, &batch.scenario_id, &batch.policy_id]
+        let valid =
+            match self {
+                Self::Report(report) => return report.validate(),
+                Self::ItemRevision(item) => {
+                    is_digest(&item.item_id)
+                        && !item.report_ids.is_empty()
+                        && item.report_ids.iter().all(|id| is_report_id(id))
+                        && valid_text(&item.claim, MAX_TEXT_BYTES, true)
+                        && digests(&item.evidence_ids)
+                        && is_commit_id(&item.source_revision)
+                        && valid_text(&item.proposed.title, MAX_TITLE_BYTES, false)
+                        && valid_text(&item.proposed.body, MAX_TEXT_BYTES, true)
+                }
+                Self::Batch(batch) => {
+                    [&batch.authority_id, &batch.scenario_id, &batch.policy_id]
+                        .into_iter()
+                        .all(|id| is_digest(id))
+                        && batch.first_sequence.get() > 0
+                        && batch.first_sequence.get() <= batch.last_sequence.get()
+                        && batch.settlement_id.as_deref().is_none_or(is_digest)
+                        && (!batch.report_ids.is_empty() || batch.settlement_id.is_some())
+                        && batch.report_ids.iter().all(|id| is_report_id(id))
+                }
+                Self::Decision(decision) => {
+                    is_digest(&decision.batch_id)
+                        && is_digest(&decision.revision_id)
+                        && digests(&decision.task_results)
+                        && digests(&decision.evidence_ids)
+                        && decision
+                            .independent_verification_id
+                            .as_deref()
+                            .is_none_or(is_digest)
+                        && (decision.disposition != Disposition::Verified
+                            || decision
+                                .independent_verification_id
+                                .as_ref()
+                                .is_some_and(|id| decision.task_results.contains(id)))
+                        && decision.local_match.as_ref().is_none_or(|matched| {
+                            decision.disposition == Disposition::AlreadyTracked
+                                && decision.independent_verification_id.as_deref().is_some_and(
+                                    |id| decision.task_results.iter().any(|result| result == id),
+                                )
+                                && is_digest(&matched.item_id)
+                                && is_digest(&matched.revision_id)
+                        })
+                        && valid_text(&decision.reason, MAX_TEXT_BYTES, true)
+                }
+                Self::Publication(publication) => {
+                    [
+                        &publication.item_id,
+                        &publication.revision_id,
+                        &publication.decision_id,
+                        &publication.destination_id,
+                        &publication.intent_id,
+                    ]
                     .into_iter()
                     .all(|id| is_digest(id))
-                    && batch.first_sequence.get() > 0
-                    && batch.first_sequence.get() <= batch.last_sequence.get()
-                    && batch.report_ids.iter().all(|id| is_report_id(id))
-            }
-            Self::Decision(decision) => {
-                is_digest(&decision.batch_id)
-                    && is_digest(&decision.revision_id)
-                    && digests(&decision.task_results)
-                    && digests(&decision.evidence_ids)
-                    && decision
-                        .independent_verification_id
-                        .as_deref()
-                        .is_none_or(is_digest)
-                    && (decision.disposition != Disposition::Verified
-                        || decision
-                            .independent_verification_id
-                            .as_ref()
-                            .is_some_and(|id| decision.task_results.contains(id)))
-                    && valid_text(&decision.reason, MAX_TEXT_BYTES, true)
-            }
-            Self::Publication(publication) => {
-                [
-                    &publication.item_id,
-                    &publication.revision_id,
-                    &publication.decision_id,
-                    &publication.destination_id,
-                    &publication.intent_id,
-                ]
-                .into_iter()
-                .all(|id| is_digest(id))
-                    && digests(&publication.attempt_ids)
-                    && publication
-                        .provider_state_id
-                        .as_deref()
-                        .is_none_or(is_digest)
-                    && publication.receipt_id.as_deref().is_none_or(is_digest)
-                    && publication
-                        .remote_id
-                        .as_deref()
-                        .is_none_or(|id| valid_text(id, 256, false))
-            }
-        };
+                        && digests(&publication.attempt_ids)
+                        && publication
+                            .provider_state_id
+                            .as_deref()
+                            .is_none_or(is_digest)
+                        && publication.receipt_id.as_deref().is_none_or(is_digest)
+                        && publication
+                            .remote_id
+                            .as_deref()
+                            .is_none_or(|id| valid_text(id, 256, false))
+                }
+            };
         if valid {
             Ok(())
         } else {

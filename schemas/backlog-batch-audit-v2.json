@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:backlog-batch-audit:1",
+  "$id": "urn:af:schema:backlog-batch-audit:2",
   "title": "Private Project backlog batch audit",
   "type": "object",
   "additionalProperties": false,
@@ -16,19 +16,21 @@
     "batches",
     "active_batch_id",
     "reconsiderations",
-    "pending_member_ids"
+    "pending_member_ids",
+    "pending_deliveries",
+    "delivery_resolutions"
   ],
   "properties": {
     "schema": {
-      "const": "af/backlog-batch-audit@1"
+      "const": "af/backlog-batch-audit@2"
     },
     "project_id": {
-      "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+      "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
     },
     "policy": {
       "anyOf": [
         {
-          "$ref": "urn:af:schema:backlog-batch-policy:1"
+          "$ref": "urn:af:schema:backlog-batch-policy:2"
         },
         {
           "type": "null"
@@ -38,7 +40,7 @@
     "pin_id": {
       "anyOf": [
         {
-          "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+          "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
         },
         {
           "type": "null"
@@ -57,14 +59,14 @@
         ],
         "properties": {
           "report_id": {
-            "$ref": "urn:af:schema:backlog-record:1#/$defs/reportId"
+            "$ref": "urn:af:schema:backlog-record:2#/$defs/reportId"
           },
           "sequence": {
             "type": "string",
             "pattern": "^(0|[1-9][0-9]{0,19})$"
           },
           "report_digest": {
-            "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+            "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
           }
         }
       }
@@ -91,7 +93,7 @@
         ],
         "properties": {
           "id": {
-            "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+            "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
           },
           "local_day": {
             "type": "integer"
@@ -143,7 +145,7 @@
                     "maximum": 9007199254740991
                   },
                   "batch_id": {
-                    "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+                    "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
                   }
                 }
               }
@@ -155,7 +157,7 @@
     "batches": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+        "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
       },
       "additionalProperties": {
         "$ref": "#/$defs/batch"
@@ -164,7 +166,7 @@
     "active_batch_id": {
       "anyOf": [
         {
-          "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+          "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
         },
         {
           "type": "null"
@@ -174,7 +176,7 @@
     "reconsiderations": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+        "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
       },
       "additionalProperties": {
         "type": "object",
@@ -185,12 +187,12 @@
         ],
         "properties": {
           "request": {
-            "$ref": "urn:af:schema:backlog-batch-record:1#/$defs/reconsideration"
+            "$ref": "urn:af:schema:backlog-batch-record:2#/$defs/reconsideration"
           },
           "admitted_batch_id": {
             "anyOf": [
               {
-                "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+                "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
               },
               {
                 "type": "null"
@@ -205,14 +207,61 @@
       "items": {
         "oneOf": [
           {
-            "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+            "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
           },
           {
-            "$ref": "urn:af:schema:backlog-record:1#/$defs/reportId"
+            "$ref": "urn:af:schema:backlog-record:2#/$defs/reportId"
           }
         ]
       },
       "uniqueItems": true
+    },
+    "pending_deliveries": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "revision_id",
+          "decision_id"
+        ],
+        "properties": {
+          "revision_id": {
+            "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+          },
+          "decision_id": {
+            "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+          }
+        }
+      }
+    },
+    "delivery_resolutions": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "revision_id",
+          "outcome"
+        ],
+        "properties": {
+          "revision_id": {
+            "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+          },
+          "outcome": {
+            "enum": [
+              "delivered",
+              "requires_reverification"
+            ]
+          }
+        }
+      }
     }
   },
   "$defs": {
@@ -229,7 +278,7 @@
       ],
       "properties": {
         "id": {
-          "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+          "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
         },
         "previous_high_water": {
           "type": "string",
@@ -244,10 +293,10 @@
           "propertyNames": {
             "oneOf": [
               {
-                "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+                "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
               },
               {
-                "$ref": "urn:af:schema:backlog-record:1#/$defs/reportId"
+                "$ref": "urn:af:schema:backlog-record:2#/$defs/reportId"
               }
             ]
           },
@@ -270,7 +319,7 @@
         "publication_reservations": {
           "type": "array",
           "items": {
-            "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+            "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
           },
           "uniqueItems": true
         }
@@ -292,20 +341,20 @@
         "member_id": {
           "oneOf": [
             {
-              "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+              "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
             },
             {
-              "$ref": "urn:af:schema:backlog-record:1#/$defs/reportId"
+              "$ref": "urn:af:schema:backlog-record:2#/$defs/reportId"
             }
           ]
         },
         "report_id": {
-          "$ref": "urn:af:schema:backlog-record:1#/$defs/reportId"
+          "$ref": "urn:af:schema:backlog-record:2#/$defs/reportId"
         },
         "item_id": {
           "anyOf": [
             {
-              "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+              "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
             },
             {
               "type": "null"
@@ -315,7 +364,7 @@
         "evidence_report_id": {
           "anyOf": [
             {
-              "$ref": "urn:af:schema:backlog-record:1#/$defs/reportId"
+              "$ref": "urn:af:schema:backlog-record:2#/$defs/reportId"
             },
             {
               "type": "null"
@@ -325,13 +374,13 @@
         "evidence_ids": {
           "type": "array",
           "items": {
-            "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+            "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
           }
         },
         "settlement": {
           "anyOf": [
             {
-              "$ref": "urn:af:schema:backlog-batch-record:1#/$defs/settlement"
+              "$ref": "urn:af:schema:backlog-batch-record:2#/$defs/settlement"
             },
             {
               "type": "null"

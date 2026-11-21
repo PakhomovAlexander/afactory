@@ -36,7 +36,7 @@ receipt by the designated authority require separate admission.
    collection has no evidence object to unlink. Pending Reports, holds and publication mappings
    remain reachable through their streams. Each acknowledgement distinguishes durable local
    capture from the designated authority's receipt.
-3. The BacklogRecordStored@1 payload family defines the versioned Report, Item Revision,
+3. The BacklogRecordStored@2 payload family defines the versioned Report, Item Revision,
    Batch, Decision and Publication records. A stable item ID identifies the item across
    revisions. The canonical payload content ID identifies each immutable revision, batch,
    decision and publication record. A batch binds frozen Report membership and an authority

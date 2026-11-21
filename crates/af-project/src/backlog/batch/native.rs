@@ -4,8 +4,10 @@ use super::*;
 use crate::backlog::{PROCESSING, VerifiedItem, read_record};
 use af_contracts::RunEvent;
 use af_contracts::backlog::{
-    BacklogRecordV1, Batch as BatchRecord, Decision, Disposition as Verdict, ItemRevision,
-    MAX_EVIDENCE_BYTES, PublicFields, Publication, batch::assessment::Decision as AssessedDecision,
+    BacklogRecordV2, Batch as BatchRecord, Decision, Disposition as Verdict, ItemRevision,
+    LocalMatch, MAX_EVIDENCE_BYTES, PublicFields, Publication,
+    batch::DeliveryOutcome,
+    batch::assessment::{Decision as AssessedDecision, TrackedItem},
 };
 use af_source_git::manifest::{EntryKind, Manifest};
 use std::io::Write;
@@ -37,20 +39,20 @@ impl ProjectStore {
     fn append_processing(
         &mut self,
         batch_id: &str,
-        records: Vec<BacklogRecordV1>,
+        records: Vec<BacklogRecordV2>,
     ) -> Result<(), String> {
         let events = records
             .into_iter()
             .map(|record| {
                 record.validate()?;
                 let refs = match &record {
-                    BacklogRecordV1::Publication(publication) => {
+                    BacklogRecordV2::Publication(publication) => {
                         publication.provider_state_id.iter().cloned().collect()
                     }
                     _ => Vec::new(),
                 };
                 let payload = serde_json::to_value(record).map_err(|e| e.to_string())?;
-                Ok(NewEvent::new(EventType::BacklogRecordStoredV1, payload)
+                Ok(NewEvent::new(EventType::BacklogRecordStoredV2, payload)
                     .correlating(batch_id)
                     .referencing(refs))
             })
@@ -59,6 +61,61 @@ impl ProjectStore {
             .append_batch(PROCESSING, &self.cas, &events)
             .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    pub(super) fn tracked_backlog(
+        &self,
+        max_bytes: usize,
+    ) -> Result<(BTreeMap<String, TrackedItem>, bool), String> {
+        let current: BTreeSet<_> = self
+            .verified_backlog()?
+            .into_iter()
+            .map(|item| item.revision_id)
+            .collect();
+        let mut revisions = BTreeMap::new();
+        let mut verification = BTreeMap::new();
+        for event in self.processing()? {
+            match read_record(&self.project_id, &event)? {
+                BacklogRecordV2::ItemRevision(revision) => {
+                    let id =
+                        af_store::content_id(&event.payload).map_err(|error| error.to_string())?;
+                    if current.contains(&id) {
+                        revisions.insert(id, revision);
+                    }
+                }
+                BacklogRecordV2::Decision(decision)
+                    if decision.disposition == Verdict::Verified =>
+                {
+                    if let Some(id) = decision.independent_verification_id {
+                        verification.insert(decision.revision_id, id);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut items = BTreeMap::new();
+        let mut bytes = 0;
+        for (revision_id, revision) in revisions {
+            let Some(verification_id) = verification.remove(&revision_id) else {
+                continue;
+            };
+            let key = revision.item_id.clone();
+            let item = TrackedItem {
+                revision_id,
+                revision,
+                verification_id,
+            };
+            let size = serde_json::to_vec(&(&key, &item))
+                .map_err(|error| error.to_string())?
+                .len();
+            if bytes + size > max_bytes || items.len() == MAX_MEMBERS {
+                continue;
+            }
+            bytes += size;
+            items.insert(key, item);
+        }
+        let truncated = items.len() < current.len();
+        Ok((items, truncated))
     }
 
     pub(super) fn native_batch_exists(&self, batch_id: &str) -> Result<bool, String> {
@@ -105,7 +162,7 @@ impl ProjectStore {
             }
         }
         let members: BTreeMap<_, _> = batch.members.iter().map(|m| (&m.member_id, m)).collect();
-        let record = BacklogRecordV1::Batch(BatchRecord {
+        let record = BacklogRecordV2::Batch(BatchRecord {
             project_id: self.project_id.clone(),
             authority_id: batch.authority_id.clone(),
             first_sequence: batch
@@ -113,7 +170,7 @@ impl ProjectStore {
                 .iter()
                 .map(|m| m.sequence)
                 .min_by_key(|n| n.get())
-                .ok_or("Empty backlog settlement")?,
+                .unwrap_or(reference.high_water),
             last_sequence: reference.high_water,
             report_ids: batch
                 .members
@@ -124,6 +181,7 @@ impl ProjectStore {
                 .collect(),
             scenario_id: batch.scenario_id.clone(),
             policy_id: reference.policy_id.clone(),
+            settlement_id: Some(receipt.clone()),
         });
         let batch_record_id = value_id(&record)?;
         let mut records = vec![record];
@@ -193,6 +251,24 @@ impl ProjectStore {
                     .expect("writing to a String cannot fail");
                 }
             }
+            let local_match = if verdict == Verdict::AlreadyTracked {
+                decision
+                    .tracked_id
+                    .as_ref()
+                    .map(|item_id| {
+                        let tracked = batch
+                            .tracked_items
+                            .get(item_id)
+                            .ok_or("Local match is outside the frozen tracked items")?;
+                        Ok::<_, String>(LocalMatch {
+                            item_id: item_id.clone(),
+                            revision_id: tracked.revision_id.clone(),
+                        })
+                    })
+                    .transpose()?
+            } else {
+                None
+            };
             let report_ids = group
                 .iter()
                 .map(|m| m.report_id.clone())
@@ -221,7 +297,7 @@ impl ProjectStore {
                     body: "See the private decision record.".into(),
                 }
             };
-            let item = BacklogRecordV1::ItemRevision(ItemRevision {
+            let item = BacklogRecordV2::ItemRevision(ItemRevision {
                 project_id: self.project_id.clone(),
                 item_id,
                 report_ids: report_ids.into_iter().collect(),
@@ -232,7 +308,7 @@ impl ProjectStore {
             });
             let revision_id = value_id(&item)?;
             records.push(item);
-            records.push(BacklogRecordV1::Decision(Decision {
+            records.push(BacklogRecordV2::Decision(Decision {
                 project_id: self.project_id.clone(),
                 batch_id: batch_record_id.clone(),
                 revision_id,
@@ -241,6 +317,7 @@ impl ProjectStore {
                 disposition: verdict,
                 reason,
                 evidence_ids: decision.evidence_ids.clone(),
+                local_match,
             }));
             for member in group {
                 let disposition = match verdict {
@@ -286,7 +363,7 @@ impl ProjectStore {
         settlement: &str,
         cancellation: &AtomicBool,
     ) -> Result<Option<String>, String> {
-        let (state, _) = self.batch_state()?;
+        let (state, intake) = self.batch_state()?;
         let batch = proof.collection;
         let batch_id = &batch.reference.batch_id;
         let pin =
@@ -314,6 +391,8 @@ impl ProjectStore {
         let mut eligible = BTreeMap::new();
         let mut source_revisions = BTreeSet::new();
         let mut authorized_batches = BTreeSet::new();
+        let mut pending_deliveries = Vec::new();
+        let mut resolved_deliveries = Vec::new();
         let mut admitted = BTreeMap::new();
         let mut mapped_items = BTreeMap::new();
         let mut other_pending = BTreeMap::new();
@@ -322,15 +401,15 @@ impl ProjectStore {
                 continue;
             }
             match read_record(&self.project_id, event)? {
-                BacklogRecordV1::Batch(record) if record.policy_id == batch.reference.policy_id => {
-                    authorized_batches.insert(value_id(&BacklogRecordV1::Batch(record))?);
+                BacklogRecordV2::Batch(record) if record.policy_id == batch.reference.policy_id => {
+                    authorized_batches.insert(value_id(&BacklogRecordV2::Batch(record))?);
                 }
-                BacklogRecordV1::ItemRevision(item)
+                BacklogRecordV2::ItemRevision(item)
                     if item.source_revision == batch.source_revision =>
                 {
-                    source_revisions.insert(value_id(&BacklogRecordV1::ItemRevision(item))?);
+                    source_revisions.insert(value_id(&BacklogRecordV2::ItemRevision(item))?);
                 }
-                BacklogRecordV1::Decision(decision)
+                BacklogRecordV2::Decision(decision)
                     if decision.disposition == Verdict::Verified
                         && decision.independent_verification_id.is_some()
                         && authorized_batches.contains(&decision.batch_id) =>
@@ -338,13 +417,18 @@ impl ProjectStore {
                     if let Some(item) = items.get(&decision.revision_id)
                         && source_revisions.contains(&item.revision_id)
                     {
-                        eligible.insert(
-                            &item.revision_id,
-                            (position, value_id(&BacklogRecordV1::Decision(decision))?),
-                        );
+                        let decision_id = value_id(&BacklogRecordV2::Decision(decision))?;
+                        if event.correlation_id.as_deref() == Some(batch_id)
+                            || state
+                                .pending_deliveries
+                                .get(&item.revision_id)
+                                .is_some_and(|pending| pending.decision_id == decision_id)
+                        {
+                            eligible.insert(&item.revision_id, (position, decision_id));
+                        }
                     }
                 }
-                BacklogRecordV1::Publication(publication)
+                BacklogRecordV2::Publication(publication)
                     if publication.destination_id == *destination =>
                 {
                     if event.correlation_id.as_deref() == Some(batch_id) {
@@ -379,10 +463,16 @@ impl ProjectStore {
             eligible.sort_by_key(|(_, (position, _))| *position);
             let mut intents = Vec::new();
             for (revision, (_, decision_id)) in eligible {
-                if intents.len() == slots {
-                    break;
-                }
                 if published_or_reserved.contains(*revision) {
+                    continue;
+                }
+                if intents.len() == slots {
+                    if !state.pending_deliveries.contains_key(*revision) {
+                        pending_deliveries.push(PendingDelivery {
+                            revision_id: (*revision).clone(),
+                            decision_id: decision_id.clone(),
+                        });
+                    }
                     continue;
                 }
                 let item = &items[*revision];
@@ -414,7 +504,7 @@ impl ProjectStore {
                     receipt_id: None,
                 };
                 admitted.insert(intent_id, intent.clone());
-                intents.push(BacklogRecordV1::Publication(intent));
+                intents.push(BacklogRecordV2::Publication(intent));
             }
             if !intents.is_empty() {
                 self.check_native_batch(
@@ -431,6 +521,7 @@ impl ProjectStore {
             }
         }
         let mut receipts = BTreeMap::new();
+        let mut delivered = BTreeSet::new();
         for mut publication in admitted.into_values() {
             if publication.receipt_id.is_none() {
                 running(cancellation, proof.deadline)?;
@@ -468,6 +559,7 @@ impl ProjectStore {
                     if let Some(remote) = &publication.remote_id {
                         mapped_items.insert(publication.item_id.clone(), remote.clone());
                     }
+                    delivered.insert(publication.revision_id.clone());
                     receipts.insert(
                         publication.intent_id,
                         publication.receipt_id.ok_or("Missing GitHub receipt")?,
@@ -483,13 +575,14 @@ impl ProjectStore {
                 if self
                     .append_processing(
                         batch_id,
-                        vec![BacklogRecordV1::Publication(publication.clone())],
+                        vec![BacklogRecordV2::Publication(publication.clone())],
                     )
                     .is_err()
                 {
                     return Ok(None);
                 }
             }
+            delivered.insert(publication.revision_id.clone());
             receipts.insert(
                 publication.intent_id,
                 publication
@@ -497,14 +590,31 @@ impl ProjectStore {
                     .ok_or("Missing backlog delivery receipt")?,
             );
         }
+        for revision_id in state.pending_deliveries.keys() {
+            let outcome =
+                if published_or_reserved.contains(revision_id) || delivered.contains(revision_id) {
+                    DeliveryOutcome::Delivered
+                } else if !eligible.contains_key(revision_id) {
+                    DeliveryOutcome::RequiresReverification
+                } else {
+                    continue;
+                };
+            resolved_deliveries.push(DeliveryResolution {
+                revision_id: revision_id.clone(),
+                outcome,
+            });
+        }
         let mut closed = state;
         running(cancellation, proof.deadline)?;
         let at_unix_ms = closed.clock.max(crate::now_unix_ms());
-        if closed.close(batch_id, at_unix_ms)? {
-            self.append_batch_journal(vec![Journal::Closed {
-                batch_id: batch_id.clone(),
-                at_unix_ms,
-            }])?;
+        let close = Journal::Closed {
+            batch_id: batch_id.clone(),
+            at_unix_ms,
+            pending_deliveries,
+            resolved_deliveries,
+        };
+        if closed.apply(&intake, close.clone())? {
+            self.append_batch_journal(vec![close])?;
         }
         value_id(&("af/backlog-dispatch-proof@1", settlement, receipts)).map(Some)
     }
@@ -571,10 +681,19 @@ fn check_settlement(
     proof: &NativeAssessment<'_>,
 ) -> Result<(), String> {
     let mut count = 0;
+    let mut batch_found = false;
+    let expected = settlement_id(proof)?;
     for event in events.iter().filter(|event| {
         event.correlation_id.as_deref() == Some(&proof.collection.reference.batch_id)
     }) {
-        if let BacklogRecordV1::Decision(decision) = read_record(project, event)? {
+        let record = read_record(project, event)?;
+        if let BacklogRecordV2::Batch(batch) = &record {
+            if batch_found || batch.settlement_id.as_deref() != Some(&expected) {
+                return Err("Backlog batch was settled by a different native receipt".into());
+            }
+            batch_found = true;
+        }
+        if let BacklogRecordV2::Decision(decision) = record {
             if decision.task_results != [proof.result_id, proof.verification_id]
                 || decision.independent_verification_id.as_deref() != Some(proof.verification_id)
             {
@@ -583,7 +702,7 @@ fn check_settlement(
             count += 1;
         }
     }
-    if count != proof.decisions.len() || count == 0 {
+    if count != proof.decisions.len() || !batch_found {
         return Err("Backlog batch lacks the complete native settlement".into());
     }
     Ok(())

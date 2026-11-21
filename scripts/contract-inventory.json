@@ -161,19 +161,19 @@
       "schemas": [
         "schemas/backlog-assessment-v2.json",
         "fixtures/project-backlog/assessment.schema.json",
-        "schemas/backlog-batch-audit-v1.json",
-        "schemas/backlog-batch-policy-v1.json",
-        "schemas/backlog-batch-record-v1.json",
+        "schemas/backlog-batch-audit-v2.json",
+        "schemas/backlog-batch-policy-v2.json",
+        "schemas/backlog-batch-record-v2.json",
         "schemas/backlog-batch-reference-v1.json",
-        "schemas/backlog-collected-batch-v2.json",
+        "schemas/backlog-collected-batch-v3.json",
         "schemas/backlog-github-state-v1.json",
         "schemas/backlog-provider-index-pin-v1.json",
         "schemas/backlog-intake-policy-v1.json",
         "schemas/backlog-intake-record-v1.json",
-        "schemas/backlog-record-v1.json",
+        "schemas/backlog-record-v2.json",
         "schemas/backlog-signed-receipt-v1.json",
         "schemas/backlog-signed-submission-v1.json",
-        "schemas/backlog-v1.json"
+        "schemas/backlog-v2.json"
       ]
     },
     {

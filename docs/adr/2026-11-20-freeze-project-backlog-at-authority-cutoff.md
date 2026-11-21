@@ -26,7 +26,8 @@ before accounting for its members.
 2. A tick freezes the committed authority high-water mark and explicit membership under
    the same Project Store lock that sequences intake. The journal records both in one
    transaction. Frozen work includes new Reports, carried deferrals and explicit eligible
-   reconsideration requests. A request can link a later authority-accepted Report as
+   reconsideration requests. Admission limits membership to 128 and bounds the serialized
+   context. Excess work remains queued and keeps its original sequence. A request can link a later authority-accepted Report as
    evidence. Its eligibility time is compared with the scheduled occurrence.
 3. The local journal retains occurrence and disposition history. While a batch has unfinished
    members, another due occurrence is skipped as busy. Closing requires a durable disposition
@@ -39,8 +40,8 @@ before accounting for its members.
    rule starting at close. The reservation is conservative bookkeeping. The local commands
    use no Provider and record no measured spend. The audit includes Report identities,
    both cutoffs, occurrence dispositions, frozen members and reconsideration requests.
-   Policy permits either metadata alone or metadata and evidence IDs. Raw evidence and verified
-   public fields remain in their existing read surfaces.
+   Policy can opt into a private assessment view of report facts, reproduction and evidence
+   excerpts. Batch audit retains only identities and digests for that evidence.
 
 ## Consequences
 

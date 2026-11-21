@@ -27,10 +27,10 @@
           "const": "af/backlog-submission@1"
         },
         "authority_id": {
-          "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+          "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
         },
         "producer_id": {
-          "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+          "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
         },
         "report": {
           "type": "object",
@@ -47,40 +47,40 @@
           ],
           "properties": {
             "project_id": {
-              "$ref": "urn:af:schema:backlog-record:1#/$defs/report/properties/project_id"
+              "$ref": "urn:af:schema:backlog-record:2#/$defs/report/properties/project_id"
             },
             "report_id": {
-              "$ref": "urn:af:schema:backlog-record:1#/$defs/report/properties/report_id"
+              "$ref": "urn:af:schema:backlog-record:2#/$defs/report/properties/report_id"
             },
             "workspace_id": {
-              "$ref": "urn:af:schema:backlog-record:1#/$defs/report/properties/workspace_id"
+              "$ref": "urn:af:schema:backlog-record:2#/$defs/report/properties/workspace_id"
             },
             "captured_unix_ms": {
-              "$ref": "urn:af:schema:backlog-record:1#/$defs/report/properties/captured_unix_ms"
+              "$ref": "urn:af:schema:backlog-record:2#/$defs/report/properties/captured_unix_ms"
             },
             "title": {
-              "$ref": "urn:af:schema:backlog-record:1#/$defs/report/properties/title"
+              "$ref": "urn:af:schema:backlog-record:2#/$defs/report/properties/title"
             },
             "observed": {
-              "$ref": "urn:af:schema:backlog-record:1#/$defs/report/properties/observed"
+              "$ref": "urn:af:schema:backlog-record:2#/$defs/report/properties/observed"
             },
             "repro": {
-              "$ref": "urn:af:schema:backlog-record:1#/$defs/report/properties/repro"
+              "$ref": "urn:af:schema:backlog-record:2#/$defs/report/properties/repro"
             },
             "task_id": {
-              "$ref": "urn:af:schema:backlog-record:1#/$defs/report/properties/task_id"
+              "$ref": "urn:af:schema:backlog-record:2#/$defs/report/properties/task_id"
             },
             "run_id": {
-              "$ref": "urn:af:schema:backlog-record:1#/$defs/report/properties/run_id"
+              "$ref": "urn:af:schema:backlog-record:2#/$defs/report/properties/run_id"
             },
             "source_revision": {
-              "$ref": "urn:af:schema:backlog-record:1#/$defs/report/properties/source_revision"
+              "$ref": "urn:af:schema:backlog-record:2#/$defs/report/properties/source_revision"
             },
             "privacy": {
-              "$ref": "urn:af:schema:backlog-record:1#/$defs/report/properties/privacy"
+              "$ref": "urn:af:schema:backlog-record:2#/$defs/report/properties/privacy"
             },
             "evidence": {
-              "$ref": "urn:af:schema:backlog-record:1#/$defs/report/properties/evidence"
+              "$ref": "urn:af:schema:backlog-record:2#/$defs/report/properties/evidence"
             }
           }
         }

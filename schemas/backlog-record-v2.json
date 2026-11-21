@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:backlog-record:1",
-  "title": "BacklogRecordStored@1 payload",
+  "$id": "urn:af:schema:backlog-record:2",
+  "title": "BacklogRecordStored@2 payload",
   "oneOf": [
     {
       "$ref": "#/$defs/report"
@@ -256,11 +256,12 @@
         "last_sequence",
         "report_ids",
         "scenario_id",
-        "policy_id"
+        "policy_id",
+        "settlement_id"
       ],
       "properties": {
         "schema": {
-          "const": "af/BacklogBatch@1"
+          "const": "af/BacklogBatch@2"
         },
         "project_id": {
           "$ref": "#/$defs/digest"
@@ -287,8 +288,36 @@
         },
         "policy_id": {
           "$ref": "#/$defs/digest"
+        },
+        "settlement_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "report_ids": {
+                "maxItems": 0
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "settlement_id": {
+                "$ref": "#/$defs/digest"
+              }
+            }
+          }
+        }
+      ]
     },
     "decision": {
       "type": "object",
@@ -301,11 +330,12 @@
         "task_results",
         "disposition",
         "reason",
-        "evidence_ids"
+        "evidence_ids",
+        "local_match"
       ],
       "properties": {
         "schema": {
-          "const": "af/BacklogDecision@1"
+          "const": "af/BacklogDecision@2"
         },
         "project_id": {
           "$ref": "#/$defs/digest"
@@ -349,6 +379,16 @@
           "items": {
             "$ref": "#/$defs/digest"
           }
+        },
+        "local_match": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/localMatch"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "allOf": [
@@ -357,6 +397,43 @@
             "properties": {
               "disposition": {
                 "const": "verified"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "independent_verification_id"
+            ],
+            "properties": {
+              "independent_verification_id": {
+                "$ref": "#/$defs/digest"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "disposition": {
+                "not": {
+                  "const": "already_tracked"
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "local_match": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "local_match": {
+                "type": "object"
               }
             }
           },
@@ -443,6 +520,22 @@
               "type": "null"
             }
           ]
+        }
+      }
+    },
+    "localMatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "item_id",
+        "revision_id"
+      ],
+      "properties": {
+        "item_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "revision_id": {
+          "$ref": "#/$defs/digest"
         }
       }
     }

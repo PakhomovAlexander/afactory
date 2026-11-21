@@ -288,7 +288,7 @@ class ReleaseContract(unittest.TestCase):
         self.assertEqual(PREFLIGHT.check(self.root), '0.15.1-rc.3')
 
     def test_project_backlog_schema_bytes_are_bound_by_the_release_contract(self):
-        for name in ('backlog-v1.json', 'backlog-record-v1.json', 'run-event-v3.json'):
+        for name in ('backlog-v2.json', 'backlog-record-v2.json', 'run-event-v3.json'):
             with self.subTest(schema=name):
                 path = self.root / 'schemas' / name
                 original = path.read_bytes()

@@ -474,7 +474,7 @@ impl ProjectStore {
         }
         self.append_processing(
             batch_id,
-            vec![BacklogRecordV1::Publication(publication.clone())],
+            vec![BacklogRecordV2::Publication(publication.clone())],
         )
     }
 }

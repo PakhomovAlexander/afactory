@@ -3,7 +3,7 @@
 use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 
-use af_contracts::backlog::BacklogRecordV1;
+use af_contracts::backlog::BacklogRecordV2;
 use af_contracts::backlog::batch::{Reconsideration, Settlement};
 use af_contracts::backlog::intake::MAX_EXCHANGE_BYTES;
 use af_project::backlog::{prepare_report, read_evidence};
@@ -209,7 +209,7 @@ fn print_document(value: &impl Serialize) -> Result<i32, String> {
 }
 
 fn print_json(view: &str, data: Value) -> Result<i32, String> {
-    print_document(&json!({"schema": "af/backlog@1", "view": view, "data": data}))
+    print_document(&json!({"schema": "af/backlog@2", "view": view, "data": data}))
 }
 
 fn read_exchange<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
@@ -322,7 +322,7 @@ pub(crate) fn run(command: Command, repo: Option<&Path>) -> Result<i32, String> 
             if json {
                 let reports = reports
                     .into_iter()
-                    .map(BacklogRecordV1::Report)
+                    .map(BacklogRecordV2::Report)
                     .collect::<Vec<_>>();
                 return print_json(
                     "inbox",
@@ -351,7 +351,7 @@ pub(crate) fn run(command: Command, repo: Option<&Path>) -> Result<i32, String> 
                 .ok_or("no private report with that ID in this Project")?;
             let report = details.report;
             if json {
-                let report = BacklogRecordV1::Report(report);
+                let report = BacklogRecordV2::Report(report);
                 if details.outcomes.is_empty() && details.authority_receipt.is_none() {
                     return print_json("report", json!(report));
                 }
@@ -387,6 +387,12 @@ pub(crate) fn run(command: Command, repo: Option<&Path>) -> Result<i32, String> 
                     disposition.as_str().unwrap_or_default(),
                     crate::terminal_lines(&outcome.reason)
                 );
+                if let Some(matched) = outcome.local_match {
+                    println!(
+                        "Matched item {} revision {}",
+                        matched.item_id, matched.revision_id
+                    );
+                }
             }
             println!("Workspace {}", report.workspace_id);
             println!(

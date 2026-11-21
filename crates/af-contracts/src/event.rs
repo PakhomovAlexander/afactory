@@ -67,10 +67,10 @@ pub enum EventType {
     SurveyFailedV1,
     #[serde(rename = "SurveyCollected@1")]
     SurveyCollectedV1,
-    #[serde(rename = "BacklogRecordStored@1")]
-    BacklogRecordStoredV1,
-    #[serde(rename = "BacklogBatchStored@1")]
-    BacklogBatchStoredV1,
+    #[serde(rename = "BacklogRecordStored@2")]
+    BacklogRecordStoredV2,
+    #[serde(rename = "BacklogBatchStored@2")]
+    BacklogBatchStoredV2,
     #[serde(rename = "BacklogIntakeStored@1")]
     BacklogIntakeStoredV1,
 }
@@ -106,8 +106,8 @@ impl EventType {
         Self::SurveyRecordedV1,
         Self::SurveyFailedV1,
         Self::SurveyCollectedV1,
-        Self::BacklogRecordStoredV1,
-        Self::BacklogBatchStoredV1,
+        Self::BacklogRecordStoredV2,
+        Self::BacklogBatchStoredV2,
         Self::BacklogIntakeStoredV1,
     ];
 
@@ -142,8 +142,8 @@ impl EventType {
             Self::SurveyRecordedV1 => "SurveyRecorded@1",
             Self::SurveyFailedV1 => "SurveyFailed@1",
             Self::SurveyCollectedV1 => "SurveyCollected@1",
-            Self::BacklogRecordStoredV1 => "BacklogRecordStored@1",
-            Self::BacklogBatchStoredV1 => "BacklogBatchStored@1",
+            Self::BacklogRecordStoredV2 => "BacklogRecordStored@2",
+            Self::BacklogBatchStoredV2 => "BacklogBatchStored@2",
             Self::BacklogIntakeStoredV1 => "BacklogIntakeStored@1",
         }
     }
@@ -179,8 +179,8 @@ impl EventType {
             Self::SurveyRecordedV1 => ("SurveyRecorded", 1),
             Self::SurveyFailedV1 => ("SurveyFailed", 1),
             Self::SurveyCollectedV1 => ("SurveyCollected", 1),
-            Self::BacklogRecordStoredV1 => ("BacklogRecordStored", 1),
-            Self::BacklogBatchStoredV1 => ("BacklogBatchStored", 1),
+            Self::BacklogRecordStoredV2 => ("BacklogRecordStored", 2),
+            Self::BacklogBatchStoredV2 => ("BacklogBatchStored", 2),
             Self::BacklogIntakeStoredV1 => ("BacklogIntakeStored", 1),
         }
     }
@@ -257,8 +257,8 @@ impl std::str::FromStr for EventType {
             "SurveyRecorded@1" => Ok(Self::SurveyRecordedV1),
             "SurveyFailed@1" => Ok(Self::SurveyFailedV1),
             "SurveyCollected@1" => Ok(Self::SurveyCollectedV1),
-            "BacklogRecordStored@1" => Ok(Self::BacklogRecordStoredV1),
-            "BacklogBatchStored@1" => Ok(Self::BacklogBatchStoredV1),
+            "BacklogRecordStored@2" => Ok(Self::BacklogRecordStoredV2),
+            "BacklogBatchStored@2" => Ok(Self::BacklogBatchStoredV2),
             "BacklogIntakeStored@1" => Ok(Self::BacklogIntakeStoredV1),
             other => Err(UnknownEventType(other.to_string())),
         }
@@ -485,9 +485,9 @@ pub fn validate_event_payload(
                 .map_err(|error| format!("SurveyFailed@1: {error}"))?
                 .validate()
         }
-        EventType::BacklogBatchStoredV1 => {
+        EventType::BacklogBatchStoredV2 => {
             serde_json::from_value::<crate::backlog::batch::Journal>(payload.clone())
-                .map_err(|_| "invalid BacklogBatchStored@1 payload".to_string())?
+                .map_err(|_| "invalid BacklogBatchStored@2 payload".to_string())?
                 .validate()
         }
         EventType::BacklogIntakeStoredV1 => {
@@ -495,9 +495,9 @@ pub fn validate_event_payload(
                 .map_err(|_| "invalid BacklogIntakeStored@1 payload".to_string())?
                 .validate()
         }
-        EventType::BacklogRecordStoredV1 => {
-            serde_json::from_value::<crate::backlog::BacklogRecordV1>(payload.clone())
-                .map_err(|_| "invalid BacklogRecordStored@1 payload".to_string())?
+        EventType::BacklogRecordStoredV2 => {
+            serde_json::from_value::<crate::backlog::BacklogRecordV2>(payload.clone())
+                .map_err(|_| "invalid BacklogRecordStored@2 payload".to_string())?
                 .validate()
         }
         EventType::SurveyCollectedV1 => {

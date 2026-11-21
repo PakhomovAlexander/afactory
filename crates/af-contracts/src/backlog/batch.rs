@@ -42,8 +42,8 @@ impl BatchReference {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PolicySchema {
-    #[serde(rename = "af/backlog-batch-policy@1")]
-    V1,
+    #[serde(rename = "af/backlog-batch-policy@2")]
+    V2,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,6 +104,7 @@ impl Policy {
 pub enum EvidenceAccess {
     MetadataOnly,
     EvidenceIds,
+    PrivateReport,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -163,7 +164,30 @@ pub enum Journal {
     Closed {
         batch_id: String,
         at_unix_ms: u64,
+        pending_deliveries: Vec<PendingDelivery>,
+        resolved_deliveries: Vec<DeliveryResolution>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PendingDelivery {
+    pub revision_id: String,
+    pub decision_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeliveryResolution {
+    pub revision_id: String,
+    pub outcome: DeliveryOutcome,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryOutcome {
+    Delivered,
+    RequiresReverification,
 }
 
 pub fn is_member_id(id: &str) -> bool {
@@ -199,6 +223,7 @@ impl Journal {
                 ..
             } => {
                 valid_time(*at_unix_ms)
+                    && members.len() <= assessment::MAX_MEMBERS
                     && members.iter().all(|id| is_member_id(id))
                     && members
                         .iter()
@@ -230,7 +255,18 @@ impl Journal {
             Self::Closed {
                 batch_id,
                 at_unix_ms,
-            } => is_digest(batch_id) && valid_time(*at_unix_ms),
+                pending_deliveries,
+                resolved_deliveries,
+            } => {
+                is_digest(batch_id)
+                    && valid_time(*at_unix_ms)
+                    && pending_deliveries
+                        .iter()
+                        .all(|work| is_digest(&work.revision_id) && is_digest(&work.decision_id))
+                    && resolved_deliveries
+                        .iter()
+                        .all(|work| is_digest(&work.revision_id))
+            }
         };
         if valid {
             Ok(())

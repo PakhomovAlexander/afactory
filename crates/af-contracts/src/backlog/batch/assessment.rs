@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 
 use super::provider_index::{Observation, ProviderMatch};
 use super::{BatchReference, is_member_id};
-use crate::backlog::{Disposition, MAX_TEXT_BYTES, MAX_TITLE_BYTES, PublicFields, valid_text};
+use crate::backlog::{
+    Disposition, ItemRevision, MAX_TEXT_BYTES, MAX_TITLE_BYTES, Privacy, PublicFields, valid_text,
+};
 use crate::is_digest;
 use crate::task::document::{DocumentDraft, DocumentSourceV1, RepositoryCitationV1};
 use crate::task::usage::DecimalU64;
@@ -16,8 +18,8 @@ pub const MAX_MEMBERS: usize = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CollectionSchema {
-    #[serde(rename = "af/backlog-collected-batch@2")]
-    V2,
+    #[serde(rename = "af/backlog-collected-batch@3")]
+    V3,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,7 +32,7 @@ pub struct CollectedBatch {
     pub source_revision: String,
     pub previous_high_water: DecimalU64,
     pub members: Vec<CollectedMember>,
-    pub tracked_items: BTreeMap<String, String>,
+    pub tracked_items: BTreeMap<String, TrackedItem>,
     pub tracked_items_truncated: bool,
     #[serde(deserialize_with = "Option::deserialize")]
     pub provider_index: Option<ProviderIndex>,
@@ -55,6 +57,40 @@ pub struct CollectedMember {
     pub sequence: DecimalU64,
     pub report_digest: String,
     pub source_revision: Option<String>,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub report: Option<ReportContext>,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub additional_report: Option<ReportContext>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReportContext {
+    pub report_id: String,
+    pub report_digest: String,
+    pub sequence: DecimalU64,
+    pub source_revision: Option<String>,
+    pub title: String,
+    pub observed: String,
+    pub repro: Option<String>,
+    pub privacy: Privacy,
+    pub evidence: Vec<EvidenceExcerpt>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceExcerpt {
+    pub content_id: String,
+    pub text: String,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrackedItem {
+    pub revision_id: String,
+    pub revision: ItemRevision,
+    pub verification_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,9 +169,16 @@ impl Assessment {
         let mut remaining: BTreeMap<_, _> = batch
             .members
             .iter()
-            .map(|row| (row.member_id.as_str(), &row.evidence_ids))
+            .map(|row| (row.member_id.as_str(), row))
             .collect();
-        if batch.members.len() != remaining.len() || !(1..=MAX_MEMBERS).contains(&remaining.len()) {
+        if batch.members.len() != remaining.len()
+            || remaining.len() > MAX_MEMBERS
+            || batch.members.iter().any(|row| {
+                row.sequence.get() == 0
+                    || row.sequence.get() > batch.reference.high_water.get()
+                    || !row.context_is_bound(batch.reference.high_water.get())
+            })
+        {
             return Err("Invalid frozen backlog membership".into());
         }
         for decision in &assessment.decisions {
@@ -146,15 +189,18 @@ impl Assessment {
             );
             let mut eligible = BTreeSet::new();
             for member in &decision.members {
-                let evidence = remaining
+                let row = remaining
                     .remove(member.as_str())
                     .ok_or("A backlog decision names an unknown or repeated member")?;
-                if requires_evidence && !evidence.iter().any(|id| cited.contains(id)) {
+                if requires_evidence
+                    && (row.report.is_none()
+                        || !row.evidence_ids.iter().any(|id| cited.contains(id)))
+                {
                     return Err(
                         "A verified or tracked decision requires evidence for each member".into(),
                     );
                 }
-                eligible.extend(evidence);
+                eligible.extend(&row.evidence_ids);
             }
             if decision.members.is_empty()
                 || decision.members.iter().any(|id| !is_member_id(id))
@@ -182,6 +228,23 @@ impl Assessment {
             return Err("Backlog assessment did not account for every frozen member".into());
         }
         Ok((batch, assessment.decisions))
+    }
+}
+
+impl CollectedMember {
+    fn context_is_bound(&self, cutoff: u64) -> bool {
+        self.report.as_ref().is_none_or(|report| {
+            report.report_id == self.report_id
+                && report.report_digest == self.report_digest
+                && report.sequence == self.sequence
+                && report.source_revision == self.source_revision
+                && self.evidence_report_id.is_some() == self.additional_report.is_some()
+        }) && self.additional_report.as_ref().is_none_or(|report| {
+            self.report.is_some()
+                && self.evidence_report_id.as_ref() == Some(&report.report_id)
+                && report.sequence.get() > self.sequence.get()
+                && report.sequence.get() <= cutoff
+        })
     }
 }
 
@@ -239,7 +302,7 @@ mod tests {
         let digest = |digit: &str| format!("sha256:{}", digit.repeat(64));
         let source_revision = "a".repeat(40);
         let mut batch = CollectedBatch {
-            schema: CollectionSchema::V2,
+            schema: CollectionSchema::V3,
             reference: BatchReference {
                 schema: BatchReferenceSchema::V1,
                 project_id: digest("1"),
@@ -260,6 +323,18 @@ mod tests {
                 sequence: 1.into(),
                 report_digest: digest("7"),
                 source_revision: Some(source_revision.clone()),
+                report: Some(ReportContext {
+                    report_id: "producer".into(),
+                    report_digest: digest("7"),
+                    sequence: 1.into(),
+                    source_revision: Some(source_revision.clone()),
+                    title: "Boundary".into(),
+                    observed: "The boundary input fails.".into(),
+                    repro: None,
+                    privacy: Privacy::Private,
+                    evidence: Vec::new(),
+                }),
+                additional_report: None,
             }],
             tracked_items: BTreeMap::new(),
             tracked_items_truncated: false,
@@ -316,6 +391,12 @@ mod tests {
             Assessment::check(&source, &draft, Some(commit))
         };
         assert!(check(&batch, &assessment, &source_revision).is_ok());
+        let mut context_withheld = batch.clone();
+        context_withheld.members[0].report = None;
+        assert!(check(&context_withheld, &assessment, &source_revision).is_err());
+        let mut wrong_receipt = batch.clone();
+        wrong_receipt.members[0].report.as_mut().unwrap().sequence = 2.into();
+        assert!(check(&wrong_receipt, &assessment, &source_revision).is_err());
         assert!(check(&batch, &assessment, &"b".repeat(40)).is_err());
         assessment.decisions[0].evidence_ids = vec![digest("8")];
         assert!(check(&batch, &assessment, &source_revision).is_err());
@@ -330,7 +411,25 @@ mod tests {
         assessment.decisions[0].disposition = Disposition::AlreadyTracked;
         assessment.decisions[0].tracked_id = Some(digest("a"));
         assert!(check(&batch, &assessment, &source_revision).is_err());
-        batch.tracked_items.insert(digest("a"), digest("b"));
+        batch.tracked_items.insert(
+            digest("a"),
+            TrackedItem {
+                revision_id: digest("b"),
+                revision: ItemRevision {
+                    project_id: digest("1"),
+                    item_id: digest("a"),
+                    report_ids: vec!["earlier".into()],
+                    claim: "The boundary input fails.".into(),
+                    evidence_ids: vec![digest("6")],
+                    source_revision: source_revision.clone(),
+                    proposed: PublicFields {
+                        title: "Boundary".into(),
+                        body: "Use an inclusive boundary.".into(),
+                    },
+                },
+                verification_id: digest("c"),
+            },
+        );
         assert!(check(&batch, &assessment, &source_revision).is_ok());
 
         let title = "Boundary comparison rejects an input";

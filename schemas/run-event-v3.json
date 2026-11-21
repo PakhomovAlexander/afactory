@@ -61,8 +61,8 @@
         "SurveyRecorded@1",
         "SurveyFailed@1",
         "SurveyCollected@1",
-        "BacklogRecordStored@1",
-        "BacklogBatchStored@1",
+        "BacklogRecordStored@2",
+        "BacklogBatchStored@2",
         "BacklogIntakeStored@1"
       ]
     },
@@ -108,7 +108,7 @@
       "if": {
         "properties": {
           "type": {
-            "const": "BacklogRecordStored@1"
+            "const": "BacklogRecordStored@2"
           }
         },
         "required": [
@@ -118,7 +118,7 @@
       "then": {
         "properties": {
           "payload": {
-            "$ref": "urn:af:schema:backlog-record:1"
+            "$ref": "urn:af:schema:backlog-record:2"
           },
           "artifact_refs": {
             "maxItems": 0
@@ -130,7 +130,7 @@
       "if": {
         "properties": {
           "type": {
-            "const": "BacklogBatchStored@1"
+            "const": "BacklogBatchStored@2"
           }
         },
         "required": [
@@ -140,7 +140,7 @@
       "then": {
         "properties": {
           "payload": {
-            "$ref": "urn:af:schema:backlog-batch-record:1"
+            "$ref": "urn:af:schema:backlog-batch-record:2"
           },
           "artifact_refs": {
             "maxItems": 0

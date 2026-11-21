@@ -30,19 +30,19 @@
           "const": "af/backlog-authority-receipt@1"
         },
         "project_id": {
-          "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+          "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
         },
         "authority_id": {
-          "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+          "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
         },
         "producer_id": {
-          "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+          "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
         },
         "report_id": {
-          "$ref": "urn:af:schema:backlog-record:1#/$defs/reportId"
+          "$ref": "urn:af:schema:backlog-record:2#/$defs/reportId"
         },
         "report_digest": {
-          "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+          "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
         },
         "sequence": {
           "type": "string",

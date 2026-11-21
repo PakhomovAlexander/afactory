@@ -36,7 +36,7 @@
       "version": "1.0.0"
     },
     "backlog/daily-author": {
-      "digest": "sha256:61dac16908efb3cc63ea7d1f7be5e43888d700be88f988d450b284c01395fdce",
+      "digest": "sha256:e441fe430f829ef3d1f287194c197e1ab6cbf7074cc40dfbf245171116e83ee1",
       "path": "task-packages/backlog/daily-author",
       "version": "1.0.0"
     },
@@ -46,7 +46,7 @@
       "version": "1.0.0"
     },
     "backlog/daily-verifier": {
-      "digest": "sha256:05f65a37aafb1e16d89540768d3c89c6a8c1c295d599238a9144254ebb60969e",
+      "digest": "sha256:18a592c06fda6f2a1768289cd144502cf5076e30d822d6379460cca175e32d13",
       "path": "task-packages/backlog/daily-verifier",
       "version": "1.0.0"
     }
@@ -54,7 +54,7 @@
   "schemas": {
     "assessment": {
       "path": "assessment.schema.json",
-      "digest": "sha256:1e8ac241aa63b9f2073d74f01c808f09b31fa444b32242aa1e32b639ceb73c6c"
+      "digest": "sha256:db88776b05544e611cd609234ed1ea8106b5913a7463348f0ec338f2420f2dfb"
     }
   }
 }

@@ -23,9 +23,10 @@ needs both without copying intake data or grants into the artifact.
 
 Prepare the versioned backlog Scenario artifact with a typed Project, batch, policy and cutoff
 reference. Check the active batch, current installed policy, committed artifact digest and bounds
-under a shared Project Store lock. Capture the frozen identities and policy-permitted evidence
-IDs as the private Report source for one read-only native Task. No raw Report text, attachments,
-signing keys or grants travel with the package or that source.
+under a shared Project Store lock. Capture the frozen identities and policy-permitted facts, reproduction and bounded evidence
+excerpts as the private Report source for one read-only native Task. Both Workers receive the
+same input. The tracked view binds verified claims and evidence to exact revisions and receipts.
+Full attachments, signing keys and grants stay outside the captured input.
 
 The report checks require a typed private assessment with exactly one decision per frozen
 member, bound to the captured checkout revision. Evidence and citations must resolve through

@@ -1,0 +1,333 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:backlog-collected-batch:3",
+  "title": "Collected private Project backlog batch",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "reference",
+    "authority_id",
+    "scenario_id",
+    "source_revision",
+    "previous_high_water",
+    "members",
+    "tracked_items",
+    "tracked_items_truncated",
+    "provider_index"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/backlog-collected-batch@3"
+    },
+    "reference": {
+      "$ref": "urn:af:schema:backlog-batch-reference:1"
+    },
+    "authority_id": {
+      "$ref": "#/$defs/digest"
+    },
+    "scenario_id": {
+      "$ref": "#/$defs/digest"
+    },
+    "source_revision": {
+      "$ref": "#/$defs/commit"
+    },
+    "previous_high_water": {
+      "type": "string",
+      "pattern": "^(?:0|[1-9][0-9]{0,19})$"
+    },
+    "members": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "member_id",
+          "report_id",
+          "item_id",
+          "evidence_report_id",
+          "evidence_ids",
+          "sequence",
+          "report_digest",
+          "source_revision",
+          "report",
+          "additional_report"
+        ],
+        "properties": {
+          "member_id": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/report"
+              },
+              {
+                "$ref": "#/$defs/digest"
+              }
+            ]
+          },
+          "report_id": {
+            "$ref": "#/$defs/report"
+          },
+          "item_id": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/digest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "evidence_report_id": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/report"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "evidence_ids": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "$ref": "#/$defs/digest"
+            }
+          },
+          "sequence": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]{0,19}$"
+          },
+          "report_digest": {
+            "$ref": "#/$defs/digest"
+          },
+          "source_revision": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/commit"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "report": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/reportContext"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "additional_report": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/reportContext"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "tracked_items": {
+      "type": "object",
+      "maxProperties": 128,
+      "propertyNames": {
+        "$ref": "#/$defs/digest"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "revision_id",
+          "verification_id",
+          "revision"
+        ],
+        "properties": {
+          "revision_id": {
+            "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+          },
+          "verification_id": {
+            "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+          },
+          "revision": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "project_id",
+              "item_id",
+              "report_ids",
+              "claim",
+              "evidence_ids",
+              "source_revision",
+              "proposed"
+            ],
+            "properties": {
+              "project_id": {
+                "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+              },
+              "item_id": {
+                "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+              },
+              "report_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "urn:af:schema:backlog-record:2#/$defs/reportId"
+                },
+                "minItems": 1
+              },
+              "claim": {
+                "$ref": "urn:af:schema:backlog-record:2#/$defs/note"
+              },
+              "evidence_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+                }
+              },
+              "source_revision": {
+                "$ref": "urn:af:schema:backlog-record:2#/$defs/commit"
+              },
+              "proposed": {
+                "$ref": "urn:af:schema:backlog-record:2#/$defs/public"
+              }
+            }
+          }
+        }
+      }
+    },
+    "tracked_items_truncated": {
+      "type": "boolean"
+    },
+    "provider_index": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "observation_id",
+        "destination_id",
+        "observation"
+      ],
+      "properties": {
+        "observation_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "destination_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "observation": {
+          "$ref": "urn:af:schema:backlog-open-issues:1",
+          "properties": {
+            "issues": {
+              "maxItems": 128
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "digest": {
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+    },
+    "commit": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "report": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+    },
+    "sequence": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]{0,19}$"
+    },
+    "reportContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "report_id",
+        "report_digest",
+        "sequence",
+        "title",
+        "observed",
+        "repro",
+        "privacy",
+        "evidence",
+        "source_revision"
+      ],
+      "properties": {
+        "report_id": {
+          "$ref": "#/$defs/report"
+        },
+        "report_digest": {
+          "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+        },
+        "sequence": {
+          "$ref": "#/$defs/sequence"
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "observed": {
+          "type": "string",
+          "maxLength": 8192
+        },
+        "repro": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 8192
+        },
+        "privacy": {
+          "const": "private"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "content_id",
+              "text",
+              "truncated"
+            ],
+            "properties": {
+              "content_id": {
+                "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+              },
+              "text": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "truncated": {
+                "type": "boolean"
+              }
+            }
+          },
+          "maxItems": 8
+        },
+        "source_revision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/commit"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

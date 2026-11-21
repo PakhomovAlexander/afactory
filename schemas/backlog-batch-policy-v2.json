@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:backlog-batch-policy:1",
+  "$id": "urn:af:schema:backlog-batch-policy:2",
   "title": "Machine-local Project backlog batch policy",
   "type": "object",
   "additionalProperties": false,
@@ -26,19 +26,19 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/backlog-batch-policy@1"
+      "const": "af/backlog-batch-policy@2"
     },
     "project_id": {
-      "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+      "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
     },
     "authority_id": {
-      "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+      "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
     },
     "scenario_id": {
-      "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+      "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
     },
     "destination_id": {
-      "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+      "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
     },
     "timezone": {
       "type": "string",
@@ -98,7 +98,8 @@
     "evidence_access": {
       "enum": [
         "metadata_only",
-        "evidence_ids"
+        "evidence_ids",
+        "private_report"
       ]
     },
     "hold_policy": {

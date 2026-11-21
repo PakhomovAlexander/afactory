@@ -1,5 +1,5 @@
 use super::{assert_invalid, assert_valid};
-use af_contracts::backlog::BacklogRecordV1;
+use af_contracts::backlog::BacklogRecordV2;
 use af_contracts::event::{EventType, validate_event_payload};
 use serde_json::{Value, json};
 
@@ -21,14 +21,14 @@ fn backlog_records_and_event_payloads_are_closed_and_versioned() {
             "source_revision": "a".repeat(40), "proposed": {"title": "Proposed", "body": "Body"}
         }),
         json!({
-            "schema": "af/BacklogBatch@1", "project_id": project, "authority_id": pin,
+            "schema": "af/BacklogBatch@2", "settlement_id": null, "project_id": project, "authority_id": pin,
             "first_sequence": "1", "last_sequence": "3", "report_ids": ["producer-1"],
             "scenario_id": pin, "policy_id": pin
         }),
         json!({
-            "schema": "af/BacklogDecision@1", "project_id": project, "batch_id": pin,
+            "schema": "af/BacklogDecision@2", "project_id": project, "batch_id": pin,
             "revision_id": pin, "task_results": [pin], "independent_verification_id": pin,
-            "disposition": "verified", "reason": "Supported", "evidence_ids": [pin]
+            "disposition": "verified", "reason": "Supported", "evidence_ids": [pin], "local_match": null
         }),
         json!({
             "schema": "af/BacklogPublication@1", "project_id": project, "item_id": pin,
@@ -37,11 +37,11 @@ fn backlog_records_and_event_payloads_are_closed_and_versioned() {
         }),
     ];
     for record in records {
-        let schema = "backlog-record-v1.json";
-        let event_type = EventType::BacklogRecordStoredV1;
+        let schema = "backlog-record-v2.json";
+        let event_type = EventType::BacklogRecordStoredV2;
         assert_valid(schema, &record);
         assert!(validate_event_payload(event_type, &record).is_ok());
-        let typed: BacklogRecordV1 = serde_json::from_value(record.clone()).unwrap();
+        let typed: BacklogRecordV2 = serde_json::from_value(record.clone()).unwrap();
         assert_eq!(serde_json::to_value(typed).unwrap(), record);
 
         let mut extra = record.clone();
@@ -54,7 +54,11 @@ fn backlog_records_and_event_payloads_are_closed_and_versioned() {
             wrong_version["schema"]
                 .as_str()
                 .unwrap()
-                .replace("@1", "@2"),
+                .split_once('@')
+                .map(|(name, version)| {
+                    format!("{name}@{}", if version == "2" { "1" } else { "99" })
+                })
+                .unwrap(),
         );
         assert_invalid(schema, &wrong_version, "unknown version");
         assert!(validate_event_payload(event_type, &wrong_version).is_err());
@@ -141,20 +145,20 @@ fn backlog_batch_journal_and_policy_are_closed_and_versioned() {
 
     let id = format!("sha256:{}", "a".repeat(64));
     let policy = json!({
-        "schema": "af/backlog-batch-policy@1",
+        "schema": "af/backlog-batch-policy@2",
         "project_id": id, "authority_id": id, "scenario_id": id, "destination_id": id,
         "timezone": "UTC", "hour": 2, "minute": 30, "start_unix_ms": 1, "lateness_ms": 180000,
         "run_tokens": 1, "run_wall_ms": 10000, "run_dispatches": 2, "rolling_tokens": 3,
         "rolling_window_ms": 86400000, "publication_limit": 1,
         "evidence_access": "metadata_only", "hold_policy": "hold_all"
     });
-    let policy_schema = "backlog-batch-policy-v1.json";
+    let policy_schema = "backlog-batch-policy-v2.json";
     assert_valid(policy_schema, &policy);
     let parsed: Policy = serde_json::from_value(policy.clone()).unwrap();
     parsed.validate().unwrap();
     assert_eq!(serde_json::to_value(parsed).unwrap(), policy);
     let mut unsupported = policy.clone();
-    unsupported["schema"] = json!("af/backlog-batch-policy@2");
+    unsupported["schema"] = json!("af/backlog-batch-policy@1");
     assert_invalid(policy_schema, &unsupported, "unsupported policy version");
     assert!(serde_json::from_value::<Policy>(unsupported).is_err());
 
@@ -169,10 +173,13 @@ fn backlog_batch_journal_and_policy_are_closed_and_versioned() {
         json!({"kind":"settled","batch_id":id,"member_id":"report-1","settlement":{
             "kind":"reserve_publication","item_id":id
         }}),
-        json!({"kind":"closed","batch_id":id,"at_unix_ms":2}),
+        json!({"kind":"closed","batch_id":id,"at_unix_ms":2,
+            "pending_deliveries":[{"revision_id":id,"decision_id":id}],
+            "resolved_deliveries":[{"revision_id":id,"outcome":"requires_reverification"}],
+        }),
     ];
-    let event_type = EventType::BacklogBatchStoredV1;
-    let record_schema = "backlog-batch-record-v1.json";
+    let event_type = EventType::BacklogBatchStoredV2;
+    let record_schema = "backlog-batch-record-v2.json";
     for payload in variants {
         assert_valid(record_schema, &payload);
         validate_event_payload(event_type, &payload).unwrap();

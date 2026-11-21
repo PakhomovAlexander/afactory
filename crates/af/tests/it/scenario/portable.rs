@@ -38,9 +38,11 @@ else:
     sources = inputs['sources']['payload']['sources']
     if 'backlog-batch' in sources:
         batch = json.loads(sources['backlog-batch']['text'])
-        reconsidering = batch['reference']['high_water'] == '7'
-        assert batch['reference']['high_water'] in ('6', '7')
-        assert len(batch['members']) == (2 if reconsidering else 6)
+        count = len(batch['members'])
+        reconsidering = count == 2
+        duplicate = count == 1
+        assert count in (0, 1, 2, 6)
+        assert batch['reference']['high_water'] == ('7' if reconsidering or duplicate else '6')
         assert not {'AF_BACKLOG_GITHUB_TOKEN', 'AF_BACKLOG_GITHUB_SCOPE', 'GH_TOKEN',
                     'GITHUB_TOKEN', 'SSH_AUTH_SOCK'} & os.environ.keys()
         assert os.environ['GH_CONFIG_DIR'] == '/dev/null'
@@ -52,11 +54,20 @@ else:
         credentials = subprocess.run(['git', 'credential', 'fill'],
             input=b'protocol=https\nhost=fixture.invalid\n\n', capture_output=True)
         assert credentials.returncode != 0 and not credentials.stdout
-        assert 'private-insufficient-repro' not in request
-        assert 'private-attachment' not in request
-        assert 'mismatched-attachment' not in request
         ids_by_evidence = {}
         for member in batch['members']:
+            report = member['report']
+            assert report['report_id'] == member['report_id']
+            assert report['report_digest'] == member['report_digest']
+            assert report['sequence'] == member['sequence']
+            assert report['privacy'] == 'private'
+            assert report['observed'] == 'Different behavior at a boundary'
+            if member['report_id'] == 'unknown':
+                assert report['repro'] == 'private-insufficient-repro'
+            if member['report_id'] == 'hold':
+                assert report['evidence'][0]['text'] == 'private-attachment'
+            if member['report_id'] == 'mismatch':
+                assert report['evidence'][0]['text'] == 'mismatched-attachment'
             for evidence in member['evidence_ids']:
                 ids_by_evidence.setdefault(evidence, []).append(member['member_id'])
         def identity(data):
@@ -68,7 +79,9 @@ else:
                         tracked_id=None, provider_match=None, proposed=proposed)
         decisions = []
         citations = []
-        groups = [('blue', 3, ['blue-a', 'blue-b']), ('green', 7, ['green'])]
+        groups = [('blue', 3, ['blue-a', 'blue-b']), ('green', 7, ['green'])] if count else []
+        if duplicate:
+            groups = [('green', 7, ['late'])]
         if reconsidering:
             member = next(member for member in batch['members'] if member['report_id'] == 'blue-a')
             assert member['item_id']
@@ -103,9 +116,16 @@ else:
             decisions[0].update(disposition='already_tracked', proposed=None,
                                 provider_match={'issue_id': exact['id'], 'quote': quote},
                                 reason='The same input and source path exhibit the same behavior.')
-        if reconsidering:
+        if duplicate:
+            tracked = next((key, value) for key, value in batch['tracked_items'].items()
+                           if value['revision']['claim'] == 'Green excludes its required boundary.')
+            key, item = tracked
+            assert item['revision']['item_id'] == key and item['verification_id'].startswith('sha256:')
+            assert item['revision']['evidence_ids'] == decisions[0]['evidence_ids']
+            decisions[0].update(disposition='already_tracked', proposed=None, tracked_id=key)
+        elif reconsidering:
             decisions.append(decision(['late'], [], 'needs_evidence', 'The reported behavior is unknown.'))
-        else:
+        elif count:
             decisions.append(decision(['unknown'], [], 'needs_evidence', 'The reported behavior is unknown.'))
             decisions.append(decision(['hold'], [], 'held', 'The evidence is unavailable for release.'))
             # Exercise the kernel's digest guard even if the mock independent verifier passes this group.
@@ -117,6 +137,11 @@ else:
         body = '```json\n' + json.dumps(assessment) + '\n```'
         block = ('Blue was reconsidered. Needs evidence: late.' if reconsidering else
                  'Blue: blue-a, blue-b. Green: green. Needs evidence: unknown. Held: hold.')
+        if duplicate:
+            block = 'Late report matches the verified Green revision.'
+        if not count:
+            block = 'No report members. Publish only previously verified revisions.'
+            citations.append({'path':'CONTRIBUTING.md', 'line':1})
         issue = sources['backlog-batch']
         if 'document' in inputs:
             stage = 'verifier'
@@ -666,7 +691,7 @@ fn github_fixture(receiver: &Receiver) -> String {
     format!("{implementation}\n{http}\nif __name__ == {entrypoint}")
 }
 
-fn capture_backlog_batch(receiver: &Receiver, github: Option<&str>) -> Value {
+fn capture_backlog_batch(receiver: &Receiver, github: Option<&str>, accept_late: bool) -> Value {
     let producer_repo = receiver.root.join("another producer");
     git(
         &receiver.repo,
@@ -744,7 +769,11 @@ fn capture_backlog_batch(receiver: &Receiver, github: Option<&str>) -> Value {
     record(&producer_repo, "hold", Some("private-attachment"));
     record(&receiver.repo, "unknown", None);
     record(&receiver.repo, "mismatch", Some("mismatched-attachment"));
-    record(&receiver.repo, "late", None);
+    record(
+        &receiver.repo,
+        "late",
+        github.is_none().then_some(green.as_str()),
+    );
     let project = project(&receiver.repo);
     let store = Path::new(project["store"].as_str().unwrap());
     let project_id = project["project_id"].as_str().unwrap();
@@ -779,9 +808,9 @@ fn capture_backlog_batch(receiver: &Receiver, github: Option<&str>) -> Value {
         af_project::backlog::batch::local_destination(project_id).unwrap()
     };
     save(
-        &store.join("backlog-batch-policy-v1.json"),
+        &store.join("backlog-batch-policy-v2.json"),
         &json!({
-            "schema":"af/backlog-batch-policy@1", "project_id":project_id,
+            "schema":"af/backlog-batch-policy@2", "project_id":project_id,
             "authority_id":af_store::canonical::blob_content_id(&authority.pk.to_bytes()),
             "scenario_id":af_scenario::contract::digest(&artifact),
             "destination_id":destination,
@@ -789,7 +818,7 @@ fn capture_backlog_batch(receiver: &Receiver, github: Option<&str>) -> Value {
             "start_unix_ms":1772755200000_u64, "lateness_ms":60000,
             "run_tokens":150000, "run_wall_ms":1230000, "run_dispatches":dispatches,
             "rolling_tokens":150000, "rolling_window_ms":86400000,
-            "publication_limit":1, "evidence_access":"evidence_ids", "hold_policy":"allow_local_reservations"
+            "publication_limit":1, "evidence_access":"private_report", "hold_policy":"allow_local_reservations"
         }),
     );
     let accept = |id| {
@@ -828,7 +857,9 @@ fn capture_backlog_batch(receiver: &Receiver, github: Option<&str>) -> Value {
     }
     let audit = ok(receiver.af(&["backlog", "batch", "tick", "--at-unix-ms", "1772755200000"]));
     assert_eq!(audit["high_water"], "6");
-    accept("late");
+    if accept_late {
+        accept("late");
+    }
     json!({
         "schema":"af/backlog-batch-reference@1",
         "project_id":project_id,
@@ -849,7 +880,7 @@ fn portable_backlog_settles_and_dispatches_the_frozen_batch_in_two_receivers() {
     );
     for issue in [303, 404] {
         let receiver = Receiver::for_artifact(parent.join(issue.to_string()), issue, BACKLOG);
-        let reference = capture_backlog_batch(&receiver, None);
+        let reference = capture_backlog_batch(&receiver, None, issue == 404);
         schemas::valid(
             &schemas::validator("backlog-batch-reference-v1.json"),
             &reference,
@@ -871,13 +902,13 @@ fn portable_backlog_settles_and_dispatches_the_frozen_batch_in_two_receivers() {
             ["sources"]["backlog-batch"];
         let collected: Value = serde_json::from_str(collection["text"].as_str().unwrap()).unwrap();
         schemas::valid(
-            &schemas::validator("backlog-collected-batch-v2.json"),
+            &schemas::validator("backlog-collected-batch-v3.json"),
             &collected,
         );
         assert_eq!(collected["reference"], reference);
         assert_eq!(collected["members"].as_array().unwrap().len(), 6);
-        assert!(!collection.to_string().contains("private-attachment"));
-        assert!(!collection.to_string().contains("Different behavior"));
+        assert!(collection.to_string().contains("private-attachment"));
+        assert!(collection.to_string().contains("Different behavior"));
         assert!(!collection.to_string().contains("late"));
 
         let policy_path = receiver.root.join("policy.json");
@@ -997,10 +1028,10 @@ fn portable_backlog_settles_and_dispatches_the_frozen_batch_in_two_receivers() {
             processing()
                 .into_iter()
                 .filter_map(|event| {
-                    let record: af_contracts::backlog::BacklogRecordV1 =
+                    let record: af_contracts::backlog::BacklogRecordV2 =
                         serde_json::from_value(event.payload).unwrap();
                     match record {
-                        af_contracts::backlog::BacklogRecordV1::Publication(value) => Some(value),
+                        af_contracts::backlog::BacklogRecordV2::Publication(value) => Some(value),
                         _ => None,
                     }
                 })
@@ -1132,7 +1163,14 @@ fn portable_backlog_settles_and_dispatches_the_frozen_batch_in_two_receivers() {
         let audit = ok(receiver.af(&["backlog", "batch", "audit"]));
         assert!(audit["active_batch_id"].is_null());
         assert_eq!(audit["closed_high_water"], "6");
-        assert_eq!(audit["pending_member_ids"], json!(["late"]));
+        let late = if issue == 404 {
+            json!(["late"])
+        } else {
+            json!([])
+        };
+        assert_eq!(audit["pending_member_ids"], late);
+        let green_revision = green["revision_id"].as_str().unwrap();
+        assert!(audit["pending_deliveries"][green_revision]["decision_id"].is_string());
         assert_eq!(ok(receiver.af(&resume)), run);
         assert_eq!(publications(), settled);
         let evaluation = cas
@@ -1160,11 +1198,63 @@ fn portable_backlog_settles_and_dispatches_the_frozen_batch_in_two_receivers() {
             task["task_id"], task["result_id"], verification_id, task["charged_tokens"],
         );
         receipts.push(task["result_id"].clone());
+
+        let closed = audit["batches"][reference["batch_id"].as_str().unwrap()]["closed_unix_ms"]
+            .as_u64()
+            .unwrap();
+        let due = ((closed / 86_400_000 + 2) * 86_400_000).to_string();
+        let next = ok(receiver.af(&["backlog", "batch", "tick", "--at-unix-ms", &due]));
+        let later = json!({
+            "schema":"af/backlog-batch-reference@1", "project_id":reference["project_id"],
+            "batch_id":next["active_batch_id"], "policy_id":next["pin_id"], "high_water":next["high_water"],
+        });
+        let later_members = &next["batches"][later["batch_id"].as_str().unwrap()]["members"];
+        assert_eq!(
+            later_members.as_object().unwrap().len(),
+            usize::from(issue == 404)
+        );
+        let (id, resumed) = start_backlog_ant(&receiver, "continued-backlog", &later);
+        assert_eq!(resumed["status"], "succeeded", "{}", resumed["failure"]);
+        let later_audit = ok(receiver.af(&["backlog", "batch", "audit"]));
+        assert_eq!(later_audit["pending_deliveries"], json!({}));
+        assert_eq!(
+            later_audit["delivery_resolutions"][green_revision]["outcome"],
+            "delivered"
+        );
+        assert_eq!(fs::read_dir(&sink).unwrap().count(), 2);
+        let delivered = publications();
+        assert_eq!(delivered.len(), 4);
+        assert_eq!(delivered[3].revision_id, green_revision);
+        assert_eq!(
+            delivered[3].decision_id,
+            audit["pending_deliveries"][green_revision]["decision_id"]
+        );
+        if issue == 404 {
+            let duplicate = private_outcome("late");
+            assert_eq!(duplicate["disposition"], "already_tracked");
+            assert_eq!(
+                duplicate["local_match"],
+                json!({
+                    "item_id":green["item_id"], "revision_id":green_revision
+                })
+            );
+            assert_eq!(ok(receiver.af(&["backlog", "list", "--json"])), visible);
+        }
+        let replayed = ok(receiver.af(&[
+            "scenario",
+            "resume",
+            &id,
+            "--state",
+            receiver.scenarios.to_str().unwrap(),
+            "--json",
+        ]));
+        assert_eq!(replayed, resumed);
+        assert_eq!(publications(), delivered);
     }
     assert_ne!(receipts[0], receipts[1]);
 }
 
-fn start_github_backlog(receiver: &Receiver, id: &str, batch: &Value) -> (String, Value) {
+fn start_backlog_ant(receiver: &Receiver, id: &str, batch: &Value) -> (String, Value) {
     let ant_path = receiver.root.join("ant.json");
     let policy_path = receiver.root.join("policy.json");
     if !policy_path.exists() {
@@ -1252,7 +1342,7 @@ fn configure_github_fixture_bounds(receiver: &Receiver) {
 
 #[test]
 fn portable_backlog_github_reconciles_a_lost_create_without_duplicate_writes() {
-    use af_contracts::backlog::{BacklogRecordV1, Publication};
+    use af_contracts::backlog::{BacklogRecordV2, Publication};
 
     let directory = tempfile::tempdir().unwrap();
     let receiver = Receiver::for_artifact(
@@ -1262,8 +1352,8 @@ fn portable_backlog_github_reconciles_a_lost_create_without_duplicate_writes() {
     );
     configure_github_fixture_bounds(&receiver);
     let executable = github_fixture(&receiver);
-    let reference = capture_backlog_batch(&receiver, Some(&executable));
-    let (run_id, first) = start_github_backlog(&receiver, "github-backlog", &reference);
+    let reference = capture_backlog_batch(&receiver, Some(&executable), true);
+    let (run_id, first) = start_backlog_ant(&receiver, "github-backlog", &reference);
     let resume = [
         "scenario",
         "resume",
@@ -1282,8 +1372,8 @@ fn portable_backlog_github_reconciles_a_lost_create_without_duplicate_writes() {
             .unwrap()
             .into_iter()
             .filter_map(|event| {
-                match serde_json::from_value::<BacklogRecordV1>(event.payload).unwrap() {
-                    BacklogRecordV1::Publication(value) => {
+                match serde_json::from_value::<BacklogRecordV2>(event.payload).unwrap() {
+                    BacklogRecordV2::Publication(value) => {
                         assert_eq!(event.artifact_refs, value.provider_state_id.as_slice());
                         Some(value)
                     }
@@ -1517,7 +1607,7 @@ fn portable_backlog_github_reconciles_a_lost_create_without_duplicate_writes() {
     });
     fs::remove_file(&credential).unwrap();
     let (revised_run, waiting) =
-        start_github_backlog(&receiver, "revised-github-backlog", &revised_reference);
+        start_backlog_ant(&receiver, "revised-github-backlog", &revised_reference);
     assert_eq!(waiting["status"], "waiting");
     assert_eq!(http_requests(&fake), requests);
     private_write(&credential, "fixture_token\n");
@@ -1533,6 +1623,13 @@ fn portable_backlog_github_reconciles_a_lost_create_without_duplicate_writes() {
         revised_result["status"], "succeeded",
         "{}",
         revised_result["failure"]
+    );
+    let after = ok(receiver.af(&["backlog", "batch", "audit"]));
+    let green_revision = green_outcome["revision_id"].as_str().unwrap();
+    assert_eq!(after["pending_deliveries"], json!({}));
+    assert_eq!(
+        after["delivery_resolutions"][green_revision]["outcome"],
+        "requires_reverification"
     );
     let revised_history = publications();
     let revised = revised_history.last().unwrap();
@@ -1585,13 +1682,13 @@ fn portable_backlog_github_retains_a_crash_before_the_provider_write_as_pending(
         BACKLOG,
     );
     let executable = github_fixture(&receiver);
-    let reference = capture_backlog_batch(&receiver, Some(&executable));
+    let reference = capture_backlog_batch(&receiver, Some(&executable), true);
     let project = ok(receiver.af(&["project", "show", "--json"]));
     let store_path = Path::new(project["store"].as_str().unwrap());
     private_write(&store_path.join(GITHUB_ADAPTER), &executable);
     let fake = receiver.root.join("fake-github");
     fs::write(fake.join("abort-before-write"), "").unwrap();
-    let (run_id, first) = start_github_backlog(&receiver, "before-write", &reference);
+    let (run_id, first) = start_backlog_ant(&receiver, "before-write", &reference);
     let resume = [
         "scenario",
         "resume",
@@ -1642,10 +1739,10 @@ fn portable_backlog_github_index_prevents_a_duplicate_from_the_daily_ant() {
         BACKLOG,
     );
     let executable = github_fixture(&receiver);
-    let reference = capture_backlog_batch(&receiver, Some(&executable));
+    let reference = capture_backlog_batch(&receiver, Some(&executable), true);
     let project = ok(receiver.af(&["project", "show", "--json"]));
     let store = Path::new(project["store"].as_str().unwrap());
-    let destination = read(&store.join("backlog-batch-policy-v1.json"))["destination_id"].clone();
+    let destination = read(&store.join("backlog-batch-policy-v2.json"))["destination_id"].clone();
     let head = Command::new("git")
         .args(["rev-parse", "HEAD"])
         .current_dir(&receiver.repo)
@@ -1735,13 +1832,13 @@ fn portable_backlog_github_index_prevents_a_duplicate_from_the_daily_ant() {
         ["requirements"]["scenario_portable_sources"]["sources"]["backlog-batch"]["text"];
     let frozen: Value = serde_json::from_str(frozen.as_str().unwrap()).unwrap();
     schemas::valid(
-        &schemas::validator("backlog-collected-batch-v2.json"),
+        &schemas::validator("backlog-collected-batch-v3.json"),
         &frozen,
     );
     assert_eq!(frozen["provider_index"]["observation_id"], observation_id);
 
     let fake = receiver.root.join("fake-github");
-    let (run_id, first) = start_github_backlog(&receiver, "indexed-backlog", &reference);
+    let (run_id, first) = start_backlog_ant(&receiver, "indexed-backlog", &reference);
     assert_eq!(first["status"], "waiting", "{}", first["failure"]);
     assert!(!fake.join("requests").exists());
     let outcome = |id| {

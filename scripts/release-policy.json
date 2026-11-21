@@ -8,14 +8,14 @@
     "schemas/backlog-signed-receipt-v1.json": [
       "af/backlog-signed-receipt@1"
     ],
-    "schemas/backlog-v1.json": [
-      "af/backlog@1"
+    "schemas/backlog-v2.json": [
+      "af/backlog@2"
     ],
     "crates/af-contracts/src/backlog.rs": [
-      "pub enum BacklogRecordV1"
+      "pub enum BacklogRecordV2"
     ],
     "crates/af-project/src/backlog.rs": [
-      "EventType::BacklogRecordStoredV1",
+      "EventType::BacklogRecordStoredV2",
       "pub fn record_backlog_report",
       "pub fn verified_backlog"
     ],

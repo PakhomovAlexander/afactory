@@ -31,14 +31,17 @@ Document, draft, source Snapshot and captured batch against Project authority.
 It records typed grouped decisions and item revisions in one Project Store
 transaction. Each positive group requires a policy-permitted evidence digest for
 every member that matches a cited, bounded file in the committed Snapshot. The
-Workers use the Snapshot to verify the behavior. Private Report prose and
-attachment contents stay in the receiving inbox. A hold or unavailable evidence
+Workers compare the private facts and bounded excerpts with the Snapshot to verify the reported
+behavior and assess privacy. A local duplicate retains the matched item and revision from the
+frozen view. A hold or unavailable evidence
 prevents public fields from being retained in the visible view.
 
 Dispatch requires the matching settlement Action receipt. The native host checks
 the current revision and installed policy and reserves at most the publication
 count limit. Verification makes approved items visible even when capacity
-defers their delivery. The Project Store records an intent and attempt before
+defers delivery. The close transaction records pending revisions and decisions. A later occurrence
+can dispatch them without new intake after rechecking eligibility. A superseding revision or
+a changed source marks a pending delivery as requiring reverification. The Project Store records an intent and attempt before
 inserting the approved revision into an owner-only local sink. The sink key
 binds the destination and revision. Reconciliation accepts existing exact
 bytes for that key and records the receipt without a second delivery. The daily

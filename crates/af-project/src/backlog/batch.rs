@@ -4,11 +4,11 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use af_contracts::EventType;
 use af_contracts::backlog::batch::assessment::{
-    CollectedBatch, CollectedMember, CollectionSchema, MAX_MEMBERS,
+    CollectedBatch, CollectedMember, CollectionSchema, EvidenceExcerpt, MAX_MEMBERS, ReportContext,
 };
 use af_contracts::backlog::batch::{
-    BatchReference, EvidenceAccess, HoldPolicy, Journal, Policy, Reconsideration, Settlement,
-    ZoneSnapshot,
+    BatchReference, DeliveryResolution, EvidenceAccess, HoldPolicy, Journal, PendingDelivery,
+    Policy, Reconsideration, Settlement, ZoneSnapshot,
 };
 use af_contracts::task::usage::DecimalU64;
 use af_scenario::contract::{Limits, MAX_TIME};
@@ -25,8 +25,11 @@ mod native;
 mod provider_index;
 pub use native::{NativeAssessment, local_destination};
 
+// Keep space within the report source limit for the provider index and tracked items.
+const MEMBER_BYTES: usize = 144 * 1024;
+const TRACKED_BYTES: usize = 32 * 1024;
 const STREAM: &str = "backlog-daily-batch";
-pub const POLICY_FILE: &str = "backlog-batch-policy-v1.json";
+pub const POLICY_FILE: &str = "backlog-batch-policy-v2.json";
 #[derive(Serialize)]
 pub struct IntakeEntry {
     pub report_id: String,
@@ -121,6 +124,8 @@ pub struct Audit {
     active_batch_id: Option<String>,
     reconsiderations: BTreeMap<String, PendingReconsideration>,
     pending_member_ids: Vec<String>,
+    pending_deliveries: BTreeMap<String, PendingDelivery>,
+    delivery_resolutions: BTreeMap<String, DeliveryResolution>,
 }
 
 struct Pin {
@@ -187,7 +192,10 @@ struct State {
     active: Option<String>,
     reconsiderations: BTreeMap<String, PendingReconsideration>,
     accounted_reports: BTreeSet<String>,
-    deferred: BTreeMap<String, Work>,
+    deferred: VecDeque<Work>,
+    queued: VecDeque<Work>,
+    pending_deliveries: BTreeMap<String, PendingDelivery>,
+    delivery_resolutions: BTreeMap<String, DeliveryResolution>,
     closed_times: VecDeque<u64>,
 }
 
@@ -227,11 +235,13 @@ impl Intake {
         let evidence_report_id = request.and_then(|r| r.evidence_report_id.clone());
         let evidence_ids = match pin.policy.evidence_access {
             EvidenceAccess::MetadataOnly => Vec::new(),
-            EvidenceAccess::EvidenceIds => std::iter::once(report_id)
-                .chain(evidence_report_id.as_deref())
-                .flat_map(|id| self.reports[id].report.evidence.iter())
-                .map(|evidence| evidence.content_id.clone())
-                .collect(),
+            EvidenceAccess::EvidenceIds | EvidenceAccess::PrivateReport => {
+                std::iter::once(report_id)
+                    .chain(evidence_report_id.as_deref())
+                    .flat_map(|id| self.reports[id].report.evidence.iter())
+                    .map(|evidence| evidence.content_id.clone())
+                    .collect()
+            }
         };
         Work {
             member_id: member_id.into(),
@@ -240,6 +250,55 @@ impl Intake {
             evidence_report_id,
             evidence_ids,
         }
+    }
+    fn collect(&self, pin: &Pin, work: &Work) -> CollectedMember {
+        let accepted = &self.reports[&work.report_id];
+        let private = pin.policy.evidence_access == EvidenceAccess::PrivateReport;
+        CollectedMember {
+            member_id: work.member_id.clone(),
+            report_id: work.report_id.clone(),
+            item_id: work.item_id.clone(),
+            evidence_report_id: work.evidence_report_id.clone(),
+            evidence_ids: work.evidence_ids.clone(),
+            sequence: accepted.receipt.body.sequence,
+            report_digest: accepted.receipt.body.report_digest.clone(),
+            source_revision: accepted.report.source_revision.clone(),
+            report: private.then(|| report_context(accepted)),
+            additional_report: work
+                .evidence_report_id
+                .as_ref()
+                .filter(|_| private)
+                .map(|id| report_context(&self.reports[id])),
+        }
+    }
+}
+
+fn report_context(accepted: &AcceptedReport) -> ReportContext {
+    let report = &accepted.report;
+    ReportContext {
+        report_id: report.report_id.clone(),
+        report_digest: accepted.receipt.body.report_digest.clone(),
+        sequence: accepted.receipt.body.sequence,
+        source_revision: report.source_revision.clone(),
+        title: report.title.clone(),
+        observed: report.observed.clone(),
+        repro: report.repro.clone(),
+        privacy: report.privacy,
+        evidence: report
+            .evidence
+            .iter()
+            .map(|evidence| {
+                let mut end = evidence.text.len().min(256);
+                while !evidence.text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                EvidenceExcerpt {
+                    content_id: evidence.content_id.clone(),
+                    text: evidence.text[..end].into(),
+                    truncated: end < evidence.text.len(),
+                }
+            })
+            .collect(),
     }
 }
 
@@ -284,12 +343,9 @@ impl State {
             ) {
                 Outcome::Skipped(block)
             } else {
-                let mut members = std::mem::take(&mut self.deferred);
                 for report_id in &intake.ordered[self.high_water as usize..high_water as usize] {
-                    members.insert(
-                        report_id.clone(),
-                        intake.work(pin, report_id, report_id, None),
-                    );
+                    self.queued
+                        .push_back(intake.work(pin, report_id, report_id, None));
                 }
                 for (key, pending) in &mut self.reconsiderations {
                     let request = &pending.request;
@@ -299,17 +355,46 @@ impl State {
                             Some(evidence) => intake.sequence(evidence)? <= high_water,
                             None => true,
                         }
+                        && !self.queued.iter().any(|work| &work.member_id == key)
                     {
-                        members.insert(
-                            key.clone(),
-                            intake.work(pin, key, &request.report_id, Some(request)),
-                        );
+                        self.queued.push_back(intake.work(
+                            pin,
+                            key,
+                            &request.report_id,
+                            Some(request),
+                        ));
+                    }
+                }
+                // Reports left over from earlier cutoffs keep their place. A deferred
+                // member goes behind work already waiting so it cannot starve intake.
+                self.queued.append(&mut self.deferred);
+                let mut members = BTreeMap::new();
+                let mut bytes = 0;
+                while members.len() < MAX_MEMBERS {
+                    let Some(work) = self.queued.front() else {
+                        break;
+                    };
+                    let size = serde_json::to_vec(&intake.collect(pin, work))
+                        .map_err(|error| error.to_string())?
+                        .len()
+                        + 1;
+                    if bytes + size > MEMBER_BYTES {
+                        if members.is_empty() {
+                            return Err("A backlog member exceeds the collection bound".into());
+                        }
+                        break;
+                    }
+                    bytes += size;
+                    let work = self.queued.pop_front().expect("queued member");
+                    if let Some(pending) = self.reconsiderations.get_mut(&work.member_id) {
                         pending.admitted_batch_id = Some(id.clone());
                     }
+                    members.insert(work.member_id.clone(), work);
                 }
                 let previous_high_water = std::mem::replace(&mut self.high_water, high_water);
                 frozen.extend(members.keys().cloned());
-                let closed_unix_ms = members.is_empty().then_some(at);
+                let closed_unix_ms =
+                    (members.is_empty() && self.pending_deliveries.is_empty()).then_some(at);
                 if closed_unix_ms.is_some() {
                     self.closed_high_water = high_water;
                 } else {
@@ -442,7 +527,13 @@ impl State {
         Ok(true)
     }
 
-    fn close(&mut self, batch_id: &str, at: u64) -> Result<bool, String> {
+    fn close(
+        &mut self,
+        batch_id: &str,
+        at: u64,
+        pending_deliveries: Vec<PendingDelivery>,
+        resolved_deliveries: Vec<DeliveryResolution>,
+    ) -> Result<bool, String> {
         let batch = self
             .batches
             .get_mut(batch_id)
@@ -458,13 +549,33 @@ impl State {
         {
             return Err("cannot close backlog batch before all members are accounted for or with an invalid clock".into());
         }
+        for resolution in resolved_deliveries {
+            if self
+                .pending_deliveries
+                .remove(&resolution.revision_id)
+                .is_none()
+            {
+                return Err("Backlog delivery resolution has no pending work".into());
+            }
+            self.delivery_resolutions
+                .insert(resolution.revision_id.clone(), resolution);
+        }
+        for pending in pending_deliveries {
+            if self
+                .pending_deliveries
+                .insert(pending.revision_id.clone(), pending)
+                .is_some()
+            {
+                return Err("Backlog delivery is already pending".into());
+            }
+        }
         for member in batch.members.values() {
             if member.disposition.is_some_and(Disposition::deferred) {
                 let mut work = member.work.clone();
                 if let Some(Settlement::ReservePublication { item_id }) = &member.settlement {
                     work.item_id = Some(item_id.clone());
                 }
-                self.deferred.insert(work.member_id.clone(), work);
+                self.deferred.push_back(work);
             } else {
                 self.accounted_reports.insert(member.work.report_id.clone());
             }
@@ -511,14 +622,23 @@ impl State {
             Journal::Closed {
                 batch_id,
                 at_unix_ms,
-            } => self.close(&batch_id, at_unix_ms),
+                pending_deliveries,
+                resolved_deliveries,
+            } => self.close(
+                &batch_id,
+                at_unix_ms,
+                pending_deliveries,
+                resolved_deliveries,
+            ),
         }
     }
 
     fn audit(self, project_id: String, intake: Intake) -> Audit {
         let pending_member_ids = self
             .deferred
-            .into_keys()
+            .into_iter()
+            .chain(self.queued)
+            .map(|work| work.member_id)
             .chain(intake.ordered[self.high_water as usize..].iter().cloned())
             .chain(
                 self.reconsiderations
@@ -526,6 +646,8 @@ impl State {
                     .filter(|(_, row)| row.admitted_batch_id.is_none())
                     .map(|(id, _)| id.clone()),
             )
+            .collect::<BTreeSet<_>>()
+            .into_iter()
             .collect();
         let intake = intake
             .ordered
@@ -543,7 +665,7 @@ impl State {
             .pin
             .map_or((None, None), |pin| (Some(pin.id), Some(pin.policy)));
         Audit {
-            schema: "af/backlog-batch-audit@1",
+            schema: "af/backlog-batch-audit@2",
             project_id,
             policy,
             pin_id,
@@ -555,6 +677,8 @@ impl State {
             active_batch_id: self.active,
             reconsiderations: self.reconsiderations,
             pending_member_ids,
+            pending_deliveries: self.pending_deliveries,
+            delivery_resolutions: self.delivery_resolutions,
         }
     }
 }
@@ -568,7 +692,7 @@ impl ProjectStore {
             .replay(STREAM)
             .map_err(|_| "could not replay backlog batches")?
         {
-            if event.event_type != EventType::BacklogBatchStoredV1
+            if event.event_type != EventType::BacklogBatchStoredV2
                 || !event.artifact_refs.is_empty()
             {
                 return Err("invalid event in backlog batch journal".into());
@@ -611,7 +735,7 @@ impl ProjectStore {
                 };
                 let payload = serde_json::to_value(record)
                     .map_err(|_| "could not encode backlog batch journal")?;
-                Ok(NewEvent::new(EventType::BacklogBatchStoredV1, payload)
+                Ok(NewEvent::new(EventType::BacklogBatchStoredV2, payload)
                     .at(af_contracts::task::collection::collected_time(at)))
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -679,52 +803,37 @@ impl ProjectStore {
             return Err("backlog Scenario requires the active Project batch".into());
         }
         let batch = &state.batches[&reference.batch_id];
-        if batch.high_water != reference.high_water
-            || batch.members.is_empty()
-            || batch.members.len() > MAX_MEMBERS
-        {
-            return Err(
-                "backlog Scenario requires the exact cutoff and 1 to 128 frozen members".into(),
-            );
-        }
         let members = batch
             .members
             .values()
-            .map(|member| {
-                let accepted = &intake.reports[&member.work.report_id];
-                CollectedMember {
-                    member_id: member.work.member_id.clone(),
-                    report_id: member.work.report_id.clone(),
-                    item_id: member.work.item_id.clone(),
-                    evidence_report_id: member.work.evidence_report_id.clone(),
-                    evidence_ids: member.work.evidence_ids.clone(),
-                    sequence: accepted.receipt.body.sequence,
-                    report_digest: accepted.receipt.body.report_digest.clone(),
-                    source_revision: accepted.report.source_revision.clone(),
-                }
-            })
+            .map(|member| intake.collect(pin, &member.work))
             .collect();
-        let tracked_items = self.verified_backlog()?;
-        let tracked_items_truncated = tracked_items.len() > MAX_MEMBERS;
+        let (tracked_items, tracked_items_truncated) = if !batch.members.is_empty()
+            && pin.policy.evidence_access == EvidenceAccess::PrivateReport
+        {
+            self.tracked_backlog(TRACKED_BYTES)?
+        } else {
+            (BTreeMap::new(), false)
+        };
         Ok(CollectedBatch {
-            schema: CollectionSchema::V2,
-            provider_index: provider_index::collect(
-                self,
-                &reference,
-                &source_revision,
-                &pin.policy.destination_id,
-            )?,
+            schema: CollectionSchema::V3,
+            provider_index: if batch.members.is_empty() {
+                None
+            } else {
+                provider_index::collect(
+                    self,
+                    &reference,
+                    &source_revision,
+                    &pin.policy.destination_id,
+                )?
+            },
             reference,
             authority_id: pin.policy.authority_id.clone(),
             scenario_id: pin.policy.scenario_id.clone(),
             source_revision,
             previous_high_water: batch.previous_high_water,
             members,
-            tracked_items: tracked_items
-                .into_iter()
-                .take(MAX_MEMBERS)
-                .map(|item| (item.item_id, item.revision_id))
-                .collect(),
+            tracked_items,
             tracked_items_truncated,
         })
     }
@@ -806,6 +915,8 @@ impl ProjectStore {
         self.update_backlog_batch(Journal::Closed {
             batch_id,
             at_unix_ms,
+            pending_deliveries: Vec::new(),
+            resolved_deliveries: Vec::new(),
         })
     }
 
@@ -816,9 +927,134 @@ impl ProjectStore {
         {
             return Err("backlog batch is owned by its native Scenario settlement".into());
         }
+        if let Journal::Closed { batch_id, .. } = &record
+            && state.active.as_deref() == Some(batch_id)
+            && !state.pending_deliveries.is_empty()
+        {
+            return Err("backlog batch carries pending native delivery work".into());
+        }
         if state.apply(&intake, record.clone())? {
             self.append_batch_journal(vec![record])?;
         }
         Ok(state.audit(self.project_id.clone(), intake))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use af_contracts::backlog::batch::PolicySchema;
+    use af_contracts::backlog::intake::{Receipt, ReceiptSchema, Signed, SignedSchema};
+    use af_contracts::backlog::{Privacy, Report};
+
+    #[test]
+    fn fresh_intake_past_the_batch_bound_progresses_before_repeated_deferrals() {
+        let digest = format!("sha256:{}", "0".repeat(64));
+        let day = 86_400_000;
+        let intake = Intake::new(
+            (1..=129)
+                .map(|sequence| {
+                    let id = format!("report-{sequence:03}");
+                    let report = Report {
+                        project_id: digest.clone(),
+                        report_id: id.clone(),
+                        workspace_id: "w-0123456789abcdef".into(),
+                        captured_unix_ms: 1.into(),
+                        title: "Observed condition".into(),
+                        observed: "Boundary input fails.".into(),
+                        repro: Some("Submit the boundary input.".into()),
+                        task_id: None,
+                        run_id: None,
+                        source_revision: None,
+                        privacy: Privacy::Private,
+                        evidence: Vec::new(),
+                    };
+                    let receipt = Signed {
+                        schema: SignedSchema::Receipt,
+                        body: Receipt {
+                            schema: ReceiptSchema::V1,
+                            project_id: digest.clone(),
+                            authority_id: digest.clone(),
+                            producer_id: digest.clone(),
+                            report_id: id.clone(),
+                            report_digest: value_id(&report).unwrap(),
+                            sequence: sequence.into(),
+                        },
+                        signature: "unit fixture".into(),
+                    };
+                    (id, AcceptedReport { report, receipt })
+                })
+                .collect(),
+        );
+        let mut state = State::default();
+        let pin = Journal::Pinned {
+            policy: Box::new(Policy {
+                schema: PolicySchema::V2,
+                project_id: digest.clone(),
+                authority_id: digest.clone(),
+                scenario_id: digest.clone(),
+                destination_id: digest.clone(),
+                timezone: "UTC".into(),
+                hour: 0,
+                minute: 0,
+                start_unix_ms: day,
+                lateness_ms: 0,
+                run_tokens: 2,
+                run_wall_ms: 30_000,
+                run_dispatches: 1,
+                rolling_tokens: 10,
+                rolling_window_ms: day,
+                publication_limit: 0,
+                evidence_access: EvidenceAccess::PrivateReport,
+                hold_policy: HoldPolicy::AllowLocalReservations,
+            }),
+            zone: ZoneSnapshot {
+                name: "UTC".into(),
+                initial_offset: 0,
+                transitions: Vec::new(),
+                valid_until_unix_seconds: None,
+            },
+        };
+        state.apply(&intake, pin.clone()).unwrap();
+        let first = state.freeze(&intake, day, 129).unwrap();
+        assert_eq!(first.len(), 128);
+        assert!(!first.iter().any(|id| id == "report-129"));
+        let batch = state.active.clone().unwrap();
+        let mut journal = vec![
+            pin,
+            Journal::Ticked {
+                at_unix_ms: day,
+                high_water: 129.into(),
+                members: first.clone(),
+            },
+        ];
+        for member_id in first {
+            let record = Journal::Settled {
+                batch_id: batch.clone(),
+                member_id,
+                settlement: Settlement::ReservePublication {
+                    item_id: digest.clone(),
+                },
+            };
+            state.apply(&intake, record.clone()).unwrap();
+            journal.push(record);
+        }
+        journal.push(Journal::Closed {
+            batch_id: batch,
+            at_unix_ms: day,
+            pending_deliveries: Vec::new(),
+            resolved_deliveries: Vec::new(),
+        });
+
+        let mut replayed = State::default();
+        for record in journal {
+            replayed.apply(&intake, record).unwrap();
+        }
+        let next = replayed.freeze(&intake, 2 * day, 129).unwrap();
+        assert_eq!(next.len(), 128);
+        assert!(next.iter().any(|id| id == "report-129"));
+        let batch = &replayed.batches[replayed.active.as_ref().unwrap()];
+        assert_eq!(batch.high_water.get(), 129);
+        assert_eq!(batch.previous_high_water.get(), 129);
     }
 }

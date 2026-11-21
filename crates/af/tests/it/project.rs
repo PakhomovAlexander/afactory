@@ -4558,7 +4558,7 @@ fn backlog_recovers_a_lost_receipt_and_shares_privately_across_worktrees() {
     let receipt = machine.expect(&repo, &record, 0);
     let receipt: Value = serde_json::from_str(&receipt).unwrap();
     let report: Value = serde_json::from_str(&before).unwrap();
-    let schema = schemas::validator("backlog-v1.json");
+    let schema = schemas::validator("backlog-v2.json");
     schemas::valid(&schema, &receipt);
     schemas::valid(&schema, &report);
     assert_eq!(
@@ -4650,7 +4650,7 @@ fn backlog_refuses_bad_fact_and_evidence_before_capture() {
 
 #[test]
 fn backlog_verified_cli_prints_only_the_approved_projection() {
-    use af_contracts::EventType::BacklogRecordStoredV1;
+    use af_contracts::EventType::BacklogRecordStoredV2;
     use af_store::{Cas, EventStore, NewEvent, content_id};
     use serde_json::json;
 
@@ -4693,7 +4693,7 @@ fn backlog_verified_cli_prints_only_the_approved_projection() {
             .append(
                 "backlog-processing",
                 &cas,
-                NewEvent::new(BacklogRecordStoredV1, data),
+                NewEvent::new(BacklogRecordStoredV2, data),
             )
             .unwrap();
         id
@@ -4701,12 +4701,12 @@ fn backlog_verified_cli_prints_only_the_approved_projection() {
     let item = digest("1");
     let evidence = vec![digest("2")];
     let batch = add(json!({
-        "schema": "af/BacklogBatch@1", "project_id": project_id, "authority_id": authority_id,
+        "schema": "af/BacklogBatch@2", "settlement_id": null, "project_id": project_id, "authority_id": authority_id,
         "first_sequence": "1", "last_sequence": "3",
         "report_ids": ["private", "held", "needs-evidence"],
         "scenario_id": digest("4"), "policy_id": digest("5")
     }));
-    let schema = schemas::validator("backlog-v1.json");
+    let schema = schemas::validator("backlog-v2.json");
     let mut verified_revision = String::new();
     for (id, item, disposition, reason) in [
         (
@@ -4730,7 +4730,7 @@ fn backlog_verified_cli_prints_only_the_approved_projection() {
             "proposed": {"title": "Public title", "body": "Approved description"}
         }));
         let decision = add(json!({
-            "schema": "af/BacklogDecision@1", "project_id": project_id, "batch_id": batch,
+            "schema": "af/BacklogDecision@2", "project_id": project_id, "batch_id": batch, "local_match": null,
             "revision_id": revision, "task_results": [digest("6")],
             "independent_verification_id": (disposition == "verified").then(|| digest("6")),
             "disposition": disposition, "reason": reason, "evidence_ids": evidence
@@ -4742,7 +4742,7 @@ fn backlog_verified_cli_prints_only_the_approved_projection() {
             shown["data"]["outcomes"],
             json!([{
                 "decision_id": decision, "batch_id": batch, "revision_id": revision,
-                "item_id": item, "disposition": disposition, "reason": reason
+                "item_id": item, "local_match": null, "disposition": disposition, "reason": reason
             }])
         );
         let human = machine.expect(&repo, &["backlog", "show", id, "--private"], 0);
@@ -4851,7 +4851,7 @@ fn backlog_offline_intake_commits_before_ack_and_replays_exactly_once() {
     }
     capture(&other_producer, &other_repo, "offline-1");
     let pending = || machine.json(&repo, &["backlog", "outbox", "--json"]);
-    let command_schema = schemas::validator("backlog-v1.json");
+    let command_schema = schemas::validator("backlog-v2.json");
     schemas::valid(&command_schema, &pending());
     assert_eq!(
         pending()["data"]["report_ids"],
@@ -5182,7 +5182,7 @@ fn backlog_daily_batch_replays_frozen_intake_and_accounts_for_every_report() {
     const BUDGET: &str = "1773124200000"; // March 10 at 02:30 EDT.
     const NEXT: &str = "1773297000000"; // March 12 at 02:30 EDT.
     let policy = json!({
-        "schema": "af/backlog-batch-policy@1",
+        "schema": "af/backlog-batch-policy@2",
         "project_id": project_id,
         "authority_id": af_store::canonical::blob_content_id(&authority.pk.to_bytes()),
         "scenario_id": digest('c'),
@@ -5193,7 +5193,7 @@ fn backlog_daily_batch_replays_frozen_intake_and_accounts_for_every_report() {
         "rolling_tokens": 5, "rolling_window_ms": 4 * 86_400_000u64, "publication_limit": 1,
         "evidence_access": "evidence_ids", "hold_policy": "allow_local_reservations",
     });
-    let policy_file = store.join("backlog-batch-policy-v1.json");
+    let policy_file = store.join("backlog-batch-policy-v2.json");
     let put_policy = |value: &Value| std::fs::write(&policy_file, value.to_string()).unwrap();
     put_policy(&policy);
 
@@ -5242,7 +5242,7 @@ fn backlog_daily_batch_replays_frozen_intake_and_accounts_for_every_report() {
         assert_eq!(competing_tick.join().unwrap(), initial);
         initial
     });
-    let audit_schema = schemas::validator("backlog-batch-audit-v1.json");
+    let audit_schema = schemas::validator("backlog-batch-audit-v2.json");
     schemas::valid(&audit_schema, &initial);
     let batch = initial["active_batch_id"].as_str().unwrap();
     assert_eq!(initial["high_water"], "3");

@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use af_contracts::backlog::intake::Receipt;
 use af_contracts::backlog::{
-    BacklogRecordV1, Batch, Decision, Disposition, Evidence, EvidenceType, ItemRevision,
-    MAX_EVIDENCE, MAX_EVIDENCE_BYTES, Privacy, PublicFields, Report, is_report_id,
+    BacklogRecordV2, Batch, Decision, Disposition, Evidence, EvidenceType, ItemRevision,
+    LocalMatch, MAX_EVIDENCE, MAX_EVIDENCE_BYTES, Privacy, PublicFields, Report, is_report_id,
 };
 use af_contracts::{EventType, RunEvent};
 use af_store::{NewEvent, canonical::blob_content_id, content_id};
@@ -43,6 +43,7 @@ pub struct ReportOutcome {
     pub batch_id: String,
     pub item_id: String,
     pub revision_id: String,
+    pub local_match: Option<LocalMatch>,
     pub disposition: Disposition,
     pub reason: String,
 }
@@ -112,15 +113,15 @@ pub fn prepare_report(
     Ok(report)
 }
 
-fn read_record(project_id: &str, event: &RunEvent) -> Result<BacklogRecordV1, String> {
-    if event.event_type != EventType::BacklogRecordStoredV1 {
+fn read_record(project_id: &str, event: &RunEvent) -> Result<BacklogRecordV2, String> {
+    if event.event_type != EventType::BacklogRecordStoredV2 {
         return Err("invalid backlog stream event".into());
     }
-    let record: BacklogRecordV1 =
+    let record: BacklogRecordV2 =
         serde_json::from_value(event.payload.clone()).map_err(|_| "invalid backlog record")?;
     record.validate()?;
     let state = match &record {
-        BacklogRecordV1::Publication(publication) => publication.provider_state_id.as_slice(),
+        BacklogRecordV2::Publication(publication) => publication.provider_state_id.as_slice(),
         _ => &[],
     };
     if event.artifact_refs != state {
@@ -162,9 +163,9 @@ impl ProjectStore {
             if self.backlog_intake()?.contains_key(&report.report_id) {
                 return Err("backlog report ID already names an authority intake report".into());
             }
-            let payload = serde_json::to_value(BacklogRecordV1::Report(report.clone()))
+            let payload = serde_json::to_value(BacklogRecordV2::Report(report.clone()))
                 .map_err(|_| "cannot encode backlog report")?;
-            let event = NewEvent::new(EventType::BacklogRecordStoredV1, payload).at(
+            let event = NewEvent::new(EventType::BacklogRecordStoredV2, payload).at(
                 af_contracts::task::collection::collected_time(report.captured_unix_ms.get()),
             );
             if self
@@ -206,7 +207,7 @@ impl ProjectStore {
         match events.as_slice() {
             [] => Ok(None),
             [event] => {
-                let BacklogRecordV1::Report(report) = read_record(&self.project_id, event)? else {
+                let BacklogRecordV2::Report(report) = read_record(&self.project_id, event)? else {
                     return Err("invalid record in backlog report stream".into());
                 };
                 if report.report_id != id {
@@ -322,10 +323,10 @@ fn project_backlog(
             continue;
         }
         match record {
-            BacklogRecordV1::Report(_) => {
+            BacklogRecordV2::Report(_) => {
                 return Err("raw report in backlog processing stream".into());
             }
-            BacklogRecordV1::Batch(batch) => {
+            BacklogRecordV2::Batch(batch) => {
                 let authority =
                     authority.ok_or("no backlog authority configured for Project batches")?;
                 if authority != batch.authority_id {
@@ -333,11 +334,13 @@ fn project_backlog(
                 }
                 batches.insert(id, batch);
             }
-            BacklogRecordV1::ItemRevision(item) => {
-                current.insert(item.item_id.clone(), id.clone());
+            BacklogRecordV2::ItemRevision(item) => {
+                if event.correlation_id.is_none() {
+                    current.insert(item.item_id.clone(), id.clone());
+                }
                 revisions.insert(id, item);
             }
-            BacklogRecordV1::Decision(decision) => {
+            BacklogRecordV2::Decision(decision) => {
                 let batch = batches
                     .get(&decision.batch_id)
                     .ok_or("backlog decision names an unknown batch")?;
@@ -352,6 +355,17 @@ fn project_backlog(
                 {
                     return Err("backlog decision does not cover its revision and evidence".into());
                 }
+                if let Some(matched) = &decision.local_match
+                    && (revisions
+                        .get(&matched.revision_id)
+                        .is_none_or(|item| item.item_id != matched.item_id)
+                        || decisions.get(&matched.revision_id).is_none_or(|prior| {
+                            prior.disposition != Disposition::Verified
+                                || prior.independent_verification_id.is_none()
+                        }))
+                {
+                    return Err("Backlog local match does not name a verified revision".into());
+                }
                 if report
                     .is_some_and(|id| revision.report_ids.iter().any(|report_id| report_id == id))
                 {
@@ -360,16 +374,17 @@ fn project_backlog(
                         batch_id: decision.batch_id.clone(),
                         item_id: revision.item_id.clone(),
                         revision_id: decision.revision_id.clone(),
+                        local_match: decision.local_match.clone(),
                         disposition: decision.disposition,
                         reason: decision.reason.clone(),
                     });
                 }
-                if event.correlation_id.is_some() {
+                if event.correlation_id.is_some() && decision.local_match.is_none() {
                     current.insert(revision.item_id.clone(), decision.revision_id.clone());
                 }
                 decisions.insert(decision.revision_id.clone(), decision);
             }
-            BacklogRecordV1::Publication(_) => {}
+            BacklogRecordV2::Publication(_) => {}
         }
     }
     let items = current

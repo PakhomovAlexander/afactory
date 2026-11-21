@@ -119,7 +119,7 @@ verified item count was zero (`data.items = []`). Both runs used zero Provider t
 
 ### Read the two capture receipts
 
-Every JSON result has `schema = "af/backlog@1"`, a `view`, and a `data` object. The two capture
+Every JSON result has `schema = "af/backlog@2"`, a `view`, and a `data` object. The two capture
 commands produce `view = "capture"` and these receipt fields:
 
 | Field | What the two results show |
@@ -161,8 +161,8 @@ uses two worktrees and distinct producer IDs, checks both capture-receipt fields
 receipt, reads both Reports from the shared inbox, checks private `show`, and verifies that the
 verified list is empty. The adjacent `backlog_refuses_bad_fact_and_evidence_before_capture` test
 covers blank facts, invalid UTF-8, oversized evidence, and symlink refusal. The JSON shapes are
-defined by [`backlog-v1.json`](../schemas/backlog-v1.json) and
-[`backlog-record-v1.json`](../schemas/backlog-record-v1.json).
+defined by [`backlog-v2.json`](../schemas/backlog-v2.json) and
+[`backlog-record-v2.json`](../schemas/backlog-record-v2.json).
 
 ## Transfer a Report to the designated authority
 
@@ -193,7 +193,7 @@ exchange with generated Minisign keys, including an accept retry and acknowledge
 ## Manually admit a daily batch
 
 Use a disposable authority Store with a signed intake policy and accepted sample Reports.
-Save a machine-local `backlog-batch-policy-v1.json` in the Project Store shown by
+Save a machine-local `backlog-batch-policy-v2.json` in the Project Store shown by
 `af project show --json`. The policy uses the same Project ID and the receipt's
 `body.authority_id`. For a manual accounting exercise, the sample Scenario and destination digests suffice.
 For a prepared Scenario, bind the actual artifact and destination identities as shown below. The first tick pins the policy and timezone transition
@@ -201,7 +201,7 @@ table. Subsequent ticks require the same policy. The policy lives outside the ch
 
 ```json
 {
-  "schema": "af/backlog-batch-policy@1",
+  "schema": "af/backlog-batch-policy@2",
   "project_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "authority_id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "scenario_id": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
@@ -235,12 +235,13 @@ af backlog batch close "$batch_id" --at-unix-ms 1772782200000
 ```
 
 Take the batch ID from `active_batch_id` and settle every ID in its `members` map before
-closing. A batch with no members closes at admission. The atomically sampled `high_water`
+closing. A batch closes at admission when it has neither assessment members nor pending delivery. The atomically sampled `high_water`
 is the last accepted Report sequence at admission, even if a tick arrives within the allowed
 lateness window. `closed_high_water` advances only after every frozen member has a disposition.
 The audit lists each accepted Report once in `intake` with its original sequence and digest.
-Reports accepted after the cutoff first appear in `pending_member_ids`. Retrying the same tick
-timestamp recovers the original occurrence and the current audit.
+Each batch takes at most 128 members and limits their total serialized size. Excess work stays
+queued across restarts and appears in `pending_member_ids`, together with arrivals after the cutoff.
+Retrying the same tick timestamp recovers the original occurrence and the current audit.
 
 After close, queue an explicit reconsideration of an accounted Report with
 `af backlog batch reconsider --item-id "$item_id" --report-id "$report_id" --eligible-unix-ms "$due"`.
@@ -268,7 +269,9 @@ travel with the artifact. The receiver selects its own private Project, Task and
 For a disposable daily policy, set `scenario_id` to `sha256:` followed by the SHA-256 of the
 committed artifact file. Give the daily budget at least the limits declared in the package.
 For a synthetic local destination, compute the policy's `destination_id` from the Project ID
-as shown below. Set `evidence_access` to `evidence_ids` to admit digest-matched source evidence.
+as shown below. Set `evidence_access` to `private_report` to admit private facts, reproduction and bounded
+evidence excerpts to both assessment Workers. Reserve that setting for approved private Providers.
+`metadata_only` and `evidence_ids` withhold report prose and cannot support a positive disposition.
 Set `hold_policy` to `allow_local_reservations` to authorize local delivery and set
 `publication_limit` to the number of revisions the native sink may accept per batch.
 
@@ -283,7 +286,7 @@ scope = json.dumps(["af/backlog-local-sink@1", sys.argv[1]], separators=(",", ":
 print("sha256:" + hashlib.sha256(b"review.kernel/content-id/v1\0" + scope.encode()).hexdigest())
 PYTHON
 ```
-After admitting a nonempty batch, use its audit to write the reference. This example uses
+After admitting an active batch, use its audit to write the reference. This example uses
 `jq` and sets restrictive permissions for the captured batch metadata and receipts.
 
 ```bash
@@ -304,8 +307,17 @@ af scenario prepare --file fixtures/project-backlog/scenario.json \
 
 Prepare checks the reference against the active batch and policy in the receiving Project
 Store. It collects at most 128 frozen members. The collected input contains accepted Report
-identities, source revisions and the evidence digests allowed by policy. Raw Report text,
-their attachments, late arrivals and local-only Reports remain outside the prepared bundle.
+identities, source revisions and evidence allowed by policy. With `private_report` the
+private source includes the observed fact, reproduction, attachment excerpts of at most 256
+UTF-8 bytes each, and a bounded set of verified tracked revisions with provenance. Full
+attachments, late arrivals and local-only Reports stay in the inbox. Keep prepared bundles private.
+A local duplicate outcome names the exact matched item and revision in `local_match`.
+
+Revisions above the publication cap appear in `pending_deliveries`. A later due batch can
+dispatch them even with no assessment members. Dispatch checks the exact approved revision
+and decision against the current source, pinned policy and destination. Changed source or a
+superseding revision records `requires_reverification` under `delivery_resolutions`. Use an
+explicit reconsideration to assess that item again. A changed installed policy still fails closed.
 
 After reviewing the prepared template, grant it in the receiver's machine policy. In a fresh
 disposable Store, construct a policy containing just that Task template grant. The builtin
@@ -594,7 +606,8 @@ cargo nextest run --workspace --locked --profile ci --success-output immediate \
 
 ### Recorded offline dispatch evidence
 
-In one fresh fixture Run, the signed exchange accepted seven Reports. Six were frozen for
+In an earlier fixture Run with digest-only evidence access, the signed exchange accepted seven
+Reports. Six were frozen for
 the first daily occurrence. The Project recorded two verified items, zero already tracked,
 two holds (`hold`, `mismatch`) and one insufficient Report (`unknown`). The `late` Report
 arrived after the cutoff. Both `blue-a` and `blue-b` had durable local receipts from distinct
@@ -623,8 +636,9 @@ and preserved its simulated human edit and closure.
 
 The assessment charged 12 synthetic Provider tokens. The private `unknown` Report retained
 its reproduction text and `needs_evidence` disposition. Its reproduction appeared in neither
-the assessment input nor the outgoing ticket. Fixture identities change with each fresh
-repository and batch.
+the assessment input nor the outgoing ticket. In the current private-report fixture, the
+reproduction is part of the private assessment input. The fake destination still receives only
+approved public fields. Fixture identities change with each fresh repository and batch.
 
 [GitHub publication decision](adr/2026-11-20-coordinate-github-backlog-publication.md)
 
@@ -658,7 +672,7 @@ import tempfile
 store, reference, commit, observation = sys.argv[1:]
 store = pathlib.Path(store)
 batch = json.loads(pathlib.Path(reference).read_text())
-policy = json.loads((store / "backlog-batch-policy-v1.json").read_text())
+policy = json.loads((store / "backlog-batch-policy-v2.json").read_text())
 with open(observation, "rb") as file:
     raw = file.read(65537)
 if len(raw) > 65536:

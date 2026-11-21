@@ -15,7 +15,7 @@
       "const": "af/backlog-intake-policy@1"
     },
     "project_id": {
-      "$ref": "urn:af:schema:backlog-record:1#/$defs/digest"
+      "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
     },
     "authority_key": {
       "type": "string",
