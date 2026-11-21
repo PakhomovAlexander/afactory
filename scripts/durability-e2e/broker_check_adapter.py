@@ -16,17 +16,22 @@ payload = {"id": check, "revision": revision, "intent": call["intent_id"]}
 outbox = root / "request.json"
 receipt = root / "receipt.json"
 if outbox.exists():
-    if json.loads(outbox.read_text()) != payload:
-        raise SystemExit("outstanding check belongs to a different intent")
+    saved = json.loads(outbox.read_text())
+    original_intent = saved.get("intent")
+    if not isinstance(original_intent, str) or saved != {**payload, "intent": original_intent}:
+        raise SystemExit("outstanding check belongs to a different candidate")
     if receipt.exists():
         data = json.loads(receipt.read_text())
-        if (any(data[key] != value for key, value in payload.items())
-                or data["result"] not in {"green", "red"}):
+        if (any(data.get(key) != value for key, value in saved.items())
+                or data.get("result") not in ("green", "red")):
             raise SystemExit("fixture returned an unrelated check")
         outcome = "done" if data["result"] == "green" else "failed"
         evidence = f"Broker-delivered exact candidate check {check} is {data['result']}"
     else:
         outcome, evidence = "pending", "Check request is outstanding in the broker transport"
+    # Only an authenticated terminal failure can be replayed under a new intent.
+    if original_intent != call["intent_id"] and outcome != "failed":
+        raise SystemExit("outstanding check belongs to a different intent")
 elif receipt.exists():
     raise SystemExit("fixture receipt has no durable check request")
 elif call["method"] == "reconcile":
