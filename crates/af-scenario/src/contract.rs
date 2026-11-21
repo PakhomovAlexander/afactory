@@ -1223,14 +1223,14 @@ impl Policy {
                 )?;
                 if grant.operation.backlog() {
                     let local = grant.destination.strip_prefix("local-backlog:");
-                    let github = grant
-                        .destination
-                        .strip_prefix("github-backlog:")
+                    let external = ["github-backlog:", "markdown-backlog:", "jira-backlog:"]
+                        .into_iter()
+                        .find_map(|prefix| grant.destination.strip_prefix(prefix))
                         .and_then(|scope| scope.split_once(":sha256:"));
                     require(
                         grant.adapter == "builtin"
                             && (local.is_some_and(af_contracts::is_digest)
-                                || github.is_some_and(|(project, destination)| {
+                                || external.is_some_and(|(project, destination)| {
                                     af_contracts::is_digest(project)
                                         && af_contracts::is_digest(&format!("sha256:{destination}"))
                                 })),

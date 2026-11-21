@@ -100,12 +100,15 @@ else:
         assert count in (0, 1, 2, 6)
         assert batch['reference']['high_water'] == ('7' if reconsidering or duplicate else '6')
         assert not {'AF_BACKLOG_GITHUB_TOKEN', 'AF_BACKLOG_GITHUB_SCOPE', 'GH_TOKEN',
-                    'GITHUB_TOKEN', 'SSH_AUTH_SOCK'} & os.environ.keys()
+                    'GITHUB_TOKEN', 'SSH_AUTH_SOCK', 'AF_BACKLOG_JIRA_CREDENTIAL',
+                    'AF_BACKLOG_JIRA_SCOPE'} & os.environ.keys()
         assert os.environ['GH_CONFIG_DIR'] == '/dev/null'
         provider_home = os.environ['CODEX_HOME']
         assert os.path.isdir(provider_home)
         assert not glob.glob(os.path.join(os.path.dirname(provider_home),
             'state/af/project/*/backlog-github-token'))
+        assert not glob.glob(os.path.join(os.path.dirname(provider_home),
+            'state/af/project/*/backlog-jira-credential'))
         # Exercise Git's actual external credential helper lookup with synthetic input.
         credentials = subprocess.run(['git', 'credential', 'fill'],
             input=b'protocol=https\nhost=fixture.invalid\n\n', capture_output=True)
@@ -414,6 +417,11 @@ distinct_models = true
                 .env("GH_TOKEN", "fixture_token")
                 .env("AF_BACKLOG_GITHUB_TOKEN", "ambient_wrong_token")
                 .env("GIT_CONFIG_GLOBAL", &ambient);
+        }
+        if self.root.join("fake-jira").exists() {
+            command
+                .env("AF_BACKLOG_JIRA_CREDENTIAL", "ambient_wrong_credential")
+                .env("AF_BACKLOG_JIRA_SCOPE", "ambient_wrong_scope");
         }
         command
             .current_dir(repo)
@@ -748,12 +756,23 @@ fn github_fixture(receiver: &Receiver) -> String {
 }
 
 fn capture_backlog_batch(receiver: &Receiver, github: Option<&str>, accept_late: bool) -> Value {
-    capture_backlog_intake(receiver, github, accept_late, false)
+    capture_backlog_intake(
+        receiver,
+        github.map(BacklogFixture::GitHub),
+        accept_late,
+        false,
+    )
+}
+
+enum BacklogFixture<'a> {
+    GitHub(&'a str),
+    Markdown,
+    Jira(&'a str),
 }
 
 fn capture_backlog_intake(
     receiver: &Receiver,
-    github: Option<&str>,
+    fixture: Option<BacklogFixture<'_>>,
     accept_late: bool,
     bulk: bool,
 ) -> Value {
@@ -849,7 +868,7 @@ fn capture_backlog_intake(
         assert_eq!(a["data"]["evidence"], b["data"]["evidence"]);
         assert_eq!(a["data"]["privacy"], "private");
         assert_eq!(b["data"]["privacy"], "private");
-        if github.is_some() {
+        if matches!(fixture, Some(BacklogFixture::GitHub(_))) {
             eprintln!("Private captures: {blue_a} {blue_b}");
         }
         record_boundary(&receiver.repo, "green", Some(&green));
@@ -859,7 +878,7 @@ fn capture_backlog_intake(
         record_boundary(
             &receiver.repo,
             "late",
-            github.is_none().then_some(green.as_str()),
+            (!matches!(fixture, Some(BacklogFixture::GitHub(_)))).then_some(green.as_str()),
         );
         ["blue-a", "blue-b", "green", "unknown", "hold", "mismatch"]
             .into_iter()
@@ -882,19 +901,40 @@ fn capture_backlog_intake(
     let artifact = fs::read(receiver.repo.join(BACKLOG)).unwrap();
     let definition: Value = serde_json::from_slice(&artifact).unwrap();
     let dispatches = &definition["definition"]["limits"]["max_dispatches"];
-    let destination = if let Some(executable) = github {
-        let config = json!({
-            "schema": "af/backlog-github-destination@1",
-            "project_id": project_id,
-            "repository": "fixture/backlog",
-            "repository_id": 23,
-            "publisher_id": 42,
-            "executable_digest": af_store::canonical::blob_content_id(executable.as_bytes()),
-        });
-        private_write(
-            &store.join(GITHUB_CONFIG),
-            serde_json::to_vec(&config).unwrap(),
-        );
+    let config = match fixture {
+        Some(BacklogFixture::GitHub(executable)) => Some((
+            GITHUB_CONFIG,
+            json!({
+                "schema": "af/backlog-github-destination@1",
+                "project_id": project_id,
+                "repository": "fixture/backlog",
+                "repository_id": 23,
+                "publisher_id": 42,
+                "executable_digest": af_store::canonical::blob_content_id(executable.as_bytes()),
+            }),
+        )),
+        Some(BacklogFixture::Markdown) => Some((
+            "backlog-markdown-destination-v1.json",
+            json!({
+                "schema": "af/backlog-markdown-destination@1", "project_id": project_id,
+            }),
+        )),
+        Some(BacklogFixture::Jira(executable)) => Some((
+            "backlog-jira-destination-v1.json",
+            json!({
+                "schema": "af/backlog-jira-destination@1", "project_id": project_id,
+                "site": "fixture.atlassian.net", "jira_project_id": "10001", "issue_type_id": "10002",
+                "publisher_account_id": "fixture:publisher",
+                "executable_digest": af_store::canonical::blob_content_id(executable.as_bytes()),
+            }),
+        )),
+        None => None,
+    };
+    let destination = if let Some((name, config)) = config {
+        if name != GITHUB_CONFIG {
+            schemas::valid(&schemas::validator(name), &config);
+        }
+        private_write(&store.join(name), serde_json::to_vec(&config).unwrap());
         af_store::canonical::content_id(&config).unwrap()
     } else {
         af_project::backlog::batch::local_destination(project_id).unwrap()
@@ -945,7 +985,7 @@ fn capture_backlog_intake(
         ok(receiver.af(&["backlog", "list", "--json"]))["data"]["items"],
         json!([])
     );
-    if github.is_some() {
+    if matches!(fixture, Some(BacklogFixture::GitHub(_))) {
         assert!(!receiver.root.join("fake-github/requests").exists());
     }
     let audit = ok(receiver.af(&["backlog", "batch", "tick", "--at-unix-ms", "1772755200000"]));
@@ -1249,6 +1289,13 @@ fn portable_backlog_settles_and_dispatches_the_frozen_batch_in_two_receivers() {
         assert_eq!(settled[0], intents[0]);
         assert_eq!(settled[1].intent_id, intents[0].intent_id);
         assert_eq!(settled[1].attempt_ids, intents[0].attempt_ids);
+        assert_backlog_publication_conformance(
+            &receiver,
+            store_path,
+            &json!(af_contracts::backlog::BacklogRecordV2::Publication(
+                settled[1].clone()
+            )),
+        );
         assert_eq!(
             settled[1].receipt_id.as_deref(),
             Some(af_store::canonical::blob_content_id(&fs::read(&entry).unwrap()).as_str())
@@ -1679,6 +1726,11 @@ fn portable_backlog_github_reconciles_a_lost_create_without_duplicate_writes() {
     assert_eq!(final_record.remote_id.as_deref(), Some("444:1"));
     assert!(final_record.receipt_id.is_some());
     assert_eq!(final_record.attempt_ids.len(), 6);
+    assert_backlog_publication_conformance(
+        &receiver,
+        store_path,
+        &json!(BacklogRecordV2::Publication(final_record.clone())),
+    );
     let observed = state(final_record);
     assert_eq!(observed["outcome"]["state"], "closed");
     assert_eq!(observed["outcome"]["approved_fields_match"], false);
@@ -2082,4 +2134,243 @@ fn portable_backlog_github_index_prevents_a_duplicate_from_the_daily_ant() {
     eprintln!(
         "Ant {run_id}, frozen observation {observation_id}, issue 1073 (#73) already tracked, one distinct POST"
     );
+}
+
+#[track_caller]
+fn assert_backlog_publication_conformance(receiver: &Receiver, store: &Path, receipt: &Value) {
+    let item_id = receipt["item_id"].as_str().unwrap();
+    let public = ok(receiver.af(&["backlog", "show", item_id, "--json"]));
+    assert_eq!(public["data"]["revision_id"], receipt["revision_id"]);
+    assert!(public["data"]["public"]["title"].is_string());
+    assert!(!public.to_string().contains("private-attachment"));
+    assert!(public["data"]["evidence_ids"].is_null());
+
+    let report = |id| ok(receiver.af(&["backlog", "show", id, "--private", "--json"]));
+    let first = report("blue-a");
+    let second = report("blue-b");
+    let outcome = &first["data"]["outcomes"][0];
+    assert_eq!(outcome, &second["data"]["outcomes"][0]);
+    assert_eq!(outcome["disposition"], "verified");
+    assert_eq!(outcome["decision_id"], receipt["decision_id"]);
+    assert_eq!(outcome["item_id"], receipt["item_id"]);
+    assert_eq!(outcome["revision_id"], receipt["revision_id"]);
+    assert_eq!(
+        report("unknown")["data"]["outcomes"][0]["disposition"],
+        "needs_evidence"
+    );
+
+    let events = af_store::EventStore::open_read_only(store.join("events.sqlite"))
+        .unwrap()
+        .replay("backlog-processing")
+        .unwrap();
+    let decision = events
+        .iter()
+        .position(|event| {
+            event.payload["schema"] == "af/BacklogDecision@2"
+                && af_store::canonical::content_id(&event.payload).unwrap()
+                    == receipt["decision_id"]
+        })
+        .unwrap();
+    assert!(events[decision].payload["independent_verification_id"].is_string());
+    let history: Vec<_> = events[decision + 1..]
+        .iter()
+        .filter(|event| event.payload["intent_id"] == receipt["intent_id"])
+        .map(|event| &event.payload)
+        .collect();
+    assert!(history.len() >= 2);
+    assert!(history[0]["receipt_id"].is_null());
+    assert_eq!(history.last().unwrap(), &receipt);
+    assert!(receipt["remote_id"].is_string());
+    assert!(receipt["receipt_id"].is_string());
+    assert!(!receipt["attempt_ids"].as_array().unwrap().is_empty());
+    let policy = read(&store.join("backlog-batch-policy-v2.json"));
+    assert_eq!(receipt["destination_id"], policy["destination_id"]);
+}
+
+fn configured_backlog_state(store: &Path) -> (Value, Value) {
+    let events = af_store::EventStore::open_read_only(store.join("events.sqlite"))
+        .unwrap()
+        .replay("backlog-processing")
+        .unwrap();
+    let publication = events.last().unwrap().payload.clone();
+    let state = Cas::open_existing(store.join("cas"))
+        .unwrap()
+        .get_json(publication["provider_state_id"].as_str().unwrap())
+        .unwrap();
+    schemas::valid(
+        &schemas::validator("backlog-configured-state-v1.json"),
+        &state,
+    );
+    (publication, state)
+}
+
+#[test]
+fn portable_backlog_jira_reconciles_one_create_with_stable_id_and_human_edits() {
+    let directory = tempfile::tempdir().unwrap();
+    let receiver = Receiver::for_artifact(
+        directory.path().canonicalize().unwrap().join("receiver"),
+        509,
+        BACKLOG,
+    );
+    configure_github_fixture_bounds(&receiver);
+    let fake = receiver.root.join("fake-jira");
+    fs::create_dir(&fake).unwrap();
+    let script = include_str!("../../../../../scripts/project-backlog-jira.py");
+    let fixture = include_str!("../../../../../fixtures/project-backlog/fake-jira.py").replace(
+        "__AF_BACKLOG_FIXTURE_STATE__",
+        &serde_json::to_string(&fake).unwrap(),
+    );
+    let (implementation, entrypoint) = script.split_once("\nif __name__ == ").unwrap();
+    let executable = format!("{implementation}\n{fixture}\nif __name__ == {entrypoint}");
+    let reference = capture_backlog_intake(
+        &receiver,
+        Some(BacklogFixture::Jira(&executable)),
+        true,
+        false,
+    );
+    let project = ok(receiver.af(&["project", "show", "--json"]));
+    let store = Path::new(project["store"].as_str().unwrap());
+    private_write(&store.join("backlog-jira-adapter"), executable);
+    // Check the receiver refuses an unpinned executable before reserving a transport attempt.
+    let adapter = store.join("backlog-jira-adapter");
+    let original = fs::read(&adapter).unwrap();
+    fs::write(&adapter, "changed").unwrap();
+    let (run, first) = start_backlog_ant(&receiver, "jira-backlog", &reference);
+    assert_eq!(first["status"], "waiting", "{}", first["failure"]);
+    assert!(!fake.join("requests").exists());
+    assert!(
+        configured_backlog_state(store).0["attempt_ids"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    fs::write(&adapter, original).unwrap();
+    private_write(
+        &store.join("backlog-jira-credential"),
+        r#"{"email":"fixture@example.invalid","api_token":"fixture_token"}"#,
+    );
+    let resume = || {
+        ok(receiver.af(&[
+            "scenario",
+            "resume",
+            &run,
+            "--state",
+            receiver.scenarios.to_str().unwrap(),
+            "--json",
+        ]))
+    };
+    assert_eq!(resume()["status"], "waiting");
+    assert!(fake.join("issue.json").is_file());
+    for (mode, reason) in [
+        ("delayed", "not_observed"),
+        ("wrong-type", "identity_conflict"),
+        ("wrong-publisher", "identity_conflict"),
+    ] {
+        fs::write(fake.join("mode"), mode).unwrap();
+        assert_eq!(resume()["status"], "waiting");
+        let (publication, state) = configured_backlog_state(store);
+        assert!(publication["receipt_id"].is_null());
+        assert_eq!(state["outcome"]["kind"], reason);
+    }
+    let mut human = read(&fake.join("issue.json"));
+    human["key"] = json!("AF-8");
+    human["fields"]["summary"] = json!("Human edit");
+    human["fields"]["status"]["statusCategory"]["key"] = json!("done");
+    save(&fake.join("issue.json"), &human);
+    fs::remove_file(fake.join("mode")).unwrap();
+    assert_eq!(resume()["status"], "succeeded");
+    let (publication, state) = configured_backlog_state(store);
+    assert_backlog_publication_conformance(&receiver, store, &publication);
+    assert_eq!(publication["remote_id"], "jira:10042");
+    assert!(publication["receipt_id"].is_string());
+    assert_eq!(state["outcome"]["observation"]["issue_key"], "AF-8");
+    assert_eq!(state["outcome"]["observation"]["closed"], true);
+    assert_eq!(state["outcome"]["approved_fields_match"], false);
+    assert_eq!(read(&fake.join("issue.json")), human);
+    let requests = http_requests(&fake);
+    let writes: Vec<_> = requests
+        .iter()
+        .filter(|call| call["path"] == "/issue")
+        .collect();
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0]["body"]["fields"]["description"]["type"], "doc");
+    assert!(
+        !requests
+            .iter()
+            .any(|call| call.to_string().contains("private-attachment"))
+    );
+}
+
+#[test]
+fn portable_backlog_markdown_creates_one_managed_entry_and_never_replaces_a_conflict() {
+    for conflict in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let receiver = Receiver::for_artifact(
+            directory.path().canonicalize().unwrap().join("receiver"),
+            510,
+            BACKLOG,
+        );
+        let reference =
+            capture_backlog_intake(&receiver, Some(BacklogFixture::Markdown), false, false);
+        let project = ok(receiver.af(&["project", "show", "--json"]));
+        let store = Path::new(project["store"].as_str().unwrap());
+        let project_id = project["project_id"].as_str().unwrap();
+        let item = af_store::canonical::content_id(&json!([
+            "af/backlog-native-item@1",
+            project_id,
+            "blue-a"
+        ]))
+        .unwrap();
+        let name = format!("backlog-item-{}.md", &item[7..]);
+        let path = store.join(&name);
+        let human = "Human-owned file\n\nKeep these notes.\n";
+        if conflict {
+            private_write(&path, human);
+        }
+        let (run, outcome) = start_backlog_ant(&receiver, "markdown-backlog", &reference);
+        let (publication, state) = configured_backlog_state(store);
+        if conflict {
+            assert_eq!(outcome["status"], "waiting");
+            assert!(publication["receipt_id"].is_null());
+            assert_eq!(state["outcome"]["kind"], "identity_conflict");
+            assert_eq!(fs::read_to_string(&path).unwrap(), human);
+            // Simulate a committed entry restored after an uncertain local write, with a
+            // subsequent human note. Reconciliation must observe the pinned intent.
+            let intent = publication["intent_id"].as_str().unwrap();
+            let text = format!("<!-- af-backlog-item:{project_id}:{item}:{intent} -->\n{human}");
+            fs::write(&path, &text).unwrap();
+            let resumed = ok(receiver.af(&[
+                "scenario",
+                "resume",
+                &run,
+                "--state",
+                receiver.scenarios.to_str().unwrap(),
+                "--json",
+            ]));
+            assert_eq!(resumed["status"], "succeeded");
+            let (_, state) = configured_backlog_state(store);
+            assert_eq!(state["outcome"]["approved_fields_match"], false);
+            assert_eq!(fs::read_to_string(&path).unwrap(), text);
+        } else {
+            assert_eq!(outcome["status"], "succeeded", "{}", outcome["failure"]);
+            assert_backlog_publication_conformance(&receiver, store, &publication);
+            assert_eq!(publication["remote_id"], name);
+            assert!(publication["receipt_id"].is_string());
+            assert_eq!(state["outcome"]["approved_fields_match"], true);
+            let text = fs::read_to_string(&path).unwrap();
+            assert!(text.contains("The configured boundary must be inclusive."));
+            assert!(!text.contains("private-attachment"));
+        }
+        assert_eq!(
+            fs::read_dir(store)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("backlog-item-"))
+                .count(),
+            1
+        );
+    }
 }

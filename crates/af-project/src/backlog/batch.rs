@@ -914,14 +914,26 @@ impl ProjectStore {
             &pin.policy.scenario_id,
             &pin.execution.per_run,
         )?;
-        if pin.policy.destination_id == local_destination(&self.project_id)? {
-            Ok(format!("local-backlog:{}", self.project_id))
-        } else {
-            Ok(format!(
-                "github-backlog:{}:{}",
-                self.project_id, pin.policy.destination_id
-            ))
-        }
+        let destination = &pin.policy.destination_id;
+        let kind = native::destinations::Kind::resolve(self, destination)?;
+        Ok(kind.resource(&self.project_id, destination))
+    }
+
+    pub fn check_backlog_action_destination(
+        &self,
+        reference: &BatchReference,
+        resource: &str,
+    ) -> Result<(), String> {
+        let (state, _) = self.batch_state()?;
+        let pin = state.pin.as_ref().ok_or("no pinned backlog batch policy")?;
+        let pin = self.check_native_batch(
+            &state,
+            reference,
+            &pin.policy.scenario_id,
+            &pin.execution.per_run,
+        )?;
+        native::destinations::Kind::from_resource(self, &pin.policy.destination_id, resource)?;
+        Ok(())
     }
 
     fn check_native_batch<'a>(

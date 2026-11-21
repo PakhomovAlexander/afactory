@@ -5,8 +5,6 @@ use af_contracts::is_digest;
 use af_process::{ExitPolicy, run_supervised_duplex_cancellable_until};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::io::Read as _;
-use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::Path;
 use std::process::Command;
 
@@ -85,34 +83,17 @@ impl Config {
         {
             return Err("Invalid GitHub backlog credential".into());
         }
-        // Run the verified bytes outside the checkout with a fresh working directory.
-        let directory =
-            tempfile::tempdir_in(&store.directory).map_err(|_| "Could not stage GitHub adapter")?;
-        let executable = directory.path().join(EXECUTABLE);
-        let mut file = local_fs::private_file_options()
-            .create_new(true)
-            .write(true)
-            .open(&executable)
+        let (directory, mut command) = stage_adapter(&store.directory, EXECUTABLE, &bytes)
             .map_err(|_| "Could not stage GitHub adapter")?;
-        file.write_all(&bytes)
-            .and_then(|()| file.set_permissions(std::fs::Permissions::from_mode(0o700)))
-            .map_err(|_| "Could not stage GitHub adapter")?;
-        drop(file);
-        let mut command = Command::new(executable);
-        command
-            .env_clear()
-            .env("PATH", af_process::sanitized_path())
-            .env("AF_BACKLOG_GITHUB_TOKEN", token)
-            .env(
-                "AF_BACKLOG_GITHUB_SCOPE",
-                json!({
-                    "project_id": self.project_id, "destination_id": destination,
-                    "repository": self.repository, "repository_id": self.repository_id,
-                    "publisher_id": self.publisher_id,
-                })
-                .to_string(),
-            )
-            .current_dir(directory.path());
+        command.env("AF_BACKLOG_GITHUB_TOKEN", token).env(
+            "AF_BACKLOG_GITHUB_SCOPE",
+            json!({
+                "project_id": self.project_id, "destination_id": destination,
+                "repository": self.repository, "repository_id": self.repository_id,
+                "publisher_id": self.publisher_id,
+            })
+            .to_string(),
+        );
         Ok((directory, command, token_pin))
     }
 }
@@ -133,31 +114,6 @@ pub(super) fn check_fields(public: &PublicFields) -> Result<(), String> {
 fn matches_pin(path: &Path, max_bytes: u64, pin: &str) -> bool {
     owned_file(path, max_bytes)
         .is_ok_and(|bytes| af_store::canonical::blob_content_id(&bytes) == pin)
-}
-
-pub(in crate::backlog::batch) fn owned_file(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK | nix::libc::O_CLOEXEC)
-        .open(path)
-        .map_err(|_| "GitHub backlog authority file unavailable")?;
-    let metadata = file
-        .metadata()
-        .map_err(|_| "GitHub backlog authority file unreadable")?;
-    if !metadata.is_file()
-        || metadata.uid() != nix::unistd::geteuid().as_raw()
-        || metadata.mode() & 0o077 != 0
-    {
-        return Err("GitHub backlog authority file must be private and owned".into());
-    }
-    let mut bytes = Vec::new();
-    file.take(limit + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| "GitHub backlog authority file unreadable")?;
-    if bytes.len() as u64 > limit {
-        return Err("GitHub backlog authority file exceeds its bound".into());
-    }
-    Ok(bytes)
 }
 
 #[derive(Clone, Copy, PartialEq, Serialize)]

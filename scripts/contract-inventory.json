@@ -143,12 +143,16 @@
         "crates/af-contracts/src/backlog/intake.rs",
         "crates/af/src/task_commands/scenario_portable/backlog.rs",
         "crates/af-project/src/backlog/batch/native/github.rs",
+        "crates/af-project/src/backlog/batch/native/destinations.rs",
+        "crates/af-project/src/backlog/batch/native/destinations/jira.rs",
+        "crates/af-project/src/backlog/batch/native/destinations/markdown.rs",
         "crates/af-project/src/backlog/batch/provider_index.rs"
       ],
       "semantic_owner": [
         "crates/af-project/src/backlog.rs",
         "crates/af-project/src/backlog/batch.rs",
         "crates/af-project/src/backlog/batch/native.rs",
+        "scripts/project-backlog-jira.py",
         "crates/af-project/src/backlog/intake.rs",
         "crates/af-scenario/src/schedule.rs",
         "crates/af-runtime/src/task/report_domain.rs"
@@ -156,7 +160,8 @@
       "tests": [
         "crates/af-contracts/tests/schema_parity/backlog.rs",
         "crates/af/tests/it/project.rs",
-        "crates/af/tests/it/scenario/portable.rs"
+        "crates/af/tests/it/scenario/portable.rs",
+        "scripts/test-project-backlog-jira.py"
       ],
       "schemas": [
         "schemas/backlog-assessment-v2.json",
@@ -167,6 +172,9 @@
         "schemas/backlog-batch-reference-v1.json",
         "schemas/backlog-collected-batch-v3.json",
         "schemas/backlog-github-state-v1.json",
+        "schemas/backlog-configured-state-v1.json",
+        "schemas/backlog-jira-destination-v1.json",
+        "schemas/backlog-markdown-destination-v1.json",
         "schemas/backlog-provider-index-pin-v1.json",
         "schemas/backlog-intake-policy-v1.json",
         "schemas/backlog-intake-record-v1.json",

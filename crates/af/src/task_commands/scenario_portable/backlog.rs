@@ -157,12 +157,11 @@ pub(crate) fn run_backlog_action(
         af_project::Wait::Until(deadline),
     )
     .map_err(af_project::Unopened::message)?;
-    require(
-        grant.destination == store.backlog_action_destination(&collection.reference)?,
-        "Backlog action destination differs from the receiving Project policy",
-    )?;
     match grant.operation {
-        Operation::BacklogSettleV1 => store.settle_native_backlog(&proof, cancellation).map(Some),
+        Operation::BacklogSettleV1 => {
+            store.check_backlog_action_destination(&collection.reference, &grant.destination)?;
+            store.settle_native_backlog(&proof, cancellation).map(Some)
+        }
         Operation::BacklogDispatchV1 => {
             let Some(Datum::Action(settlement)) = dispatch.inputs.get("settlement") else {
                 return Err("Backlog dispatch lacks a native settlement receipt".into());
@@ -178,7 +177,12 @@ pub(crate) fn run_backlog_action(
                     }),
                 "Backlog dispatch must use the preceding Project settlement for the same batch",
             )?;
-            store.dispatch_native_backlog(&proof, &settlement.evidence, cancellation)
+            store.dispatch_native_backlog(
+                &proof,
+                &settlement.evidence,
+                &grant.destination,
+                cancellation,
+            )
         }
         _ => Err("Unknown native backlog action".into()),
     }

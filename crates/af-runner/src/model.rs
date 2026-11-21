@@ -545,6 +545,8 @@ impl ModelRunner {
             for name in [
                 "AF_BACKLOG_GITHUB_TOKEN",
                 "AF_BACKLOG_GITHUB_SCOPE",
+                "AF_BACKLOG_JIRA_CREDENTIAL",
+                "AF_BACKLOG_JIRA_SCOPE",
                 "GH_TOKEN",
                 "GITHUB_TOKEN",
                 "GH_ENTERPRISE_TOKEN",

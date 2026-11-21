@@ -1,4 +1,4 @@
-use super::native::github::{Config, owned_file};
+use super::native::{github::Config, owned_file};
 use super::{BatchReference, ProjectStore};
 use af_contracts::backlog::batch::assessment::ProviderIndex;
 use af_contracts::backlog::batch::provider_index::{MAX_INDEX_BYTES, Observation};

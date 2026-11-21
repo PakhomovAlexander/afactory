@@ -740,3 +740,135 @@ for both Blue Reports and keeps a third Report with missing evidence private. Th
 publisher receives one POST for the distinct, verified Green defect. Replaying the settled Run
 after rotating the observer input does not add another POST. The fixture prints the actual
 Ant Run and observation identities.
+
+## Markdown and Jira destinations
+
+Use the same signed intake, batch policy, portable Scenario and independent verification steps.
+Configure one destination in the receiving Project Store before its batch policy is pinned.
+The prepared grant names the Project and exact destination digest. Both destinations receive
+only the approved title and body and the metadata needed to bind the publication.
+
+### Markdown
+
+Markdown writes one private `backlog-item-<item-digest>.md` file per verified item to the
+Project Store. The filename and marker bind the stable item identity. AF uses atomic
+create-without-replacement and leaves preexisting files, symlinks and surrounding text alone.
+Human edits are read back when a later independently verified revision is dispatched. Keep the
+marker intact. An absent or conflicting entry leaves the intent waiting. A file inside a Git
+checkout or bare repository requires a separately authorized publication workflow.
+
+Run this from the registered receiver checkout to create the private configuration once, then
+use the shared pin step below to compute its destination ID.
+
+```bash
+project=$(af project show --json)
+store=$(jq -r .store <<< "$project")
+project_id=$(jq -r .project_id <<< "$project")
+(
+  umask 077
+  set -o noclobber
+  jq -n --arg project_id "$project_id" \
+    '{schema:"af/backlog-markdown-destination@1", $project_id}' \
+    > "$store/backlog-markdown-destination-v1.json"
+)
+```
+
+### Jira Cloud
+
+Grant a dedicated Jira account Browse Projects and Create Issues for the pinned project.
+Use the canonical `<site>.atlassian.net` host, project and issue type IDs from Jira, and the
+publisher's `accountId`. Jira must allow Summary, Description and Labels on that issue type's
+create screen. The adapter maps the approved body to plain-text ADF paragraphs and writes a
+stable AF label. It uses the issue's stable numeric ID for later reads, records the current
+display key and regards status category Done as closed. The transport follows the Jira Cloud
+REST v3 [Issues](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issues/)
+and [enhanced issue search](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-search/) contracts.
+
+Set `jira_site`, `jira_project_id`, `issue_type_id` and `publisher_account_id` before running
+the following from the registered receiver checkout. Run one receiver per designated destination.
+
+```bash
+project=$(af project show --json)
+store=$(jq -r .store <<< "$project")
+project_id=$(jq -r .project_id <<< "$project")
+test ! -e "$store/backlog-jira-adapter" && test ! -L "$store/backlog-jira-adapter" &&
+  install -m 600 scripts/project-backlog-jira.py "$store/backlog-jira-adapter"
+
+executable_digest=$(python3 - "$store/backlog-jira-adapter" <<'PYTHON'
+import hashlib
+from pathlib import Path
+import sys
+
+payload = Path(sys.argv[1]).read_bytes()
+print("sha256:" + hashlib.sha256(b"review.kernel/content-id/v1\0" + payload).hexdigest())
+PYTHON
+)
+(
+  umask 077
+  set -o noclobber
+  jq -n --arg project_id "$project_id" --arg site "$jira_site" \
+    --arg jira_project_id "$jira_project_id" --arg issue_type_id "$issue_type_id" \
+    --arg publisher_account_id "$publisher_account_id" --arg executable_digest "$executable_digest" \
+    '{schema:"af/backlog-jira-destination@1", $project_id, $site, $jira_project_id,
+      $issue_type_id, $publisher_account_id, $executable_digest}' \
+    > "$store/backlog-jira-destination-v1.json"
+)
+```
+
+Provision `backlog-jira-credential` as an owner-only file containing a JSON object with
+`email` and `api_token`. Use a Jira Cloud token that supports HTTP Basic authentication at
+the pinned site. Follow the receiver account and Worker isolation procedure above. The adapter
+authenticates the account and project before contacting the issue create endpoint and talks
+only to the configured HTTPS host. Keep the credential absent during assessment when Workers
+share the receiver UID. When provisioning is complete, resume the already-admitted Scenario.
+
+### Pin and recover a configured destination
+
+Set `kind` to `markdown` or `jira`, then copy the following digest into the batch policy's
+`destination_id` before ticking. Review the `<kind>-backlog:<project_id>:<destination_id>`
+grant before confirming the prepared Scenario.
+
+```bash
+python3 - "$store/backlog-$kind-destination-v1.json" <<'PYTHON'
+import hashlib
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as config:
+    payload = json.dumps(json.load(config), sort_keys=True, ensure_ascii=False,
+                         separators=(",", ":")).encode("utf-8")
+print("sha256:" + hashlib.sha256(b"review.kernel/content-id/v1\0" + payload).hexdigest())
+PYTHON
+```
+
+An interrupted attempt leaves the batch waiting if the receiver cannot confirm the result.
+Restore the exact configuration and adapter bytes if they were removed. Inspect the existing
+Markdown marker or Jira label, issue scope and author before resuming. A missing Jira search
+result can reflect indexing delay. A conflicting Markdown entry should be preserved while the
+operator investigates its origin. Resume with the original Run ID and Scenario Store.
+
+```bash
+af backlog batch audit
+af scenario resume "$run_id" --state "$scratch/scenarios" --json
+af backlog list --json
+```
+
+Private publication rows reference [configured destination state](../schemas/backlog-configured-state-v1.json).
+For Markdown, `remote_id` is the managed filename. For Jira, `remote_id` is `jira:<issue-id>`
+and the private observation includes the display key. An observed digest mismatch records
+the discrepancy without replacing text or reopening an issue.
+
+### Offline checks for all four destinations
+
+This command exercises the CLI and portable Ant with isolated Stores and deterministic
+Providers. GitHub and Jira use fake transports. The Markdown fixture uses a disposable
+Project Store and exercises a collision and read-only recovery.
+
+```sh
+cargo nextest run --workspace --locked --profile ci \
+  -E 'binary_id(af::it) & test(/^scenario::portable::portable_backlog/)'
+python3 -I scripts/test-project-backlog-github.py
+python3 -I scripts/test-project-backlog-jira.py
+```
+
+[Markdown and Jira publication decision](adr/2026-11-21-bind-markdown-and-jira-backlog-destinations.md)

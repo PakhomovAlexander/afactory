@@ -9,11 +9,63 @@ use af_contracts::backlog::{
     batch::assessment::{Decision as AssessedDecision, MAX_TRACKED_ITEMS, TrackedItem},
 };
 use af_source_git::manifest::{EntryKind, Manifest};
-use std::io::Write;
+use std::io::{Read as _, Write};
+use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
+use std::path::Path;
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
+pub(super) mod destinations;
 pub(super) mod github;
+
+pub(super) fn owned_file(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK | nix::libc::O_CLOEXEC)
+        .open(path)
+        .map_err(|_| "Backlog authority file unavailable")?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| "Backlog authority file unreadable")?;
+    if !metadata.is_file()
+        || metadata.uid() != nix::unistd::geteuid().as_raw()
+        || metadata.mode() & 0o077 != 0
+    {
+        return Err("Backlog authority file must be private and owned".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Backlog authority file unreadable")?;
+    if bytes.len() as u64 > limit {
+        return Err("Backlog authority file exceeds its bound".into());
+    }
+    Ok(bytes)
+}
+
+/// Stage only receiver-pinned bytes, outside the checkout and with a cleared environment.
+fn stage_adapter(
+    root: &Path,
+    name: &str,
+    bytes: &[u8],
+) -> std::io::Result<(tempfile::TempDir, Command)> {
+    let directory = tempfile::tempdir_in(root)?;
+    let executable = directory.path().join(name);
+    let mut file = local_fs::private_file_options()
+        .create_new(true)
+        .write(true)
+        .open(&executable)?;
+    file.write_all(bytes)?;
+    file.set_permissions(std::fs::Permissions::from_mode(0o700))?;
+    drop(file);
+    let mut command = Command::new(executable);
+    command
+        .env_clear()
+        .env("PATH", af_process::sanitized_path())
+        .current_dir(directory.path());
+    Ok((directory, command))
+}
 
 pub fn local_destination(project_id: &str) -> Result<String, String> {
     value_id(&("af/backlog-local-sink@1", project_id))
@@ -360,6 +412,7 @@ impl ProjectStore {
         &mut self,
         proof: &NativeAssessment<'_>,
         settlement: &str,
+        resource: &str,
         cancellation: &AtomicBool,
     ) -> Result<Option<String>, String> {
         let (state, intake) = self.batch_state()?;
@@ -369,7 +422,8 @@ impl ProjectStore {
             self.check_native_batch(&state, &batch.reference, &batch.scenario_id, proof.limits)?;
         let events = self.processing()?;
         let destination = &pin.policy.destination_id;
-        let local = *destination == local_destination(&self.project_id)?;
+        let kind = destinations::Kind::from_resource(self, destination, resource)?;
+        let local = kind == destinations::Kind::Local;
         if settlement_id(proof)? != settlement {
             return Err("Backlog dispatch differs from the native settlement".into());
         }
@@ -444,7 +498,9 @@ impl ProjectStore {
                             .is_some_and(|mapped| mapped != remote)
                         && !local
                     {
-                        return Err("Conflicting GitHub issue identities in Project history".into());
+                        return Err(
+                            "Conflicting backlog destination identities in Project history".into(),
+                        );
                     }
                     published_or_reserved.insert(publication.revision_id);
                 }
@@ -478,11 +534,7 @@ impl ProjectStore {
                 if !local && other_pending.get(&item.item_id) == Some(&true) {
                     return Ok(None);
                 }
-                let domain = if local {
-                    "af/backlog-local-intent@1"
-                } else {
-                    "af/backlog-github-intent@1"
-                };
+                let domain = kind.intent_domain();
                 let intent_id = value_id(&(domain, destination, revision))?;
                 let attempt_ids = if local {
                     vec![value_id(&("af/backlog-local-attempt@1", &intent_id))?]
@@ -512,7 +564,7 @@ impl ProjectStore {
                     &batch.scenario_id,
                     proof.limits,
                 )?;
-                if !local && !github::check_destination(self, destination) {
+                if !kind.admitted(self, destination) {
                     return Ok(None);
                 }
                 running(cancellation, proof.deadline)?;
@@ -538,21 +590,42 @@ impl ProjectStore {
                     &batch.scenario_id,
                     proof.limits,
                 )?;
-                if live.policy.hold_policy != HoldPolicy::AllowLocalReservations {
+                if live.policy.hold_policy != HoldPolicy::AllowLocalReservations
+                    || state.batches[batch_id].closed_unix_ms.is_some()
+                {
                     return Err("Project hold prevents backlog delivery".into());
                 }
                 let item = items
                     .get(&publication.revision_id)
                     .ok_or("Backlog delivery revision is no longer current")?;
                 if !local {
-                    if !self.publish_github_backlog(
-                        proof,
-                        &state,
-                        &mut publication,
-                        item,
-                        &mapped_items,
-                        cancellation,
-                    )? {
+                    if destinations::Kind::resolve(self, destination)
+                        .is_ok_and(|configured| configured != kind)
+                    {
+                        return Err(
+                            "Backlog destination transport differs from the pinned grant".into(),
+                        );
+                    }
+                    let resolved = if kind == destinations::Kind::GitHub {
+                        self.publish_github_backlog(
+                            proof,
+                            &state,
+                            &mut publication,
+                            item,
+                            &mapped_items,
+                            cancellation,
+                        )?
+                    } else {
+                        self.publish_configured_backlog(
+                            proof,
+                            &state,
+                            &mut publication,
+                            item,
+                            &mapped_items,
+                            cancellation,
+                        )?
+                    };
+                    if !resolved {
                         return Ok(None);
                     }
                     if let Some(remote) = &publication.remote_id {
@@ -561,7 +634,9 @@ impl ProjectStore {
                     delivered.insert(publication.revision_id.clone());
                     receipts.insert(
                         publication.intent_id,
-                        publication.receipt_id.ok_or("Missing GitHub receipt")?,
+                        publication
+                            .receipt_id
+                            .ok_or("Missing backlog destination receipt")?,
                     );
                     continue;
                 }
@@ -621,7 +696,6 @@ impl ProjectStore {
     fn deliver_local(&self, item: &VerifiedItem, intent: &str) -> Result<String, String> {
         let directory = self.directory.join("backlog-local-sink");
         local_fs::create_private_dir_all(&directory).map_err(|e| e.to_string())?;
-        use std::os::unix::fs::MetadataExt as _;
         let metadata = std::fs::symlink_metadata(&directory).map_err(|e| e.to_string())?;
         if !metadata.is_dir()
             || metadata.uid() != nix::unistd::geteuid().as_raw()
