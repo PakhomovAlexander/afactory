@@ -3,7 +3,6 @@ from types import SimpleNamespace
 
 fixture_state = Path(__AF_BACKLOG_FIXTURE_STATE__)
 fixture_repo = '/repos/Fixture/Backlog'
-fixture_issues = fixture_repo + '/issues'
 fixture_url = API_URL + fixture_repo
 
 
@@ -14,6 +13,9 @@ def fixture_issue(number, day, **fields):
 
 
 class FixtureTransport:
+    def __init__(self):
+        self.walks = 0
+
     def request(self, url, headers, max_bytes, timeout):
         assert headers['Authorization'] == 'Bearer fixture_issues_read_only'
         assert 'AF_BACKLOG_GITHUB_TOKEN' not in os.environ
@@ -27,7 +29,19 @@ class FixtureTransport:
             payload = dict(id=24 if mode == 'wrong-scope' else 23, full_name='Fixture/Backlog',
                            url=fixture_url)
         else:
-            page = f'{fixture_url}/issues?state=open&sort=created&direction=asc&per_page=100&page='
+            page = API_URL + '/repositories/23/issues?state=open&sort=created&direction=asc&per_page=100&page='
+            if url == page + '1':
+                self.walks += 1
+            if mode == 'offset-shift':
+                number = int(url.removeprefix(page))
+                # Close issue 1 after page 1 of the first walk. Both walks still have three pages.
+                start = 1 if self.walks == 1 and number == 1 else 2
+                offset = 100 * (number - 1)
+                payload = [fixture_issue(n, day) if n == 101 else fixture_issue(n, day, pull_request={})
+                           for n in range(start + offset, min(start + offset + 100, 251))]
+                if number < 3:
+                    response['link'] = f'<{page}{number + 1}>; rel="next", <{page}3>; rel="last"'
+                return SimpleNamespace(status=status, headers=response, body=json.dumps(payload).encode())
             if url == page + '1':
                 payload = [fixture_issue(73, day, body=(
                     'blue-boundary.py rejects the input 3 and accepts 4.\nPrivate index detail.'))]
@@ -45,7 +59,7 @@ class FixtureTransport:
                     payload = []
                 elif mode == 'unavailable':
                     status = 503
-                elif mode == 'second-with-registry-drift':
+                elif mode == 'second-with-registry-drift' and self.walks == 2:
                     with (fixture_state.parent / 'providers.toml').open('a') as registry:
                         registry.write('\n# receiver registry changed before preparation\n')
         return SimpleNamespace(status=status, headers=response, body=json.dumps(payload).encode())

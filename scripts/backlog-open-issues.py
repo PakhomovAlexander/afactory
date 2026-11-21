@@ -69,6 +69,7 @@ def get(transport, path, token, deadline):
         response = transport.request(API_URL + path, {
             'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json',
             'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'af-backlog-open-issues',
+            'Cache-Control': 'no-cache',
         }, PAGE_BYTES, min(remaining, REQUEST_SECONDS))
         require(time.monotonic() < deadline, 'GitHub read budget exhausted')
         require(response.status == 200, 'GitHub read failed')
@@ -79,7 +80,7 @@ def get(transport, path, token, deadline):
         raise Refused('GitHub read failed') from None
 
 
-def pagination(link, path, repository_id, page):
+def pagination(link, path, named_path, page):
     require(len(link) <= 8192, 'GitHub pagination refused')
     relations = {}
     for item in link.split(',') if link else ():
@@ -91,7 +92,7 @@ def pagination(link, path, repository_id, page):
         except ValueError:
             raise Refused('GitHub pagination refused') from None
         require(target.scheme == 'https' and target.netloc == 'api.github.com'
-                and target.path in (path, f'/repositories/{repository_id}/issues')
+                and target.path in (path, named_path)
                 and not target.fragment and query.get('per_page') == [str(PAGE_SIZE)]
                 and match[2] not in relations, 'GitHub pagination refused')
         numbers = query.get('page', [])
@@ -104,24 +105,18 @@ def pagination(link, path, repository_id, page):
     return 'next' in relations, relations.get('last')
 
 
-def observe(repository, token, transport, expected_repository_id=None):
-    deadline = time.monotonic() + WALL_SECONDS
-    repo, _ = get(transport, '/repos/' + repository, token, deadline)
-    require(isinstance(repo, dict), 'GitHub repository identity refused')
-    name, repo_id = repo.get('full_name'), repo.get('id')
-    require(repository_name(name) and name.lower() == repository.lower() and identity(repo_id)
-            and (expected_repository_id is None or repo_id == expected_repository_id)
-            and repo.get('url') == API_URL + '/repos/' + name, 'GitHub repository identity refused')
-    path = '/repos/' + name + '/issues'
+def walk(name, repo_id, token, transport, deadline):
+    path = f'/repositories/{repo_id}/issues'
+    named_path = '/repos/' + name + '/issues'
     repo_url = API_URL + '/repos/' + name
-    ids, numbers, issues = set(), set(), []
+    ids, numbers, rows, issues = set(), set(), [], []
     more, last = False, None
     for page in range(1, MAX_PAGES + 1):
         batch, headers = get(transport, path + f'?state=open&sort=created&direction=asc'
                              f'&per_page={PAGE_SIZE}&page={page}', token, deadline)
         require(isinstance(batch, list) and len(batch) <= PAGE_SIZE and (batch or not more),
                 'GitHub issue page incomplete or malformed')
-        more, advertised = pagination(headers.get('link', ''), path, repo_id, page)
+        more, advertised = pagination(headers.get('link', ''), path, named_path, page)
         require(advertised is None or last in (None, advertised), 'GitHub pagination changed')
         last = advertised if advertised is not None else last
         require(last is None or page <= last <= MAX_PAGES, 'GitHub page bound or changed listing')
@@ -141,7 +136,9 @@ def observe(repository, token, transport, expected_repository_id=None):
             require(state in ('open', 'closed'), 'GitHub issue state refused')
             require('pull_request' not in row or isinstance(row['pull_request'], dict),
                     'GitHub pull request marker refused')
-            if 'pull_request' in row or state == 'closed':
+            pull_request = 'pull_request' in row
+            rows.append((issue_id, number, state, pull_request))
+            if pull_request or state == 'closed':
                 continue
             title, body, revision = row.get('title'), row.get('body'), row.get('updated_at')
             require(isinstance(title, str) and 0 < len(title) <= TEXT_LIMIT
@@ -157,10 +154,32 @@ def observe(repository, token, transport, expected_repository_id=None):
             issues.append(dict(id=issue_id, number=number, updated_at=revision, title=title,
                                body_excerpt=body[:TEXT_LIMIT], body_truncated=len(body) > TEXT_LIMIT))
         if not full or (not more and page == last):
-            return dict(schema=SCHEMA, observation='live-page-walk', repository=name,
-                        destination='github:' + name, repository_id=repo_id,
-                        issues=sorted(issues, key=lambda item: item['number']))
+            return rows, issues
     raise Refused('GitHub page bound exhausted')
+
+
+def repository_identity(repository, token, transport, deadline):
+    repo, _ = get(transport, '/repos/' + repository, token, deadline)
+    require(isinstance(repo, dict), 'GitHub repository identity refused')
+    name, repo_id = repo.get('full_name'), repo.get('id')
+    require(repository_name(name) and name.lower() == repository.lower() and identity(repo_id)
+            and repo.get('url') == API_URL + '/repos/' + name, 'GitHub repository identity refused')
+    return name, repo_id
+
+
+def observe(repository, token, transport, expected_repository_id=None):
+    deadline = time.monotonic() + WALL_SECONDS
+    name, repo_id = repository_identity(repository, token, transport, deadline)
+    require(expected_repository_id is None or repo_id == expected_repository_id,
+            'GitHub repository identity refused')
+    first = walk(name, repo_id, token, transport, deadline)
+    require(walk(name, repo_id, token, transport, deadline) == first,
+            'GitHub listing changed between page walks')
+    require(repository_identity(repository, token, transport, deadline) == (name, repo_id),
+            'GitHub repository identity refused')
+    return dict(schema=SCHEMA, observation='live-page-walk', repository=name,
+                destination='github:' + name, repository_id=repo_id,
+                issues=sorted(first[1], key=lambda item: item['number']))
 
 
 def write_private(path, data):

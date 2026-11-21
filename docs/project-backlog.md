@@ -476,8 +476,10 @@ them. Archive the old private enrollment file `backlog-schedule-v1.json` and val
 enroll the new scope with this release. The private file slot now holds the
 `af/backlog-schedule@2` envelope.
 
-For each frozen batch that needs a Run, the scheduler checks the configured GitHub repository
-name and stable numeric ID, then validates the complete page walk. The accepted
+For each frozen recurring batch that needs a Run, the scheduler checks the configured GitHub
+repository name and stable numeric ID. The observer requires two matching, bounded page walks
+and rechecks repository identity. A listing change that shifts rows can fail this check even
+when the last page number stays the same. The accepted
 observation must fit the [existing Project limits](#use-a-private-provider-index-for-daily-duplicate-checks).
 Before preparation the scheduler retains the exact bytes in the private Project Store,
 addressed by digest, and records one immutable pin for that batch. The two assessment Workers
@@ -545,11 +547,18 @@ the batch's evidence. Once bound, reconciling the same Run does not contact the 
 
 ### Optional manual mode
 
-For a Project without recurring enrollment, [admit the batch manually](#manually-admit-a-daily-batch)
-and use the [preparation and execution commands](#prepare-and-run-the-portable-daily-scenario).
-The optional `backlog-provider-index-v1.json` pin belongs to manual preparation. Archive that
-pin outside the Project Store before enrolling a recurring schedule. The scheduler preserves any
-manual pin it encounters and reports a conflict.
+[Admit a batch manually](#manually-admit-a-daily-batch) and use the
+[preparation and execution commands](#prepare-and-run-the-portable-daily-scenario).
+If the Project has recurring enrollment, pause it and use the manual tick before the
+scheduler records the cutoff as a paused slot. An existing
+recurring batch must settle through its enrolled Run. A manually admitted batch can settle
+and dispatch with its own Scenario and pins while enrollment is paused or after it resumes.
+The scheduler leaves the active manual batch to that Scenario.
+
+The optional `backlog-provider-index-v1.json` pin belongs to manual preparation. Archive
+the pin outside the Project Store after the manual batch settles and dispatches, and before
+the next recurring cutoff. The scheduler preserves the pin and reports a conflict if it
+encounters one outside an active manual batch.
 
 ### Reproduce the scheduler evidence
 

@@ -187,7 +187,7 @@
         ],
         "properties": {
           "request": {
-            "$ref": "urn:af:schema:backlog-batch-record:4#/$defs/reconsideration"
+            "$ref": "urn:af:schema:backlog-batch-record:5#/$defs/reconsideration"
           },
           "admitted_batch_id": {
             "anyOf": [
@@ -385,7 +385,7 @@
         "settlement": {
           "anyOf": [
             {
-              "$ref": "urn:af:schema:backlog-batch-record:4#/$defs/settlement"
+              "$ref": "urn:af:schema:backlog-batch-record:5#/$defs/settlement"
             },
             {
               "type": "null"

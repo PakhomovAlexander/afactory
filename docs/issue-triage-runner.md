@@ -22,9 +22,13 @@ python3 -I scripts/backlog-open-issues.py \
   --output /path/to/private/open-issues.json
 ```
 
-The command makes only GET requests to GitHub's API, with a two-minute read budget and at
-most 20 issue pages of 100 rows each. It filters out pull requests and closed issues. Exit 0
-writes one mode-0600 JSON file of up to 4 MiB and leaves stdout and stderr empty. A failed,
+The command makes only GET requests to GitHub's API, with one two-minute read budget for
+two walks of at most 20 issue pages of 100 rows each and two repository identity reads.
+It walks the listing by numeric repository ID and checks the repository name and ID before
+and after. It compares row identities, order and state across the walks, including pull
+requests and closed issues. It also compares revisions, titles, body excerpts and truncation
+flags for the open issues retained in the output. Exit 0 writes one mode-0600 JSON file of up
+to 4 MiB and leaves stdout and stderr empty. A failed,
 conflicting or detectably incomplete read exits 1 without publishing a file. An existing output path is
 preserved. Invalid command syntax exits 2.
 
@@ -36,10 +40,13 @@ sorted by repository-local number. Each row carries GitHub's stable issue ID, nu
 `body_truncated` records whether the excerpt omits text. GitHub text is untrusted evidence.
 Identical titles can belong to distinct issues and the index makes no duplicate decisions.
 
-The `observation` value `live-page-walk` marks a read of the listing through its terminal page.
-GitHub's live pagination can shift during reads, so the result cannot establish the
-absence of a duplicate. The daily Project Scenario uses a private pin to give both Workers
-the same observation for verification against committed source. See the
+The `observation` value `live-page-walk` marks agreement between two reads through the
+terminal page. If an earlier issue closes and shifts another issue past the current offset,
+the walks can disagree even when the number of pages stays the same. A disagreement refuses
+the observation. GitHub can change during or after both walks, so the result gives neither a
+point-in-time snapshot nor proof that a duplicate is absent. The daily Project Scenario uses
+a private pin to give both Workers the same observation for verification against committed
+source. See the
 [manual receiver steps](project-backlog.md#use-a-private-provider-index-for-daily-duplicate-checks)
 or [recurring enrollment setup](project-backlog.md#opt-in-to-recurring-github-issue-indexing).
 

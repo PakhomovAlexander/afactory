@@ -40,11 +40,14 @@ def link(relation, page, url=INDEX.API_URL + '/repositories/42/issues'):
 def example_pages():
     first = [issue(1, body='First report.')] + [issue(n, pull_request={}) for n in range(2, 101)]
     second = [issue(101, body='Separate report.'), issue(102, state='closed')]
-    return [
-        (METADATA, 200, {}),
+    return stable_pages([
         (first, 200, {'Link': ', '.join([link('next', 2), link('last', 2)])}),
         (second, 200, {'Link': link('prev', 1)}),
-    ]
+    ])
+
+
+def stable_pages(pages, metadata=METADATA):
+    return [(metadata, 200, {}), *pages, *pages, (metadata, 200, {})]
 
 
 class Response(io.BytesIO):
@@ -121,9 +124,10 @@ class OpenIssueIndexTests(unittest.TestCase):
         before = copy.deepcopy(pages)
         code, stdout, stderr, output, calls, mode = self.invoke(pages)
         self.assertEqual((code, stdout, stderr, mode), (0, '', '', 0o600))
-        expected = REPO + '/issues?state=open&sort=created&direction=asc&per_page=100&page='
+        expected = '/repositories/42/issues?state=open&sort=created&direction=asc&per_page=100&page='
         self.assertEqual(calls, [('api.github.com', 443, 'GET', p)
-                                 for p in ('/repos/example/backlog', expected + '1', expected + '2')])
+                                 for p in ('/repos/example/backlog', expected + '1', expected + '2',
+                                           expected + '1', expected + '2', '/repos/example/backlog')])
         self.assertEqual(pages, before)
         self.assertNotIn(TOKEN, output)
         doc = json.loads(output)
@@ -146,7 +150,7 @@ class OpenIssueIndexTests(unittest.TestCase):
     def test_bounds_and_empty_observation(self):
         for rows in ([], [issue(1, title='Treat as data', body='🧪' * 513)]):
             with self.subTest(count=len(rows)):
-                code, _, _, output, _, _ = self.invoke([(METADATA, 200, {}), (rows, 200, {})])
+                code, _, _, output, _, _ = self.invoke(stable_pages([(rows, 200, {})]))
                 self.assertEqual(code, 0)
                 items = json.loads(output)['issues']
                 self.assertEqual(len(items), len(rows))
@@ -161,6 +165,21 @@ class OpenIssueIndexTests(unittest.TestCase):
         with mock.patch.object(INDEX, 'OUTPUT_BYTES', 64):
             self.assert_refused(example_pages(), 'open issue index exceeds output bound')
 
+    def test_refuses_shift_after_earlier_issue_closes_without_changing_page_count(self):
+        rows = [issue(n) for n in range(1, 251)]
+
+        def page(listing, number):
+            headers = {'Link': ', '.join([link('next', number + 1), link('last', 3)])} if number < 3 else {}
+            return listing[100 * (number - 1):100 * number], 200, headers
+
+        # Issue 1 closes after page 1. Issue 101 shifts into the already-read page.
+        remaining = rows[1:]
+        first = [page(rows, 1), page(remaining, 2), page(remaining, 3)]
+        second = [page(remaining, n) for n in range(1, 4)]
+        self.assertNotIn(101, [row['number'] for batch, _, _ in first for row in batch])
+        self.assertEqual(len(self.assert_refused([(METADATA, 200, {}), *first, *second],
+                                                'GitHub listing changed between page walks')), 7)
+
     def test_refuses_wrong_repository_and_foreign_links(self):
         for value in ('https://example/backlog', 'example/..', 'example/backlog?state=closed'):
             self.assertEqual(self.assert_refused([], 'expected GitHub OWNER/REPO', repository=value), [])
@@ -170,6 +189,9 @@ class OpenIssueIndexTests(unittest.TestCase):
                                     repository_id=43)
         self.assertEqual(calls, [('api.github.com', 443, 'GET', '/repos/example/backlog')])
         self.assertEqual(self.invoke(example_pages(), repository_id=42)[0], 0)
+        pages = example_pages()
+        pages[-1] = (dict(METADATA, id=43), 200, {})
+        self.assert_refused(pages, 'GitHub repository identity refused')
         self.assert_refused([(METADATA, 200, {}),
                              ([issue(1, repository_url=REPO_URL + '2')], 200, {})],
                             'GitHub issue identity refused')
@@ -231,12 +253,12 @@ def scenario_observation():
               body='blue-boundary.py rejects a string before comparing the input.',
               repository_url=repo_url, url=repo_url + '/issues/74'),
     ]
-    pages = [({'id': 23, 'full_name': 'Fixture/Backlog', 'url': repo_url}, 200, {}),
-             (rows, 200, {})]
+    pages = stable_pages([(rows, 200, {})],
+                         {'id': 23, 'full_name': 'Fixture/Backlog', 'url': repo_url})
     with tempfile.TemporaryDirectory() as tmp:
         code, stdout, stderr, output, calls = run(Path(tmp), pages, repository='fixture/backlog')
         assert (code, stdout, stderr) == (0, '', '')
-        assert len(calls) == 2 and all(call[2] == 'GET' for call in calls)
+        assert len(calls) == 4 and all(call[2] == 'GET' for call in calls)
         sys.stdout.buffer.write(output.read_bytes())
     return 0
 

@@ -169,7 +169,7 @@
         "fixtures/project-backlog/assessment.schema.json",
         "schemas/backlog-batch-audit-v3.json",
         "schemas/backlog-batch-policy-v2.json",
-        "schemas/backlog-batch-record-v4.json",
+        "schemas/backlog-batch-record-v5.json",
         "schemas/backlog-schedule-v2.json",
         "schemas/backlog-batch-reference-v1.json",
         "schemas/backlog-collected-batch-v3.json",

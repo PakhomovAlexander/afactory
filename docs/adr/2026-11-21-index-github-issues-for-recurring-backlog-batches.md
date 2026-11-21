@@ -38,5 +38,7 @@ A bound batch requires its original evidence.
 
 Successive indexed batches use fresh observations without re-enrollment. An invalid read blocks
 preparation and leaves the batch private. Manual pinning and the other destinations keep their
-existing observation requirements. The live walk can detect incomplete responses and does not
-provide a point-in-time snapshot of GitHub.
+existing observation requirements. The observer compares two bounded walks of the same
+numeric repository, with name and ID checks before and after. A mismatch refuses the read,
+including when shifted rows leave the page count unchanged. The matching walks remain live
+observations and cannot establish a point-in-time snapshot of GitHub.

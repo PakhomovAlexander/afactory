@@ -187,6 +187,7 @@ impl ProjectStore {
         let reference = &batch.reference;
         let batch_id = &reference.batch_id;
         let pin = self.check_native_batch(&state, reference, &batch.scenario_id, proof.limits)?;
+        state.check_index_mode(reference, proof.index_mode)?;
         let events = self.processing()?;
         let receipt = settlement_id(proof)?;
         let mut outcomes = BTreeMap::new();
@@ -422,6 +423,7 @@ impl ProjectStore {
         let batch_id = &batch.reference.batch_id;
         let pin =
             self.check_native_batch(&state, &batch.reference, &batch.scenario_id, proof.limits)?;
+        state.check_index_mode(&batch.reference, proof.index_mode)?;
         let events = self.processing()?;
         let destination = &pin.policy.destination_id;
         let kind = destinations::Kind::from_resource(self, destination, resource)?;

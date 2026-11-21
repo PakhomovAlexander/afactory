@@ -458,6 +458,10 @@ pub(super) fn reserved(id: &str) -> bool {
     id.starts_with(RUN_PREFIX)
 }
 
+pub(crate) fn enrollment_paused(project: &ProjectStore) -> Result<bool> {
+    Ok(load(&project.directory)?.is_some_and(|enrollment| enrollment.paused))
+}
+
 fn recurring_template(run: &Run) -> Option<&Template> {
     if !reserved(&run.id) {
         return None;
@@ -501,7 +505,7 @@ pub(super) fn check_dispatch(state: &Path, run: &Run) -> Result<()> {
     require(
         state == scope.scenario_state
             && run.id == run_id(&reference)
-            && portable::backlog_template_enrollment(template) == Some(&enrollment.revision)
+            && portable::backlog_template_enrollment(template)? == Some(&enrollment.revision)
             && run.pin.policy == batch_policy(&run.pin.bundle),
         "Recurring backlog Run is outside its enrolled Store, batch or Scenario policy",
     )?;
@@ -517,13 +521,14 @@ pub(crate) fn index_mode(
     template: &Template,
 ) -> Result<IndexMode> {
     match (
-        load(&project.directory)?,
-        portable::backlog_template_enrollment(template),
+        reserved(&run.id),
+        portable::backlog_template_enrollment(template)?,
     ) {
-        (None, None) => Ok(IndexMode::Manual),
-        (Some(enrollment), Some(revision))
-            if revision == enrollment.revision && reserved(&run.id) =>
-        {
+        (false, None) => Ok(IndexMode::Manual),
+        (true, Some(revision)) => {
+            let enrollment = load(&project.directory)?
+                .filter(|enrollment| revision == enrollment.revision)
+                .ok_or("Backlog action differs from the Project's enrollment")?;
             Ok(enrollment.scope.index_mode())
         }
         _ => Err("Backlog action differs from the Project's enrollment".into()),

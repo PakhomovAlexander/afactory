@@ -796,6 +796,10 @@ fn capture_backlog_intake(
     if accept_late {
         accept("late");
     }
+    backlog_reference(&audit)
+}
+
+fn backlog_reference(audit: &Value) -> Value {
     json!({
         "schema":"af/backlog-batch-reference@1",
         "project_id":audit["project_id"],
@@ -2448,7 +2452,7 @@ fn portable_backlog_scheduler_indexes_fresh_github_evidence_before_each_batch() 
     let first_run = &first["runs"][first_id];
     assert_eq!(first_run["status"], "succeeded", "{}", first_run["failure"]);
     let (first_pin, first_raw) = index(first_run);
-    assert_eq!(fs::read_to_string(&reads).unwrap().lines().count(), 3);
+    assert_eq!(fs::read_to_string(&reads).unwrap().lines().count(), 6);
     assert!(!fake.join("requests").exists());
     let first_audit = audit();
     let first_batch = first_pin["batch_id"].as_str().unwrap();
@@ -2485,9 +2489,17 @@ fn portable_backlog_scheduler_indexes_fresh_github_evidence_before_each_batch() 
     let frozen = audit();
     let second_batch = frozen["active_batch_id"].as_str().unwrap();
     assert_ne!(first_batch, second_batch);
+    save(&receiver.input, &backlog_reference(&frozen));
+    let manual = receiver.prepare_artifact(BACKLOG, None);
+    assert!(
+        !manual.status.success()
+            && text(&manual).contains("mode differs from frozen batch admission"),
+        "{manual:?}"
+    );
     for (failure, diagnostic) in [
         ("unavailable", "observation unavailable"),
         ("partial", "observation unavailable"),
+        ("offset-shift", "observation unavailable"),
         ("wrong-scope", "different GitHub repository"),
         ("oversize", "over-bound GitHub backlog observation"),
     ] {
@@ -2583,10 +2595,72 @@ fn portable_backlog_github_index_prevents_a_duplicate_from_the_daily_ant() {
         BACKLOG,
     );
     let executable = github_fixture(&receiver);
-    let reference = capture_backlog_batch(&receiver, Some(&executable), true);
+    let (accept, count) =
+        configure_backlog_intake(&receiver, Some(BacklogFixture::GitHub(&executable)), false);
     let project = ok(receiver.af(&["project", "show", "--json"]));
     let store = Path::new(project["store"].as_str().unwrap());
-    let destination = read(&store.join("backlog-batch-policy-v2.json"))["destination_id"].clone();
+    let policy_path = store.join("backlog-batch-policy-v2.json");
+    let mut policy = read(&policy_path);
+    let due = af_scenario::runtime::now().unwrap() / 60_000 * 60_000;
+    policy["start_unix_ms"] = json!(due);
+    policy["hour"] = json!(due / 3_600_000 % 24);
+    policy["minute"] = json!(due / 60_000 % 60);
+    policy["lateness_ms"] = json!(600_000);
+    save(&policy_path, &policy);
+    let destination = policy["destination_id"].clone();
+    let before = (due - 1).to_string();
+    let state = receiver.scenarios.to_str().unwrap();
+    let scope = [
+        "--file",
+        BACKLOG,
+        "--owner",
+        "fixture-owner",
+        "--task-state",
+        receiver.tasks.to_str().unwrap(),
+        "--state",
+        state,
+        "--now",
+        &before,
+        "--json",
+        "--github-issue-index",
+    ];
+    private_write(
+        &store.join("backlog-github-observer"),
+        github_observer_fixture(&receiver),
+    );
+    private_write(
+        &store.join("backlog-github-read-token"),
+        "fixture_issues_read_only\n",
+    );
+    let preview = ok(receiver.af(&[&["ant", "backlog", "validate"][..], &scope].concat()));
+    ok(receiver.af(&[
+        &[
+            "ant",
+            "backlog",
+            "enroll",
+            "--confirm-pin",
+            preview["revision"].as_str().unwrap(),
+        ][..],
+        &scope,
+    ]
+    .concat()));
+    let enrollment = |verb: &str| {
+        ok(receiver.af(&[
+            "ant",
+            "backlog",
+            verb,
+            "--state",
+            state,
+            "--now",
+            &due.to_string(),
+            "--json",
+        ]))
+    };
+    assert_eq!(enrollment("pause")["paused"], true);
+    let audit = ok(receiver.af(&["backlog", "batch", "tick", "--at-unix-ms", &due.to_string()]));
+    assert_eq!(audit["high_water"], count.to_string());
+    let reference = backlog_reference(&audit);
+    accept("late");
     let head = Command::new("git")
         .args(["rev-parse", "HEAD"])
         .current_dir(&receiver.repo)
@@ -2684,6 +2758,20 @@ fn portable_backlog_github_index_prevents_a_duplicate_from_the_daily_ant() {
     let fake = receiver.root.join("fake-github");
     let (run_id, first) = start_backlog_ant(&receiver, "indexed-backlog", &reference);
     assert_eq!(first["status"], "waiting", "{}", first["failure"]);
+    assert!(!run_id.starts_with("backlog-daily-"));
+    assert_eq!(first["frames"]["root"]["steps"][1]["status"], "succeeded");
+    assert_eq!(enrollment("resume")["paused"], false);
+    // The enrolled scheduler must leave the active manual batch and its pin alone.
+    let tick = ok(receiver.af(&["ant", "tick", "--state", state, "--json"]));
+    assert_eq!(tick["started"], json!([]));
+    assert_eq!(tick["refused"], json!({}));
+    assert!(!fake.join("observer-requests").exists());
+    let batch_id = reference["batch_id"].as_str().unwrap();
+    assert!(
+        !store
+            .join(format!("backlog-provider-index-{}.json", &batch_id[7..]))
+            .exists()
+    );
     assert!(!fake.join("requests").exists());
     let outcome = |id| {
         ok(receiver.af(&["backlog", "show", id, "--private", "--json"]))["data"]["outcomes"][0]

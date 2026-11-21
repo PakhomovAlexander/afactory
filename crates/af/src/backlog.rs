@@ -155,7 +155,10 @@ fn batch_write(store: &mut ProjectStore, command: BatchCommand) -> Result<i32, S
         BatchCommand::Audit => {
             unreachable!("read-only batch audit handled before opening a writer")
         }
-        BatchCommand::Tick { at_unix_ms } => store.tick_backlog_batch(at_unix_ms)?,
+        BatchCommand::Tick { at_unix_ms } => {
+            let paused = crate::scenario::backlog::enrollment_paused(store)?;
+            store.tick_backlog_batch(at_unix_ms, paused)?
+        }
         BatchCommand::Reconsider {
             item_id,
             report_id,

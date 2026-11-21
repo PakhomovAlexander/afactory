@@ -62,7 +62,7 @@
         "SurveyFailed@1",
         "SurveyCollected@1",
         "BacklogRecordStored@2",
-        "BacklogBatchStored@4",
+        "BacklogBatchStored@5",
         "BacklogIntakeStored@1"
       ]
     },
@@ -130,7 +130,7 @@
       "if": {
         "properties": {
           "type": {
-            "const": "BacklogBatchStored@4"
+            "const": "BacklogBatchStored@5"
           }
         },
         "required": [
@@ -140,7 +140,7 @@
       "then": {
         "properties": {
           "payload": {
-            "$ref": "urn:af:schema:backlog-batch-record:4"
+            "$ref": "urn:af:schema:backlog-batch-record:5"
           },
           "artifact_refs": {
             "maxItems": 0

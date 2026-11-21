@@ -151,6 +151,7 @@ pub enum Journal {
     Ticked {
         at_unix_ms: u64,
         paused: bool,
+        recurring: bool,
         high_water: DecimalU64,
         members: Vec<String>,
     },

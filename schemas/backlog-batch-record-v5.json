@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:backlog-batch-record:4",
-  "title": "BacklogBatchStored@4 payload",
+  "$id": "urn:af:schema:backlog-batch-record:5",
+  "title": "BacklogBatchStored@5 payload",
   "oneOf": [
     {
       "type": "object",
@@ -78,6 +78,7 @@
         "kind",
         "at_unix_ms",
         "paused",
+        "recurring",
         "high_water",
         "members"
       ],
@@ -91,6 +92,9 @@
           "maximum": 8640000000000
         },
         "paused": {
+          "type": "boolean"
+        },
+        "recurring": {
           "type": "boolean"
         },
         "high_water": {

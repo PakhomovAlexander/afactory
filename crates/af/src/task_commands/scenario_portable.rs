@@ -348,8 +348,15 @@ pub(crate) fn backlog_template_scope(template: &Template) -> Result<String, Stri
     template.id()
 }
 
-pub(crate) fn backlog_template_enrollment(template: &Template) -> Option<&str> {
-    template.document["requirements"][BACKLOG_ENROLLMENT].as_str()
+pub(crate) fn backlog_template_enrollment(template: &Template) -> Result<Option<&str>, String> {
+    template.document["requirements"]
+        .get(BACKLOG_ENROLLMENT)
+        .map(|revision| {
+            revision
+                .as_str()
+                .ok_or_else(|| "Invalid backlog template enrollment".into())
+        })
+        .transpose()
 }
 
 pub(crate) fn backlog_template_collection(template: &Template) -> Result<CollectedBatch, String> {

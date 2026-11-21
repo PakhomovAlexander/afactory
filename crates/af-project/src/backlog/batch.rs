@@ -81,6 +81,8 @@ struct Member {
 #[derive(Serialize)]
 struct Batch {
     id: String,
+    #[serde(skip)]
+    recurring: bool,
     previous_high_water: DecimalU64,
     high_water: DecimalU64,
     policy_id: String,
@@ -358,12 +360,21 @@ fn report_context(accepted: &AcceptedReport) -> ReportContext {
 }
 
 impl State {
+    fn check_index_mode(&self, reference: &BatchReference, mode: IndexMode) -> Result<(), String> {
+        let recurring = !matches!(mode, IndexMode::Manual);
+        if self.batches[&reference.batch_id].recurring != recurring {
+            return Err("Backlog collection mode differs from frozen batch admission".into());
+        }
+        Ok(())
+    }
+
     fn freeze(
         &mut self,
         intake: &Intake,
         at: u64,
         high_water: u64,
         paused: bool,
+        recurring: bool,
     ) -> Result<Vec<String>, String> {
         let pin = self.pin.as_ref().ok_or("no pinned backlog batch policy")?;
         if at == 0 || at < self.clock || high_water < self.high_water || high_water > intake.len() {
@@ -463,6 +474,7 @@ impl State {
                     id.clone(),
                     Batch {
                         id: id.clone(),
+                        recurring,
                         previous_high_water: previous_high_water.into(),
                         high_water: high_water.into(),
                         policy_id: pin.id.clone(),
@@ -689,12 +701,14 @@ impl State {
                 at_unix_ms,
                 high_water,
                 paused,
+                recurring,
                 members,
             } => {
                 if self.last_tick == Some(at_unix_ms) {
                     return Err("duplicate backlog batch tick in journal".into());
                 }
-                if self.freeze(intake, at_unix_ms, high_water.get(), paused)? != members {
+                if self.freeze(intake, at_unix_ms, high_water.get(), paused, recurring)? != members
+                {
                     return Err("frozen backlog membership differs from authority replay".into());
                 }
                 Ok(true)
@@ -778,7 +792,7 @@ impl ProjectStore {
             .replay(STREAM)
             .map_err(|_| "could not replay backlog batches")?
         {
-            if event.event_type != EventType::BacklogBatchStoredV4
+            if event.event_type != EventType::BacklogBatchStoredV5
                 || !event.artifact_refs.is_empty()
             {
                 return Err("invalid event in backlog batch journal".into());
@@ -821,7 +835,7 @@ impl ProjectStore {
                 };
                 let payload = serde_json::to_value(record)
                     .map_err(|_| "could not encode backlog batch journal")?;
-                Ok(NewEvent::new(EventType::BacklogBatchStoredV4, payload)
+                Ok(NewEvent::new(EventType::BacklogBatchStoredV5, payload)
                     .at(af_contracts::task::collection::collected_time(at)))
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -860,16 +874,23 @@ impl ProjectStore {
     }
 
     fn schedule_scope(&self, state: &State, pin: &Pin) -> Result<ScheduleScope, String> {
-        match self
-            .directory
-            .join(provider_index::PIN_FILE)
-            .symlink_metadata()
+        if state
+            .active
+            .as_ref()
+            .is_none_or(|id| state.batches[id].recurring)
         {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            _ => {
-                return Err(
-                    "Batch-specific provider index pins require manual backlog preparation".into(),
-                );
+            match self
+                .directory
+                .join(provider_index::PIN_FILE)
+                .symlink_metadata()
+            {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                _ => {
+                    return Err(
+                        "Batch-specific provider index pins require manual backlog preparation"
+                            .into(),
+                    );
+                }
             }
         }
         let destination = &pin.policy.destination_id;
@@ -905,21 +926,37 @@ impl ProjectStore {
             );
         }
         self.advance_batch(&mut state, &intake, pin, zone, now, Some(paused))?;
-        Ok(state.active.as_ref().map(|id| BatchReference {
-            schema: af_contracts::backlog::batch::BatchReferenceSchema::V1,
-            project_id: self.project_id.clone(),
-            batch_id: id.clone(),
-            policy_id: state.batches[id].policy_id.clone(),
-            high_water: state.batches[id].high_water,
-        }))
+        Ok(state
+            .active
+            .as_ref()
+            .filter(|id| state.batches[*id].recurring)
+            .map(|id| BatchReference {
+                schema: af_contracts::backlog::batch::BatchReferenceSchema::V1,
+                project_id: self.project_id.clone(),
+                batch_id: id.clone(),
+                policy_id: state.batches[id].policy_id.clone(),
+                high_water: state.batches[id].high_water,
+            }))
     }
 
-    pub fn tick_backlog_batch(&mut self, now: u64) -> Result<Audit, String> {
+    pub fn tick_backlog_batch(
+        &mut self,
+        now: u64,
+        enrollment_paused: bool,
+    ) -> Result<Audit, String> {
         match self.directory.join(ENROLLMENT_FILE).symlink_metadata() {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(_) if enrollment_paused => {}
             _ => return Err("Backlog batch admission belongs to the enrolled scheduler".into()),
         }
         let (mut state, intake) = self.batch_state()?;
+        if state
+            .active
+            .as_ref()
+            .is_some_and(|id| state.batches[id].recurring)
+        {
+            return Err("Active backlog batch belongs to the enrolled scheduler".into());
+        }
         let policy = self.installed_batch_policy(&intake)?;
         let (pin, zone) = Self::batch_policy_pin(policy)?;
         self.advance_batch(&mut state, &intake, pin, zone, now, None)?;
@@ -954,10 +991,12 @@ impl ProjectStore {
             && (scheduled_pause.is_none() || pin.schedule.due(&pin.zone, state.next_day)?.0 <= now)
         {
             let paused = scheduled_pause.unwrap_or(false);
-            let members = state.freeze(intake, now, intake.len(), paused)?;
+            let recurring = scheduled_pause.is_some();
+            let members = state.freeze(intake, now, intake.len(), paused, recurring)?;
             records.push(Journal::Ticked {
                 at_unix_ms: now,
                 paused,
+                recurring,
                 high_water: intake.len().into(),
                 members,
             });
@@ -981,19 +1020,21 @@ impl ProjectStore {
         source_revision: String,
         mode: IndexMode,
     ) -> Result<CollectedBatch, String> {
-        match (
-            mode,
-            self.directory.join(ENROLLMENT_FILE).symlink_metadata(),
-        ) {
-            (IndexMode::Manual, Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
-            (IndexMode::RecurringIndexed | IndexMode::RecurringUnindexed, Ok(_)) => {}
-            _ => return Err("Backlog collection mode differs from Project enrollment".into()),
+        if !matches!(mode, IndexMode::Manual)
+            && self
+                .directory
+                .join(ENROLLMENT_FILE)
+                .symlink_metadata()
+                .is_err()
+        {
+            return Err("Backlog collection mode differs from Project enrollment".into());
         }
         self.collect_backlog_with(
             reference,
             scenario_id,
             limits,
             source_revision,
+            mode,
             |reference, source, destination, has_members| match mode {
                 IndexMode::Manual if has_members => provider_index::collect(
                     self,
@@ -1038,6 +1079,7 @@ impl ProjectStore {
             scenario_id,
             limits,
             source_revision,
+            IndexMode::RecurringIndexed,
             |reference, source, destination, _| {
                 if let Some(index) = provider_index::collect(
                     self,
@@ -1066,6 +1108,7 @@ impl ProjectStore {
         scenario_id: &str,
         limits: &Limits,
         source_revision: String,
+        mode: IndexMode,
         collect_index: impl FnOnce(
             &BatchReference,
             &str,
@@ -1076,6 +1119,7 @@ impl ProjectStore {
         reference.validate()?;
         let (state, intake) = self.batch_state()?;
         let pin = self.check_native_batch(&state, &reference, scenario_id, limits)?;
+        state.check_index_mode(&reference, mode)?;
         if state.active.as_deref() != Some(&reference.batch_id) {
             return Err("backlog Scenario requires the active Project batch".into());
         }
@@ -1211,7 +1255,11 @@ impl ProjectStore {
     fn update_backlog_batch(&mut self, record: Journal) -> Result<Audit, String> {
         let (mut state, intake) = self.batch_state()?;
         if let Journal::Settled { batch_id, .. } | Journal::Closed { batch_id, .. } = &record
-            && self.native_batch_exists(batch_id)?
+            && (state
+                .batches
+                .get(batch_id)
+                .is_some_and(|batch| batch.recurring)
+                || self.native_batch_exists(batch_id)?)
         {
             return Err("backlog batch is owned by its native Scenario settlement".into());
         }
@@ -1321,7 +1369,7 @@ mod tests {
                 state.apply(&intake, record.clone()).unwrap();
             }
             let at = occurrence * day;
-            let members = state.freeze(&intake, at, cutoff, false).unwrap();
+            let members = state.freeze(&intake, at, cutoff, false, false).unwrap();
             assert_eq!(members.len(), MAX_REPOSITORY_CITATIONS);
             assert_eq!(
                 members.first().unwrap(),
@@ -1340,6 +1388,7 @@ mod tests {
             let batch_id = state.active.unwrap();
             journal.push(Journal::Ticked {
                 paused: false,
+                recurring: false,
                 at_unix_ms: at,
                 high_water: cutoff.into(),
                 members: members.clone(),
