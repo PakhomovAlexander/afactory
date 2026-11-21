@@ -15,6 +15,7 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts/performance'))
 from perflab import contracts, telemetry_lab  # noqa: E402
+from tests import test_workflow as workflow_text  # noqa: E402
 
 PREFLIGHT = telemetry_lab.script_module('scripts/release-contract.py')
 
@@ -40,6 +41,40 @@ def copy_inputs(source, destination):
 
 
 class HostedReleaseDependencies(unittest.TestCase):
+    def test_nobuild_release_pr_runs_only_metadata_and_named_summaries(self):
+        workflows = ROOT / '.github/workflows'
+        source = (workflows / 'validate.yml').read_text()
+        jobs = workflow_text.jobs(source)
+        label = "contains(github.event.pull_request.labels.*.name, 'nobuild')"
+        ordinary = "github.event_name != 'pull_request' || !" + label
+        self.assertIn("NOBUILD: ${{ github.event_name == 'pull_request' && " + label + " }}", source)
+        self.assertEqual(workflow_text.key(jobs['resolve'], 'if'), ordinary)
+        workers = ('base', 'classes', 'container-probes', 'telemetry-build-smoke', 'telemetry-runtime-smoke')
+        self.assertEqual(set(jobs), {'resolve', 'lint', 'check', *workers})
+        for worker in workers:
+            self.assertEqual(workflow_text.key(jobs[worker], 'needs'), 'resolve')
+            self.assertNotIn('always()', workflow_text.key(jobs[worker], 'if') or '')
+        self.assertIn('inputs.release && (' + ordinary + ')', '\n'.join(jobs['check']))
+        for gate, always_steps in (('lint', 1), ('check', 0)):
+            with self.subTest(gate=gate), tempfile.TemporaryDirectory() as directory:
+                active = [step for step in workflow_text.steps(jobs[gate])
+                          if not any("env.NOBUILD != 'true'" in line for line in step)]
+                self.assertEqual(len(active), always_steps + 1)
+                if always_steps:
+                    self.assertIn('actions/checkout@', active[0][0])
+                exemption = active[-1]
+                self.assertIn("        if: env.NOBUILD == 'true'", exemption)
+                recipe = workflow_text.block(exemption, 'run')
+                if gate == 'lint':
+                    self.assertIn('python3 -I scripts/af-pin.py --check', recipe)
+                summary = Path(directory) / 'summary'
+                subprocess.run(['bash', '-e', '-c', recipe], cwd=ROOT, check=True,
+                               env={'PATH': str(Path(sys.executable).parent) + ':/usr/bin:/bin',
+                                    'GITHUB_STEP_SUMMARY': str(summary)})
+                self.assertIn('NOT RUN (nobuild PR exemption)', summary.read_text())
+        self.assertIn('labeled, unlabeled', (workflows / 'ci.yml').read_text())
+        self.assertNotIn('nobuild', (workflows / 'pr-report.yml').read_text())
+
     def test_base_installs_real_signature_dependency_before_release_checks(self):
         workflow = (ROOT / '.github/workflows/validate.yml').read_text()
         base = workflow.split('\n  base:\n', 1)[1].split('\n  classes:\n', 1)[0]

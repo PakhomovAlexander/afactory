@@ -88,6 +88,42 @@ def env(step):
     return out
 
 
+class NobuildLabelEvents(unittest.TestCase):
+    def test_unrelated_label_events_skip_jobs_and_get_unique_concurrency_groups(self):
+        label_event = 'contains(fromJSON(\'["labeled","unlabeled"]\'), github.event.action)'
+        nobuild = "contains(github.event.pull_request.labels.*.name, 'nobuild')"
+        pr_only = "github.event_name == 'pull_request'"
+        for workflow, job in (
+            ("workspace-fixture-benchmark", "benchmark"),
+            ("performance-activation", "verify"),
+            ("release-namespace-proof", "namespace"),
+            ("performance-telemetry", "plan"),
+        ):
+            with self.subTest(workflow=workflow):
+                source = read(os.path.join(ROOT, ".github", "workflows", workflow + ".yml")).decode()
+                triggers, rest = source.split("\non:\n", 1)[1].split("\npermissions:\n", 1)
+                self.assertIn("types: [opened, synchronize, reopened, labeled, unlabeled]", triggers)
+                concurrency = rest.split("\nconcurrency:\n", 1)[1].split("\n\n", 1)[0]
+                group = workflow + "-${{ github.event.pull_request.number }}"
+                cancel = "true"
+                ignore = label_event + " && github.event.label.name != 'nobuild'"
+                run = "!" + nobuild + " && (!" + label_event + " || github.event.label.name == 'nobuild')"
+                if workflow == "performance-telemetry":
+                    for event in ("schedule", "release", "workflow_dispatch"):
+                        self.assertIn("\n  " + event + ":\n", triggers)
+                    group = workflow + "-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}"
+                    cancel = "${{ " + pr_only + " }}"
+                    ignore = pr_only + " && " + ignore
+                    run = "github.event_name != 'pull_request' || (" + run + ")"
+                # A skipped job alone still enters workflow-level concurrency. Each ignored
+                # event needs its own group so it cannot displace any pending or running work.
+                self.assertEqual(concurrency.splitlines(), [
+                    "  group: " + group + "${{ " + ignore + " && format('-ignored-{0}', github.run_id) || '' }}",
+                    "  cancel-in-progress: " + cancel,
+                ])
+                self.assertEqual(key(jobs(source)[job], "if"), "${{ " + run + " }}")
+
+
 class RequiredPythonCompatibility(unittest.TestCase):
     def setUp(self):
         self.text = read(WORKFLOW).decode("utf-8")
@@ -118,6 +154,7 @@ class RequiredPythonCompatibility(unittest.TestCase):
                 uses_python = [i for i, step in enumerate(actions)
                                if any(re.search(r"^\s*(?:run: )?(?:python3?|make)\s", line)
                                       for line in step if "run:" in line or line.startswith("          "))
+                               and "        if: env.NOBUILD == 'true'" not in step
                                and i != setup[0]]
                 self.assertTrue(uses_python)
                 self.assertLess(setup[0], min(uses_python))
@@ -144,7 +181,8 @@ class RequiredPythonCompatibility(unittest.TestCase):
         job = "\n".join(self.jobs["resolve"])
         self.assertIn('--bound "$BOUND_PLAN"', job)
         self.assertIn('--event "$GITHUB_EVENT_PATH"', job)
-        self.assertNotIn("github.event.pull_request.labels", job)
+        self.assertNotIn("github.event.pull_request.labels", "\n".join(
+            line for step in steps(self.jobs["resolve"]) for line in step))
         self.assertNotIn("continue-on-error", job)
 
     def test_telemetry_smoke_is_selected_perf_validation_with_original_containment(self):
