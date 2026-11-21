@@ -776,6 +776,26 @@ fn capture_backlog_intake(
     accept_late: bool,
     bulk: bool,
 ) -> Value {
+    let (accept, count) = configure_backlog_intake(receiver, fixture, bulk);
+    let audit = ok(receiver.af(&["backlog", "batch", "tick", "--at-unix-ms", "1772755200000"]));
+    assert_eq!(audit["high_water"], count.to_string());
+    if accept_late {
+        accept("late");
+    }
+    json!({
+        "schema":"af/backlog-batch-reference@1",
+        "project_id":audit["project_id"],
+        "batch_id":audit["active_batch_id"],
+        "policy_id":audit["pin_id"],
+        "high_water":audit["high_water"]
+    })
+}
+
+fn configure_backlog_intake<'a>(
+    receiver: &'a Receiver,
+    fixture: Option<BacklogFixture<'_>>,
+    bulk: bool,
+) -> (impl Fn(&str) -> Value + 'a, usize) {
     let producer_repo = receiver.root.join("another producer");
     git(
         &receiver.repo,
@@ -954,7 +974,7 @@ fn capture_backlog_intake(
             "publication_limit":if matches!(fixture, Some(BacklogFixture::Markdown(_))) { 2 } else { 1 }, "evidence_access":"private_report", "hold_policy":"allow_local_reservations"
         }),
     );
-    let accept = |id| {
+    let accept = move |id: &str| {
         let packet = ok(receiver.af(&[
             "backlog",
             "export",
@@ -989,18 +1009,252 @@ fn capture_backlog_intake(
     if matches!(fixture, Some(BacklogFixture::GitHub(_))) {
         assert!(!receiver.root.join("fake-github/requests").exists());
     }
-    let audit = ok(receiver.af(&["backlog", "batch", "tick", "--at-unix-ms", "1772755200000"]));
-    assert_eq!(audit["high_water"], ids.len().to_string());
-    if accept_late {
-        accept("late");
+    (accept, ids.len())
+}
+
+#[test]
+fn portable_backlog_scheduler_enrolls_once_and_replays_two_daily_batches() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap().join("recurring");
+    let receiver = Receiver::for_artifact(root, 303, BACKLOG);
+    let (accept, first_count) = configure_backlog_intake(&receiver, None, false);
+    let project = ok(receiver.af(&["project", "show", "--json"]));
+    let project_store = Path::new(project["store"].as_str().unwrap());
+    let policy_file = project_store.join("backlog-batch-policy-v2.json");
+    let due = af_scenario::runtime::now().unwrap() / 60_000 * 60_000;
+    let mut policy = read(&policy_file);
+    policy["start_unix_ms"] = json!(due);
+    policy["hour"] = json!(due / 3_600_000 % 24);
+    policy["minute"] = json!(due / 60_000 % 60);
+    policy["lateness_ms"] = json!(600_000);
+    save(&policy_file, &policy);
+
+    let state = receiver.scenarios.to_str().unwrap();
+    let before = (due - 1).to_string();
+    let receiver_args = [
+        "--file",
+        BACKLOG,
+        "--task-state",
+        receiver.tasks.to_str().unwrap(),
+        "--owner",
+        "fixture-owner",
+        "--state",
+        state,
+        "--now",
+        &before,
+        "--json",
+    ];
+    let enroll = |operation, extra: &[&str]| {
+        receiver.af(&[&["ant", "backlog", operation][..], &receiver_args, extra].concat())
+    };
+    let preview = ok(enroll("validate", &[]));
+    schemas::valid(&schemas::validator("backlog-schedule-v1.json"), &preview);
+    let wrong = enroll("enroll", &["--confirm-pin", "wrong"]);
+    assert!(!wrong.status.success() && text(&wrong).contains("confirmation differs"));
+    assert!(!receiver.provider_home.join("calls").exists());
+    let confirmed = ["--confirm-pin", preview["revision"].as_str().unwrap()];
+    assert_eq!(ok(enroll("enroll", &confirmed)), preview);
+    assert_eq!(ok(enroll("enroll", &confirmed)), preview);
+    let manual = receiver.af(&["backlog", "batch", "tick", "--at-unix-ms", &due.to_string()]);
+    assert!(!manual.status.success() && text(&manual).contains("enrolled scheduler"));
+
+    let registry = receiver.root.join("providers.toml");
+    let registry_bytes = fs::read(&registry).unwrap();
+    fs::write(&registry, [&registry_bytes[..], b"\n# drift\n"].concat()).unwrap();
+    let refused = ok(receiver.af(&[
+        "ant",
+        "tick",
+        "--state",
+        state,
+        "--now",
+        &due.to_string(),
+        "--json",
+    ]));
+    assert!(
+        refused["refused"]
+            .as_object()
+            .unwrap()
+            .values()
+            .any(|error| {
+                error
+                    .as_str()
+                    .unwrap()
+                    .contains("Provider registry or bindings changed")
+            })
+    );
+    assert_eq!(
+        ok(receiver.af(&["backlog", "batch", "audit"]))["occurrences"],
+        json!([])
+    );
+    assert!(!receiver.provider_home.join("calls").exists());
+    fs::write(&registry, registry_bytes).unwrap();
+
+    let sink = project_store.join("backlog-local-sink");
+    fs::write(&sink, "temporary sink obstruction").unwrap();
+    // Drive the first slot through the real foreground scheduler. The local sink fails
+    // after independent verification and durable settlement, leaving a recoverable intent.
+    let scheduler = receiver.af(&[
+        "ant",
+        "scheduler",
+        "run",
+        "--state",
+        state,
+        "--for-seconds",
+        "1",
+    ]);
+    assert!(scheduler.status.success(), "{}", text(&scheduler));
+    let runs =
+        || ok(receiver.af(&["scenario", "list", "--state", state, "--json"]))["runs"].clone();
+    let first = runs();
+    let (first_id, first_run) = first.as_object().unwrap().iter().next().unwrap();
+    assert_eq!(first.as_object().unwrap().len(), 1);
+    assert_eq!(first_run["status"], "waiting", "{first_run}");
+    let first_steps = &first_run["frames"]["root"]["steps"];
+    assert_eq!(first_steps[0]["status"], "succeeded");
+    assert_eq!(first_steps[1]["status"], "succeeded");
+    assert_eq!(first_steps[2]["status"], "waiting");
+    let audit = || ok(receiver.af(&["backlog", "batch", "audit"]));
+    let first_batch = audit()["active_batch_id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        audit()["batches"][&first_batch]["members"]
+            .as_object()
+            .unwrap()
+            .len(),
+        first_count
+    );
+    accept("late");
+    assert_eq!(audit()["pending_member_ids"], json!(["late"]));
+    assert!(audit()["batches"][&first_batch]["members"]["late"].is_null());
+
+    let tick = |now: u64| {
+        ok(receiver.af(&[
+            "ant",
+            "tick",
+            "--state",
+            state,
+            "--now",
+            &now.to_string(),
+            "--json",
+        ]))
+    };
+    let observed = af_scenario::runtime::now().unwrap();
+    // A policy edit must block both new admission and continuation of the already verified
+    // Run. Restoring the exact policy permits reconciliation of the original intent.
+    let mut changed = policy.clone();
+    changed["publication_limit"] = json!(2);
+    save(&policy_file, &changed);
+    fs::remove_file(&sink).unwrap();
+    let blocked = tick(observed);
+    assert!(
+        blocked["refused"][first_id]
+            .as_str()
+            .unwrap()
+            .contains("installed Project authority")
+    );
+    assert_eq!(&runs()[first_id], first_run);
+    assert!(!sink.exists());
+    save(&policy_file, &policy);
+
+    let recovered = tick(observed);
+    assert_eq!(recovered["started"], json!([]));
+    let first_done = &recovered["runs"][first_id];
+    assert_eq!(first_done["status"], "succeeded", "{first_done}");
+    assert_eq!(
+        first_done["frames"]["root"]["steps"][2]["intents"][0]["id"],
+        first_steps[2]["intents"][0]["id"],
+    );
+    assert_eq!(fs::read_dir(&sink).unwrap().count(), 1);
+    let closed = audit()["batches"][&first_batch]["closed_unix_ms"]
+        .as_u64()
+        .unwrap();
+    let second_time = closed + 86_400_000;
+    assert!(second_time < due + 86_400_000 + 600_000);
+    let second = tick(second_time);
+    let second_id = second["started"][0].as_str().unwrap();
+    let second_done = &second["runs"][second_id];
+    assert_eq!(second_done["status"], "succeeded", "{second_done}");
+    assert_ne!(first_id, second_id);
+    assert_ne!(
+        first_done["pin"]["revision"],
+        second_done["pin"]["revision"]
+    );
+    assert_ne!(
+        first_done["pin"]["policy"]["task_templates"],
+        second_done["pin"]["policy"]["task_templates"]
+    );
+    let audits = audit();
+    let admitted = audits["occurrences"].as_array().unwrap();
+    assert_eq!(admitted.len(), 2);
+    let second_batch = admitted[1]["outcome"]["batch_id"].as_str().unwrap();
+    assert_eq!(admitted[0]["outcome"]["batch_id"], first_batch);
+    assert_ne!(first_batch, second_batch);
+    assert_eq!(
+        audits["batches"][second_batch]["members"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect::<Vec<_>>(),
+        vec!["late"]
+    );
+    assert_eq!(audits["closed_high_water"], (first_count + 1).to_string());
+    assert_eq!(fs::read_dir(&sink).unwrap().count(), 2);
+
+    let cas = Cas::open_existing(receiver.tasks.join("cas")).unwrap();
+    let mut task_receipts = Vec::new();
+    let mut reviews = Vec::new();
+    for (run, batch_id) in [
+        (first_done, first_batch.as_str()),
+        (second_done, second_batch),
+    ] {
+        let requirements = &run["pin"]["bundle"]["definitions"]["daily-backlog"]["steps"][0]["operation"]
+            ["template"]["document"]["requirements"];
+        assert_eq!(
+            requirements["scenario_backlog_enrollment"],
+            preview["revision"]
+        );
+        let outputs = &run["frames"]["root"]["outputs"];
+        let task = &outputs["assessment"]["value"];
+        assert_eq!(task["result"]["acceptance"], "satisfied");
+        task_receipts.push(task["result_id"].clone());
+        let verification = task["result"]["outputs"]["verification"]["artifact_ids"][0]
+            .as_str()
+            .unwrap();
+        let review = cas.get_artifact(verification).unwrap();
+        assert_eq!(review.payload["outcome"], "passed");
+        reviews.push(review.payload["evaluation_id"].as_str().unwrap().to_owned());
+        assert_eq!(outputs["settle-backlog"]["value"]["subject"], batch_id);
+        assert_eq!(outputs["dispatch-backlog"]["value"]["subject"], batch_id);
+        assert!(outputs["dispatch-backlog"]["value"]["evidence"].is_string());
     }
-    json!({
-        "schema":"af/backlog-batch-reference@1",
-        "project_id":project_id,
-        "batch_id":audit["active_batch_id"],
-        "policy_id":audit["pin_id"],
-        "high_water":audit["high_water"]
-    })
+    assert_ne!(task_receipts[0], task_receipts[1]);
+    assert_ne!(reviews[0], reviews[1]);
+    let calls = fs::read_to_string(receiver.provider_home.join("calls")).unwrap();
+    assert_eq!(calls.lines().filter(|line| *line == "verifier").count(), 2);
+    assert_eq!(tick(second_time)["started"], json!([]));
+    assert_eq!(tick(second_time + 1)["runs"], json!({}));
+    assert_eq!(audit(), audits);
+    assert_eq!(fs::read_dir(&sink).unwrap().count(), 2);
+
+    let pause_at = (second_time + 2).to_string();
+    let mode =
+        |operation, time| ok(receiver.af(&["ant", "backlog", operation, "--now", time, "--json"]));
+    assert_eq!(mode("pause", &pause_at)["paused"], true);
+    let third_due = (due + 2 * 86_400_000).to_string();
+    // Resume without an intervening tick must preserve the skipped paused occurrence.
+    assert_eq!(mode("resume", &third_due)["paused"], false);
+    assert_eq!(
+        audit()["occurrences"][2]["outcome"]["kind"],
+        "skipped_paused"
+    );
+    assert_eq!(tick(due + 3 * 86_400_000 + 600_001)["started"], json!([]));
+    assert_eq!(
+        audit()["occurrences"][3]["outcome"]["kind"],
+        "skipped_missed"
+    );
+    assert_eq!(
+        fs::read_to_string(receiver.provider_home.join("calls")).unwrap(),
+        calls
+    );
 }
 
 #[test]

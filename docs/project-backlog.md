@@ -388,56 +388,118 @@ cargo nextest run --workspace --locked --profile ci \
 
 [Native settlement and delivery decision](adr/2026-11-20-settle-and-dispatch-verified-backlog-locally.md)
 
-## Schedule a prepared batch with an Ant
+## Enroll once for recurring daily processing
 
-This example uses Bash and `jq`. The batch policy tick freezes a batch and produces the batch
-reference. The Ant runs that **prepared batch**. The package binds its source, members, and policy,
-so an existing Ant never silently switches to a later batch. For each later cutoff, create a
-fresh batch reference, prepare it, and register a new reviewed Ant binding for that batch.
+On the receiver, configure the signed intake authority, the approved Provider registry and
+the committed backlog Scenario packages. Install the [daily batch policy](#manually-admit-a-daily-batch)
+and choose its destination before enrollment. The synthetic local sink, GitHub Issues, Markdown
+and Jira use the same scheduler. Set `scenario_id` to the digest of the reviewed committed artifact
+bytes. Set the daily time, timezone, start, lateness and spending limits in the batch policy.
+Schedule the first cutoff after enrollment and use a checkout at the reviewed commit.
+Keep all state paths and any Provider alias bindings local to the receiver.
 
-Use the `prepared.json` and `policy.json` from preparation above. Set `start_ms` to a Unix time
-in milliseconds at or before the chosen daily UTC slot and set `hour` and `minute` to that slot.
-Use an operator-selected owner and local notification route.
+### One-time setup
 
-```bash
-jq -n --slurpfile scenario "$scratch/prepared.json" \
-  --arg id "$ant_id" --arg owner "$owner" --arg route "$notification" \
-  --argjson start "$start_ms" --argjson hour "$hour" --argjson minute "$minute" '
-  $scenario[0] as $bundle |
-  $bundle.definitions["daily-backlog"].limits as $limits |
-  {
-    schema: "af/ant@12", id: $id, scenario: $bundle, inputs: {},
-    schedule: {kind: "daily", timezone: "UTC", hour: $hour, minute: $minute,
-               start_unix_ms: $start},
-    owner: $owner, notification: $route,
-    execution: {overlap: "skip", missed: "skip", lateness_ms: 120000,
-                per_run: $limits, rolling_tokens: 150000, rolling_window_ms: 86400000}
-  }
-' > "$scratch/ant.json"
-
-af ant validate --file "$scratch/ant.json" --authority "$scratch/policy.json" \
-  --state "$scratch/scenarios" --json
-```
-
-Review the validated grant and set `ant_pin` to the returned `revision`. Before the next due slot,
-register and enable it. Tick at the due slot, or run the foreground scheduler on the same Store.
-Use `show` to retrieve the occurrence and its Run ID. To drive ticks continuously,
-run `af ant scheduler run --state "$scratch/scenarios"` in the foreground.
+Run this from the registered receiving checkout. Change the owner label to your own and the
+artifact path if you installed the reviewed package elsewhere. Pass `--bindings /private/bindings.toml`
+to both commands if this receiver uses an explicit Provider alias file.
 
 ```bash
-af ant add --file "$scratch/ant.json" --authority "$scratch/policy.json" \
-  --state "$scratch/scenarios" --confirm-pin "$ant_pin" --json
-af ant enable "$ant_id" --state "$scratch/scenarios" --json
-af ant tick --state "$scratch/scenarios" --json
-af ant show "$ant_id" --state "$scratch/scenarios" --json
+umask 077
+receiver=$(pwd -P)
+project_id=$(af project show --json | jq -er .project_id)
+private="${XDG_STATE_HOME:-$HOME/.local/state}/af/backlog-receiver/${project_id#sha256:}"
+mkdir -p "$private"
+scenario_state="$private/scenarios"
+task_state="$private/tasks"
+artifact=fixtures/project-backlog/scenario.json
+owner=backlog-owner
+scope=(--repo "$receiver" --file "$artifact" --owner "$owner"
+       --task-state "$task_state" --state "$scenario_state")
+
+af ant backlog validate "${scope[@]}" --json > "$private/review.json"
+jq . "$private/review.json"
 ```
 
-`af ant pause "$ant_id" --state "$scratch/scenarios"` pauses future launches. An existing
-Run can still dispatch on a tick or resume. For a maintenance pause use
-`af ant scheduler stop --state "$scratch/scenarios"` where a foreground scheduler is active
-and refrain from manually ticking or resuming. Use `af scenario cancel RUN_ID --reason REASON`
-with the same state path when the existing Run itself must stop. Cancellation preserves receipts
-and effects already committed.
+Review the Project, checkout commit, artifact, intake and batch policy pins, destination, native
+Task authority and limits. Confirmation authorizes fresh private assessments and publication
+within that scope for future Project batches. The review spends no model tokens.
+
+```bash
+pin=$(jq -er .revision "$private/review.json")
+af ant backlog enroll "${scope[@]}" --confirm-pin "$pin" --json
+```
+
+### Continuous runtime
+
+Run the normal foreground scheduler with the same Scenario Store and receiver Provider registry.
+The Project Store records each occurrence, the accepted intake high-water mark and exact
+membership in one transaction. Intake committed after that transaction waits for a later batch.
+The scheduler prepares a new native Scenario and Task grant for each batch that has work. The
+assessment must pass independent review before settlement or delivery. Empty batches with no
+pending delivery close without sending private data to a Provider.
+
+```bash
+af ant scheduler run --state "$scenario_state"
+```
+
+The daily policy controls missed, busy and over-budget slots. Skipped slots preserve intake
+for later admission. An unfinished batch keeps its membership and reservation across restarts.
+A restarted scheduler reconciles the same Scenario Run and delivery intents. The schedule
+uses the batch policy's pinned timezone rules, including daylight-saving gaps and folds.
+Rolling reservations are measured from batch closure. A daily slot can be too early to admit
+work if the previous batch closed less than a rolling window ago. Size the reviewed rolling
+allowance for the number of batches that can overlap that window.
+
+### Inspection and recovery
+
+```bash
+af ant scheduler status --state "$scenario_state" --json
+af ant backlog show --repo "$receiver" --json
+af backlog batch audit
+af scenario list --state "$scenario_state" --json
+af ant backlog pause --repo "$receiver"
+af ant backlog resume --repo "$receiver"
+```
+
+Pause suppresses future cutoffs while already-frozen work can settle. Resume records any due
+paused slots before enabling admission. To stop the foreground process, use
+`af ant scheduler stop --state "$scenario_state"`. Start it again with the same private Stores
+and receiver inputs. `af ant tick --state "$scenario_state" --json` runs one scheduler cycle
+and reports refusals and busy Runs. Inspect a recorded Run with
+`af scenario show RUN_ID --state "$scenario_state" --json`.
+
+If a pending delivery cannot be reconciled, restore the authorized destination configuration,
+adapter or credential and resume the same Run. Restore the enrolled checkout commit, Provider
+registry, bindings or policy if they drift during a batch. To intentionally change the reviewed
+scope, settle the active batch and Run, pause enrollment, and repeat validation and
+confirmation in the original Scenario Store. For a failed or cancelled terminal Run, inspect the
+batch journal and retained Task and delivery receipts before making an explicit recovery
+decision. The scheduler reports the blocked batch and retains its membership.
+
+### Optional manual mode
+
+For a Project without recurring enrollment, [admit the batch manually](#manually-admit-a-daily-batch)
+and use the [preparation and execution commands](#prepare-and-run-the-portable-daily-scenario).
+The optional batch-specific GitHub observation pin belongs to manual preparation. Archive that
+pin outside the Project Store before enrolling a recurring schedule. Recurring assessment uses
+the private intake and tracked Project evidence without an automatic provider index lookup.
+
+### Reproduce the scheduler evidence
+
+```sh
+cargo nextest run --workspace --locked --profile ci \
+  -E '(binary_id(af::it) & test(portable_backlog_)) | (binary_id(af-contracts::schema_parity) & test(backlog_batch_journal))'
+python3 -I scripts/contract-inventory.py
+```
+
+The isolated fixture runs one cutoff through the foreground scheduler and advances the next
+daily slot through the same tick path. It checks late intake, independent reviews, distinct
+Task and Scenario pins, scope drift, recovery without duplicate delivery, and paused and missed
+cutoffs. The remaining portable backlog tests exercise the four delivery adapters with private
+fixtures.
+
+[Recurring schedule decision](adr/2026-11-21-enroll-recurring-project-backlog-processing.md)
 
 ## GitHub Issues destination
 
@@ -708,7 +770,7 @@ os.replace(file.name, store / "backlog-provider-index-v1.json")
 PYTHON
 ```
 
-Continue with the normal Scenario preparation and Ant approval. Keep the pin and its bytes
+Continue with manual Scenario preparation and exact pin approval. Keep the pin and its bytes
 in place through first settlement. A mismatched pin, wrong repository name or numeric ID,
 missing bytes, unsafe file, invalid JSON or incomplete page walk prevents acceptance. If the
 pin or observation changes before settlement, restore the captured scope and bytes for the

@@ -54,6 +54,9 @@ pub(crate) fn resume_admitted(
     if preflight && admitted.status.active() {
         super::implementation::preflight(store.host.as_ref(), &admitted.pin)?;
     }
+    if admitted.status.active() {
+        store.host.check_run_dispatch(store.path(), admitted)?;
+    }
     loop {
         let at = execution_time()?;
         let prepared = store.update(|world| crate::retention::prepare_run(world, id, at))?;
@@ -140,6 +143,7 @@ pub(crate) fn resume_admitted(
                 .ok_or("Implementation startup scope expired")?;
             dispatch.timeout_ms = dispatch.timeout_ms.min(remaining);
         }
+        store.host.check_run_dispatch(store.path(), &run)?;
         let cancellation = std::sync::atomic::AtomicBool::new(false);
         let task_dispatch = matches!(
             dispatch.definition.operation,

@@ -9,8 +9,10 @@ use af_scenario::contract::{
     Authority, Binding, Bundle, Datum, Grant, Kind, Limits, Operation, Port, Scenario, Step,
     Timeout, digest, hash, name, require,
 };
+use af_scenario::template::Template;
 
 const SCHEMA: &str = "af/scenario-artifact@1";
+const BACKLOG_ENROLLMENT: &str = "scenario_backlog_enrollment";
 const BACKLOG_FILE: &str = "scenario_backlog_artifact_file";
 const BACKLOG_SCHEMA: &str = "af/backlog-scenario-artifact@1";
 pub(super) const SOURCES: &str = "scenario_portable_sources";
@@ -20,6 +22,10 @@ pub(super) const SOURCES: &str = "scenario_portable_sources";
 enum Inputs {
     Report(ReportSourcesV1),
     Backlog(BatchReference),
+    #[serde(skip)]
+    BacklogReview(String),
+    #[serde(skip)]
+    RecurringBacklog(BatchReference, String),
 }
 
 impl Inputs {
@@ -42,24 +48,9 @@ impl Inputs {
                 )?;
                 Ok(inputs)
             }
-            Self::Backlog(reference) if backlog => {
-                require(
-                    artifact.inputs
-                        == BTreeMap::from([(BATCH_SOURCE.into(), InputType::BacklogBatch)]),
-                    "Portable backlog artifact requires one backlog_batch input",
-                )?;
+            Self::Backlog(reference) | Self::RecurringBacklog(reference, _) if backlog => {
+                artifact.validate_backlog()?;
                 reference.validate()?;
-                require(
-                    artifact.definition.limits.max_dispatches >= 3
-                        && artifact
-                            .definition
-                            .task
-                            .limits
-                            .wall_ms
-                            .saturating_add(30_000)
-                            <= artifact.definition.limits.max_wall_ms,
-                    "Portable backlog bounds must cover assessment, settlement and dispatch",
-                )?;
                 let checkout = af_project::require_checkout(repo)?;
                 require(
                     reference.project_id == checkout.project_id,
@@ -84,6 +75,25 @@ impl Inputs {
                         uri: format!("{SOURCE_URI}{}", batch.reference.batch_id),
                         revision: digest(text.as_bytes()),
                         text,
+                    },
+                );
+                Ok(inputs)
+            }
+            Self::BacklogReview(expected) if backlog => {
+                artifact.validate_backlog()?;
+                require(
+                    expected == artifact_digest,
+                    "Committed backlog Scenario differs from the Project policy",
+                )?;
+                let mut inputs = ReportSourcesV1::empty();
+                let text = "Frozen membership is supplied by the Project scheduler.";
+                inputs.sources.insert(
+                    BATCH_SOURCE.into(),
+                    DocumentSourceV1 {
+                        title: "Backlog enrollment review".into(),
+                        uri: "repo:enrollment".into(),
+                        revision: digest(text.as_bytes()),
+                        text: text.into(),
                     },
                 );
                 Ok(inputs)
@@ -165,6 +175,19 @@ fn artifact_path(directory: &str, path: &str) -> Result<String, String> {
 }
 
 impl Artifact {
+    fn validate_backlog(&self) -> Result<(), String> {
+        require(
+            self.inputs == BTreeMap::from([(BATCH_SOURCE.into(), InputType::BacklogBatch)]),
+            "Portable backlog artifact requires one backlog_batch input",
+        )?;
+        require(
+            self.definition.limits.max_dispatches >= 3
+                && self.definition.task.limits.wall_ms.saturating_add(30_000)
+                    <= self.definition.limits.max_wall_ms,
+            "Portable backlog bounds must cover assessment, settlement and dispatch",
+        )
+    }
+
     fn bind(
         &self,
         cas: &Cas,
@@ -266,13 +289,85 @@ pub(crate) fn prepare(
     inputs: &Path,
     local: Option<&Path>,
 ) -> Result<Bundle, String> {
+    let bytes = af_scenario::store::read(inputs, MAX_REPORT_SOURCES_FILE_BYTES as u64)?;
+    let inputs: Inputs = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    let (template, (definition, backlog)) = capture(repo, state, file, inputs, local)?;
+    bundle(template, definition, backlog)
+}
+
+pub(crate) fn review_backlog(
+    repo: PathBuf,
+    state: PathBuf,
+    file: &str,
+    scenario_id: String,
+    local: Option<&Path>,
+) -> Result<(Template, Limits), String> {
+    let (template, (definition, _)) =
+        capture(repo, state, file, Inputs::BacklogReview(scenario_id), local)?;
+    Ok((template, definition.limits))
+}
+
+pub(crate) fn prepare_backlog(
+    repo: PathBuf,
+    state: PathBuf,
+    file: &str,
+    reference: BatchReference,
+    local: Option<&Path>,
+    enrollment: &str,
+) -> Result<Bundle, String> {
+    let (template, (definition, backlog)) = capture(
+        repo,
+        state,
+        file,
+        Inputs::RecurringBacklog(reference, enrollment.into()),
+        local,
+    )?;
+    bundle(template, definition, backlog)
+}
+
+/// Only the private collected batch changes between the reviewed template and its instances.
+pub(crate) fn backlog_template_scope(template: &Template) -> Result<String, String> {
+    let mut template = template.clone();
+    template.document["requirements"][SOURCES]["sources"]
+        .as_object_mut()
+        .and_then(|sources| sources.remove(BATCH_SOURCE))
+        .ok_or("Missing backlog template input")?;
+    if let Some(requirements) = template.document["requirements"].as_object_mut() {
+        requirements.remove(BACKLOG_ENROLLMENT);
+    }
+    template.id()
+}
+
+pub(crate) fn backlog_template_enrollment(template: &Template) -> Option<&str> {
+    template.document["requirements"][BACKLOG_ENROLLMENT].as_str()
+}
+
+pub(crate) fn backlog_template_reference(template: &Template) -> Result<BatchReference, String> {
+    let batch: af_contracts::backlog::batch::assessment::CollectedBatch = serde_json::from_str(
+        template.document["requirements"][SOURCES]["sources"][BATCH_SOURCE]["text"]
+            .as_str()
+            .ok_or("Missing frozen backlog collection")?,
+    )
+    .map_err(|_| "Invalid frozen backlog collection")?;
+    require(
+        batch.provider_index.is_none(),
+        "Recurring backlog does not authorize a batch-specific provider index",
+    )?;
+    Ok(batch.reference)
+}
+
+fn capture(
+    repo: PathBuf,
+    state: PathBuf,
+    file: &str,
+    inputs: Inputs,
+    local: Option<&Path>,
+) -> Result<(Template, (Definition, bool)), String> {
     require(
         safe_relative_path(file) && file.ends_with(".json"),
         "Portable Scenario file must be a repository-relative JSON path",
     )?;
     let directory = file.rfind('/').map_or("", |slash| &file[..=slash]);
-    let bytes = af_scenario::store::read(inputs, MAX_REPORT_SOURCES_FILE_BYTES as u64)?;
-    let inputs: Inputs = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
     let home = tempfile::tempdir().map_err(|e| e.to_string())?;
     let git = Repo::open(&repo, home.path());
     let top = git
@@ -283,18 +378,25 @@ pub(crate) fn prepare(
             .ok_or("Git omitted repository root")?,
     );
     let commit = git.rev_parse("HEAD").map_err(|e| e.to_string())?;
-    let (template, (definition, backlog)) = scenario_template::pin_with(
+    scenario_template::pin_with(
         repo.clone(),
         state,
         commit.clone(),
         |cas, manifest, delivery| {
             let bytes = captured_file(cas, manifest, file)?;
             let artifact: Artifact = parse(Path::new(file), &bytes)?;
+            let enrollment = match &inputs {
+                Inputs::RecurringBacklog(_, revision) => Some(revision.clone()),
+                _ => None,
+            };
             let inputs = inputs.bind(&repo, &artifact, &digest(&bytes), commit)?;
             inputs.validate()?;
             let (mut document, packages) = artifact.bind(cas, manifest, directory, inputs)?;
             if artifact.schema == BACKLOG_SCHEMA {
                 document["requirements"][BACKLOG_FILE] = json!(file);
+            }
+            if let Some(enrollment) = enrollment {
+                document["requirements"][BACKLOG_ENROLLMENT] = json!(enrollment);
             }
             let names: BTreeSet<_> = packages.pins.keys().cloned().collect();
             let task = &artifact.definition.task;
@@ -320,7 +422,10 @@ pub(crate) fn prepare(
                 (artifact.definition, artifact.schema == BACKLOG_SCHEMA),
             ))
         },
-    )?;
+    )
+}
+
+fn bundle(template: Template, definition: Definition, backlog: bool) -> Result<Bundle, String> {
     let template_id = template.id()?;
     let assessment = step_result(&definition.step);
     let mut scenario = Scenario {

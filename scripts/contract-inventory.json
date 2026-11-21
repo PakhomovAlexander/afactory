@@ -137,6 +137,7 @@
       "name": "project-backlog",
       "reader_writer": [
         "crates/af/src/backlog.rs",
+        "crates/af/src/scenario/backlog.rs",
         "crates/af-contracts/src/backlog.rs",
         "crates/af-contracts/src/backlog/batch.rs",
         "crates/af-contracts/src/backlog/batch/assessment.rs",
@@ -168,7 +169,8 @@
         "fixtures/project-backlog/assessment.schema.json",
         "schemas/backlog-batch-audit-v3.json",
         "schemas/backlog-batch-policy-v2.json",
-        "schemas/backlog-batch-record-v3.json",
+        "schemas/backlog-batch-record-v4.json",
+        "schemas/backlog-schedule-v1.json",
         "schemas/backlog-batch-reference-v1.json",
         "schemas/backlog-collected-batch-v3.json",
         "schemas/backlog-github-state-v1.json",

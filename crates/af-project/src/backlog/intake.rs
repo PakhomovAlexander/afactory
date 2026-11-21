@@ -184,6 +184,12 @@ impl ProjectStore {
         }))
     }
 
+    pub(super) fn backlog_intake_policy_digest(&self) -> Result<String, String> {
+        let bytes = local_fs::read_bounded(&self.directory.join(POLICY_FILE), MAX_POLICY_BYTES)
+            .map_err(|error| format!("reading backlog intake policy: {error}"))?;
+        Ok(af_store::canonical::blob_content_id(&bytes))
+    }
+
     pub(super) fn backlog_authority_id(&self) -> Result<Option<String>, String> {
         Ok(self
             .intake_policy()?

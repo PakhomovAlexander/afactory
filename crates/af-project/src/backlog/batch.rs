@@ -32,6 +32,7 @@ const COLLECTION_BYTES: usize = 56 * 1024;
 const MEMBER_BYTES: usize = 52 * 1024;
 const TRACKED_BYTES: usize = 32 * 1024;
 const STREAM: &str = "backlog-daily-batch";
+pub const ENROLLMENT_FILE: &str = "backlog-schedule-v1.json";
 pub const POLICY_FILE: &str = "backlog-batch-policy-v2.json";
 #[derive(Serialize)]
 pub struct IntakeEntry {
@@ -130,6 +131,14 @@ pub struct Audit {
     pending_member_ids: Vec<String>,
     pending_deliveries: BTreeMap<String, PendingDelivery>,
     delivery_resolutions: BTreeMap<String, DeliveryResolution>,
+}
+
+pub struct ScheduleScope {
+    pub policy: Policy,
+    pub policy_pin: String,
+    pub intake_policy: String,
+    pub destination: String,
+    pub active: bool,
 }
 
 struct Pin {
@@ -346,7 +355,13 @@ fn report_context(accepted: &AcceptedReport) -> ReportContext {
 }
 
 impl State {
-    fn freeze(&mut self, intake: &Intake, at: u64, high_water: u64) -> Result<Vec<String>, String> {
+    fn freeze(
+        &mut self,
+        intake: &Intake,
+        at: u64,
+        high_water: u64,
+        paused: bool,
+    ) -> Result<Vec<String>, String> {
         let pin = self.pin.as_ref().ok_or("no pinned backlog batch policy")?;
         if at == 0 || at < self.clock || high_water < self.high_water || high_water > intake.len() {
             return Err("invalid backlog batch clock or authority cutoff".into());
@@ -376,7 +391,11 @@ impl State {
             let outcome = if let Some(block) = pin.execution.admission_block(
                 gap,
                 at - due,
-                AntMode::Enabled,
+                if paused {
+                    AntMode::Paused
+                } else {
+                    AntMode::Enabled
+                },
                 None,
                 self.active.is_some(),
                 used,
@@ -666,12 +685,13 @@ impl State {
             Journal::Ticked {
                 at_unix_ms,
                 high_water,
+                paused,
                 members,
             } => {
                 if self.last_tick == Some(at_unix_ms) {
                     return Err("duplicate backlog batch tick in journal".into());
                 }
-                if self.freeze(intake, at_unix_ms, high_water.get())? != members {
+                if self.freeze(intake, at_unix_ms, high_water.get(), paused)? != members {
                     return Err("frozen backlog membership differs from authority replay".into());
                 }
                 Ok(true)
@@ -755,7 +775,7 @@ impl ProjectStore {
             .replay(STREAM)
             .map_err(|_| "could not replay backlog batches")?
         {
-            if event.event_type != EventType::BacklogBatchStoredV3
+            if event.event_type != EventType::BacklogBatchStoredV4
                 || !event.artifact_refs.is_empty()
             {
                 return Err("invalid event in backlog batch journal".into());
@@ -798,7 +818,7 @@ impl ProjectStore {
                 };
                 let payload = serde_json::to_value(record)
                     .map_err(|_| "could not encode backlog batch journal")?;
-                Ok(NewEvent::new(EventType::BacklogBatchStoredV3, payload)
+                Ok(NewEvent::new(EventType::BacklogBatchStoredV4, payload)
                     .at(af_contracts::task::collection::collected_time(at)))
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -808,33 +828,133 @@ impl ProjectStore {
         Ok(())
     }
 
-    pub fn tick_backlog_batch(&mut self, now: u64) -> Result<Audit, String> {
-        let (mut state, intake) = self.batch_state()?;
+    fn installed_batch_policy(&self, intake: &Intake) -> Result<Policy, String> {
         let bytes = local_fs::read_bounded(&self.directory.join(POLICY_FILE), 16_384)
             .map_err(|error| format!("reading backlog batch policy: {error}"))?;
         let policy: Policy =
             serde_json::from_slice(&bytes).map_err(|_| "invalid backlog batch policy document")?;
-        self.check_batch_authority(&policy, &intake)?;
+        self.check_batch_authority(&policy, intake)?;
+        policy.validate()?;
+        Ok(policy)
+    }
+
+    fn batch_policy_pin(policy: Policy) -> Result<(Pin, ZoneSnapshot), String> {
+        let zone = Zone::load(&policy.timezone)?;
+        let snapshot = ZoneSnapshot {
+            name: zone.name,
+            initial_offset: zone.initial_offset,
+            transitions: zone.transitions,
+            valid_until_unix_seconds: zone.valid_until_unix_seconds,
+        };
+        Ok((Pin::new(policy, snapshot.clone())?, snapshot))
+    }
+
+    /// Read the immutable authorities a receiving scheduler must confirm before running batches.
+    pub fn backlog_schedule_scope(&self) -> Result<ScheduleScope, String> {
+        let (state, intake) = self.batch_state()?;
+        let (pin, _) = Self::batch_policy_pin(self.installed_batch_policy(&intake)?)?;
+        self.schedule_scope(&state, &pin)
+    }
+
+    fn schedule_scope(&self, state: &State, pin: &Pin) -> Result<ScheduleScope, String> {
+        match self
+            .directory
+            .join(provider_index::PIN_FILE)
+            .symlink_metadata()
+        {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            _ => {
+                return Err(
+                    "Batch-specific provider index pins require manual backlog preparation".into(),
+                );
+            }
+        }
+        let destination = &pin.policy.destination_id;
+        let kind = native::destinations::Kind::resolve(self, destination)?;
+        Ok(ScheduleScope {
+            policy: pin.policy.clone(),
+            policy_pin: pin.id.clone(),
+            intake_policy: self.backlog_intake_policy_digest()?,
+            destination: kind.resource(&self.project_id, destination),
+            active: state.active.is_some(),
+        })
+    }
+
+    /// Freeze only a due occurrence, or recover its exact already-frozen active reference.
+    /// Manual and scheduled admission use the same Project transaction and cursor.
+    pub fn tick_backlog_schedule(
+        &mut self,
+        now: u64,
+        policy_pin: &str,
+        intake_policy: &str,
+        destination: &str,
+        paused: bool,
+    ) -> Result<Option<BatchReference>, String> {
+        let (mut state, intake) = self.batch_state()?;
+        let (pin, zone) = Self::batch_policy_pin(self.installed_batch_policy(&intake)?)?;
+        let scope = self.schedule_scope(&state, &pin)?;
+        if scope.policy_pin != policy_pin
+            || scope.intake_policy != intake_policy
+            || scope.destination != destination
+        {
+            return Err(
+                "Recurring backlog scope differs from the installed Project authority".into(),
+            );
+        }
+        self.advance_batch(&mut state, &intake, pin, zone, now, Some(paused))?;
+        Ok(state.active.as_ref().map(|id| BatchReference {
+            schema: af_contracts::backlog::batch::BatchReferenceSchema::V1,
+            project_id: self.project_id.clone(),
+            batch_id: id.clone(),
+            policy_id: state.batches[id].policy_id.clone(),
+            high_water: state.batches[id].high_water,
+        }))
+    }
+
+    pub fn tick_backlog_batch(&mut self, now: u64) -> Result<Audit, String> {
+        match self.directory.join(ENROLLMENT_FILE).symlink_metadata() {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            _ => return Err("Backlog batch admission belongs to the enrolled scheduler".into()),
+        }
+        let (mut state, intake) = self.batch_state()?;
+        let policy = self.installed_batch_policy(&intake)?;
+        let (pin, zone) = Self::batch_policy_pin(policy)?;
+        self.advance_batch(&mut state, &intake, pin, zone, now, None)?;
+        Ok(state.audit(self.project_id.clone(), intake))
+    }
+
+    fn advance_batch(
+        &mut self,
+        state: &mut State,
+        intake: &Intake,
+        pin: Pin,
+        zone: ZoneSnapshot,
+        now: u64,
+        scheduled_pause: Option<bool>,
+    ) -> Result<(), String> {
+        if now == 0 || now > MAX_TIME || now < state.clock {
+            return Err("invalid backlog batch clock".into());
+        }
         let mut records = Vec::new();
-        if state.pin.as_ref().is_none_or(|pin| pin.policy != policy) {
-            policy.validate()?;
-            let zone = Zone::load(&policy.timezone)?;
+        if state.pin.as_ref().is_none_or(|old| {
+            old.policy != pin.policy || (scheduled_pause.is_some() && old.id != pin.id)
+        }) {
             let record = Journal::Pinned {
-                policy: Box::new(policy),
-                zone: ZoneSnapshot {
-                    name: zone.name,
-                    initial_offset: zone.initial_offset,
-                    transitions: zone.transitions,
-                    valid_until_unix_seconds: zone.valid_until_unix_seconds,
-                },
+                policy: Box::new(pin.policy),
+                zone,
             };
-            state.apply(&intake, record.clone())?;
+            state.apply(intake, record.clone())?;
             records.push(record);
         }
-        if state.last_tick != Some(now) {
-            let members = state.freeze(&intake, now, intake.len())?;
+        let pin = state.pin.as_ref().ok_or("no pinned backlog batch policy")?;
+        if state.last_tick != Some(now)
+            && (scheduled_pause.is_none() || pin.schedule.due(&pin.zone, state.next_day)?.0 <= now)
+        {
+            let paused = scheduled_pause.unwrap_or(false);
+            let members = state.freeze(intake, now, intake.len(), paused)?;
             records.push(Journal::Ticked {
                 at_unix_ms: now,
+                paused,
                 high_water: intake.len().into(),
                 members,
             });
@@ -842,7 +962,7 @@ impl ProjectStore {
         if !records.is_empty() {
             self.append_batch_journal(records)?;
         }
-        Ok(state.audit(self.project_id.clone(), intake))
+        Ok(())
     }
 
     pub fn backlog_batch_audit(&self) -> Result<Audit, String> {
@@ -1109,7 +1229,7 @@ mod tests {
                 state.apply(&intake, record.clone()).unwrap();
             }
             let at = occurrence * day;
-            let members = state.freeze(&intake, at, cutoff).unwrap();
+            let members = state.freeze(&intake, at, cutoff, false).unwrap();
             assert_eq!(members.len(), MAX_REPOSITORY_CITATIONS);
             assert_eq!(
                 members.first().unwrap(),
@@ -1127,6 +1247,7 @@ mod tests {
             }
             let batch_id = state.active.unwrap();
             journal.push(Journal::Ticked {
+                paused: false,
                 at_unix_ms: at,
                 high_water: cutoff.into(),
                 members: members.clone(),

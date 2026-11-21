@@ -1,5 +1,7 @@
 //! Scenario CLI parsing and presentation; the domain lives in `af_scenario`.
+mod backlog;
 pub(crate) mod host;
+use af_scenario::Host;
 use af_scenario::{
     contract, performance, roadmap, runtime, schedule, source, state, store, workspace,
 };
@@ -296,6 +298,13 @@ af scenario experiment-source --file source.json --repo /project \\\n    --task-
 }
 #[derive(Debug, Subcommand)]
 pub(crate) enum AntCommand {
+    /// Configure recurring daily Project backlog processing
+    Backlog {
+        #[command(subcommand)]
+        command: backlog::Command,
+        #[command(flatten)]
+        inspect: Inspect,
+    },
     /// Explicit foreground scheduler lifecycle; never installs a service
     Scheduler {
         #[command(subcommand)]
@@ -451,7 +460,7 @@ fn scheduler(command: SchedulerCommand) -> Result<i32> {
                 let poll = std::time::Instant::now();
                 // Native supervised Task/adapter dispatch retains its existing deadlines,
                 // reconciliation and per-Run locks. Failed ticks are visible, never successes.
-                let error = match runtime::tick(&store, at, None) {
+                let error = match backlog::tick(&store, at, None) {
                     Ok(tick) if tick.refused.is_empty() => None,
                     Ok(tick) => {
                         Some(serde_json::to_string(&tick.refused).map_err(|e| e.to_string())?)
@@ -796,6 +805,10 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
                 "Implementation startup scope is required but absent",
             )?;
             af_scenario::driver::validate_schedule(&pin, poll_ms)?;
+            require(
+                !backlog::reserved(&run_id),
+                "Run label is reserved for recurring Project backlog",
+            )?;
             let limits = pin.bundle.definitions[&pin.bundle.root].limits.clone();
             let run = Run::new(
                 &AfHost,
@@ -951,6 +964,7 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
 pub(crate) fn ant(command: AntCommand) -> Result<i32> {
     match command {
         AntCommand::Scheduler { command } => scheduler(command),
+        AntCommand::Backlog { command, inspect } => backlog::command(command, &inspect),
         AntCommand::Output { id, view, inspect } => output(&id, true, &view, &inspect),
         AntCommand::Validate {
             definition,
@@ -1013,7 +1027,7 @@ pub(crate) fn ant(command: AntCommand) -> Result<i32> {
                 refused,
                 busy,
                 runs: results,
-            } = runtime::tick(&store, now, inspect.now)?;
+            } = backlog::tick(&store, now, inspect.now)?;
             print(
                 &serde_json::json!({"schema":"af/ant-tick@13","now_unix_ms":now,"started":started,"busy":busy,"refused":refused,"runs":results}),
                 &inspect,

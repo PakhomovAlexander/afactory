@@ -274,7 +274,7 @@ const SCHEMAS: [&str; 265] = [
     "backlog-provider-index-pin-v1.json",
     "backlog-batch-policy-v2.json",
     "backlog-batch-reference-v1.json",
-    "backlog-batch-record-v3.json",
+    "backlog-batch-record-v4.json",
     "backlog-intake-policy-v1.json",
     "backlog-intake-record-v1.json",
     "backlog-record-v2.json",

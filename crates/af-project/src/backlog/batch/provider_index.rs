@@ -7,7 +7,7 @@ use af_store::canonical::blob_content_id;
 use serde::Deserialize;
 use std::io::ErrorKind;
 
-const PIN_FILE: &str = "backlog-provider-index-v1.json";
+pub(super) const PIN_FILE: &str = "backlog-provider-index-v1.json";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
