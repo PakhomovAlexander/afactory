@@ -121,6 +121,8 @@ def run(binary, source, gate, *, work_base=None):
        "--inputs", str(inputs), "--confirm-pin", pin["revision"], "--execute")
     observed = af("observed", "scenario-state", "scenario", "show", "clean")
     task = af("task", "task-state", "task", "show", "pagination-cli")
+    if gate == "red":
+        af("task-checks", "task-state", "task", "show", "pagination-cli", "--checks")
     summary = {
         "scenario_status": observed["status"],
         "fixture_gate": gate,

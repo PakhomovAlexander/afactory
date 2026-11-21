@@ -1,0 +1,24 @@
+{
+  "schema": "af-durability/load-cases@1",
+  "profiles": {
+    "short": ["clean", "restart-green", "gate-red", "budget", "restart-red"],
+    "full": [
+      "clean",
+      "gate-red",
+      "restart-green",
+      "restart-red",
+      "expired-auth",
+      "wrong-revision",
+      "budget",
+      "ambiguous-charge",
+      "writer-loss",
+      "child-cancel",
+      "admission",
+      "pause",
+      "journal-enospc",
+      "artifact-enospc",
+      "independent-writer"
+    ],
+    "optional-fixtures": ["gate-repair", "hostile-output", "malformed-usage"]
+  }
+}
