@@ -429,8 +429,15 @@ then `make check-classes`. The JSON file has the GitHub event shape
 `{"pull_request":{"labels":[{"name":"test:functional"},{"name":"test:e2e"}]}}`.
 Selective e2e includes live containers and requires Docker. Fmt/lint and policy checks always run.
 
-Every PR defaults to functional + e2e + uix, including AF gate and release PRs. Any positive
-`test:functional`, `test:e2e`, `test:uix`, `test:perf`
+Apply the GitHub `nobuild` label manually only when the entire PR changes no sources, pipelines,
+build inputs or tests. A PR that changes only `.af/af.lock` qualifies, including one from
+`release/pin-vVERSION`. Recheck the full diff after each update and remove `nobuild` as soon as the
+PR no longer qualifies. The exemption skips hosted builds, tests, smoke and performance work.
+The direct pin check, exemption summaries and PR report still run. Removing the label restores
+ordinary selection. The AF local Task gate still verifies the candidate.
+
+Without `nobuild`, every PR defaults to functional + e2e + uix, including AF gate and release PRs.
+Any positive `test:functional`, `test:e2e`, `test:uix`, `test:perf`
 labels replace that default with an explicit allowlist. `no-functional`, `no-e2e`, `no-uix`, `no-perf`
 exclude from defaults. Contradictions, unknown reserved labels and empty selections fail. Skipped
 classes are reported as NOT RUN. `no-perf` also exempts the separate Performance measurement workflow;
@@ -471,7 +478,7 @@ selections. Direct unbound tags run full. All selected Linux/macOS gates and pac
 architecture and signature smoke remain mandatory. Fast/custom release notes state their scope.
 The post-publication Performance measurement is asynchronous, not a publication gate.
 
-Every validation profile, including fast and `no-perf`, runs the cheap offline
+Every ordinary validation profile, including fast and `no-perf`, runs the cheap offline
 `python3 -I scripts/release-contract.py` in `release-check`/`base-check`. Release preparation
 runs it after changing the workspace version and before committing or publishing its PR.
 Preparation generates `scripts/release-contract.json` for the exact version and source,

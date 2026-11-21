@@ -17,12 +17,17 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-validation-proof-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   proof:
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      contains(github.event.pull_request.labels.*.name, 'release:fast') ||
-      contains(github.event.pull_request.labels.*.name, 'release:full')
+      (!contains(github.event.pull_request.labels.*.name, 'nobuild') &&
+      (contains(github.event.pull_request.labels.*.name, 'release:fast') ||
+      contains(github.event.pull_request.labels.*.name, 'release:full')))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -63,8 +68,9 @@ jobs:
     needs: [proof, validate]
     if: >-
       always() && (github.event_name == 'workflow_dispatch' ||
-      contains(github.event.pull_request.labels.*.name, 'release:fast') ||
-      contains(github.event.pull_request.labels.*.name, 'release:full'))
+      (!contains(github.event.pull_request.labels.*.name, 'nobuild') &&
+      (contains(github.event.pull_request.labels.*.name, 'release:fast') ||
+      contains(github.event.pull_request.labels.*.name, 'release:full'))))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
