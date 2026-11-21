@@ -223,7 +223,7 @@ impl Journal {
                 ..
             } => {
                 valid_time(*at_unix_ms)
-                    && members.len() <= assessment::MAX_MEMBERS
+                    && members.len() <= crate::task::document::MAX_REPOSITORY_CITATIONS
                     && members.iter().all(|id| is_member_id(id))
                     && members
                         .iter()

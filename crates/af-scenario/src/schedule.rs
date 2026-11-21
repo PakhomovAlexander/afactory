@@ -179,7 +179,7 @@ impl Zone {
             .find(|(at, _)| *at <= seconds)
             .map_or(self.initial_offset, |(_, o)| *o))
     }
-    fn local_day(&self, seconds: i64) -> Result<i64> {
+    pub fn local_day(&self, seconds: i64) -> Result<i64> {
         Ok((seconds + i64::from(self.offset(seconds)?)).div_euclid(DAY))
     }
     fn occurrence(&self, day: i64, hour: u8, minute: u8) -> Result<(i64, bool)> {

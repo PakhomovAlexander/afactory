@@ -36,7 +36,7 @@
       "version": "1.0.0"
     },
     "backlog/daily-author": {
-      "digest": "sha256:e441fe430f829ef3d1f287194c197e1ab6cbf7074cc40dfbf245171116e83ee1",
+      "digest": "sha256:3e3c646ea28ba141ac0e307ea68275fd6187e425e536365c0a753b16ee627205",
       "path": "task-packages/backlog/daily-author",
       "version": "1.0.0"
     },
@@ -46,7 +46,7 @@
       "version": "1.0.0"
     },
     "backlog/daily-verifier": {
-      "digest": "sha256:18a592c06fda6f2a1768289cd144502cf5076e30d822d6379460cca175e32d13",
+      "digest": "sha256:2039dc3c89ac6c2fdba8047ebc3425abb3b7775f06384f5f0127d64639662689",
       "path": "task-packages/backlog/daily-verifier",
       "version": "1.0.0"
     }

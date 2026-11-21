@@ -5242,7 +5242,7 @@ fn backlog_daily_batch_replays_frozen_intake_and_accounts_for_every_report() {
         assert_eq!(competing_tick.join().unwrap(), initial);
         initial
     });
-    let audit_schema = schemas::validator("backlog-batch-audit-v2.json");
+    let audit_schema = schemas::validator("backlog-batch-audit-v3.json");
     schemas::valid(&audit_schema, &initial);
     let batch = initial["active_batch_id"].as_str().unwrap();
     assert_eq!(initial["high_water"], "3");
@@ -5335,6 +5335,15 @@ fn backlog_daily_batch_replays_frozen_intake_and_accounts_for_every_report() {
     assert!(!resumed.to_string().contains("late private evidence"));
     let late_digest = af_store::canonical::blob_content_id(b"late private evidence");
     assert!(!resumed["batches"][batch].to_string().contains(&late_digest));
+    let mut changed = policy.clone();
+    changed["publication_limit"] = json!(2);
+    put_policy(&changed);
+    refuse(
+        &["backlog", "batch", "tick", "--at-unix-ms", BUSY],
+        "during an active batch",
+    );
+    assert_eq!(audit(), resumed);
+    put_policy(&policy);
     let overlap = tick(BUSY);
     assert_eq!(overlap["occurrences"][1]["outcome"]["kind"], "skipped_busy");
     assert_eq!(overlap["high_water"], "3");
@@ -5384,7 +5393,11 @@ fn backlog_daily_batch_replays_frozen_intake_and_accounts_for_every_report() {
         .unwrap();
     assert!(reconsidered["reconsiderations"][reconsider_id]["admitted_batch_id"].is_null());
 
+    changed["run_tokens"] = json!(2);
+    changed["evidence_access"] = json!("metadata_only");
+    put_policy(&changed);
     let skipped = tick(BUDGET);
+    assert_ne!(skipped["pin_id"], initial["pin_id"]);
     let occurrences = skipped["occurrences"].as_array().unwrap();
     assert_eq!(occurrences[2]["outcome"]["kind"], "skipped_missing_time");
     assert_eq!(occurrences[2]["due_unix_ms"], 1_772_953_200_000u64);
@@ -5393,30 +5406,23 @@ fn backlog_daily_batch_replays_frozen_intake_and_accounts_for_every_report() {
     assert_eq!(occurrences[4]["outcome"]["kind"], "skipped_budget");
     assert_eq!(skipped["high_water"], "3");
 
-    let mut changed = policy.clone();
-    changed["publication_limit"] = json!(2);
-    put_policy(&changed);
-    refuse(
-        &["backlog", "batch", "tick", "--at-unix-ms", NEXT],
-        "differs from its pinned revision",
-    );
-    assert_eq!(audit(), skipped);
-    put_policy(&policy);
     let next = tick(NEXT);
+    assert_eq!(next["pin_id"], skipped["pin_id"]);
+    let admitted = next["occurrences"].as_array().unwrap().last().unwrap();
+    assert_eq!(admitted["outcome"]["reserved_tokens"], 2);
+    assert_eq!(next["batches"][batch]["policy_id"], initial["pin_id"]);
+    assert_eq!(
+        next["batches"][next["active_batch_id"].as_str().unwrap()]["policy_id"],
+        next["pin_id"]
+    );
     let next_batch = next["active_batch_id"].as_str().unwrap();
     assert_ne!(next_batch, batch);
     let members = next["batches"][next_batch]["members"].as_object().unwrap();
     assert_eq!(members.len(), 4);
     assert_eq!(members["capacity"]["item_id"], other_item);
     assert_eq!(members[reconsider_id]["evidence_report_id"], "late");
-    assert_eq!(members["late"]["evidence_ids"], json!([late_digest]));
-    assert_eq!(
-        members[reconsider_id]["evidence_ids"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
-    );
+    assert_eq!(members["late"]["evidence_ids"], json!([]));
+    assert_eq!(members[reconsider_id]["evidence_ids"], json!([]));
     assert_eq!(
         next["reconsiderations"][reconsider_id]["admitted_batch_id"],
         next_batch

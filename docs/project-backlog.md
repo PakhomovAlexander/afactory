@@ -196,8 +196,10 @@ Use a disposable authority Store with a signed intake policy and accepted sample
 Save a machine-local `backlog-batch-policy-v2.json` in the Project Store shown by
 `af project show --json`. The policy uses the same Project ID and the receipt's
 `body.authority_id`. For a manual accounting exercise, the sample Scenario and destination digests suffice.
-For a prepared Scenario, bind the actual artifact and destination identities as shown below. The first tick pins the policy and timezone transition
-table. Subsequent ticks require the same policy. The policy lives outside the checkout.
+For a prepared Scenario, bind the actual artifact and destination identities as shown below.
+The first tick pins the policy and timezone transition table. A later tick can pin a changed policy for the same authority after the active batch
+closes. Finish an active batch under its original policy before installing the replacement.
+The policy lives outside the checkout.
 
 ```json
 {
@@ -239,8 +241,10 @@ closing. A batch closes at admission when it has neither assessment members nor 
 is the last accepted Report sequence at admission, even if a tick arrives within the allowed
 lateness window. `closed_high_water` advances only after every frozen member has a disposition.
 The audit lists each accepted Report once in `intake` with its original sequence and digest.
-Each batch takes at most 128 members and limits their total serialized size. Excess work stays
-queued across restarts and appears in `pending_member_ids`, together with arrivals after the cutoff.
+Each batch takes at most 64 members, leaving room for a distinct repository citation per
+member, and bounds their encoded size in the portable Task template. Excess work stays queued across restarts.
+A deferred member queues behind work already waiting and ahead of later arrivals. The audit's
+`pending_member_ids` also includes arrivals after the cutoff.
 Retrying the same tick timestamp recovers the original occurrence and the current audit.
 
 After close, queue an explicit reconsideration of an accounted Report with
@@ -256,6 +260,7 @@ ticks record a busy skip, and the batch can still be settled and closed. Missed 
 local times and rolling-budget refusals appear in `occurrences`. The per-run reservation
 remains in the rolling window from close and is distinct from actual Provider spend.
 [Daily batch decision](adr/2026-11-20-freeze-project-backlog-at-authority-cutoff.md)
+[Admission and policy decision](adr/2026-11-20-bound-backlog-assessment-and-repin-between-batches.md)
 
 ## Prepare and run the portable daily Scenario
 
@@ -306,18 +311,24 @@ af scenario prepare --file fixtures/project-backlog/scenario.json \
 ```
 
 Prepare checks the reference against the active batch and policy in the receiving Project
-Store. It collects at most 128 frozen members. The collected input contains accepted Report
+Store. It collects at most 64 frozen members. The collected input contains accepted Report
 identities, source revisions and evidence allowed by policy. With `private_report` the
 private source includes the observed fact, reproduction, attachment excerpts of at most 256
-UTF-8 bytes each, and a bounded set of verified tracked revisions with provenance. Full
-attachments, late arrivals and local-only Reports stay in the inbox. Keep prepared bundles private.
-A local duplicate outcome names the exact matched item and revision in `local_match`.
+UTF-8 bytes each, and a bounded set of verified tracked revisions with provenance. An oversized
+member gets bounded, labeled excerpts of report facts and reproduction so it can still be
+assessed. Full attachments, late arrivals and local-only Reports stay in the inbox. Keep prepared
+bundles private.
+A local duplicate outcome names the exact matched item and revision in `local_match`. If the
+tracked view is truncated, exact matches in the supplied view can still settle as already
+tracked. Hold otherwise verified decisions until equivalence can be ruled out.
 
 Revisions above the publication cap appear in `pending_deliveries`. A later due batch can
 dispatch them even with no assessment members. Dispatch checks the exact approved revision
 and decision against the current source, pinned policy and destination. Changed source or a
-superseding revision records `requires_reverification` under `delivery_resolutions`. Use an
-explicit reconsideration to assess that item again. A changed installed policy still fails closed.
+superseding revision records `requires_reverification` under `delivery_resolutions`. A tick
+that pins a changed policy moves pending deliveries to the same outcome under the Project
+Store lock. Use explicit reconsideration to assess that item again. Audit records retain the
+original policy ID on each batch and rolling reservations retain their original token amounts.
 
 After reviewing the prepared template, grant it in the receiver's machine policy. In a fresh
 disposable Store, construct a policy containing just that Task template grant. The builtin
@@ -365,14 +376,14 @@ A resume with a pending intent reconciles the same delivery within the Scenario'
 wall time and dispatch limits. The native graph closes the batch when admitted deliveries
 have receipts. `af backlog show ID --private --json` shows each Report's typed decision.
 
-The offline regression exercises signed intake and the normal prepare, validate, start and
-resume commands with two fresh receivers and a deterministic Provider. It checks duplicate
-grouping, distinct source defects, held and insufficient evidence and preservation of the
-original receipt and sink delivery across interruption and resume.
+The offline regressions exercise signed intake and the normal prepare, validate, start and
+resume commands with fresh receivers and a deterministic Provider. They check duplicate
+grouping, distinct source defects, held and insufficient evidence, bounded admission and
+policy rotation. They also check receipt and sink delivery across interruption and resume.
 
 ```sh
 cargo nextest run --workspace --locked --profile ci \
-  -E 'binary_id(af::it) & test(portable_backlog_settles_and_dispatches)'
+  -E 'binary_id(af::it) & test(portable_backlog_)'
 ```
 
 [Native settlement and delivery decision](adr/2026-11-20-settle-and-dispatch-verified-backlog-locally.md)
@@ -648,8 +659,9 @@ On the receiving Project authority, run the
 [Issues-read observer](issue-triage-runner.md#read-only-open-issue-index) against the exact
 GitHub destination. Use a fresh observation for each batch. The observer's read credential
 stays outside the Project and Workers. The receiver admits at most 128 issues and 64 KiB of
-observation JSON so both Workers receive the entire accepted walk. A larger observation is
-refused. The observer marks truncated issue bodies individually. Such a body cannot support
+observation JSON. The entire accepted walk must also fit in the encoded portable Task input
+alongside the frozen members. Preparation refuses an observation that cannot fit intact.
+The observer marks truncated issue bodies individually. Such a body cannot support
 an exact provider match, and a batch with any truncated body cannot propose public fields.
 
 After freezing the batch and before running `af scenario prepare`, use the `batch.json`

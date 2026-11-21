@@ -806,7 +806,7 @@ impl EventStore {
                         | EventType::SurveyCollectedV1
                         | EventType::BacklogRecordStoredV2
                         | EventType::BacklogIntakeStoredV1
-                        | EventType::BacklogBatchStoredV2
+                        | EventType::BacklogBatchStoredV3
                 )
             }) {
                 return Err(StoreError::Conflict("Review domain events require native Task publication; Campaign execution is retired".into()));

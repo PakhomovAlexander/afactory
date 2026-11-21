@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:backlog-batch-record:2",
-  "title": "BacklogBatchStored@2 payload",
+  "$id": "urn:af:schema:backlog-batch-record:3",
+  "title": "BacklogBatchStored@3 payload",
   "oneOf": [
     {
       "type": "object",
@@ -106,7 +106,7 @@
             ]
           },
           "uniqueItems": true,
-          "maxItems": 128
+          "maxItems": 64
         }
       }
     },

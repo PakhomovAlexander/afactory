@@ -161,9 +161,9 @@
       "schemas": [
         "schemas/backlog-assessment-v2.json",
         "fixtures/project-backlog/assessment.schema.json",
-        "schemas/backlog-batch-audit-v2.json",
+        "schemas/backlog-batch-audit-v3.json",
         "schemas/backlog-batch-policy-v2.json",
-        "schemas/backlog-batch-record-v2.json",
+        "schemas/backlog-batch-record-v3.json",
         "schemas/backlog-batch-reference-v1.json",
         "schemas/backlog-collected-batch-v3.json",
         "schemas/backlog-github-state-v1.json",

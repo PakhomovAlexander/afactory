@@ -178,8 +178,8 @@ fn backlog_batch_journal_and_policy_are_closed_and_versioned() {
             "resolved_deliveries":[{"revision_id":id,"outcome":"requires_reverification"}],
         }),
     ];
-    let event_type = EventType::BacklogBatchStoredV2;
-    let record_schema = "backlog-batch-record-v2.json";
+    let event_type = EventType::BacklogBatchStoredV3;
+    let record_schema = "backlog-batch-record-v3.json";
     for payload in variants {
         assert_valid(record_schema, &payload);
         validate_event_payload(event_type, &payload).unwrap();
@@ -199,6 +199,17 @@ fn backlog_batch_journal_and_policy_are_closed_and_versioned() {
         assert_invalid(record_schema, &extra, "unknown record field");
         assert!(validate_event_payload(event_type, &extra).is_err());
     }
+    assert!("BacklogBatchStored@2".parse::<EventType>().is_err());
+    let oversized = json!({
+        "kind":"ticked","at_unix_ms":1,"high_water":"65",
+        "members": (1..=65).map(|index| format!("report-{index}")).collect::<Vec<_>>(),
+    });
+    assert_invalid(
+        record_schema,
+        &oversized,
+        "membership exceeds the citation budget",
+    );
+    assert!(validate_event_payload(event_type, &oversized).is_err());
     let duplicate = json!({"kind":"ticked","at_unix_ms":1,"high_water":"1","members":["r","r"]});
     assert_invalid(record_schema, &duplicate, "duplicate frozen member");
     assert!(validate_event_payload(event_type, &duplicate).is_err());

@@ -4,12 +4,13 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use af_contracts::EventType;
 use af_contracts::backlog::batch::assessment::{
-    CollectedBatch, CollectedMember, CollectionSchema, EvidenceExcerpt, MAX_MEMBERS, ReportContext,
+    CollectedBatch, CollectedMember, CollectionSchema, EvidenceExcerpt, ReportContext,
 };
 use af_contracts::backlog::batch::{
-    BatchReference, DeliveryResolution, EvidenceAccess, HoldPolicy, Journal, PendingDelivery,
-    Policy, Reconsideration, Settlement, ZoneSnapshot,
+    BatchReference, DeliveryOutcome, DeliveryResolution, EvidenceAccess, HoldPolicy, Journal,
+    PendingDelivery, Policy, Reconsideration, Settlement, ZoneSnapshot,
 };
+use af_contracts::task::document::MAX_REPOSITORY_CITATIONS;
 use af_contracts::task::usage::DecimalU64;
 use af_scenario::contract::{Limits, MAX_TIME};
 use af_scenario::schedule::{
@@ -25,8 +26,10 @@ mod native;
 mod provider_index;
 pub use native::{NativeAssessment, local_destination};
 
-// Keep space within the report source limit for the provider index and tracked items.
-const MEMBER_BYTES: usize = 144 * 1024;
+// The collection is a JSON string in a bounded portable Task template. Leave
+// room for the template and packaged schema, and for collection fields outside membership.
+const COLLECTION_BYTES: usize = 56 * 1024;
+const MEMBER_BYTES: usize = 52 * 1024;
 const TRACKED_BYTES: usize = 32 * 1024;
 const STREAM: &str = "backlog-daily-batch";
 pub const POLICY_FILE: &str = "backlog-batch-policy-v2.json";
@@ -76,6 +79,7 @@ struct Batch {
     id: String,
     previous_high_water: DecimalU64,
     high_water: DecimalU64,
+    policy_id: String,
     members: BTreeMap<String, Member>,
     closed_unix_ms: Option<u64>,
     publication_reservations: BTreeSet<String>,
@@ -196,7 +200,7 @@ struct State {
     queued: VecDeque<Work>,
     pending_deliveries: BTreeMap<String, PendingDelivery>,
     delivery_resolutions: BTreeMap<String, DeliveryResolution>,
-    closed_times: VecDeque<u64>,
+    closed_reservations: Vec<(u64, u64)>,
 }
 
 struct Intake {
@@ -232,29 +236,33 @@ impl Intake {
         report_id: &str,
         request: Option<&Reconsideration>,
     ) -> Work {
-        let evidence_report_id = request.and_then(|r| r.evidence_report_id.clone());
-        let evidence_ids = match pin.policy.evidence_access {
+        let mut work = Work {
+            member_id: member_id.into(),
+            report_id: report_id.into(),
+            item_id: request.map(|r| r.item_id.clone()),
+            evidence_report_id: request.and_then(|r| r.evidence_report_id.clone()),
+            evidence_ids: Vec::new(),
+        };
+        self.bind_evidence(pin, &mut work);
+        work
+    }
+
+    fn bind_evidence(&self, pin: &Pin, work: &mut Work) {
+        work.evidence_ids = match pin.policy.evidence_access {
             EvidenceAccess::MetadataOnly => Vec::new(),
             EvidenceAccess::EvidenceIds | EvidenceAccess::PrivateReport => {
-                std::iter::once(report_id)
-                    .chain(evidence_report_id.as_deref())
+                std::iter::once(work.report_id.as_str())
+                    .chain(work.evidence_report_id.as_deref())
                     .flat_map(|id| self.reports[id].report.evidence.iter())
                     .map(|evidence| evidence.content_id.clone())
                     .collect()
             }
         };
-        Work {
-            member_id: member_id.into(),
-            report_id: report_id.into(),
-            item_id: request.map(|r| r.item_id.clone()),
-            evidence_report_id,
-            evidence_ids,
-        }
     }
-    fn collect(&self, pin: &Pin, work: &Work) -> CollectedMember {
+    fn collect(&self, pin: &Pin, work: &Work) -> Result<(CollectedMember, usize), String> {
         let accepted = &self.reports[&work.report_id];
         let private = pin.policy.evidence_access == EvidenceAccess::PrivateReport;
-        CollectedMember {
+        let mut member = CollectedMember {
             member_id: work.member_id.clone(),
             report_id: work.report_id.clone(),
             item_id: work.item_id.clone(),
@@ -269,7 +277,42 @@ impl Intake {
                 .as_ref()
                 .filter(|_| private)
                 .map(|id| report_context(&self.reports[id])),
+        };
+        let mut size = template_text_bytes(&member)? + 1;
+        if size > MEMBER_BYTES {
+            for report in member
+                .report
+                .iter_mut()
+                .chain(&mut member.additional_report)
+            {
+                bound_report_text(&mut report.observed);
+                if let Some(repro) = &mut report.repro {
+                    bound_report_text(repro);
+                }
+            }
+            size = template_text_bytes(&member)? + 1;
         }
+        Ok((member, size))
+    }
+}
+
+fn template_text_bytes(value: &impl Serialize) -> Result<usize, String> {
+    let json = serde_json::to_string(value).map_err(|error| error.to_string())?;
+    // Count the escaped text without the enclosing string quotes.
+    serde_json::to_vec(&json)
+        .map(|bytes| bytes.len() - 2)
+        .map_err(|error| error.to_string())
+}
+
+fn bound_report_text(text: &mut String) {
+    const MAX_EXCERPT_BYTES: usize = 1536;
+    if text.len() > MAX_EXCERPT_BYTES {
+        let mut end = MAX_EXCERPT_BYTES;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+        text.push_str("\n[truncated for assessment]");
     }
 }
 
@@ -312,13 +355,12 @@ impl State {
             .schedule
             .due_index(&pin.zone, at, self.next_day)?
             .ok_or("backlog batch requires a daily schedule")?;
-        while self
-            .closed_times
-            .front()
-            .is_some_and(|time| !pin.execution.in_rolling_window(*time, at))
-        {
-            self.closed_times.pop_front();
-        }
+        let window_start = self
+            .closed_reservations
+            .partition_point(|(time, _)| !pin.execution.in_rolling_window(*time, at));
+        let used = self.closed_reservations[window_start..]
+            .iter()
+            .fold(0u64, |total, (_, tokens)| total.saturating_add(*tokens));
         let mut frozen = Vec::new();
         while self.next_day <= end {
             let day = self.next_day;
@@ -331,8 +373,6 @@ impl State {
                 continue;
             }
             let id = occurrence_id("project-backlog", &pin.id, day)?;
-            let used =
-                (self.closed_times.len() as u64).saturating_mul(pin.execution.per_run.max_tokens);
             let outcome = if let Some(block) = pin.execution.admission_block(
                 gap,
                 at - due,
@@ -343,6 +383,9 @@ impl State {
             ) {
                 Outcome::Skipped(block)
             } else {
+                // Existing carryover keeps its place. Repeated deferrals rejoin the
+                // tail before this occurrence's arrivals, behind work already waiting.
+                self.queued.append(&mut self.deferred);
                 for report_id in &intake.ordered[self.high_water as usize..high_water as usize] {
                     self.queued
                         .push_back(intake.work(pin, report_id, report_id, None));
@@ -365,19 +408,13 @@ impl State {
                         ));
                     }
                 }
-                // Reports left over from earlier cutoffs keep their place. A deferred
-                // member goes behind work already waiting so it cannot starve intake.
-                self.queued.append(&mut self.deferred);
                 let mut members = BTreeMap::new();
                 let mut bytes = 0;
-                while members.len() < MAX_MEMBERS {
+                while members.len() < MAX_REPOSITORY_CITATIONS {
                     let Some(work) = self.queued.front() else {
                         break;
                     };
-                    let size = serde_json::to_vec(&intake.collect(pin, work))
-                        .map_err(|error| error.to_string())?
-                        .len()
-                        + 1;
+                    let (_, size) = intake.collect(pin, work)?;
                     if bytes + size > MEMBER_BYTES {
                         if members.is_empty() {
                             return Err("A backlog member exceeds the collection bound".into());
@@ -406,6 +443,7 @@ impl State {
                         id: id.clone(),
                         previous_high_water: previous_high_water.into(),
                         high_water: high_water.into(),
+                        policy_id: pin.id.clone(),
                         members: members
                             .into_iter()
                             .map(|(key, work)| {
@@ -584,7 +622,9 @@ impl State {
         self.closed_high_water = batch.high_water.get();
         self.active = None;
         self.clock = at;
-        self.closed_times.push_back(at);
+        let pin = self.pin.as_ref().ok_or("no pinned backlog batch policy")?;
+        self.closed_reservations
+            .push((at, pin.execution.per_run.max_tokens));
         Ok(true)
     }
 
@@ -592,11 +632,34 @@ impl State {
         record.validate()?;
         match record {
             Journal::Pinned { policy, zone } => {
-                if self.pin.is_some() {
-                    return Err("backlog batch policy is already pinned".into());
-                }
                 let pin = Pin::new(*policy, zone)?;
-                self.next_day = pin.schedule.initial_index(&pin.zone)?;
+                let mut next_day = pin.schedule.initial_index(&pin.zone)?;
+                if let Some(previous) = &self.pin {
+                    if self.active.is_some()
+                        || pin.id == previous.id
+                        || pin.policy.project_id != previous.policy.project_id
+                        || pin.policy.authority_id != previous.policy.authority_id
+                    {
+                        return Err("cannot change the pinned backlog policy during an active batch or across authorities".into());
+                    }
+                    next_day = next_day.max(pin.zone.local_day((self.clock / 1000) as i64)?);
+                    if pin.schedule.due(&pin.zone, next_day)?.0 <= self.clock {
+                        next_day += 1;
+                    }
+                    for (revision_id, _) in std::mem::take(&mut self.pending_deliveries) {
+                        self.delivery_resolutions.insert(
+                            revision_id.clone(),
+                            DeliveryResolution {
+                                revision_id,
+                                outcome: DeliveryOutcome::RequiresReverification,
+                            },
+                        );
+                    }
+                    for work in self.queued.iter_mut().chain(&mut self.deferred) {
+                        intake.bind_evidence(&pin, work);
+                    }
+                }
+                self.next_day = next_day;
                 self.pin = Some(pin);
                 Ok(true)
             }
@@ -665,7 +728,7 @@ impl State {
             .pin
             .map_or((None, None), |pin| (Some(pin.id), Some(pin.policy)));
         Audit {
-            schema: "af/backlog-batch-audit@2",
+            schema: "af/backlog-batch-audit@3",
             project_id,
             policy,
             pin_id,
@@ -692,7 +755,7 @@ impl ProjectStore {
             .replay(STREAM)
             .map_err(|_| "could not replay backlog batches")?
         {
-            if event.event_type != EventType::BacklogBatchStoredV2
+            if event.event_type != EventType::BacklogBatchStoredV3
                 || !event.artifact_refs.is_empty()
             {
                 return Err("invalid event in backlog batch journal".into());
@@ -735,7 +798,7 @@ impl ProjectStore {
                 };
                 let payload = serde_json::to_value(record)
                     .map_err(|_| "could not encode backlog batch journal")?;
-                Ok(NewEvent::new(EventType::BacklogBatchStoredV2, payload)
+                Ok(NewEvent::new(EventType::BacklogBatchStoredV3, payload)
                     .at(af_contracts::task::collection::collected_time(at)))
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -753,11 +816,7 @@ impl ProjectStore {
             serde_json::from_slice(&bytes).map_err(|_| "invalid backlog batch policy document")?;
         self.check_batch_authority(&policy, &intake)?;
         let mut records = Vec::new();
-        if let Some(pin) = &state.pin {
-            if pin.policy != policy {
-                return Err("backlog batch policy differs from its pinned revision".into());
-            }
-        } else {
+        if state.pin.as_ref().is_none_or(|pin| pin.policy != policy) {
             policy.validate()?;
             let zone = Zone::load(&policy.timezone)?;
             let record = Journal::Pinned {
@@ -779,6 +838,8 @@ impl ProjectStore {
                 high_water: intake.len().into(),
                 members,
             });
+        }
+        if !records.is_empty() {
             self.append_batch_journal(records)?;
         }
         Ok(state.audit(self.project_id.clone(), intake))
@@ -806,16 +867,9 @@ impl ProjectStore {
         let members = batch
             .members
             .values()
-            .map(|member| intake.collect(pin, &member.work))
-            .collect();
-        let (tracked_items, tracked_items_truncated) = if !batch.members.is_empty()
-            && pin.policy.evidence_access == EvidenceAccess::PrivateReport
-        {
-            self.tracked_backlog(TRACKED_BYTES)?
-        } else {
-            (BTreeMap::new(), false)
-        };
-        Ok(CollectedBatch {
+            .map(|member| intake.collect(pin, &member.work).map(|(member, _)| member))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut collected = CollectedBatch {
             schema: CollectionSchema::V3,
             provider_index: if batch.members.is_empty() {
                 None
@@ -833,9 +887,21 @@ impl ProjectStore {
             source_revision,
             previous_high_water: batch.previous_high_water,
             members,
-            tracked_items,
-            tracked_items_truncated,
-        })
+            tracked_items: BTreeMap::new(),
+            tracked_items_truncated: false,
+        };
+        let remaining = COLLECTION_BYTES
+            .checked_sub(template_text_bytes(&collected)?)
+            .ok_or(
+                "Pinned provider observation exceeds the remaining portable backlog input budget",
+            )?;
+        if !collected.members.is_empty()
+            && pin.policy.evidence_access == EvidenceAccess::PrivateReport
+        {
+            (collected.tracked_items, collected.tracked_items_truncated) =
+                self.tracked_backlog(remaining.min(TRACKED_BYTES))?;
+        }
+        Ok(collected)
     }
 
     /// Resolve the action destination from receiver-owned batch authority.
@@ -880,12 +946,10 @@ impl ProjectStore {
         {
             return Err("backlog Scenario differs from the Project batch policy".into());
         }
-        if state
-            .batches
-            .get(&reference.batch_id)
-            .is_none_or(|batch| batch.high_water != reference.high_water)
-        {
-            return Err("backlog Scenario requires the exact cutoff".into());
+        if state.batches.get(&reference.batch_id).is_none_or(|batch| {
+            batch.high_water != reference.high_water || batch.policy_id != pin.id
+        }) {
+            return Err("backlog Scenario requires the exact cutoff and batch policy".into());
         }
         Ok(pin)
     }
@@ -948,11 +1012,23 @@ mod tests {
     use af_contracts::backlog::{Privacy, Report};
 
     #[test]
-    fn fresh_intake_past_the_batch_bound_progresses_before_repeated_deferrals() {
+    fn oversized_member_prose_keeps_a_marked_utf8_prefix() {
+        let original = "a".to_owned() + &"€".repeat(600);
+        let mut excerpt = original.clone();
+        bound_report_text(&mut excerpt);
+        let prefix = excerpt
+            .strip_suffix("\n[truncated for assessment]")
+            .unwrap();
+        assert_eq!(prefix.len(), 1534);
+        assert!(original.starts_with(prefix));
+    }
+
+    #[test]
+    fn repeated_deferrals_and_sustained_intake_make_progress_after_replay() {
         let digest = format!("sha256:{}", "0".repeat(64));
         let day = 86_400_000;
         let intake = Intake::new(
-            (1..=129)
+            (1..=321)
                 .map(|sequence| {
                     let id = format!("report-{sequence:03}");
                     let report = Report {
@@ -986,7 +1062,6 @@ mod tests {
                 })
                 .collect(),
         );
-        let mut state = State::default();
         let pin = Journal::Pinned {
             policy: Box::new(Policy {
                 schema: PolicySchema::V2,
@@ -1015,46 +1090,54 @@ mod tests {
                 valid_until_unix_seconds: None,
             },
         };
-        state.apply(&intake, pin.clone()).unwrap();
-        let first = state.freeze(&intake, day, 129).unwrap();
-        assert_eq!(first.len(), 128);
-        assert!(!first.iter().any(|id| id == "report-129"));
-        let batch = state.active.clone().unwrap();
-        let mut journal = vec![
-            pin,
-            Journal::Ticked {
-                at_unix_ms: day,
-                high_water: 129.into(),
-                members: first.clone(),
-            },
-        ];
-        for member_id in first {
-            let record = Journal::Settled {
-                batch_id: batch.clone(),
-                member_id,
-                settlement: Settlement::ReservePublication {
-                    item_id: digest.clone(),
-                },
-            };
-            state.apply(&intake, record.clone()).unwrap();
-            journal.push(record);
+        let mut journal = vec![pin];
+        for (occurrence, cutoff) in [(1, 65), (2, 193), (3, 321)] {
+            let mut state = State::default();
+            for record in &journal {
+                state.apply(&intake, record.clone()).unwrap();
+            }
+            let at = occurrence * day;
+            let members = state.freeze(&intake, at, cutoff).unwrap();
+            assert_eq!(members.len(), MAX_REPOSITORY_CITATIONS);
+            assert_eq!(
+                members.first().unwrap(),
+                match occurrence {
+                    1 => "report-001",
+                    2 => "report-001",
+                    _ => "report-064",
+                }
+            );
+            if occurrence == 2 {
+                assert!(members.iter().any(|id| id == "report-065"));
+            }
+            if occurrence == 3 {
+                assert!(members.iter().any(|id| id == "report-066"));
+            }
+            let batch_id = state.active.unwrap();
+            journal.push(Journal::Ticked {
+                at_unix_ms: at,
+                high_water: cutoff.into(),
+                members: members.clone(),
+            });
+            for member_id in members {
+                journal.push(Journal::Settled {
+                    batch_id: batch_id.clone(),
+                    settlement: if member_id.as_str() <= "report-064" {
+                        Settlement::ReservePublication {
+                            item_id: digest.clone(),
+                        }
+                    } else {
+                        Settlement::Accounted
+                    },
+                    member_id,
+                });
+            }
+            journal.push(Journal::Closed {
+                batch_id,
+                at_unix_ms: at,
+                pending_deliveries: Vec::new(),
+                resolved_deliveries: Vec::new(),
+            });
         }
-        journal.push(Journal::Closed {
-            batch_id: batch,
-            at_unix_ms: day,
-            pending_deliveries: Vec::new(),
-            resolved_deliveries: Vec::new(),
-        });
-
-        let mut replayed = State::default();
-        for record in journal {
-            replayed.apply(&intake, record).unwrap();
-        }
-        let next = replayed.freeze(&intake, 2 * day, 129).unwrap();
-        assert_eq!(next.len(), 128);
-        assert!(next.iter().any(|id| id == "report-129"));
-        let batch = &replayed.batches[replayed.active.as_ref().unwrap()];
-        assert_eq!(batch.high_water.get(), 129);
-        assert_eq!(batch.previous_high_water.get(), 129);
     }
 }

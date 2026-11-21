@@ -14,7 +14,8 @@ use crate::task::usage::DecimalU64;
 
 pub const SOURCE_NAME: &str = "backlog-batch";
 pub const SOURCE_URI: &str = "af:backlog:";
-pub const MAX_MEMBERS: usize = 128;
+const MAX_MEMBERS: usize = 128;
+pub const MAX_TRACKED_ITEMS: usize = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CollectionSchema {
@@ -201,6 +202,11 @@ impl Assessment {
                     );
                 }
                 eligible.extend(&row.evidence_ids);
+            }
+            if batch.tracked_items_truncated && decision.disposition == Disposition::Verified {
+                return Err(
+                    "An incomplete local tracked-item view prevents verified decisions".into(),
+                );
             }
             if decision.members.is_empty()
                 || decision.members.iter().any(|id| !is_member_id(id))
@@ -391,6 +397,12 @@ mod tests {
             Assessment::check(&source, &draft, Some(commit))
         };
         assert!(check(&batch, &assessment, &source_revision).is_ok());
+        batch.tracked_items_truncated = true;
+        assert_eq!(
+            check(&batch, &assessment, &source_revision).unwrap_err(),
+            "An incomplete local tracked-item view prevents verified decisions"
+        );
+        batch.tracked_items_truncated = false;
         let mut context_withheld = batch.clone();
         context_withheld.members[0].report = None;
         assert!(check(&context_withheld, &assessment, &source_revision).is_err());

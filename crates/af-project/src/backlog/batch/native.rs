@@ -6,8 +6,7 @@ use af_contracts::RunEvent;
 use af_contracts::backlog::{
     BacklogRecordV2, Batch as BatchRecord, Decision, Disposition as Verdict, ItemRevision,
     LocalMatch, MAX_EVIDENCE_BYTES, PublicFields, Publication,
-    batch::DeliveryOutcome,
-    batch::assessment::{Decision as AssessedDecision, TrackedItem},
+    batch::assessment::{Decision as AssessedDecision, MAX_TRACKED_ITEMS, TrackedItem},
 };
 use af_source_git::manifest::{EntryKind, Manifest};
 use std::io::Write;
@@ -105,10 +104,10 @@ impl ProjectStore {
                 revision,
                 verification_id,
             };
-            let size = serde_json::to_vec(&(&key, &item))
-                .map_err(|error| error.to_string())?
-                .len();
-            if bytes + size > max_bytes || items.len() == MAX_MEMBERS {
+            // The tuple's brackets and separator cover the entry's JSON
+            // punctuation, including the comma between successive entries.
+            let size = template_text_bytes(&(&key, &item))?;
+            if bytes + size > max_bytes || items.len() == MAX_TRACKED_ITEMS {
                 continue;
             }
             bytes += size;
