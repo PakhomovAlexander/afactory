@@ -141,6 +141,14 @@ pub enum Settlement {
     ReservePublication { item_id: String },
 }
 
+/// Source and enrollment authority captured with a recurring cutoff.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScheduledSource {
+    pub commit: String,
+    pub enrollment_revision: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Journal {
@@ -152,6 +160,8 @@ pub enum Journal {
         at_unix_ms: u64,
         paused: bool,
         recurring: bool,
+        #[serde(deserialize_with = "Deserialize::deserialize")]
+        source: Option<ScheduledSource>,
         high_water: DecimalU64,
         members: Vec<String>,
     },
@@ -222,9 +232,22 @@ impl Journal {
             Self::Ticked {
                 at_unix_ms,
                 members,
+                paused,
+                recurring,
+                source,
                 ..
             } => {
                 valid_time(*at_unix_ms)
+                    && source.as_ref().is_none_or(|source| {
+                        *recurring
+                            && !*paused
+                            && source.commit.len() == 40
+                            && source
+                                .commit
+                                .bytes()
+                                .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+                            && is_digest(&source.enrollment_revision)
+                    })
                     && members.len() <= crate::task::document::MAX_REPOSITORY_CITATIONS
                     && members.iter().all(|id| is_member_id(id))
                     && members

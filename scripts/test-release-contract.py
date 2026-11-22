@@ -324,7 +324,7 @@ class ReleaseContract(unittest.TestCase):
 
     def test_project_backlog_schema_bytes_are_bound_by_the_release_contract(self):
         for name in ('backlog-v2.json', 'backlog-record-v2.json',
-                     'backlog-schedule-v2.json', 'run-event-v4.json'):
+                     'backlog-schedule-v3.json', 'backlog-batch-record-v6.json', 'run-event-v4.json'):
             with self.subTest(schema=name):
                 path = self.root / 'schemas' / name
                 original = path.read_bytes()

@@ -9,7 +9,7 @@ use af_contracts::backlog::batch::assessment::{
 };
 use af_contracts::backlog::batch::{
     BatchReference, DeliveryOutcome, DeliveryResolution, EvidenceAccess, HoldPolicy, Journal,
-    PendingDelivery, Policy, Reconsideration, Settlement, ZoneSnapshot,
+    PendingDelivery, Policy, Reconsideration, ScheduledSource, Settlement, ZoneSnapshot,
 };
 use af_contracts::task::document::MAX_REPOSITORY_CITATIONS;
 use af_contracts::task::usage::DecimalU64;
@@ -82,7 +82,7 @@ struct Member {
 struct Batch {
     id: String,
     #[serde(skip)]
-    recurring: bool,
+    source: Option<ScheduledSource>,
     previous_high_water: DecimalU64,
     high_water: DecimalU64,
     policy_id: String,
@@ -144,6 +144,12 @@ pub struct ScheduleScope {
     pub intake_policy: String,
     pub destination: String,
     pub active: bool,
+}
+
+enum TickMode<'a> {
+    Manual,
+    Paused,
+    Recurring(&'a dyn Fn() -> Result<ScheduledSource, String>),
 }
 
 struct Pin {
@@ -362,7 +368,7 @@ fn report_context(accepted: &AcceptedReport) -> ReportContext {
 impl State {
     fn check_index_mode(&self, reference: &BatchReference, mode: IndexMode) -> Result<(), String> {
         let recurring = !matches!(mode, IndexMode::Manual);
-        if self.batches[&reference.batch_id].recurring != recurring {
+        if self.batches[&reference.batch_id].source.is_some() != recurring {
             return Err("Backlog collection mode differs from frozen batch admission".into());
         }
         Ok(())
@@ -375,6 +381,7 @@ impl State {
         high_water: u64,
         paused: bool,
         recurring: bool,
+        mut source: impl FnMut() -> Result<Option<ScheduledSource>, String>,
     ) -> Result<Vec<String>, String> {
         let pin = self.pin.as_ref().ok_or("no pinned backlog batch policy")?;
         if at == 0 || at < self.clock || high_water < self.high_water || high_water > intake.len() {
@@ -416,6 +423,10 @@ impl State {
             ) {
                 Outcome::Skipped(block)
             } else {
+                let source = source()?;
+                if recurring != source.is_some() {
+                    return Err("frozen backlog batch lacks its exact admission authority".into());
+                }
                 // Existing carryover keeps its place. Repeated deferrals rejoin the
                 // tail before this occurrence's arrivals, behind work already waiting.
                 self.queued.append(&mut self.deferred);
@@ -474,7 +485,7 @@ impl State {
                     id.clone(),
                     Batch {
                         id: id.clone(),
-                        recurring,
+                        source,
                         previous_high_water: previous_high_water.into(),
                         high_water: high_water.into(),
                         policy_id: pin.id.clone(),
@@ -702,12 +713,20 @@ impl State {
                 high_water,
                 paused,
                 recurring,
+                source,
                 members,
             } => {
                 if self.last_tick == Some(at_unix_ms) {
                     return Err("duplicate backlog batch tick in journal".into());
                 }
-                if self.freeze(intake, at_unix_ms, high_water.get(), paused, recurring)? != members
+                if self.freeze(
+                    intake,
+                    at_unix_ms,
+                    high_water.get(),
+                    paused,
+                    recurring,
+                    || Ok(source.clone()),
+                )? != members
                 {
                     return Err("frozen backlog membership differs from authority replay".into());
                 }
@@ -792,7 +811,7 @@ impl ProjectStore {
             .replay(STREAM)
             .map_err(|_| "could not replay backlog batches")?
         {
-            if event.event_type != EventType::BacklogBatchStoredV5
+            if event.event_type != EventType::BacklogBatchStoredV6
                 || !event.artifact_refs.is_empty()
             {
                 return Err("invalid event in backlog batch journal".into());
@@ -835,7 +854,7 @@ impl ProjectStore {
                 };
                 let payload = serde_json::to_value(record)
                     .map_err(|_| "could not encode backlog batch journal")?;
-                Ok(NewEvent::new(EventType::BacklogBatchStoredV5, payload)
+                Ok(NewEvent::new(EventType::BacklogBatchStoredV6, payload)
                     .at(af_contracts::task::collection::collected_time(at)))
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -877,7 +896,7 @@ impl ProjectStore {
         if state
             .active
             .as_ref()
-            .is_none_or(|id| state.batches[id].recurring)
+            .is_none_or(|id| state.batches[id].source.is_some())
         {
             match self
                 .directory
@@ -912,8 +931,8 @@ impl ProjectStore {
         policy_pin: &str,
         intake_policy: &str,
         destination: &str,
-        paused: bool,
-    ) -> Result<Option<BatchReference>, String> {
+        source: Option<&dyn Fn() -> Result<ScheduledSource, String>>,
+    ) -> Result<Option<(BatchReference, ScheduledSource)>, String> {
         let (mut state, intake) = self.batch_state()?;
         let (pin, zone) = Self::batch_policy_pin(self.installed_batch_policy(&intake)?)?;
         let scope = self.schedule_scope(&state, &pin)?;
@@ -925,18 +944,45 @@ impl ProjectStore {
                 "Recurring backlog scope differs from the installed Project authority".into(),
             );
         }
-        self.advance_batch(&mut state, &intake, pin, zone, now, Some(paused))?;
-        Ok(state
-            .active
-            .as_ref()
-            .filter(|id| state.batches[*id].recurring)
-            .map(|id| BatchReference {
-                schema: af_contracts::backlog::batch::BatchReferenceSchema::V1,
-                project_id: self.project_id.clone(),
-                batch_id: id.clone(),
-                policy_id: state.batches[id].policy_id.clone(),
-                high_water: state.batches[id].high_water,
-            }))
+        let mode = source.map_or(TickMode::Paused, TickMode::Recurring);
+        self.advance_batch(&mut state, &intake, pin, zone, now, mode)?;
+        Ok(state.active.as_ref().and_then(|id| {
+            let batch = &state.batches[id];
+            let source = batch.source.clone()?;
+            Some((
+                BatchReference {
+                    schema: af_contracts::backlog::batch::BatchReferenceSchema::V1,
+                    project_id: self.project_id.clone(),
+                    batch_id: id.clone(),
+                    policy_id: batch.policy_id.clone(),
+                    high_water: batch.high_water,
+                },
+                source,
+            ))
+        }))
+    }
+
+    pub fn check_scheduled_backlog_source(
+        &self,
+        reference: &BatchReference,
+        commit: &str,
+        enrollment_revision: &str,
+    ) -> Result<(), String> {
+        let (state, _) = self.batch_state()?;
+        if reference.project_id != self.project_id
+            || state
+                .batches
+                .get(&reference.batch_id)
+                .and_then(|batch| batch.source.as_ref())
+                .is_none_or(|source| {
+                    source.commit != commit || source.enrollment_revision != enrollment_revision
+                })
+        {
+            return Err(
+                "Recurring backlog Run differs from its frozen source or enrollment".into(),
+            );
+        }
+        Ok(())
     }
 
     pub fn tick_backlog_batch(
@@ -953,13 +999,13 @@ impl ProjectStore {
         if state
             .active
             .as_ref()
-            .is_some_and(|id| state.batches[id].recurring)
+            .is_some_and(|id| state.batches[id].source.is_some())
         {
             return Err("Active backlog batch belongs to the enrolled scheduler".into());
         }
         let policy = self.installed_batch_policy(&intake)?;
         let (pin, zone) = Self::batch_policy_pin(policy)?;
-        self.advance_batch(&mut state, &intake, pin, zone, now, None)?;
+        self.advance_batch(&mut state, &intake, pin, zone, now, TickMode::Manual)?;
         Ok(state.audit(self.project_id.clone(), intake))
     }
 
@@ -970,15 +1016,18 @@ impl ProjectStore {
         pin: Pin,
         zone: ZoneSnapshot,
         now: u64,
-        scheduled_pause: Option<bool>,
+        mode: TickMode<'_>,
     ) -> Result<(), String> {
         if now == 0 || now > MAX_TIME || now < state.clock {
             return Err("invalid backlog batch clock".into());
         }
+        let recurring = !matches!(mode, TickMode::Manual);
         let mut records = Vec::new();
-        if state.pin.as_ref().is_none_or(|old| {
-            old.policy != pin.policy || (scheduled_pause.is_some() && old.id != pin.id)
-        }) {
+        if state
+            .pin
+            .as_ref()
+            .is_none_or(|old| old.policy != pin.policy || (recurring && old.id != pin.id))
+        {
             let record = Journal::Pinned {
                 policy: Box::new(pin.policy),
                 zone,
@@ -988,15 +1037,23 @@ impl ProjectStore {
         }
         let pin = state.pin.as_ref().ok_or("no pinned backlog batch policy")?;
         if state.last_tick != Some(now)
-            && (scheduled_pause.is_none() || pin.schedule.due(&pin.zone, state.next_day)?.0 <= now)
+            && (!recurring || pin.schedule.due(&pin.zone, state.next_day)?.0 <= now)
         {
-            let paused = scheduled_pause.unwrap_or(false);
-            let recurring = scheduled_pause.is_some();
-            let members = state.freeze(intake, now, intake.len(), paused, recurring)?;
+            let paused = matches!(mode, TickMode::Paused);
+            let mut source = None;
+            let members = state.freeze(intake, now, intake.len(), paused, recurring, || {
+                if let TickMode::Recurring(capture) = mode {
+                    if source.is_none() {
+                        source = Some(capture()?);
+                    }
+                }
+                Ok(source.clone())
+            })?;
             records.push(Journal::Ticked {
                 at_unix_ms: now,
                 paused,
                 recurring,
+                source,
                 high_water: intake.len().into(),
                 members,
             });
@@ -1124,6 +1181,13 @@ impl ProjectStore {
             return Err("backlog Scenario requires the active Project batch".into());
         }
         let batch = &state.batches[&reference.batch_id];
+        if batch
+            .source
+            .as_ref()
+            .is_some_and(|source| source.commit != source_revision)
+        {
+            return Err("Backlog collection differs from its frozen source revision".into());
+        }
         let members = batch
             .members
             .values()
@@ -1258,7 +1322,7 @@ impl ProjectStore {
             && (state
                 .batches
                 .get(batch_id)
-                .is_some_and(|batch| batch.recurring)
+                .is_some_and(|batch| batch.source.is_some())
                 || self.native_batch_exists(batch_id)?)
         {
             return Err("backlog batch is owned by its native Scenario settlement".into());
@@ -1369,7 +1433,9 @@ mod tests {
                 state.apply(&intake, record.clone()).unwrap();
             }
             let at = occurrence * day;
-            let members = state.freeze(&intake, at, cutoff, false, false).unwrap();
+            let members = state
+                .freeze(&intake, at, cutoff, false, false, || Ok(None))
+                .unwrap();
             assert_eq!(members.len(), MAX_REPOSITORY_CITATIONS);
             assert_eq!(
                 members.first().unwrap(),
@@ -1389,6 +1455,7 @@ mod tests {
             journal.push(Journal::Ticked {
                 paused: false,
                 recurring: false,
+                source: None,
                 at_unix_ms: at,
                 high_water: cutoff.into(),
                 members: members.clone(),

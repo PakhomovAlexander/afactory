@@ -415,6 +415,13 @@ distinct_models = true
         }
     }
 
+    fn head(&self) -> String {
+        let home = tempfile::tempdir().unwrap();
+        af_source_git::git::Repo::open(&self.repo, home.path())
+            .rev_parse("HEAD")
+            .unwrap()
+    }
+
     fn af(&self, args: &[&str]) -> Output {
         self.af_in(&self.repo, args)
     }
@@ -1046,6 +1053,12 @@ fn portable_backlog_scheduler_enrolls_once_and_replays_two_daily_batches() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().canonicalize().unwrap().join("recurring");
     let receiver = Receiver::for_artifact(root, 303, BACKLOG);
+    let reviewed_ref = "refs/remotes/origin/main";
+    let initial = receiver.head();
+    git(
+        &receiver.repo,
+        &["update-ref", reviewed_ref, initial.as_str()],
+    );
     let (accept, first_count) = configure_backlog_intake(&receiver, None, false);
     let project = ok(receiver.af(&["project", "show", "--json"]));
     let project_store = Path::new(project["store"].as_str().unwrap());
@@ -1065,6 +1078,8 @@ fn portable_backlog_scheduler_enrolls_once_and_replays_two_daily_batches() {
         BACKLOG,
         "--task-state",
         receiver.tasks.to_str().unwrap(),
+        "--trusted-ref",
+        reviewed_ref,
         "--owner",
         "fixture-owner",
         "--state",
@@ -1077,7 +1092,10 @@ fn portable_backlog_scheduler_enrolls_once_and_replays_two_daily_batches() {
         receiver.af(&[&["ant", "backlog", operation][..], &receiver_args, extra].concat())
     };
     let preview = ok(enroll("validate", &[]));
-    schemas::valid(&schemas::validator("backlog-schedule-v2.json"), &preview);
+    let enrollment_schema = schemas::validator("backlog-schedule-v3.json");
+    schemas::valid(&enrollment_schema, &preview);
+    assert_eq!(preview["scope"]["trusted_ref"], reviewed_ref);
+    assert_eq!(preview["scope"]["commit"], initial.as_str());
     let wrong = enroll("enroll", &["--confirm-pin", "wrong"]);
     assert!(!wrong.status.success() && text(&wrong).contains("confirmation differs"));
     assert!(!receiver.provider_home.join("calls").exists());
@@ -1166,6 +1184,15 @@ fn portable_backlog_scheduler_enrolls_once_and_replays_two_daily_batches() {
             "--json",
         ]))
     };
+    // Change source while the first batch has a verified receipt and a pending dispatch.
+    fs::write(
+        receiver.repo.join("CONTRIBUTING.md"),
+        "# Reviewed source advance\n",
+    )
+    .unwrap();
+    capture(&receiver.repo);
+    let advanced = receiver.head();
+    assert_ne!(initial, advanced);
     let observed = af_scenario::runtime::now().unwrap();
     // A policy edit must block both new admission and continuation of the already verified
     // Run. Restoring the exact policy permits reconciliation of the original intent.
@@ -1193,11 +1220,65 @@ fn portable_backlog_scheduler_enrolls_once_and_replays_two_daily_batches() {
         first_steps[2]["intents"][0]["id"],
     );
     assert_eq!(fs::read_dir(&sink).unwrap().count(), 1);
-    let closed = audit()["batches"][&first_batch]["closed_unix_ms"]
+    let first_closed = audit();
+    let pending = first_closed["pending_deliveries"].as_object().unwrap();
+    assert_eq!(pending.len(), 1);
+    let deferred_revision = pending.keys().next().unwrap();
+    let closed = first_closed["batches"][&first_batch]["closed_unix_ms"]
         .as_u64()
         .unwrap();
     let second_time = closed + 86_400_000;
     assert!(second_time < due + 86_400_000 + 600_000);
+    // A commit made locally has no admission authority until the reviewed ref agrees.
+    let assert_refused = |tick: &Value, message: &str| {
+        assert_eq!(tick["started"], json!([]));
+        assert!(
+            tick["refused"]
+                .as_object()
+                .unwrap()
+                .values()
+                .any(|error| { error.as_str().unwrap().contains(message) }),
+            "{tick}"
+        );
+        assert_eq!(audit()["occurrences"].as_array().unwrap().len(), 1);
+    };
+    assert_refused(&tick(second_time), "HEAD must match the reviewed ref");
+    let lookalike = "refs/tags/refs/remotes/origin/main";
+    git(&receiver.repo, &["update-ref", "-d", reviewed_ref]);
+    git(&receiver.repo, &["update-ref", lookalike, "HEAD"]);
+    assert_refused(&tick(second_time), "exact enrolled remote-tracking ref");
+    git(&receiver.repo, &["update-ref", "-d", lookalike]);
+
+    // Even on the reviewed ref, changing a Worker package exceeds the confirmed closure.
+    let worker = receiver
+        .repo
+        .join("fixtures/project-backlog/task-packages/backlog/daily-author/instructions.md");
+    fs::write(worker, "Changed daily author instructions.\n").unwrap();
+    capture(&receiver.repo);
+    git(&receiver.repo, &["update-ref", reviewed_ref, "HEAD"]);
+    assert_refused(&tick(second_time), "package");
+
+    // A different repository at the same path has a different Project identity.
+    let original = receiver.root.join("original repository");
+    fs::rename(&receiver.repo, &original).unwrap();
+    fs::create_dir(&receiver.repo).unwrap();
+    git(&receiver.repo, &["init", "-q", "-b", "main"]);
+    fs::write(receiver.repo.join("README"), "Another Project.\n").unwrap();
+    capture(&receiver.repo);
+    let wrong = tick(second_time);
+    fs::rename(&receiver.repo, receiver.root.join("different repository")).unwrap();
+    fs::rename(&original, &receiver.repo).unwrap();
+    assert_refused(&wrong, "different Project");
+
+    git(&receiver.repo, &["reset", "--hard", advanced.as_str()]);
+    git(
+        &receiver.repo,
+        &["update-ref", reviewed_ref, advanced.as_str()],
+    );
+    assert_eq!(
+        ok(receiver.af(&["ant", "backlog", "show", "--state", state, "--json"])),
+        preview
+    );
     let second = tick(second_time);
     let second_id = second["started"][0].as_str().unwrap();
     let second_done = &second["runs"][second_id];
@@ -1226,17 +1307,24 @@ fn portable_backlog_scheduler_enrolls_once_and_replays_two_daily_batches() {
         vec!["late"]
     );
     assert_eq!(audits["closed_high_water"], (first_count + 1).to_string());
-    assert_eq!(fs::read_dir(&sink).unwrap().count(), 2);
+    assert_eq!(fs::read_dir(&sink).unwrap().count(), 1);
+    assert_eq!(audits["pending_deliveries"], json!({}));
+    assert_eq!(
+        audits["delivery_resolutions"][deferred_revision]["outcome"],
+        "requires_reverification"
+    );
 
     let cas = Cas::open_existing(receiver.tasks.join("cas")).unwrap();
     let mut task_receipts = Vec::new();
     let mut reviews = Vec::new();
-    for (run, batch_id) in [
-        (first_done, first_batch.as_str()),
-        (second_done, second_batch),
+    for (run, batch_id, commit) in [
+        (first_done, first_batch.as_str(), initial.as_str()),
+        (second_done, second_batch, advanced.as_str()),
     ] {
-        let requirements = &run["pin"]["bundle"]["definitions"]["daily-backlog"]["steps"][0]["operation"]
-            ["template"]["document"]["requirements"];
+        let template = &run["pin"]["bundle"]["definitions"]["daily-backlog"]["steps"][0]["operation"]
+            ["template"];
+        assert_eq!(template["authority_commit"], commit);
+        let requirements = &template["document"]["requirements"];
         assert_eq!(
             requirements["scenario_backlog_enrollment"],
             preview["revision"]
@@ -1250,6 +1338,11 @@ fn portable_backlog_scheduler_enrolls_once_and_replays_two_daily_batches() {
             .unwrap();
         let review = cas.get_artifact(verification).unwrap();
         assert_eq!(review.payload["outcome"], "passed");
+        let snapshot_id = review.payload["source_snapshot_id"].as_str().unwrap();
+        let (snapshot, _) = af_source_git::task::read_snapshot(&cas, snapshot_id).unwrap();
+        let origin = af_source_git::task::read_origin(&cas, &snapshot.origin_id).unwrap();
+        assert_eq!(origin.source_revision(), Some(commit));
+        assert_eq!(snapshot.content_digest, template["source_content_digest"]);
         reviews.push(review.payload["evaluation_id"].as_str().unwrap().to_owned());
         assert_eq!(outputs["settle-backlog"]["value"]["subject"], batch_id);
         assert_eq!(outputs["dispatch-backlog"]["value"]["subject"], batch_id);
@@ -1262,7 +1355,9 @@ fn portable_backlog_scheduler_enrolls_once_and_replays_two_daily_batches() {
     assert_eq!(tick(second_time)["started"], json!([]));
     assert_eq!(tick(second_time + 1)["runs"], json!({}));
     assert_eq!(audit(), audits);
-    assert_eq!(fs::read_dir(&sink).unwrap().count(), 2);
+    assert_eq!(&runs()[first_id], first_done);
+    assert_eq!(&runs()[second_id], second_done);
+    assert_eq!(fs::read_dir(&sink).unwrap().count(), 1);
 
     let pause_at = (second_time + 2).to_string();
     let mode =
@@ -2309,6 +2404,9 @@ fn portable_backlog_scheduler_indexes_fresh_github_evidence_before_each_batch() 
         false,
         |id| matches!(id, "blue-a" | "blue-b"),
     );
+    let reviewed_ref = "refs/remotes/origin/main";
+    let initial = receiver.head();
+    git(&receiver.repo, &["update-ref", reviewed_ref, &initial]);
     let project = ok(receiver.af(&["project", "show", "--json"]));
     let store = Path::new(project["store"].as_str().unwrap());
     let fake = receiver.root.join("fake-github");
@@ -2341,13 +2439,15 @@ fn portable_backlog_scheduler_indexes_fresh_github_evidence_before_each_batch() 
         state,
         "--now",
         &before,
+        "--trusted-ref",
+        reviewed_ref,
         "--github-issue-index",
         "--json",
     ];
     let enrollment =
         |verb, extra: &[&str]| receiver.af(&[&["ant", "backlog", verb][..], &args, extra].concat());
     let preview = ok(enrollment("validate", &[]));
-    schemas::valid(&schemas::validator("backlog-schedule-v2.json"), &preview);
+    schemas::valid(&schemas::validator("backlog-schedule-v3.json"), &preview);
     assert_eq!(
         preview["scope"]["github_observer"],
         af_store::canonical::blob_content_id(&observer)
@@ -2372,11 +2472,8 @@ fn portable_backlog_scheduler_indexes_fresh_github_evidence_before_each_batch() 
     assert!(!reads.exists());
     let enrollment_file = store.join("backlog-schedule-v1.json");
     let mut old = preview.clone();
-    old["schema"] = json!("af/backlog-schedule@1");
-    old["scope"]
-        .as_object_mut()
-        .unwrap()
-        .remove("github_observer");
+    old["schema"] = json!("af/backlog-schedule@2");
+    old["scope"].as_object_mut().unwrap().remove("trusted_ref");
     let installed = fs::read(&enrollment_file).unwrap();
     fs::write(&enrollment_file, serde_json::to_vec(&old).unwrap()).unwrap();
     let rejected = receiver.af(&["ant", "backlog", "show", "--state", state]);
@@ -2453,6 +2550,7 @@ fn portable_backlog_scheduler_indexes_fresh_github_evidence_before_each_batch() 
     let first_run = &first["runs"][first_id];
     assert_eq!(first_run["status"], "succeeded", "{}", first_run["failure"]);
     let (first_pin, first_raw) = index(first_run);
+    assert_eq!(first_pin["source_revision"], initial);
     assert_eq!(fs::read_to_string(&reads).unwrap().lines().count(), 6);
     assert!(!fake.join("requests").exists());
     let first_audit = audit();
@@ -2471,6 +2569,17 @@ fn portable_backlog_scheduler_indexes_fresh_github_evidence_before_each_batch() 
             .contains("Verified GitHub issue ID 1073 (#73)")
     );
 
+    fs::write(
+        receiver.repo.join("CONTRIBUTING.md"),
+        "# Reviewed second day\n",
+    )
+    .unwrap();
+    capture(&receiver.repo);
+    let second_commit = receiver.head();
+    git(
+        &receiver.repo,
+        &["update-ref", reviewed_ref, &second_commit],
+    );
     accept("green");
     let project_refusal = format!(
         "project-backlog-{}",
@@ -2533,10 +2642,54 @@ fn portable_backlog_scheduler_indexes_fresh_github_evidence_before_each_batch() 
         "{interrupted}"
     );
     let bound_before_admission = read(&binding_path(second_batch));
+    assert_eq!(bound_before_admission["source_revision"], second_commit);
     assert_eq!(audit(), frozen);
     assert_eq!(fs::read(&provider_calls).unwrap(), first_calls);
     assert!(!fake.join("requests").exists());
     fs::write(&registry, registry_bytes).unwrap();
+
+    // Kill the scheduler while its native preparation holds the original collection.
+    let barriers = receiver.root.join("barriers");
+    let barrier = barriers.join("template-captured-1");
+    fs::create_dir_all(&barrier).unwrap();
+    let mut child = receiver
+        .command(
+            &receiver.repo,
+            &[
+                "ant",
+                "tick",
+                "--state",
+                state,
+                "--now",
+                &day_two.to_string(),
+                "--json",
+            ],
+        )
+        .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barriers)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let started = Instant::now();
+    while !barrier.join("ready").exists() {
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "preparation exited before the barrier"
+        );
+        assert!(started.elapsed() < Duration::from_secs(30));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    fs::write(
+        receiver.repo.join("CONTRIBUTING.md"),
+        "# Reviewed during preparation\n",
+    )
+    .unwrap();
+    capture(&receiver.repo);
+    git(&receiver.repo, &["update-ref", reviewed_ref, "HEAD"]);
+    child.kill().unwrap();
+    assert!(!child.wait().unwrap().success());
+    assert_eq!(audit(), frozen);
+    assert_eq!(read(&binding_path(second_batch)), bound_before_admission);
 
     mode("wrong-scope");
     fs::remove_file(&read_token).unwrap();

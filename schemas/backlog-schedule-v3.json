@@ -1,19 +1,19 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:backlog-schedule:2",
+  "$id": "urn:af:schema:backlog-schedule:3",
   "title": "Receiver-local backlog schedule enrollment",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "revision", "scope", "paused"],
   "properties": {
-    "schema": {"const": "af/backlog-schedule@2"},
+    "schema": {"const": "af/backlog-schedule@3"},
     "revision": {"$ref": "#/$defs/digest"},
     "paused": {"type": "boolean"},
     "scope": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "owner", "project_id", "scenario_state", "repo", "commit", "file", "task_state",
+        "owner", "project_id", "scenario_state", "repo", "commit", "trusted_ref", "file", "task_state",
         "template_scope", "bindings", "providers", "scenario_id", "intake_authority",
         "batch_policy", "intake_policy", "destination", "github_observer", "limits"
       ],
@@ -23,6 +23,16 @@
         "scenario_state": {"$ref": "#/$defs/absolutePath"},
         "repo": {"$ref": "#/$defs/absolutePath"},
         "commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "trusted_ref": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "string",
+              "maxLength": 1024,
+              "pattern": "^refs/remotes/(?!.*\\.\\.)(?!.*\\.lock(?:/|$))(?!.*(?:/HEAD|\\.)$)(?:[A-Za-z0-9_-][A-Za-z0-9._-]*/)+[A-Za-z0-9_-][A-Za-z0-9._-]*$"
+            }
+          ]
+        },
         "file": {"type": "string", "pattern": "^[^/].*\\.json$"},
         "task_state": {"$ref": "#/$defs/absolutePath"},
         "template_scope": {"$ref": "#/$defs/digest"},

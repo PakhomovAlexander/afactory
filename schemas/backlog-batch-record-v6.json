@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:backlog-batch-record:5",
-  "title": "BacklogBatchStored@5 payload",
+  "$id": "urn:af:schema:backlog-batch-record:6",
+  "title": "BacklogBatchStored@6 payload",
   "oneOf": [
     {
       "type": "object",
@@ -79,9 +79,12 @@
         "at_unix_ms",
         "paused",
         "recurring",
+        "source",
         "high_water",
         "members"
       ],
+      "if": {"properties": {"source": {"type": "object"}}},
+      "then": {"properties": {"recurring": {"const": true}, "paused": {"const": false}}},
       "properties": {
         "kind": {
           "const": "ticked"
@@ -96,6 +99,20 @@
         },
         "recurring": {
           "type": "boolean"
+        },
+        "source": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["commit", "enrollment_revision"],
+              "properties": {
+                "commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+                "enrollment_revision": {"$ref": "urn:af:schema:backlog-record:2#/$defs/digest"}
+              }
+            }
+          ]
         },
         "high_water": {
           "type": "string",

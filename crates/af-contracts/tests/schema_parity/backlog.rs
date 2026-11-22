@@ -166,7 +166,9 @@ fn backlog_batch_journal_and_policy_are_closed_and_versioned() {
         json!({"kind":"pinned","policy":policy,"zone":{
             "name":"UTC","initial_offset":0,"transitions":[],"valid_until_unix_seconds":null
         }}),
-        json!({"kind":"ticked","at_unix_ms":1,"paused":false,"recurring":false,"high_water":"1","members":["report-1",id]}),
+        json!({"kind":"ticked","at_unix_ms":1,"paused":false,"recurring":false,"source":null,"high_water":"1","members":["report-1",id]}),
+        json!({"kind":"ticked","at_unix_ms":1,"paused":false,"recurring":true,"high_water":"1",
+            "members":["report-1"],"source":{"commit":"a".repeat(40),"enrollment_revision":id}}),
         json!({"kind":"reconsidered","request":{
             "item_id":id,"report_id":"report-1","evidence_report_id":null,"eligible_unix_ms":2
         }}),
@@ -178,8 +180,8 @@ fn backlog_batch_journal_and_policy_are_closed_and_versioned() {
             "resolved_deliveries":[{"revision_id":id,"outcome":"requires_reverification"}],
         }),
     ];
-    let event_type = EventType::BacklogBatchStoredV5;
-    let record_schema = "backlog-batch-record-v5.json";
+    let event_type = EventType::BacklogBatchStoredV6;
+    let record_schema = "backlog-batch-record-v6.json";
     for payload in variants {
         assert_valid(record_schema, &payload);
         validate_event_payload(event_type, &payload).unwrap();
@@ -208,17 +210,16 @@ fn backlog_batch_journal_and_policy_are_closed_and_versioned() {
         assert_invalid(record_schema, &extra, "unknown record field");
         assert!(validate_event_payload(event_type, &extra).is_err());
     }
-    assert!("BacklogBatchStored@4".parse::<EventType>().is_err());
-    let old_tick =
-        json!({"kind":"ticked","at_unix_ms":1,"paused":false,"high_water":"0","members":[]});
+    assert!("BacklogBatchStored@5".parse::<EventType>().is_err());
+    let old_tick = json!({"kind":"ticked","at_unix_ms":1,"paused":false,"recurring":true,"high_water":"0","members":[]});
     assert_invalid(
         record_schema,
         &old_tick,
-        "tick lacks the recorded admission mode",
+        "tick lacks the recorded source field",
     );
     assert!(validate_event_payload(event_type, &old_tick).is_err());
     let oversized = json!({
-        "kind":"ticked","at_unix_ms":1,"paused":false,"recurring":false,"high_water":"65",
+        "kind":"ticked","at_unix_ms":1,"paused":false,"recurring":false,"source":null,"high_water":"65",
         "members": (1..=65).map(|index| format!("report-{index}")).collect::<Vec<_>>(),
     });
     assert_invalid(
@@ -227,7 +228,7 @@ fn backlog_batch_journal_and_policy_are_closed_and_versioned() {
         "membership exceeds the citation budget",
     );
     assert!(validate_event_payload(event_type, &oversized).is_err());
-    let duplicate = json!({"kind":"ticked","at_unix_ms":1,"paused":false,"recurring":false,"high_water":"1","members":["r","r"]});
+    let duplicate = json!({"kind":"ticked","at_unix_ms":1,"paused":false,"recurring":false,"source":null,"high_water":"1","members":["r","r"]});
     assert_invalid(record_schema, &duplicate, "duplicate frozen member");
     assert!(validate_event_payload(event_type, &duplicate).is_err());
 }

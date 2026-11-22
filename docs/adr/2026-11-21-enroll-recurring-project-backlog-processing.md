@@ -23,25 +23,27 @@ Scenario cannot process subsequent cutoffs with that same pin.
 ## Decision
 
 `af ant backlog validate` captures the static portable Task closure and prints the
-receiver-local `af/backlog-schedule@1` scope. `enroll` confirms its exact hash and installs
+receiver-local `af/backlog-schedule@3` scope. `enroll` confirms its exact hash and installs
 one owner-only record per Project under the Project Store lock. It binds the Scenario Store,
-checkout and source commit, reviewed portable artifact and native Task closure, local
-Provider registry and optional bindings, intake authority and policy, batch policy and
-timezone, destination and limits. Machine paths belong to the receiver's record.
+checkout, source anchor and optional reviewed remote-tracking ref, reviewed portable artifact
+and native Task closure, local Provider registry and optional bindings, intake authority and
+policy, batch policy and timezone, destination and limits. Machine paths belong to the receiver's record.
 
 The foreground scheduler and `af ant tick` find enrollments for the selected Store. They
 validate live authority before using the Project journal's shared Ant calendar and admission
-rules. The journal freezes membership and the committed intake cutoff atomically. Pause
-suppresses admission while leaving existing work recoverable. Resuming consumes due paused
-slots before enabling admission. The journal uses `BacklogBatchStored@5` with its recorded
+rules. A new cutoff can follow a source descendant of the enrollment anchor when HEAD matches
+the confirmed remote-tracking ref and the captured Task closure is unchanged. The journal
+atomically freezes membership, the committed intake cutoff, the exact source commit and the
+enrollment revision. Pause suppresses admission while leaving existing work recoverable. Resuming consumes due paused
+slots before enabling admission. The journal uses `BacklogBatchStored@6` with its recorded
 pause state and admission mode, replacing the prior journal version.
 
-The scheduler prepares the existing backlog Scenario from the recorded cutoff and admits
-one Run under a deterministic batch-derived ID. The enrolled scope permits substituting the
-single frozen input into the reviewed template, with an exact fresh template grant and no
-other machine grants. The native template records the enrollment revision. The Run and native
-Task retain separate pins and receipts. On restart the
-scheduler uses an existing Run for that batch, including uncertain intents. A terminal
+The scheduler prepares the existing backlog Scenario from the recorded cutoff and source and
+admits one Run under a deterministic batch-derived ID. The enrolled scope permits substituting
+the frozen source and batch input into the reviewed template, with an exact fresh template grant
+and no other machine grants. The native template records the enrollment revision. The Run and
+native Task retain separate pins and receipts. On restart the scheduler resumes an existing
+Run and its uncertain intents or prepares from the original frozen source. A terminal
 failure with a batch still open requires explicit recovery. Native independent verification,
 Project settlement, publication authority and adapter reconciliation remain mandatory.
 A receiver can explicitly admit a manual batch while enrollment is paused. That batch

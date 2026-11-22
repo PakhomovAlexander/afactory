@@ -415,17 +415,25 @@ mkdir -p "$private"
 scenario_state="$private/scenarios"
 task_state="$private/tasks"
 artifact=fixtures/project-backlog/scenario.json
+trusted_ref=refs/remotes/origin/main
 owner=backlog-owner
 scope=(--repo "$receiver" --file "$artifact" --owner "$owner"
-       --task-state "$task_state" --state "$scenario_state")
+       --task-state "$task_state" --state "$scenario_state" --trusted-ref "$trusted_ref")
 
 af ant backlog validate "${scope[@]}" --json > "$private/review.json"
 jq . "$private/review.json"
 ```
 
-Review the Project, checkout commit, artifact, intake and batch policy pins, destination, native
-Task authority and limits. Confirmation authorizes fresh private assessments and publication
-within that scope for future Project batches. The review spends no model tokens.
+Choose the local remote-tracking branch for the repository's reviewed branch. Keep that ref
+under the receiver owner's control and update it through the normal reviewed repository flow.
+At enrollment and before each new admission, HEAD must match the named ref. Later commits must
+descend from the enrollment commit. AF reads the ref locally and captures committed bytes.
+Omit `--trusted-ref` for an enrollment limited to one exact commit.
+
+Review the Project, checkout commit, trusted ref, artifact, intake and batch policy pins,
+destination, native Task authority and limits. Confirmation authorizes future assessments
+and publication within those pins. Commits that change the enrolled Scenario, Task closure or
+policy require a new confirmation. The review spends no model tokens.
 `validate` records the native template pin in the Task Store. `enroll` rechecks the scope,
 prepares the Scenario Store and records the confirmed enrollment in the Project Store.
 The foreground scheduler or an explicit tick drives the enrolled batches.
@@ -469,12 +477,14 @@ pin=$(jq -er .revision "$private/review.json")
 af ant backlog enroll "${scope[@]}" --confirm-pin "$pin" --json
 ```
 
-For an existing enrollment, settle outstanding work and pause it in its original Scenario
-Store before confirming the replacement. Enrollment envelopes with schema
-`af/backlog-schedule@1` must be retired after settling work with the release that wrote
-them. Archive the old private enrollment file `backlog-schedule-v1.json` and validate and
-enroll the new scope with this release. The private file slot now holds the
-`af/backlog-schedule@2` envelope.
+To replace an enrollment written by this release, settle outstanding work and pause it in its
+original Scenario Store before confirming the replacement. The private slot
+`backlog-schedule-v1.json` now holds `af/backlog-schedule@3`. The Project batch journal now
+writes `BacklogBatchStored@6`. Earlier enrollment envelopes and journals fail closed under
+[ADR-0145](adr/0145-read-only-what-this-release-writes-and-version-every-changed-shape.md).
+Use the writing release to finish or abandon its frozen batches before upgrading. Archive the
+old Project and Scenario Stores and configure the receiver with fresh state for this release.
+The intake contract uses its existing version.
 
 For each frozen recurring batch that needs a Run, the scheduler checks the configured GitHub
 repository name and stable numeric ID. The observer requires two matching, bounded page walks
@@ -491,7 +501,9 @@ need no observer. GitHub enrollment without this flag uses only local Project ev
 
 Run the normal foreground scheduler with the same Scenario Store and receiver Provider registry.
 The Project Store records each occurrence, the accepted intake high-water mark and exact
-membership in one transaction. Intake committed after that transaction waits for a later batch.
+membership, enrollment revision and exact source commit in one transaction. Intake committed
+after that transaction waits for a later batch. Each new batch can use the latest authorized
+commit on the same enrollment.
 The scheduler prepares a new native Scenario and Task grant for each batch that has work. The
 assessment must pass independent review before settlement or delivery. Empty batches with no
 pending delivery close without sending private data to a Provider.
@@ -501,9 +513,13 @@ af ant scheduler run --state "$scenario_state"
 ```
 
 The daily policy controls missed, busy and over-budget slots. Skipped slots preserve intake
-for later admission. An unfinished batch keeps its membership and reservation across restarts.
-A restarted scheduler reconciles the same Scenario Run and delivery intents. The schedule
-uses the batch policy's pinned timezone rules, including daylight-saving gaps and folds.
+for later admission. An unfinished batch keeps its membership, reservation and source across
+restarts. If preparation stops before a Run exists, it restarts from the frozen commit and uses
+any already-bound observer evidence. A prepared Run keeps its native Task pins, verification
+and delivery intents as the checkout advances. Keep frozen commits available to the receiving
+repository until work settles. A delivery deferred from an older source requires verification
+against the new source before a later batch can publish it. The schedule uses the batch policy's pinned timezone rules,
+including daylight-saving gaps and folds.
 Rolling reservations are measured from batch closure. A daily slot can be too early to admit
 work if the previous batch closed less than a rolling window ago. Size the reviewed rolling
 allowance for the number of batches that can overlap that window.
@@ -527,9 +543,10 @@ and reports refusals and busy Runs. Inspect a recorded Run with
 `af scenario show RUN_ID --state "$scenario_state" --json`.
 
 If a pending delivery cannot be reconciled, restore the authorized destination configuration,
-adapter or credential and resume the same Run. Restore the enrolled checkout commit, Provider
-registry, bindings or policy if they drift during a batch. To intentionally change the reviewed
-scope, settle the active batch and Run, pause enrollment, and repeat validation and
+adapter or credential and resume the same Run. Restore the authorized Provider registry,
+bindings or policy if they drift during a batch. For a refused new source, check the receiving
+HEAD and the enrolled reviewed ref. To intentionally change the reviewed scope, settle the
+active batch and Run, pause enrollment, and repeat validation and
 confirmation in the original Scenario Store. For a failed or cancelled terminal Run, inspect the
 batch journal and retained Task and delivery receipts before making an explicit recovery
 decision. The scheduler reports the blocked batch and retains its membership.

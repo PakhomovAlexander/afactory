@@ -300,7 +300,7 @@ pub(crate) fn prepare(
 ) -> Result<Bundle, String> {
     let bytes = af_scenario::store::read(inputs, MAX_REPORT_SOURCES_FILE_BYTES as u64)?;
     let inputs: Inputs = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-    let (template, (definition, backlog)) = capture(repo, state, file, inputs, local)?;
+    let (template, (definition, backlog)) = capture(repo, state, file, inputs, local, None)?;
     bundle(template, definition, backlog)
 }
 
@@ -310,9 +310,16 @@ pub(crate) fn review_backlog(
     file: &str,
     scenario_id: String,
     local: Option<&Path>,
+    commit: &str,
 ) -> Result<(Template, Limits), String> {
-    let (template, (definition, _)) =
-        capture(repo, state, file, Inputs::BacklogReview(scenario_id), local)?;
+    let (template, (definition, _)) = capture(
+        repo,
+        state,
+        file,
+        Inputs::BacklogReview(scenario_id),
+        local,
+        Some(commit),
+    )?;
     Ok((template, definition.limits))
 }
 
@@ -322,22 +329,25 @@ pub(crate) fn prepare_backlog(
     file: &str,
     reference: BatchReference,
     local: Option<&Path>,
-    enrollment: &str,
+    source: &af_contracts::backlog::batch::ScheduledSource,
     mode: IndexMode,
 ) -> Result<Bundle, String> {
     let (template, (definition, backlog)) = capture(
         repo,
         state,
         file,
-        Inputs::RecurringBacklog(reference, enrollment.into(), mode),
+        Inputs::RecurringBacklog(reference, source.enrollment_revision.clone(), mode),
         local,
+        Some(&source.commit),
     )?;
     bundle(template, definition, backlog)
 }
 
-/// Only the private collected batch changes between the reviewed template and its instances.
+/// Keep the native authority and document closure, with the exact source pinned per batch.
 pub(crate) fn backlog_template_scope(template: &Template) -> Result<String, String> {
     let mut template = template.clone();
+    template.authority_commit.clear();
+    template.source_content_digest.clear();
     template.document["requirements"][SOURCES]["sources"]
         .as_object_mut()
         .and_then(|sources| sources.remove(BATCH_SOURCE))
@@ -374,6 +384,7 @@ fn capture(
     file: &str,
     inputs: Inputs,
     local: Option<&Path>,
+    commit: Option<&str>,
 ) -> Result<(Template, (Definition, bool)), String> {
     require(
         safe_relative_path(file) && file.ends_with(".json"),
@@ -389,7 +400,10 @@ fn capture(
         top.strip_suffix('\n')
             .ok_or("Git omitted repository root")?,
     );
-    let commit = git.rev_parse("HEAD").map_err(|e| e.to_string())?;
+    let commit = match commit {
+        Some(commit) => commit.to_owned(),
+        None => git.rev_parse("HEAD").map_err(|e| e.to_string())?,
+    };
     scenario_template::pin_with(
         repo.clone(),
         state,
