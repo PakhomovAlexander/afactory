@@ -10,7 +10,7 @@
 //! turns a class of crash-corruption into an immediate error.
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use af_contracts::{EventType, RunEvent};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
@@ -42,7 +42,7 @@ pub mod writers;
 
 fn event_envelope_conflict() -> StoreError {
     StoreError::Conflict(format!(
-        "events table does not use the current {} envelope",
+        "Store does not use the complete current {} SQLite layout",
         RunEvent::SCHEMA
     ))
 }
@@ -51,9 +51,8 @@ fn event_envelope_conflict() -> StoreError {
 // carries the full identity so replay also refuses a mixed or damaged log.
 const EVENT_LAYOUT_VERSION: u32 = 4;
 
-// SQLite stores the table definition in sqlite_schema, omitting IF NOT EXISTS.
-// Keep the v4 spelling so this read-only check can verify the full definition,
-// including the envelope CHECK and both event identity constraints.
+// SQLite stores each CREATE statement in sqlite_schema without IF NOT EXISTS
+// or the terminating semicolon. Keep the spelling of the AF-produced v4 layout.
 const EVENT_TABLE: &str = "CREATE TABLE events (
                  envelope       TEXT NOT NULL CHECK (envelope = 'review.kernel/RunEvent@4'),
                  run_id         TEXT    NOT NULL,
@@ -70,18 +69,88 @@ const EVENT_TABLE: &str = "CREATE TABLE events (
                  PRIMARY KEY (run_id, sequence)
              )";
 
+const EVENT_AUXILIARY_LAYOUT: &[&str] = &[
+    "CREATE INDEX events_by_correlation
+                 ON events (run_id, correlation_id)",
+    "CREATE INDEX events_by_type_sequence
+                 ON events (run_id, type, sequence DESC)",
+    "CREATE INDEX events_by_causation_type_sequence
+                 ON events (run_id, causation_id, type, sequence)",
+    "CREATE INDEX task_execution_history
+                 ON events (run_id, sequence)
+                 WHERE type = 'TaskTransition@6'
+                   AND json_extract(payload, '$.change.kind') = 'execution_recorded'",
+    "CREATE TABLE attempt_wall (
+                 run_id             TEXT    NOT NULL,
+                 attempt_id         TEXT    NOT NULL,
+                 node_id            TEXT    NOT NULL,
+                 round              INTEGER NOT NULL,
+                 epoch              INTEGER NOT NULL,
+                 started_unix_ms    INTEGER NOT NULL,
+                 elapsed_ms         INTEGER NOT NULL,
+                 usage_v3_json      TEXT,
+                 usage_observation_v1_json TEXT,
+                 PRIMARY KEY (run_id, attempt_id)
+             )",
+    "CREATE TABLE attempt_wall_end (
+                 run_id             TEXT    NOT NULL,
+                 attempt_id         TEXT    NOT NULL,
+                 wall_end_id        TEXT    NOT NULL,
+                 PRIMARY KEY (run_id, attempt_id)
+             )",
+];
+
+fn required_layout() -> impl Iterator<Item = &'static str> {
+    std::iter::once(EVENT_TABLE)
+        .chain(EVENT_AUXILIARY_LAYOUT.iter().copied())
+        .chain(wake::SCHEMA.iter().copied())
+}
+
 fn check_event_layout(conn: &Connection) -> Result<bool, StoreError> {
-    let (version, current_events): (u32, Option<bool>) = conn.query_row(
-        "SELECT user_version,
-                (SELECT type='table' AND sql=?1 FROM sqlite_schema
-                 WHERE name='events' AND type IN ('table', 'view'))
-         FROM pragma_user_version",
-        [EVENT_TABLE],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+    static QUERY: LazyLock<String> = LazyLock::new(|| {
+        let required_count = required_layout().count();
+        let definitions = (1..=required_count)
+            .map(|index| format!("?{index}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let writer = required_count + 1;
+        format!(
+            "SELECT user_version, objects = 0, required = {required_count} AND NOT EXISTS (
+                        SELECT 1
+                        FROM main.sqlite_schema AS tbl
+                        JOIN pragma_index_list(tbl.name, 'main') AS idx
+                        WHERE tbl.type = 'table' AND tbl.sql IN ({definitions}, ?{writer})
+                          AND idx.origin IN ('pk', 'u')
+                          AND NOT EXISTS (
+                              SELECT 1 FROM main.sqlite_schema AS implicit
+                              WHERE implicit.type = 'index' AND implicit.name = idx.name
+                                AND implicit.tbl_name = tbl.name AND implicit.rootpage > 0
+                                AND implicit.sql IS NULL
+                          )
+                    ), invalid_writer = 0
+             FROM pragma_user_version,
+                  (SELECT count(*) AS objects,
+                          count(CASE WHEN sql IN ({definitions})
+                                     AND (type = 'trigger' OR rootpage > 0)
+                                     THEN 1 END) AS required,
+                          count(CASE WHEN name = 'store_writers' COLLATE NOCASE
+                                     AND (type != 'table' OR rootpage <= 0 OR sql IS NOT ?{writer})
+                                     THEN 1 END) AS invalid_writer
+                   FROM main.sqlite_schema)"
+        )
+    });
+    // Read only schema metadata in one snapshot. SQLite derives the implicit
+    // PRIMARY KEY and UNIQUE indexes from the definitions. Verify their schema
+    // entries too, since index_list can still name an index whose entry is lost.
+    // The provenance table is optional until the first append.
+    let (version, empty, complete, writer_valid): (u32, bool, bool, bool) = conn.query_row(
+        &QUERY,
+        rusqlite::params_from_iter(required_layout().chain(std::iter::once(writers::CREATE))),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     )?;
-    match (version, current_events) {
-        (0, None) => Ok(false),
-        (EVENT_LAYOUT_VERSION, Some(true)) => Ok(true),
+    match (version, empty, complete, writer_valid) {
+        (0, true, _, _) => Ok(false),
+        (EVENT_LAYOUT_VERSION, _, true, true) => Ok(true),
         _ => Err(event_envelope_conflict()),
     }
 }
@@ -580,9 +649,12 @@ impl EventStore {
             .filter(|path| !path.is_empty())
             .ok_or_else(|| StoreError::Conflict("Store has no database file to reopen".into()))?;
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
-        conn.pragma_update(None, "synchronous", "FULL")?;
         conn.busy_timeout(busy_timeout)?;
+        let checkpoint = rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE;
+        conn.set_db_config(checkpoint, true)?;
         require_event_layout(&conn)?;
+        conn.set_db_config(checkpoint, false)?;
+        conn.pragma_update(None, "synchronous", "FULL")?;
         Ok(Self {
             conn,
             task_cache: std::cell::RefCell::new(None),
@@ -595,13 +667,13 @@ impl EventStore {
         let checkpoint = rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE;
         conn.set_db_config(checkpoint, true)?;
         let initialized = prepare_event_journal(&conn)?;
-        conn.set_db_config(checkpoint, false)?;
         // FULL, not NORMAL: an accepted effect must survive process death, which is the entire
         // reason the log exists.
         conn.pragma_update(None, "synchronous", "FULL")?;
         if !initialized {
             Self::initialize_layout(&mut conn)?;
         }
+        conn.set_db_config(checkpoint, false)?;
         Ok(Self {
             conn,
             task_cache: std::cell::RefCell::new(None),
@@ -615,40 +687,11 @@ impl EventStore {
         if check_event_layout(&tx)? {
             return Ok(());
         }
-        tx.execute(EVENT_TABLE, [])?;
-        tx.execute_batch(
-            "CREATE INDEX IF NOT EXISTS events_by_correlation
-                 ON events (run_id, correlation_id);
-             CREATE INDEX IF NOT EXISTS events_by_type_sequence
-                 ON events (run_id, type, sequence DESC);
-             CREATE INDEX IF NOT EXISTS events_by_causation_type_sequence
-                 ON events (run_id, causation_id, type, sequence);
-             CREATE INDEX IF NOT EXISTS task_execution_history
-                 ON events (run_id, sequence)
-                 WHERE type = 'TaskTransition@6'
-                   AND json_extract(payload, '$.change.kind') = 'execution_recorded';
-             CREATE TABLE IF NOT EXISTS attempt_wall (
-                 run_id             TEXT    NOT NULL,
-                 attempt_id         TEXT    NOT NULL,
-                 node_id            TEXT    NOT NULL,
-                 round              INTEGER NOT NULL,
-                 epoch              INTEGER NOT NULL,
-                 started_unix_ms    INTEGER NOT NULL,
-                 elapsed_ms         INTEGER NOT NULL,
-                 usage_v3_json      TEXT,
-                 usage_observation_v1_json TEXT,
-                 PRIMARY KEY (run_id, attempt_id)
-             );
-             CREATE TABLE IF NOT EXISTS attempt_wall_end (
-                 run_id             TEXT    NOT NULL,
-                 attempt_id         TEXT    NOT NULL,
-                 wall_end_id        TEXT    NOT NULL,
-                 PRIMARY KEY (run_id, attempt_id)
-             );",
-        )?;
+        for definition in required_layout() {
+            tx.execute(definition, [])?;
+        }
         // The table only: this release's marker is written with its first appended event.
-        tx.execute_batch(writers::CREATE)?;
-        tx.execute_batch(wake::SCHEMA)?;
+        tx.execute(writers::CREATE, [])?;
         tx.pragma_update(None, "user_version", EVENT_LAYOUT_VERSION)?;
         tx.commit()?;
         Ok(())
@@ -2023,6 +2066,122 @@ mod tests {
             check(EventStore::open_read_only(&path));
             check(EventStore::open_unchanged(&path));
         }
+    }
+
+    #[test]
+    fn refuses_missing_and_malformed_auxiliary_layout_without_rewriting() {
+        let malformed = [
+            "DROP TABLE attempt_wall; CREATE TABLE attempt_wall (run_id TEXT)",
+            "DROP TABLE attempt_wall_end; CREATE VIEW attempt_wall_end AS SELECT 1",
+            "DROP TABLE wake_outbox_v1; CREATE TABLE wake_outbox_v1 (delivery_id TEXT PRIMARY KEY)",
+            "DROP INDEX task_execution_history;
+             CREATE INDEX task_execution_history ON events (run_id, sequence)",
+            "DROP INDEX wake_subscriptions_task_v1;
+             CREATE INDEX wake_subscriptions_task_v1 ON wake_subscriptions_v1(registration_key)",
+            "DROP TABLE store_writers; CREATE TABLE store_writers (af_version TEXT)",
+            "PRAGMA user_version = 3",
+            "PRAGMA user_version = 0",
+        ];
+        let drops = required_layout().skip(1).map(|definition| {
+            let mut words = definition.split_ascii_whitespace().skip(1);
+            format!("DROP {} {}", words.next().unwrap(), words.next().unwrap())
+        });
+        for defect in drops.chain(malformed.map(str::to_owned)) {
+            let (directory, store, _cas) = fixture();
+            let path = directory.path().join("events.sqlite");
+            store.conn.execute_batch(&defect).unwrap();
+            let wal = directory.path().join("events.sqlite-wal");
+            let before = (std::fs::read(&path).unwrap(), std::fs::read(&wal).unwrap());
+            let check = |result| {
+                assert!(
+                    matches!(result, Err(StoreError::Conflict(message)) if message.contains(RunEvent::SCHEMA)),
+                    "{defect}"
+                );
+            };
+            check(EventStore::open(&path));
+            check(EventStore::open_read_only(&path));
+            check(EventStore::open_unchanged(&path));
+            check(store.reopen(std::time::Duration::ZERO));
+            assert_eq!(std::fs::read(&path).unwrap(), before.0, "{defect}");
+            assert_eq!(std::fs::read(&wal).unwrap(), before.1, "{defect}");
+
+            drop(store);
+            let before = std::fs::read(&path).unwrap();
+            check(EventStore::open_unchanged(&path));
+            assert_eq!(std::fs::read(&path).unwrap(), before, "{defect}");
+            assert!(!wal.exists(), "{defect}");
+        }
+    }
+
+    #[test]
+    fn refuses_an_implicit_index_missing_from_the_database_schema() {
+        let (directory, store, _cas) = fixture();
+        drop(store);
+        let path = directory.path().join("events.sqlite");
+        let conn = Connection::open(&path).unwrap();
+        conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, false)
+            .unwrap();
+        conn.execute_batch(
+            "PRAGMA writable_schema = ON;
+             DELETE FROM sqlite_schema WHERE name = 'sqlite_autoindex_events_1';",
+        )
+        .unwrap();
+        drop(conn);
+
+        let before = std::fs::read(&path).unwrap();
+        for result in [
+            EventStore::open(&path),
+            EventStore::open_read_only(&path),
+            EventStore::open_unchanged(&path),
+        ] {
+            assert!(
+                matches!(result, Err(StoreError::Conflict(message)) if message.contains(RunEvent::SCHEMA))
+            );
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn opens_v4_created_with_prior_ddl_and_marks_it_only_on_append() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("events.sqlite");
+        let conn = Connection::open(&path).unwrap();
+        conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+        conn.execute(EVENT_TABLE, []).unwrap();
+        // Prior AF v4 initialization used IF NOT EXISTS for every auxiliary object.
+        for definition in required_layout().skip(1) {
+            let mut parts = definition.splitn(3, ' ').skip(1);
+            let kind = parts.next().unwrap();
+            let body = parts.next().unwrap();
+            conn.execute_batch(&format!("CREATE {kind} IF NOT EXISTS {body};"))
+                .unwrap();
+        }
+        conn.pragma_update(None, "user_version", EVENT_LAYOUT_VERSION)
+            .unwrap();
+        drop(conn);
+
+        let before = std::fs::read(&path).unwrap();
+        let mut store = EventStore::open(&path).unwrap();
+        for reader in [
+            EventStore::open_read_only(&path).unwrap(),
+            EventStore::open_unchanged(&path).unwrap(),
+            store.reopen(std::time::Duration::ZERO).unwrap(),
+        ] {
+            assert!(reader.replay("run").unwrap().is_empty());
+            assert!(reader.writer_releases().unwrap().is_empty());
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let cas = Cas::open(directory.path().join("cas")).unwrap();
+        let event = store
+            .append(
+                "run",
+                &cas,
+                NewEvent::new(EventType::SourceCapturedV1, json!({})),
+            )
+            .unwrap();
+        let reader = EventStore::open_read_only(&path).unwrap();
+        assert_eq!(reader.replay("run").unwrap(), [event]);
+        assert_eq!(reader.writer_releases().unwrap(), [writers::AF_VERSION]);
     }
 
     #[test]

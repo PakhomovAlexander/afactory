@@ -14,10 +14,10 @@ use super::{EventStore, StoreError};
 /// The release this build is, as `af --version` prints it.
 pub const AF_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub(super) const CREATE: &str = "CREATE TABLE IF NOT EXISTS store_writers (
+pub(super) const CREATE: &str = "CREATE TABLE store_writers (
      af_version TEXT PRIMARY KEY NOT NULL,
      record     TEXT NOT NULL
- );";
+ )";
 
 /// Record this release as a writer of the Store, in `tx`, the transaction that appends this
 /// release's events: every event a Store holds was written by a release its markers name, and

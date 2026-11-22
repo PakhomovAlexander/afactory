@@ -26,6 +26,11 @@ Rust names do not themselves authorize another representation. Changed typed sha
 identities, coherent writers/readers, fixtures and parity. There is no migration or reader fallback
 for retired execution state. The compiled schema's title names its actual `CompiledTask@4` envelope.
 
+Store opens check the SQLite layout version and required schema objects before use. An initialized
+WAL Store can be opened while a writer holds a transaction. The writer provenance table may be
+absent in a current-layout Store and is created with the first append. Replay still checks the
+envelope of each event.
+
 The published inventory has 450 JSON files, including 443 schema IDs and three conformance corpora.
 Four additional schemas omit resource IDs. The existing `af-contracts::schema_parity` registry enforces current consolidated ownership and
 checks every published schema's resource and JSON Pointer reference closure, including Python-owned
