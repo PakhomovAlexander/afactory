@@ -226,7 +226,7 @@ fn validate_recorded_codex_projection(
 
 /// The coordinator's real token-free observation is separate from the synthetic parser
 /// fixtures. It proves harness-advertised support only; inference access needs admission.
-fn recorded_codex_models() -> Vec<serde_json::Value> {
+fn historical_codex_models() -> Vec<serde_json::Value> {
     let provenance = codex_observation_provenance();
     let observation =
         validate_recorded_codex_projection(RAW_CODEX_MODELS, PROJECTED_CODEX_MODELS, &provenance)
@@ -334,29 +334,125 @@ fn recorded_codex_projection_rejects_changed_selected_models_and_other_fields() 
     );
 }
 
-fn assert_recorded_codex_support(
+const OPERATOR_RAW_DIGEST: &str =
+    "sha256:4ebc5e15b5400c3606c0ef1334b932a5c5396965fc602e4eaf4590c6dfaead7f";
+
+fn operator_codex_observation(root: &Path) -> (Vec<u8>, serde_json::Value) {
+    let fixtures = root.join("crates/af/tests/fixtures/provider-models");
+    let bytes = std::fs::read(fixtures.join("codex-provider-models-raw-20261122.json")).unwrap();
+    let provenance =
+        std::fs::read(fixtures.join("codex-provider-models-raw-20261122.provenance.json")).unwrap();
+    (bytes, serde_json::from_slice(&provenance).unwrap())
+}
+
+fn validate_operator_codex_observation(
+    bytes: &[u8],
+    provenance: &serde_json::Value,
+) -> Result<Vec<serde_json::Value>, String> {
+    use serde_json::{Value, json};
+
+    let observation: Value = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+    if !crate::schemas::validator("provider-models-v4.json").is_valid(&observation) {
+        return Err("invalid operator provider-models schema".into());
+    }
+    if response_digest(bytes) != OPERATOR_RAW_DIGEST {
+        return Err("operator raw response digest mismatch".into());
+    }
+    let providers = observation["providers"].as_array().unwrap();
+    let [provider] = providers.as_slice() else {
+        return Err("expected exactly one operator Provider".into());
+    };
+    if *provenance
+        != json!({
+            "host": "r-400",
+            "af_version": "0.15.1-rc.3",
+            "engine": "e3c45a0a769fe9042079e442cb036965a352c6a1",
+            "capture_command": "af provider models codex-personal --json --page 0",
+            "raw_response_sha256": OPERATOR_RAW_DIGEST,
+            "source": provider["source"],
+            "harness_version": provider["harness_version"],
+            "freshness": provider["freshness"],
+        })
+    {
+        return Err("operator capture provenance mismatch".into());
+    }
+    if observation["exit_code"] != 0
+        || provider["id"] != "codex-personal"
+        || provider["kind"] != "codex"
+        || provider["state"] != "listed"
+        || provider["source"] != "codex app-server model/list"
+        || provider["skipped_entries"] != 0
+        || !provider["resolution"].is_null()
+    {
+        return Err("expected a complete listing for codex-personal".into());
+    }
+    Ok(provider["models"].as_array().unwrap().clone())
+}
+
+fn recorded_codex_support(
     models: &[serde_json::Value],
-    name: &str,
     model: &str,
     effort: &str,
-) {
+) -> Result<(), String> {
     let listed = models
         .iter()
         .find(|row| row["id"].as_str() == Some(model))
-        .unwrap_or_else(|| panic!("{name}: {model} absent from recorded observation"));
-    assert!(
-        listed["effort_levels"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|level| level.as_str() == Some(effort)),
-        "{name}: {model}/{effort} absent from recorded observation"
+        .ok_or_else(|| format!("{model} absent from recorded observation"))?;
+    if listed["effort_levels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|level| level.as_str() == Some(effort))
+    {
+        Ok(())
+    } else {
+        Err(format!("{model}/{effort} absent from recorded observation"))
+    }
+}
+
+#[test]
+fn recorded_codex_support_rejects_missing_exact_bindings() {
+    let historical = historical_codex_models();
+    for (product, operator) in [
+        ("gpt-6.1-sol", "gpt-6.2-sol"),
+        ("gpt-6-astra", "gpt-6.2-astra"),
+    ] {
+        recorded_codex_support(&historical, product, "medium").unwrap();
+        assert_eq!(
+            recorded_codex_support(&historical, operator, "medium").unwrap_err(),
+            format!("{operator} absent from recorded observation")
+        );
+    }
+    assert_eq!(
+        recorded_codex_support(&historical, "gpt-6-luna", "ultra").unwrap_err(),
+        "gpt-6-luna/ultra absent from recorded observation"
+    );
+}
+
+#[test]
+fn operator_codex_observation_rejects_mutation() {
+    if crate::issue_workflows::model_profile().sol != "gpt-6.2-sol" {
+        // The operator capture is only carried by the operator fixture port.
+        return;
+    }
+    let (mut bytes, mut provenance) = operator_codex_observation(&workspace());
+    validate_operator_codex_observation(&bytes, &provenance).unwrap();
+    provenance["harness_version"] = "0.0.0".into();
+    assert_eq!(
+        validate_operator_codex_observation(&bytes, &provenance).unwrap_err(),
+        "operator capture provenance mismatch"
+    );
+    bytes.push(b'\n');
+    provenance["raw_response_sha256"] = response_digest(&bytes).into();
+    assert_eq!(
+        validate_operator_codex_observation(&bytes, &provenance).unwrap_err(),
+        "operator raw response digest mismatch"
     );
 }
 
 /// Exact approved replacement Workers, including personal accounts and independent roles.
 #[test]
-fn every_shipped_model_worker_uses_supported_61_models_and_independent_judges() {
+fn every_shipped_model_worker_uses_recorded_models_and_independent_judges() {
     use af_pipeline_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
     let root = workspace();
     let catalog: toml::Value =
@@ -428,7 +524,12 @@ fn every_shipped_model_worker_uses_supported_61_models_and_independent_judges() 
         ),
     ]);
     let profile = crate::issue_workflows::model_profile();
-    let models = recorded_codex_models();
+    let models = if profile.sol == "gpt-6.2-sol" {
+        let (bytes, provenance) = operator_codex_observation(&root);
+        validate_operator_codex_observation(&bytes, &provenance).unwrap()
+    } else {
+        historical_codex_models()
+    };
     let mut checked = std::collections::BTreeSet::new();
     for (name, pin) in catalog["packages"].as_table().unwrap() {
         let package = root.join(pin["path"].as_str().unwrap());
@@ -470,24 +571,25 @@ fn every_shipped_model_worker_uses_supported_61_models_and_independent_judges() 
                 | "issue-internal/kimi-researcher"
                 | "issue-internal/kimi-challenger"
         );
-        assert_eq!(
-            worker.runner,
-            TaskWorkerRunner::Model {
-                provider_kind: if pi { "pi" } else { "codex" }.into(),
-                model: model.into(),
-                effort: effort.into(),
-            },
-            "{name}"
-        );
+        let TaskWorkerRunner::Model {
+            provider_kind,
+            model: bound_model,
+            effort: bound_effort,
+        } = worker.runner
+        else {
+            panic!("{name}: expected a model runner");
+        };
+        assert_eq!(provider_kind, if pi { "pi" } else { "codex" }, "{name}");
+        assert_eq!(bound_model, model, "{name}");
+        assert_eq!(bound_effort, effort, "{name}");
         assert_eq!(
             catalog["providers"][name].as_str(),
             Some(if pi { "pi-personal" } else { "codex-personal" }),
             "{name}"
         );
         if !pi {
-            // The authenticated historical catalog supports the product expectations.
-            // The operator's newer exact pins are exercised with a synthetic catalog.
-            assert_recorded_codex_support(&models, name, product_model, effort);
+            recorded_codex_support(&models, &bound_model, &bound_effort)
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
         }
         checked.insert(name.as_str());
     }

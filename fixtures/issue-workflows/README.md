@@ -69,15 +69,33 @@ catalog. The operator's staged rubric pins therefore differ from its installed b
 Launcher tests install the staged catalog in disposable repositories and still require
 exact authority bytes. Production `.af/` packages and captured authority stay as recorded.
 
-The recorded 2026-11-07 Codex response and its verified projection supply historical model
-and effort evidence for the product pins. The operator profile uses synthetic catalog rows
-only for hermetic checks. Recorded support for the newer pins would require a separately
-captured token-free response showing exact Sol 6.2 medium/high and Astra 6.2 medium with
-source, harness version, freshness and digests.
+The shipped-worker audit queries the exact model and effort read from each installed Codex
+Worker. The product port uses the complete 2026-11-07 response after verifying its historical
+projection. Carry the two 2026-11-22 files under `crates/af/tests/fixtures/provider-models/` with
+the operator port. The product port needs neither file. The operator files contain the exact
+normalized `af/provider-models@4` response and its capture provenance from
+`af provider models codex-personal --json --page 0` on r-400, using AF 0.15.1-rc.3 and
+Codex 0.169.0. The audit checks the pinned raw SHA-256, capture metadata and complete
+`codex-personal` listing, including Sol 6.2 medium/high and Astra 6.2 medium. These observations
+establish harness-advertised support. Synthetic catalog rows are used for hermetic planning.
 
-Verify either port with `python3 -I scripts/test-issue-workflows.py`, the native
-`catalog_digest`, `issue_workflows` and three-field `onboard` tests under nextest's `ci`
-profile, and the fast Task gate.
+Verify either port with the focused commands below and the fast Task gate.
+
+#### Focused operator-port execution on 2026-11-22
+
+```sh
+python3 -I scripts/test-issue-workflows.py
+cargo nextest run --workspace --locked --profile ci -E 'binary_id(af::it) & (test(/^catalog_digest::/) | test(/^issue_workflows::/) | test(=onboard::afactory_authority_plans_a_three_field_task_with_its_defaults))'
+```
+
+Python ran 26 tests and passed. Nextest ran 22 tests, with 18 passed and 4 failed.
+The repeat with `TMPDIR="$PWD/target/worker-test-tmp"` had the same counts. All
+`catalog_digest` tests passed, including the installed-worker audit and the controls for
+missing exact model or effort and altered observation bytes or provenance. The initial
+nine-plan test hit the sandbox's 10 GiB disk floor in `/tmp`. After moving `TMPDIR`, the
+nine-plan, design acceptance and three-field onboarding tests reported that `/opt` had
+UID 65534, which failed Provider registry or disable-state ancestry checks. The launcher
+freshness test reported an unavailable `codex-personal` catalog in both runs.
 
 ## Review and install the hard migration
 
