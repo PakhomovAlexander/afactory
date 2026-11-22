@@ -177,25 +177,38 @@ class Workflows(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def test_latest_models_per_family_and_fail_closed_catalogs(self):
+        profile = json.loads((ROOT / 'fixtures/issue-workflows/model-profile.json').read_text())
+        sol, astra = profile['sol'], profile['astra']
+        equal_sol = sol.removesuffix('-sol') + '.0-sol'
         models = [dict(id=m, effort_levels=['medium', 'high']) for m in
-                  ('gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-astra', 'gpt-6-sol',
+                  (sol, 'gpt-6.1-terra', astra, 'gpt-6-sol',
                    'gpt-5.6-sol', 'k3.1-pro', 'k99-pro-highspeed', 'gpt-99-luna')]
         with mock.patch.object(w, 'available_models', return_value=models):
             for name in w.catalog()['selections']:
                 w.check_latest_models('af', name)
-        for model, selection in [('gpt-6.2-sol', 'bugfix/default-codex'),
+        for model, selection in [('gpt-6.10-sol', 'bugfix/default-codex'),
                                  ('gpt-6.10-terra', 'bugfix/light-codex'),
-                                 ('gpt-6.1-astra', 'design/astra-kimi'),
-                                 ('k3.2-pro', 'issue-internal/kimi-report'),
-                                 ('gpt-6.1.0-sol', 'bugfix/default-codex')]:
+                                 ('gpt-6.10-astra', 'design/astra-kimi'),
+                                 ('k3.2-pro', 'issue-internal/kimi-report')]:
             changed = models + [dict(id=model, effort_levels=['medium', 'high'])]
-            with mock.patch.object(w, 'available_models', return_value=changed), self.assertRaises(ValueError):
+            with mock.patch.object(w, 'available_models', return_value=changed), \
+                 self.assertRaisesRegex(ValueError, 'superseded or unavailable active model pin'):
                 w.check_latest_models('af', selection)
-        for changed in ([], [m for m in models if m['id'] != 'gpt-6-astra'],
-                        [m for m in models if m['id'] != 'gpt-6.1-terra'],
-                        [dict(m, effort_levels=['medium']) if m['id'] == 'gpt-6.1-terra' else m for m in models],
+        tied = models + [dict(id=equal_sol, effort_levels=['medium', 'high'])]
+        with mock.patch.object(w, 'available_models', return_value=tied), \
+             self.assertRaisesRegex(ValueError, 'ambiguous latest model family'):
+            w.check_latest_models('af', 'bugfix/default-codex')
+        for omitted, selection in [(None, 'bugfix/default-codex'), (astra, 'bugfix/default-codex'),
+                                   ('gpt-6.1-terra', 'bugfix/default-codex'),
+                                   ('k3.1-pro', 'bugfix/light-kimi-terra-sol')]:
+            changed = [m for m in models if omitted is not None and m['id'] != omitted]
+            with mock.patch.object(w, 'available_models', return_value=changed), \
+                 self.assertRaisesRegex(ValueError, 'selected model family unavailable'):
+                w.check_latest_models('af', selection)
+        for changed in ([dict(m, effort_levels=['medium']) if m['id'] == 'gpt-6.1-terra' else m for m in models],
                         [dict(m, effort_levels=[]) for m in models]):
-            with mock.patch.object(w, 'available_models', return_value=changed), self.assertRaises(ValueError):
+            with mock.patch.object(w, 'available_models', return_value=changed), \
+                 self.assertRaisesRegex(ValueError, 'active model effort unavailable'):
                 w.check_latest_models('af', 'bugfix/default-codex')
         self.assertEqual(w.model_family('gpt-6.10-sol')[1], (6, 10))
         self.assertIsNone(w.model_family('k3.1-pro-highspeed'))

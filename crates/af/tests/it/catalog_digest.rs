@@ -105,6 +105,32 @@ fn every_published_package_pin_reproduces() {
     ] {
         assert_reproduces(&root, &root.join(catalog));
     }
+    let staged = root.join("fixtures/issue-workflows");
+    let read_pins = |file| -> toml::Table {
+        toml::from_str(&std::fs::read_to_string(staged.join(file)).unwrap()).unwrap()
+    };
+    let shared = read_pins("catalog.toml");
+    let replacement = read_pins("replacement-catalog.toml");
+    let shared = shared["packages"].as_table().unwrap();
+    let replacement = replacement["packages"].as_table().unwrap();
+    assert_eq!(shared.len(), replacement.len());
+    for (name, pin) in shared {
+        for field in ["version", "digest"] {
+            assert_eq!(pin[field], replacement[name][field], "{name}: {field}");
+        }
+        assert_eq!(
+            pin["path"].as_str().unwrap(),
+            format!(
+                "fixtures/issue-workflows/{}",
+                replacement[name]["path"]
+                    .as_str()
+                    .unwrap()
+                    .strip_prefix(".af/")
+                    .unwrap()
+            ),
+            "{name}: path"
+        );
+    }
     let fixtures = root.join("fixtures/task-runtime");
     let mut checked = 0;
     for entry in std::fs::read_dir(&fixtures).unwrap() {
@@ -401,6 +427,7 @@ fn every_shipped_model_worker_uses_supported_61_models_and_independent_judges() 
             ("gpt-6.1-terra", "high", "verify"),
         ),
     ]);
+    let profile = crate::issue_workflows::model_profile();
     let models = recorded_codex_models();
     let mut checked = std::collections::BTreeSet::new();
     for (name, pin) in catalog["packages"].as_table().unwrap() {
@@ -422,9 +449,15 @@ fn every_shipped_model_worker_uses_supported_61_models_and_independent_judges() 
             af_pipeline_config::lock::package_digest(name, &package).unwrap(),
             "{name}"
         );
-        let &(model, effort, role) = expected
+        let &(product_model, effort, role) = expected
             .get(name.as_str())
             .unwrap_or_else(|| panic!("unapproved Worker {name}"));
+        let model = match (name.as_str(), product_model) {
+            ("backlog/triage-author", _) => product_model,
+            (_, "gpt-6.1-sol") => profile.sol.as_str(),
+            (_, "gpt-6-astra") => profile.astra.as_str(),
+            _ => product_model,
+        };
         assert_eq!(
             worker.signature.roles,
             std::collections::BTreeSet::from([role.to_owned()]),
@@ -452,7 +485,9 @@ fn every_shipped_model_worker_uses_supported_61_models_and_independent_judges() 
             "{name}"
         );
         if !pi {
-            assert_recorded_codex_support(&models, name, model, effort);
+            // The authenticated historical catalog supports the product expectations.
+            // The operator's newer exact pins are exercised with a synthetic catalog.
+            assert_recorded_codex_support(&models, name, product_model, effort);
         }
         checked.insert(name.as_str());
     }
@@ -514,6 +549,7 @@ fn selected_light_workers() -> (
 fn validate_small_issue_rubrics(
     pipeline: &af_contracts::task::pipeline::PipelineDefinition,
     workers: &BTreeMap<String, af_pipeline_config::task::catalog::TaskWorkerManifest>,
+    sol: &str,
 ) -> Result<(), String> {
     use af_pipeline_config::task::catalog::TaskWorkerRunner;
 
@@ -544,7 +580,7 @@ fn validate_small_issue_rubrics(
         let (expected_provider, expected_model, expected_effort) = match role {
             "implement" => ("pi", "k3.1-pro", "high"),
             "review" => ("codex", "gpt-6.1-terra", "high"),
-            "evaluate" => ("codex", "gpt-6.1-sol", "medium"),
+            "evaluate" => ("codex", sol, "medium"),
             _ => unreachable!(),
         };
         if provider_kind != expected_provider
@@ -608,13 +644,16 @@ fn validate_small_issue_rubrics(
 #[test]
 fn every_small_issue_rubric_matches_the_selected_light_worker_models_efforts_and_roles() {
     let (pipeline, workers) = selected_light_workers();
-    validate_small_issue_rubrics(&pipeline, &workers).unwrap();
+    let profile = crate::issue_workflows::model_profile();
+    validate_small_issue_rubrics(&pipeline, &workers, &profile.sol).unwrap();
 }
 
 #[test]
 fn small_issue_rubric_audit_rejects_slot_and_worker_role_mutations_independently() {
     let (pipeline, workers) = selected_light_workers();
-    validate_small_issue_rubrics(&pipeline, &workers).unwrap();
+    let profile = crate::issue_workflows::model_profile();
+    let sol = &profile.sol;
+    validate_small_issue_rubrics(&pipeline, &workers, sol).unwrap();
     for (slot_name, role, _) in LIGHT_ROLES {
         for field in ["provider", "model", "effort"] {
             let mut wrong_workers = workers.clone();
@@ -635,7 +674,7 @@ fn small_issue_rubric_audit_rejects_slot_and_worker_role_mutations_independently
                 "effort" => *effort = "wrong-effort".into(),
                 _ => unreachable!(),
             }
-            let error = validate_small_issue_rubrics(&pipeline, &wrong_workers).unwrap_err();
+            let error = validate_small_issue_rubrics(&pipeline, &wrong_workers, sol).unwrap_err();
             assert!(
                 error.starts_with(&format!("{slot_name}: expected ")),
                 "{field}: {error}"
@@ -648,7 +687,7 @@ fn small_issue_rubric_audit_rejects_slot_and_worker_role_mutations_independently
         };
         let mut wrong_pipeline = pipeline.clone();
         wrong_pipeline.slots.get_mut(slot_name).unwrap().role = wrong_role.into();
-        let error = validate_small_issue_rubrics(&wrong_pipeline, &workers).unwrap_err();
+        let error = validate_small_issue_rubrics(&wrong_pipeline, &workers, sol).unwrap_err();
         assert!(
             error.starts_with(&format!("{slot_name}: slot.role")),
             "{error}"
@@ -660,7 +699,7 @@ fn small_issue_rubric_audit_rejects_slot_and_worker_role_mutations_independently
             .unwrap()
             .signature
             .roles = std::collections::BTreeSet::from([wrong_role.into()]);
-        let error = validate_small_issue_rubrics(&pipeline, &wrong_workers).unwrap_err();
+        let error = validate_small_issue_rubrics(&pipeline, &wrong_workers, sol).unwrap_err();
         assert!(
             error.starts_with(&format!("{slot_name}: Worker.signature.roles")),
             "{error}"
