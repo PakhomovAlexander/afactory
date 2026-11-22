@@ -134,7 +134,7 @@ def configure(root, name, binary, common_env, url, token):
                         "file_roots": [], "decision_keys": {}})
     policy.chmod(0o600)
     definition = {
-        "schema": "af/scenario@10", "admission": None, "inputs": {},
+        "schema": "af/scenario@11", "admission": None, "inputs": {},
         "outputs": {"document": "task"}, "steps": [{
             "id": "document", "operation": {"kind": "task", "target": {
                 "repo": str(repo), "state": str(state), "task_id": name,
@@ -150,7 +150,7 @@ def configure(root, name, binary, common_env, url, token):
         "limits": limits,
     }
     bundle = work / "scenario.json"
-    write_json(bundle, {"schema": "af/scenario-bundle@10", "root": "document",
+    write_json(bundle, {"schema": "af/scenario-bundle@11", "root": "document",
                         "definitions": {"document": definition}})
     inputs = work / "inputs.json"
     write_json(inputs, {})

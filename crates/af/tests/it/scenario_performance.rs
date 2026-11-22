@@ -958,7 +958,7 @@ fn shipped_performance_loop_delivers_research_and_publishes_verified_improvement
     let history = &mut bundle["definitions"]["performance"]["steps"][0];
     history["inputs"]["subject"]["value"]["value"] = packet["index_digest"].clone();
     history["inputs"]["revision"]["value"]["value"] = packet["compatibility"].clone();
-    valid("scenario-bundle-v10.json", &bundle);
+    valid("scenario-bundle-v11.json", &bundle);
     write(&p.f.bundle, &bundle);
     let pin = p.cli(
         &p.f.state,
@@ -1107,7 +1107,7 @@ fn shipped_performance_loop_delivers_research_and_publishes_verified_improvement
         }
     }
     assert_eq!(done["status"], "succeeded", "{done:#}");
-    valid("scenario-run-v11.json", &done);
+    valid("scenario-run-v12.json", &done);
     let steps = done["frames"]["root"]["steps"].as_array().unwrap();
     let research = &steps[1]["outputs"]["result"]["value"];
     let id = research["result"]["outputs"]["report"]["artifact_ids"][0]
@@ -1782,8 +1782,8 @@ sys.exit(99)
     let template_id = template.id().unwrap();
     let limits =
         json!({"max_tokens":template.max_tokens,"max_wall_ms":604800000,"max_dispatches":64});
-    let bundle: af_scenario::contract::Bundle = serde_json::from_value(json!({"schema":"af/scenario-bundle@10","root":"startup","definitions":{"startup":{
-        "schema":"af/scenario@10","inputs":{},"outputs":{"ok":"boolean"},"steps":[step("implement",json!({"kind":"fresh_task","template":template,"bindings":{}}),json!({}),"task")],
+    let bundle: af_scenario::contract::Bundle = serde_json::from_value(json!({"schema":"af/scenario-bundle@11","root":"startup","definitions":{"startup":{
+        "schema":"af/scenario@11","inputs":{},"outputs":{"ok":"boolean"},"steps":[step("implement",json!({"kind":"fresh_task","template":template,"bindings":{}}),json!({}),"task")],
         "result":{"ok":literal("boolean",json!(true))},"completion":[literal("boolean",json!(true))],
         "authority":{"task_plans":[],"task_templates":[template_id],"grants":[],"decision_owners":[]},"limits":limits,"admission":null}}})).unwrap();
     let models: std::collections::BTreeMap<_, _> = [
@@ -2405,7 +2405,7 @@ fn native_scoped_implementation(
     let typed_request: af_scenario::adapter::Request =
         serde_json::from_value(request.clone()).unwrap();
     let world = af_scenario::store::World {
-        schema: "af/scenario-store@17".into(),
+        schema: "af/scenario-store@18".into(),
         writer_version: env!("CARGO_PKG_VERSION").into(),
         runs: std::collections::BTreeMap::from([(captured.id.clone(), captured.clone())]),
         run_capacity: Default::default(),

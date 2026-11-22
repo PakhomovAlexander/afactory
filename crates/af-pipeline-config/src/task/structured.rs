@@ -189,6 +189,13 @@ impl TaskPlanCompiler {
                 .ok_or("Missing structured root input")?;
             validate_value(cas, value, declaration)?;
         }
+        if contract
+            .outputs
+            .values()
+            .any(|p| p.artifact_type == af_contracts::ci_health::DIAGNOSIS_TYPE)
+        {
+            af_store::ci_health::validate_selection(cas, &task.inputs)?;
+        }
         Ok(())
     }
 }
@@ -213,6 +220,11 @@ pub fn validate_value(
         return Err("Structured artifact changed its typed source contract".into());
     }
     validate_payload(&declaration.schema, &envelope.payload)?;
+    if declaration.artifact_type == af_contracts::ci_health::SNAPSHOT_TYPE {
+        let snapshot: af_contracts::ci_health::Snapshot =
+            serde_json::from_value(envelope.payload.clone()).map_err(|e| e.to_string())?;
+        af_store::ci_health::validate_snapshot(&snapshot)?;
+    }
     Ok(envelope.payload)
 }
 pub fn validate_payload(

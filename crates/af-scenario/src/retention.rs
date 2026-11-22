@@ -430,11 +430,18 @@ fn response_bytes(dispatch: &Dispatch) -> Result<u64> {
         .map_err(|e| e.to_string())?
         .len() as u64;
     Ok(match dispatch.definition.operation {
-        Kind::Task { .. } | Kind::FreshTask { .. } => 8 * 1024 * 1024 + RUN_HEADROOM,
+        Kind::Task { .. } | Kind::CiDiagnosis { .. } | Kind::FreshTask { .. } => {
+            8 * 1024 * 1024 + RUN_HEADROOM
+        }
         _ => inputs.saturating_add(2 * 1024 * 1024),
     })
 }
-pub fn prepare_run(world: &mut World, id: &str, now: u64) -> Result<Option<Dispatch>> {
+pub fn prepare_run(
+    host: &dyn crate::Host,
+    world: &mut World,
+    id: &str,
+    now: u64,
+) -> Result<Option<Dispatch>> {
     let before = world.runs.get(id).ok_or("Scenario Run not found")?.clone();
     require(now >= before.updated_unix_ms, "Run clock moved backwards")?;
     let old_capacity = *world
@@ -442,7 +449,7 @@ pub fn prepare_run(world: &mut World, id: &str, now: u64) -> Result<Option<Dispa
         .get(id)
         .ok_or("Run capacity lease missing")?;
     let run = world.runs.get_mut(id).unwrap();
-    let dispatch = match run.prepare(now) {
+    let dispatch = match run.prepare(host, now) {
         Ok(d) => d,
         Err(why) => {
             run.fail(why);
@@ -543,7 +550,7 @@ mod tests {
         }
         let definition = Ant {
             occurrence_inputs: BTreeMap::new(),
-            schema: "af/ant@11".into(),
+            schema: "af/ant@12".into(),
             id: id.into(),
             scenario: bundle,
             inputs: BTreeMap::new(),
@@ -626,8 +633,12 @@ mod tests {
                                     });
                                 }
                                 _ => {
-                                    assert!(run.prepare(at).unwrap().is_none());
-                                    assert!(run.prepare(at).unwrap().is_none());
+                                    assert!(
+                                        run.prepare(&TestHost::default(), at).unwrap().is_none()
+                                    );
+                                    assert!(
+                                        run.prepare(&TestHost::default(), at).unwrap().is_none()
+                                    );
                                     assert_eq!(run.status, Status::Succeeded);
                                 }
                             }
@@ -648,7 +659,7 @@ mod tests {
                 let world = store.read().unwrap();
                 assert_eq!(world, Store::isolated(root.path()).unwrap().read().unwrap());
                 assert!(serde_json::to_vec(&world).unwrap().len() as u64 <= MAX_BYTES);
-                valid("scenario-store-v17.json", &world);
+                valid("scenario-store-v18.json", &world);
             }
         }
         eprintln!(
@@ -793,7 +804,9 @@ mod tests {
                 .update(|w| {
                     let id = tick(w, START + index * 1000).pop().unwrap();
                     let run = w.runs.get_mut(&id).unwrap();
-                    run.prepare(START + index * 1000).unwrap().unwrap();
+                    run.prepare(&TestHost::default(), START + index * 1000)
+                        .unwrap()
+                        .unwrap();
                     let charge = run.task_charges.values_mut().next().unwrap();
                     charge.charged = Some(index % 29);
                     expected += u128::from(index % 29);
@@ -820,7 +833,9 @@ mod tests {
             .update(|w| {
                 let id = tick(w, START + 240_000).pop().unwrap();
                 let run = w.runs.get_mut(&id).unwrap();
-                run.prepare(START + 240_000).unwrap().unwrap();
+                run.prepare(&TestHost::default(), START + 240_000)
+                    .unwrap()
+                    .unwrap();
                 let charge = run.task_charges.values_mut().next().unwrap();
                 charge.charged = Some(65);
                 charge.unknown_usage = true;
@@ -998,7 +1013,12 @@ mod tests {
         );
         assert_eq!(run.task_charges[&second_key].charged, Some(u64::MAX));
         let mut terminal = run.clone();
-        assert!(terminal.prepare(settled).unwrap().is_none());
+        assert!(
+            terminal
+                .prepare(&TestHost::default(), settled)
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(terminal.dispatches, 2);
         assert_eq!(run.task_charges[&second_key].reserved(), 0);
         assert!(!protected(run));
@@ -1115,7 +1135,7 @@ mod tests {
                         let at = START + index * 1000;
                         let id = tick(w, at).pop().unwrap();
                         let run = w.runs.get_mut(&id).unwrap();
-                        run.prepare(at).unwrap().unwrap();
+                        run.prepare(&TestHost::default(), at).unwrap().unwrap();
                         run.frames.get_mut("root").unwrap().steps[0].intents[0].phase =
                             Phase::Failed;
                         run.fail("native response lost; usage unresolved".into());
@@ -1376,7 +1396,7 @@ mod tests {
             .unwrap();
         let target = store
             .update(|w| {
-                let d = prepare_run(w, "goal", START)?.unwrap();
+                let d = prepare_run(&TestHost::default(), w, "goal", START)?.unwrap();
                 let Kind::FreshTask { template, .. } = &d.definition.operation else {
                     panic!("not fresh")
                 };
@@ -1436,6 +1456,7 @@ mod tests {
                 let r = w.runs.get_mut("goal").unwrap();
                 r.task_charges.values_mut().next().unwrap().charged = Some(17);
                 r.complete(
+                    &TestHost::default(),
                     "root",
                     "review",
                     BTreeMap::from([("result".into(), Datum::Task(receipt))]),
@@ -1477,7 +1498,7 @@ mod tests {
         );
         assert_eq!(run.dispatches, 1);
         assert!(occupied(&world).unwrap() <= MAX_BYTES);
-        valid("scenario-store-v17.json", &world);
+        valid("scenario-store-v18.json", &world);
     }
 
     #[test]
@@ -1506,7 +1527,12 @@ mod tests {
             })
             .unwrap();
         let intent = store
-            .update(|w| Ok(prepare_run(w, "planning", START)?.unwrap().intent.id))
+            .update(|w| {
+                Ok(prepare_run(&TestHost::default(), w, "planning", START)?
+                    .unwrap()
+                    .intent
+                    .id)
+            })
             .unwrap();
         assert!(store.read().unwrap().run_capacity["planning"] > 9 * 1024 * 1024);
         store
@@ -1562,7 +1588,7 @@ mod tests {
             .update(|w| {
                 let id = tick(w, START).pop().unwrap();
                 let r = w.runs.get_mut(&id).unwrap();
-                r.prepare(START).unwrap().unwrap();
+                r.prepare(&TestHost::default(), START).unwrap().unwrap();
                 let c = r.task_charges.values_mut().next().unwrap();
                 c.charged = Some(65);
                 c.unknown_usage = true;

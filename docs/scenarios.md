@@ -11,7 +11,7 @@ defines the authority boundary.
 ## Review, record, drive
 
 Definitions use TOML for authoring and JSON for their versioned wire documents, with schema
-`af/scenario@10`. A bundle (`af/scenario-bundle@10`) names its
+`af/scenario@11`. A bundle (`af/scenario-bundle@11`) names its
 `root` and maps names to definitions. See the inert examples in `fixtures/scenarios/` and the
 schemas from `af schema show`. Definitions have explicit `inputs`, `outputs`, ordered `steps`,
 `result` bindings, boolean `completion` conditions, `authority`, and `limits`.
@@ -22,7 +22,8 @@ The port types are `text`, `boolean`, `integer`, `task`, `task_outcome`, `action
 `literal` (with `value`), `input` (with `port`), or `step` (with `step` and `port`). Forward
 references and type mismatches fail admission. A `project` binding selects a typed receipt field:
 `task_conclusion`, `task_result_id`, `task_output_id` or `task_output_snapshot` (the latter two
-name a `port`), `action_intent`, `observation_satisfied`, or `decision_approved`. Its `value` is
+name a `port`), `task_output_field` (a `port`, `schema` and allowlisted `field`), `action_intent`,
+`observation_satisfied`, or `decision_approved`. Its `value` is
 another binding and its `projection` is an object with `kind`. An `equals` binding compares scalar
 `left` and `right` bindings of the same type and returns a boolean. This allows a Task's evidenced
 `no_worthwhile_optimization` conclusion to skip implementation and still complete successfully.
@@ -30,6 +31,8 @@ A `select` binding has boolean `condition` and equal-type `when_true`/`when_fals
 it resolves only the chosen arm, so optional skipped outputs remain unread. Decision branches
 are refused to keep signed approval consumers static. Root inputs and literals are scalar data; they
 cannot manufacture receipts. Child inputs may carry receipts produced by preceding steps.
+Native CI diagnosis settlements additionally allow `ci_diagnosis_field` (`category` or
+`signature_id`) and boolean `ci_diagnosis_refused` projections, checked against the native step.
 
 A native Task step may explicitly declare its result as `task_outcome` instead of `task`.
 This retains the exact terminal Task/plan/revision/result, native cause, available candidate
@@ -88,6 +91,10 @@ A Storage Budget setup failure returns 1 with a diagnostic on stderr before the 
   `af task run --confirm-plan` through the ordinary runtime. Generated plan
   signatures, sandboxing and Task acceptance still apply. A process exit is not evidence: the
   coordinator reads the accepted result, output artifacts and accounting from the Task Store.
+  The `ci_diagnosis` specialization uses the same target, plan authority, reservation and
+  cancellation lease with one step attempt. It returns an observation containing the accepted
+  diagnosis or a separate deterministic unknown with the original refused Task receipt and
+  bounded native refusal evidence. The refused result never becomes accepted Task output.
 - Scenario: `operation.kind: scenario` names a bundled definition. Its input and output ports
   must match exactly. Recursion, excessive depth, widened authority and larger child budgets
   fail admission. The Run pins the complete transitive bundle. Editing a definition changes
@@ -128,6 +135,22 @@ A [structured Task example](../fixtures/custom-tasks/README.md) projects the exa
 of one captured issue Task through `task_output_id` and checks `structurally_validated`. This
 uses the same pinned Task projection as every other kind, without report or evaluator nodes,
 dynamic Task creation or publication authority.
+
+The [CI health Phase 1 fixture](ci-health-maintenance.md) uses native `ci_diagnosis` settlements
+and their category/signature projections. Native retrieval verifies the exact accepted Task
+output and captured snapshot, or records a separate deterministic unknown from a refused result.
+Its `notify` inputs include `diagnosis_settlement` (observation), `category` and `signature_id`
+(text). At the adapter boundary, the kernel checks the observation's exact repository subject
+and transports bounded exact settlement references as text in
+`af/scenario-ci-notification-evidence@2`, explicitly naming details retained in the native Run.
+The transport subject binds the repository by its canonical digest; the adapter verifies it against
+its pinned snapshot and restores the exact repository in the notification. The journal and intent
+digest retain the original observation. Findings, including explicit alerts for every
+release-blocking failure, precede diagnosis.
+A refusal sends a deterministic unknown diagnosis, alert-only remedy and outcome, then skips Watch.
+Ordinary accepted Task outputs still support `task_output_field` with the same closed allowlist.
+This also composes with `accepted_task` on an accepted fresh Task outcome: native settlement
+retains diagnosis evidence for the exact accepted receipt, so projection survives Task collection.
 
 A Decision receipt used for publication may authorize exactly that one decision-consuming Action
 in the pinned bundle, including uses through aliased child inputs and outputs. Admission rejects
@@ -216,7 +239,7 @@ script does not change native Wait behavior or complete a native Scenario Run.
 
 ## Ant scheduling
 
-An `af/ant@11` definition has `id`, `scenario` (bundle), typed `inputs`, `owner`, `notification`,
+An `af/ant@12` definition has `id`, `scenario` (bundle), typed `inputs`, `owner`, `notification`,
 `schedule` (`kind: daily`, `timezone`, `hour`, `minute`, `start_unix_ms`), and `execution`. The
 notification is
 an accountable routing label retained in inspection; sending a notification is an explicit
@@ -541,7 +564,7 @@ Creation refuses an existing label. Replay checks the revision chain and account
 missing ownership and corrupt journals fail closed.
 
 Roadmaps share `runs/scenarios.sqlite`, its immediate transactions, private ownership and checksum
-with Runs and Ants. The journal is now `af/scenario-store@17`; the previous Store shape is refused
+with Runs and Ants. The journal is now `af/scenario-store@18`; the previous Store shape is refused
 without migration. The unchanged 16 MiB document bound includes all roadmap history; the Ant
 retention policy above does not erase goal provenance or roadmap revisions. The ordinary
 machine Storage Budget counts these bytes as retained Store remainder; pruning never silently
@@ -659,8 +682,8 @@ Task/source receipts. It reads no owner-supplied JSON artifact file and launches
 
 Fresh Task planning requires the exact durable native template-pin record in the selected Task
 Store before creating a Task. An authorized template digest alone cannot substitute authority from
-another committed source. The combined current contracts are Scenario/Bundle 10, Policy 8,
-Pin/Run/List 11, Ant 11, Ant Pin/Tick 12, State/List 13, inspection 8 and Store 17 with driver 2.
+another committed source. The combined current contracts are Scenario/Bundle 11, Policy 8,
+Pin/Run/List 12, Ant 12, Ant Pin/Tick 13, State/List 14, inspection 9 and Store 18 with driver 2.
 Earlier shapes are refused. The
 [composition decision](adr/2026-11-17-compose-scoped-implementation-and-native-nightly-contracts.md)
 records both parents and the separately scoped implementation and nightly capabilities.

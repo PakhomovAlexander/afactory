@@ -598,20 +598,26 @@ Campaign selectors and their inspection documents are retired. Review plan captu
 Task plan; --authority selects trusted authority independently of source/base selectors.
 
 Scenario and Ant documents (ADR-0274; `af help scenarios`):
-  scenario validate: af/scenario-pin@11; start, show, resume, decide, cancel: af/scenario-run@11.
-  scenario decision-payload: af/scenario-decision@1; list: af/scenario-list@11.
-  ant validate: af/ant-pin@12; add, enable, pause, disable: af/ant-state@13;
-  ant show: af/ant-inspection@8; ant scheduler status/stop: af/ant-scheduler@1;
-  ant list: af/ant-list@13; tick: af/ant-tick@12.
+  scenario validate: af/scenario-pin@12; start, show, resume, decide, cancel: af/scenario-run@12.
+  scenario decision-payload: af/scenario-decision@1; list: af/scenario-list@12.
+  ant validate: af/ant-pin@13; add, enable, pause, disable: af/ant-state@14;
+  ant show: af/ant-inspection@9; ant scheduler status/stop: af/ant-scheduler@1;
+  ant list: af/ant-list@14; tick: af/ant-tick@13.
   Result presentation: af/result-document@1; rendered metadata: af/result-snapshot@1.
-  Definitions and machine policy: af/scenario@10, af/scenario-bundle@10, af/scenario-policy@8,
+  CI Health Phase 1: af.ci-health-snapshot/1, af.ci-health-state/2, af.ci-diagnosis/1,
+  af.ci-diagnosis-selection/1, af.ci-health-notification/5, af.ci-signature-state/5,
+  af.ci-observe-occurrence/1, af.ci-observe-service/1, af.maintenance-watchdog-config/1 and
+  af.maintenance-watchdog-alert/1. Native diagnosis and notification records:
+  af/scenario-ci-diagnosis@2, af/scenario-ci-notification-evidence@2 and
+  af/scenario-task-output-field@1. Remedies are report-only; the watchdog is inactive.
+  Definitions and machine policy: af/scenario@11, af/scenario-bundle@11, af/scenario-policy@8,
   Scoped implementation publication: af/implementation-pr-proof@1, af/implementation-pr-live@1.
   Startup scope: af/implementation-startup-scope@2.
-  af/ant@11; signed envelopes: af/scenario-signed-decision@1.
+  af/ant@12; signed envelopes: af/scenario-signed-decision@1.
   Roadmaps: af/scenario-roadmap-proposal@2 (input), af/scenario-roadmap-revision@2 (validate),
   af/scenario-roadmap@3 (create, show, revise), af/scenario-roadmap-list@3 (list).
   Fresh templates: af/scenario-task-template@2; capture: af/scenario-template-pin@2.
-  Driver status: af/scenario-driver@2. Journal: af/scenario-store@17.
+  Driver status: af/scenario-driver@2. Journal: af/scenario-store@18.
   Owned file envelope: af/scenario-owned-file@1.
   Research evidence: af/scenario-evidence-source@1.
   Experiment source: af/scenario-experiment-source-request@1 and af/scenario-experiment-source@1.

@@ -191,9 +191,11 @@ impl Zone {
             .chain([self.initial_offset])
             .collect();
         let mut matches = Vec::new();
-        for offset in offsets {
+        // Historical offsets are hypotheses: only candidates inside the pinned interval
+        // can match. An unused candidate beyond the horizon must not erase a proven one.
+        for &offset in &offsets {
             let at = local - i64::from(offset);
-            if self.offset(at)? == offset {
+            if self.valid_until_unix_seconds.is_none_or(|h| at < h) && self.offset(at)? == offset {
                 matches.push(at);
             }
         }
@@ -203,7 +205,8 @@ impl Zone {
         // Nonexistent spring-forward wall time: retain a skipped occurrence at the transition.
         let mut before = self.initial_offset;
         for &(at, after) in &self.transitions {
-            if after > before
+            if self.valid_until_unix_seconds.is_none_or(|h| at < h)
+                && after > before
                 && local >= at.saturating_add(i64::from(before))
                 && local < at.saturating_add(i64::from(after))
             {
@@ -211,6 +214,11 @@ impl Zone {
             }
             before = after;
         }
+        require(
+            self.valid_until_unix_seconds
+                .is_none_or(|h| offsets.iter().all(|o| local - i64::from(*o) < h)),
+            "Pinned timezone transition horizon exhausted; define a new Ant revision with current tzdata",
+        )?;
         Err("Cannot resolve local schedule time in pinned timezone".into())
     }
 }
@@ -321,7 +329,7 @@ impl Ant {
         Ok(values)
     }
     pub fn validate(&self, host: &dyn crate::Host) -> Result<()> {
-        require(self.schema == "af/ant@11", "Unsupported Ant version")?;
+        require(self.schema == "af/ant@12", "Unsupported Ant version")?;
         name(&self.id)?;
         name(&self.owner)?;
         text(&self.notification)?;
@@ -370,7 +378,7 @@ impl AntPin {
         let zone = Zone::load(definition.schedule.timezone())?;
         let revision = hash(&(&definition, &scenario, &zone))?;
         Ok(Self {
-            schema: "af/ant-pin@12".into(),
+            schema: "af/ant-pin@13".into(),
             definition,
             scenario,
             zone,
@@ -382,7 +390,7 @@ impl AntPin {
         self.scenario.validate(host)?;
         self.zone.validate()?;
         require(
-            self.schema == "af/ant-pin@12"
+            self.schema == "af/ant-pin@13"
                 && self.definition.scenario == self.scenario.bundle
                 && self.definition.schedule.timezone() == self.zone.name
                 && self.revision == hash(&(&self.definition, &self.scenario, &self.zone))?,
@@ -445,7 +453,7 @@ impl AntState {
             schedule => pin.zone.local_day((schedule.start() / 1000) as i64)?,
         };
         Ok(Self {
-            schema: "af/ant-state@13".into(),
+            schema: "af/ant-state@14".into(),
             pin,
             state: AntMode::Disabled,
             changes: vec![(now, AntMode::Disabled)],
@@ -459,7 +467,7 @@ impl AntState {
         self.pin.validate(host)?;
         self.retention.validate(self.next_day)?;
         require(
-            self.schema == "af/ant-state@13"
+            self.schema == "af/ant-state@14"
                 && self.cursor_valid()
                 && self.last_tick_unix_ms > 0
                 && self.last_tick_unix_ms <= MAX_TIME
@@ -809,4 +817,54 @@ pub fn tick_all_with_capacity(
         }
     }
     (started, refused)
+}
+
+#[cfg(test)]
+mod occurrence_tests {
+    use super::*;
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Case {
+        name: String,
+        zone: Zone,
+        day: i64,
+        hour: u8,
+        minute: u8,
+        due_unix_ms: Option<u64>,
+        gap: bool,
+    }
+
+    #[test]
+    fn pinned_occurrences_match_watchdog_fixtures() {
+        // The watchdog consumes these exact dates, pins and expected UTC instants too.
+        let cases: Vec<Case> = serde_json::from_str(include_str!(
+            "../../../fixtures/scenarios/pinned-occurrences.json"
+        ))
+        .unwrap();
+        for case in cases {
+            case.zone.validate().unwrap();
+            let schedule = Schedule::Daily {
+                timezone: case.zone.name.clone(),
+                hour: case.hour,
+                minute: case.minute,
+                start_unix_ms: 1,
+            };
+            let actual = schedule.due(&case.zone, case.day);
+            if let Some(expected) = case.due_unix_ms {
+                assert_eq!(actual.unwrap(), (expected, case.gap), "{}", case.name);
+            } else {
+                assert!(
+                    actual.unwrap_err().contains("horizon exhausted"),
+                    "{}",
+                    case.name
+                );
+            }
+            if let Some(horizon) = case.zone.valid_until_unix_seconds {
+                assert!(case.zone.offset(horizon - 1).is_ok(), "{}", case.name);
+                assert!(case.zone.offset(horizon).is_err(), "{}", case.name);
+                assert!(case.zone.local_day(horizon).is_err(), "{}", case.name);
+            }
+        }
+    }
 }

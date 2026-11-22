@@ -76,7 +76,7 @@ def run(binary, source):
     definition["steps"][0]["timeout_ms"] = 135_000
     definition["limits"].update(max_wall_ms=150_000, max_dispatches=150)
     ant = {
-        "schema": "af/ant@11", "id": "writer-loss", "scenario": bundle, "inputs": {},
+        "schema": "af/ant@12", "id": "writer-loss", "scenario": bundle, "inputs": {},
         "schedule": {"kind": "interval", "seconds": 300,
                      "start_unix_ms": time.time_ns() // 1_000_000 + 1500},
         "owner": "fixture", "notification": "local:fixture",
