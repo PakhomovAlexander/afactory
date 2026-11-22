@@ -589,9 +589,11 @@ version and native `af catalog digest` pin refresh, without changing Worker auth
 Native Review's Store contains Task transitions and typed native Round outputs. The shared
 canonical Ledger is initialized from the Task Subject, with no Campaign manifest or bootstrap
 event. SQLite Stores bind their layout to `review.kernel/RunEvent@4` and stamp each event row
-with that envelope identity. Opening a Store from an earlier layout or replaying a row with
-another identity fails closed. Opening an initialized WAL Store can observe committed events
-while another connection holds a write transaction. First-time schema initialization is serialized
-in a write transaction. Standalone continuation
+with that envelope identity. Store opens check the current events table definition, including
+its event and per-run sequence identity constraints, through SQLite schema metadata. An earlier
+or malformed layout fails closed before schema or journal changes. Replay rejects rows with a
+different envelope identity. An initialized WAL Store can observe committed events while another
+connection holds a write transaction. First-time schema initialization is serialized in a write
+transaction. Standalone continuation
 validates each prior Round against its original captured plan and graph, then binds exact
 canonical history and Base into a new Task plan under the existing history and Round bounds.

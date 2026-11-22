@@ -51,18 +51,37 @@ fn event_envelope_conflict() -> StoreError {
 // carries the full identity so replay also refuses a mixed or damaged log.
 const EVENT_LAYOUT_VERSION: u32 = 4;
 
+// SQLite stores the table definition in sqlite_schema, omitting IF NOT EXISTS.
+// Keep the v4 spelling so this read-only check can verify the full definition,
+// including the envelope CHECK and both event identity constraints.
+const EVENT_TABLE: &str = "CREATE TABLE events (
+                 envelope       TEXT NOT NULL CHECK (envelope = 'review.kernel/RunEvent@4'),
+                 run_id         TEXT    NOT NULL,
+                 sequence       INTEGER NOT NULL,
+                 event_id       TEXT    NOT NULL UNIQUE,
+                 type           TEXT    NOT NULL,
+                 occurred_at    TEXT    NOT NULL,
+                 node_id        TEXT,
+                 attempt_id     TEXT,
+                 causation_id   TEXT,
+                 correlation_id TEXT,
+                 artifact_refs  TEXT    NOT NULL,
+                 payload        TEXT    NOT NULL,
+                 PRIMARY KEY (run_id, sequence)
+             )";
+
 fn check_event_layout(conn: &Connection) -> Result<bool, StoreError> {
-    let (version, has_events, has_envelope): (u32, bool, bool) = conn.query_row(
+    let (version, current_events): (u32, Option<bool>) = conn.query_row(
         "SELECT user_version,
-                EXISTS(SELECT 1 FROM sqlite_schema WHERE name='events' AND type='table'),
-                EXISTS(SELECT 1 FROM pragma_table_info('events') WHERE name='envelope' AND [notnull]=1)
+                (SELECT type='table' AND sql=?1 FROM sqlite_schema
+                 WHERE name='events' AND type IN ('table', 'view'))
          FROM pragma_user_version",
-        [],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        [EVENT_TABLE],
+        |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    match (version, has_events, has_envelope) {
-        (0, false, false) => Ok(false),
-        (EVENT_LAYOUT_VERSION, true, true) => Ok(true),
+    match (version, current_events) {
+        (0, None) => Ok(false),
+        (EVENT_LAYOUT_VERSION, Some(true)) => Ok(true),
         _ => Err(event_envelope_conflict()),
     }
 }
@@ -596,23 +615,9 @@ impl EventStore {
         if check_event_layout(&tx)? {
             return Ok(());
         }
+        tx.execute(EVENT_TABLE, [])?;
         tx.execute_batch(
-            "CREATE TABLE IF NOT EXISTS events (
-                 envelope       TEXT NOT NULL CHECK (envelope = 'review.kernel/RunEvent@4'),
-                 run_id         TEXT    NOT NULL,
-                 sequence       INTEGER NOT NULL,
-                 event_id       TEXT    NOT NULL UNIQUE,
-                 type           TEXT    NOT NULL,
-                 occurred_at    TEXT    NOT NULL,
-                 node_id        TEXT,
-                 attempt_id     TEXT,
-                 causation_id   TEXT,
-                 correlation_id TEXT,
-                 artifact_refs  TEXT    NOT NULL,
-                 payload        TEXT    NOT NULL,
-                 PRIMARY KEY (run_id, sequence)
-             );
-             CREATE INDEX IF NOT EXISTS events_by_correlation
+            "CREATE INDEX IF NOT EXISTS events_by_correlation
                  ON events (run_id, correlation_id);
              CREATE INDEX IF NOT EXISTS events_by_type_sequence
                  ON events (run_id, type, sequence DESC);
@@ -1970,6 +1975,57 @@ mod tests {
     }
 
     #[test]
+    fn refuses_malformed_current_event_layout_without_rewriting() {
+        for (defect, ddl) in [
+            (
+                "missing columns",
+                "CREATE TABLE events (envelope TEXT NOT NULL)".into(),
+            ),
+            (
+                "wrong sequence type",
+                EVENT_TABLE.replace("sequence       INTEGER", "sequence       TEXT"),
+            ),
+            (
+                "nullable required field",
+                EVENT_TABLE.replace("payload        TEXT    NOT NULL", "payload        TEXT"),
+            ),
+            (
+                "wrong sequence identity",
+                EVENT_TABLE.replace("PRIMARY KEY (run_id, sequence)", "PRIMARY KEY (sequence)"),
+            ),
+            (
+                "missing event identity",
+                EVENT_TABLE.replace("NOT NULL UNIQUE", "NOT NULL"),
+            ),
+            (
+                "missing envelope check",
+                EVENT_TABLE.replace(" CHECK (envelope = 'review.kernel/RunEvent@4')", ""),
+            ),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("events.sqlite");
+            let conn = Connection::open(&path).unwrap();
+            assert_ne!(ddl, EVENT_TABLE, "{defect}");
+            conn.execute(&ddl, []).unwrap();
+            conn.pragma_update(None, "user_version", EVENT_LAYOUT_VERSION)
+                .unwrap();
+            drop(conn);
+
+            let before = std::fs::read(&path).unwrap();
+            let check = |result| {
+                assert!(
+                    matches!(result, Err(StoreError::Conflict(message)) if message.contains(RunEvent::SCHEMA)),
+                    "{defect}"
+                );
+                assert_eq!(std::fs::read(&path).unwrap(), before, "{defect}");
+            };
+            check(EventStore::open(&path));
+            check(EventStore::open_read_only(&path));
+            check(EventStore::open_unchanged(&path));
+        }
+    }
+
+    #[test]
     fn current_store_records_and_checks_the_envelope_at_replay() {
         let (directory, mut store, cas) = fixture();
         let event = store
@@ -2020,8 +2076,16 @@ mod tests {
             .unwrap();
         tx.execute("UPDATE events SET payload = '{}'", []).unwrap();
 
-        let reader = EventStore::open(directory.path().join("events.sqlite")).unwrap();
-        assert_eq!(reader.replay("run").unwrap(), [event]);
+        let path = directory.path().join("events.sqlite");
+        let reader = EventStore::open(&path).unwrap();
+        assert_eq!(reader.replay("run").unwrap(), std::slice::from_ref(&event));
+        assert_eq!(
+            EventStore::open_read_only(&path)
+                .unwrap()
+                .replay("run")
+                .unwrap(),
+            [event]
+        );
         let journal: String = reader
             .conn
             .pragma_query_value(None, "journal_mode", |row| row.get(0))
