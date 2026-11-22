@@ -392,8 +392,9 @@ detail) and the run's stderr each say `check kernel stopped at its 90 min wall a
 what to do: make the check faster, or raise its wall in `.af/code-policy.toml`
 (`check_wall_ms`, `check_process_wall_ms` or `[warm] build_wall_ms`) and plan the Task again;
 `af task run ID --retry-gate` runs it again under the same wall. The wall is what the check's
-process ran under, so it is what was left of the check's wall after preparation. Only a check that
-did not start still says `never started`.
+process ran under, so it is what was left of the check's wall after preparation. A check that
+did not start says `never started`. When a local check has execution evidence and no recorded
+duration, `af task show --checks` says `elapsed timing unavailable`.
 
 A Task's wall clock starts at its first `af task run`, not when it is planned: the preview says
 `deadline starts when you run`, the Store moves the recorded deadline by the time the Task waited

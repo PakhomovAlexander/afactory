@@ -1073,6 +1073,16 @@ pub(crate) fn checks_lines(task_id: &str, view: &TaskView) -> Vec<String> {
             (Some(stop), _) => head.push_str(&format!(", {}", wall_words(stop))),
             (None, Some(ms)) => head.push_str(&format!(" in {ms} ms")),
             (None, None) if check.remote => head.push_str(", run remotely"),
+            // Preparation can write diagnostics, so a capture ID alone does not show execution.
+            (None, None)
+                if check.exit_code.is_some()
+                    || check.stopped_step.is_some()
+                    || !check.failed_tests.is_empty()
+                    || !check.flaky.is_empty()
+                    || check.layer.is_some() =>
+            {
+                head.push_str(", elapsed timing unavailable");
+            }
             (None, None) => head.push_str(", never started"),
         }
         head.push_str(&format!(", {}", check.cache));
@@ -1366,6 +1376,68 @@ mod tests {
             "tests"
         );
         assert!(document["receipt"]["checks"][1]["layer"]["phases"]["build_ms"].is_null());
+    }
+
+    #[test]
+    fn executed_check_with_no_span_has_unavailable_elapsed_timing() {
+        let temp = tempfile::tempdir().unwrap();
+        let cas = Cas::open(temp.path()).unwrap();
+        let stderr = cas.put(b"[test] 1.2s, exit 2\n").unwrap();
+        let result = cas
+            .put_json(&json!({
+                "name": "kernel",
+                "status": "failed",
+                "exit_code": 2,
+                "program": "scripts/verify.sh",
+                "args": [],
+                "stderr": stderr,
+                "required": true,
+            }))
+            .unwrap();
+        let kernel = check_view(&cas, "kernel", &result, None, None).unwrap();
+        assert_eq!(kernel.elapsed_ms, None);
+        let mut step_only = kernel.clone();
+        step_only.name = "step-only".into();
+        step_only.exit_code = None;
+
+        let mut unstarted = check("not_run", &[], &[], None);
+        unstarted.name = "markdownlint".into();
+        unstarted.exit_code = None;
+        unstarted.elapsed_ms = None;
+        let mut remote = unstarted.clone();
+        remote.name = "remote".into();
+        remote.status = "failed".into();
+        remote.remote = true;
+        let mut timed = kernel.clone();
+        timed.name = "timed".into();
+        timed.elapsed_ms = Some(1200);
+
+        let task = TaskView {
+            state: TaskStateV1::new(TaskStatePhaseV1::Finished),
+            gate: None,
+            checks: Some(view(vec![kernel, step_only, unstarted, remote, timed])),
+            failures: vec![],
+        };
+        let lines = checks_lines("t", &task);
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.starts_with("check "))
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            [
+                "check kernel: failed (exit 2), elapsed timing unavailable, cold (no warm cache), evidence: output",
+                "check step-only: failed, elapsed timing unavailable, cold (no warm cache), evidence: output",
+                "check markdownlint: not_run, never started, cold (no warm cache)",
+                "check remote: failed, run remotely, cold (no warm cache)",
+                "check timed: failed (exit 2) in 1200 ms, cold (no warm cache), evidence: output",
+            ]
+        );
+        let document = checks_document("t", &task);
+        let shown = &document["receipt"]["checks"][0];
+        assert_eq!(shown["status"], "failed");
+        assert_eq!(shown["stderr_id"], stderr);
+        assert!(shown.get("elapsed_ms").is_none());
     }
 
     /// A check the kernel stopped at its wall (ADR-0255) is `check_failed`, and every rendering
