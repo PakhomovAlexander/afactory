@@ -1,0 +1,175 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:durability-compute-identity:2",
+  "title": "af-durability/compute-identity@2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "cpus",
+    "memory_bytes",
+    "cgroups",
+    "rlimits",
+    "ancestry"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af-durability/compute-identity@2"
+    },
+    "ancestry": {
+      "const": {
+        "namespace": "cgroup:[4026531835]",
+        "mount_root": "/",
+        "visibility": "unambiguous-full-hierarchy"
+      }
+    },
+    "memory_bytes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "cpus": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "array",
+        "prefixItems": [
+          {
+            "type": "integer",
+            "minimum": 0
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "core id",
+              "cpu cores",
+              "cpu family",
+              "flags",
+              "model",
+              "model name",
+              "physical id",
+              "siblings",
+              "stepping",
+              "vendor_id"
+            ],
+            "properties": {
+              "core id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "cpu cores": {
+                "type": "string",
+                "minLength": 1
+              },
+              "cpu family": {
+                "type": "string",
+                "minLength": 1
+              },
+              "flags": {
+                "type": "string",
+                "minLength": 1
+              },
+              "model": {
+                "type": "string",
+                "minLength": 1
+              },
+              "model name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "physical id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "siblings": {
+                "type": "string",
+                "minLength": 1
+              },
+              "stepping": {
+                "type": "string",
+                "minLength": 1
+              },
+              "vendor_id": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        ],
+        "minItems": 2,
+        "maxItems": 2
+      },
+      "maxItems": 4096
+    },
+    "cgroups": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "cpu.max",
+          "cpu.weight",
+          "cpuset.cpus.effective",
+          "cpuset.mems.effective",
+          "memory.high",
+          "memory.max",
+          "memory.swap.max"
+        ],
+        "properties": {
+          "cpu.max": {
+            "type": "string",
+            "minLength": 1
+          },
+          "cpu.weight": {
+            "type": "string",
+            "minLength": 1
+          },
+          "cpuset.cpus.effective": {
+            "type": "string",
+            "minLength": 1
+          },
+          "cpuset.mems.effective": {
+            "type": "string",
+            "minLength": 1
+          },
+          "memory.high": {
+            "type": "string",
+            "minLength": 1
+          },
+          "memory.max": {
+            "type": "string",
+            "minLength": 1
+          },
+          "memory.swap.max": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "maxItems": 33
+    },
+    "rlimits": {
+      "type": "object",
+      "required": [
+        "RLIMIT_AS",
+        "RLIMIT_CPU",
+        "RLIMIT_DATA",
+        "RLIMIT_RSS",
+        "RLIMIT_NPROC"
+      ],
+      "patternProperties": {
+        "^RLIMIT_": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "integer",
+            "minimum": -1
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

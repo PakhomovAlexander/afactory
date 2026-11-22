@@ -949,6 +949,25 @@
         "schemas/scenario-ci-notification-evidence-v2.json",
         "schemas/scenario-task-output-field-v1.json"
       ]
+    },
+    {
+      "name": "durability-load",
+      "reader_writer": [
+        "scripts/durability-e2e/load_identity.py",
+        "scripts/durability-e2e/load_suite.py",
+        "scripts/durability-e2e/load_worker.py"
+      ],
+      "semantic_owner": [
+        "scripts/durability-e2e/load_identity.py",
+        "scripts/durability-e2e/load_suite.py"
+      ],
+      "tests": [
+        "scripts/durability-e2e/load_suite_test.py"
+      ],
+      "schemas": [
+        "schemas/durability-compute-identity-v2.json",
+        "scripts/durability-e2e/manifests/load-trial-v3.schema.json"
+      ]
     }
   ],
   "requests": [

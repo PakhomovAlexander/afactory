@@ -237,6 +237,24 @@ fn scenario_task_receipts_resolve_current_task_contracts_and_keep_closed_results
 }
 
 #[test]
+fn durability_v12_captured_before_receipts_match_native_contracts() {
+    let captures: Value = serde_json::from_str(include_str!(
+        "../../../scripts/durability-e2e/fixtures/recovery-before-native-v12.json"
+    ))
+    .unwrap();
+    let validator = schema("scenario-list-v12.json");
+    assert_eq!(captures.as_object().unwrap().len(), 4);
+    for (case, capture) in captures.as_object().unwrap() {
+        let before = &capture["before"];
+        assert!(validator.is_valid(before), "{case}: invalid native list");
+        for wire in before["runs"].as_object().unwrap().values() {
+            let run: Run = serde_json::from_value(wire.clone()).unwrap();
+            assert_eq!(serde_json::to_value(run).unwrap(), *wire, "{case}");
+        }
+    }
+}
+
+#[test]
 fn contracts_roundtrip_schemas_and_old_versions_fail_closed() {
     let (bundle, policy) = simple();
     let pin = Pin::new(&TestHost::default(), bundle.clone(), policy.clone()).unwrap();

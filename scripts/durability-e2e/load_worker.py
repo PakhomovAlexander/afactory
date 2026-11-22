@@ -15,7 +15,10 @@ import sys
 import time
 
 from load_cases import CASES, DIGEST_PATTERN, FIXTURES, MARKER, SUITE_FILES, file_sha, files_identity
+from load_identity import compute_identity
 from native_budget import ADMISSION
+from native_recovery import check_identity
+from recovery_evidence import before_identity
 from native_smoke import private_scratch
 from worker_failover import REQUIRED
 
@@ -117,7 +120,8 @@ def preflight(binding, args):
     disk = namespace_probe(root) if args.namespace else None
     filesystem = subprocess.check_output(["stat", "-f", "-c", "%T", scratch], env=ENV, text=True,
                                          timeout=5).strip()
-    result = {"environment": {"cpus": capacity["cpus"], "arch": platform.machine(),
+    result = {"schema": "af-durability/load-preflight@2",
+              "environment": {"compute_identity": compute_identity(), "cpus": capacity["cpus"], "arch": platform.machine(),
                               "kernel": platform.release(), "python": platform.python_version(),
                               "scratch": str(scratch), "filesystem": filesystem},
               "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
@@ -129,14 +133,23 @@ def preflight(binding, args):
     return result
 
 
-def read(path):
+def unique_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("ambiguous duplicate JSON key")
+        value[key] = item
+    return value
+
+
+def read(path, *, unique=False):
     try:
         with path.open("rb") as stream:
             data = stream.read(4 * 1024 * 1024 + 1)
         if len(data) <= 4 * 1024 * 1024:
-            value = json.loads(data)
+            value = json.loads(data, object_pairs_hook=unique_object if unique else None)
             return value if isinstance(value, dict) else {}
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         pass
     return {}
 
@@ -149,15 +162,26 @@ def tail(path, limit=3000):
         return stream.read(limit).decode(errors="replace").strip()
 
 
-def checks_fault_witness(case_id, ledger):
+def before_check(before):
+    """Read the one interrupted native recovery action, independently of Checks."""
+    try:
+        revision, intent_id = before_identity(before)
+        return check_identity("pagination", revision), revision, intent_id
+    except (KeyError, TypeError, ValueError, AttributeError, IndexError, OverflowError, RecursionError):
+        return None
+
+
+def checks_fault_witness(case_id, ledger, before):
+    expected = before_check(before)
+    if expected is None:
+        return False
+    check_id, revision, expected_intent = expected
     checks, calls = ledger.get("checks"), ledger.get("calls")
     if (not isinstance(checks, list) or len(checks) != 1 or not isinstance(checks[0], dict)
             or not isinstance(calls, list)):
         return False
-    check_id, revision = checks[0].get("id"), checks[0].get("revision")
     digest = "sha256:" + DIGEST_PATTERN
-    if (not isinstance(check_id, str) or not re.fullmatch(DIGEST_PATTERN, check_id)
-            or not isinstance(revision, str) or not re.fullmatch(digest, revision)):
+    if checks[0] != {"id": check_id, "revision": revision}:
         return False
 
     stale = "sha256:" + "0" * 64
@@ -179,7 +203,7 @@ def checks_fault_witness(case_id, ledger):
         number, intent = call.get("sequence"), call.get("intent")
         action, status = call.get("action"), call.get("status")
         if (type(number) is not int or number <= sequence or not isinstance(intent, str)
-                or not re.fullmatch(digest, intent) or type(status) is not int
+                or not re.fullmatch(digest, intent) or intent != expected_intent or type(status) is not int
                 or not isinstance(action, str) or status not in statuses.get(action, ())
                 or "served_revision" not in call):
             return False
@@ -207,8 +231,9 @@ def witness(case_id, root):
         crash = read(root / "crash.json")
         exit_code = crash.get("exit")
         if (type(exit_code) is int and exit_code == -signal.SIGKILL and crash.get("fixture_alive") is True
-                and checks_fault_witness(case_id, read(root / "ledger-before.json"))):
-            return "ledger-before.json + crash.json"
+                and checks_fault_witness(case_id, read(root / "ledger-before.json"),
+                                         read(root / "before.json", unique=True))):
+            return "before.json + ledger-before.json + crash.json"
     if case_id == "journal-enospc":
         disk = read(root / "disk-fault.json")
         if disk.get("pressure_errno") == errno.ENOSPC and disk.get("af_reported_full_store"):
@@ -395,18 +420,19 @@ def stop_orphans():
 
 
 def execute(argv, output, env, root, seconds):
-    start = time.monotonic_ns()
     timed_out = False
     with output.open("wb") as log:
+        start = time.monotonic_ns()
         try:
             result = subprocess.run(argv, cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT,
                                     timeout=seconds)
         except subprocess.TimeoutExpired:
             timed_out = True
         finally:
+            # Case timing ends at the subprocess boundary, before descendant cleanup.
+            end = time.monotonic_ns()
             if sys.platform == "linux":
                 stop_orphans()
-    end = time.monotonic_ns()
     code = None if timed_out else result.returncode
     diagnostic = (f"native process exceeded {seconds}s deadline" if timed_out else
                   f"native process exited {code}" if code else "")
@@ -468,6 +494,8 @@ def run_case(binding, args):
                   "reason": f"could not interpret native evidence: {error}",
                   "diagnostic": diagnostic, "summary": None, "metrics": {}}
     result["metrics"]["cpu_s"] = (after.ru_utime - cpu.ru_utime) + (after.ru_stime - cpu.ru_stime)
+    if result["verdict"] in {"pass", "fail"} and result["summary"]:
+        result["metrics"]["terminal_s"] = (interval[1] - interval[0]) / 1e9
     return {**result, "interval_ns": interval, "evidence_dir": str(job_dir),
             "native_dir": str(native_root), "native_exit": code}
 
@@ -489,7 +517,10 @@ def main():
         parser.error("invalid run or job identity")
     try:
         binding = json.loads(args.binding)
+        identity = compute_identity() if args.phase == "trial" else None
         result = preflight(binding, args) if args.phase == "preflight" else run_case(binding, args)
+        if args.phase == "trial":
+            result["compute_identity"] = identity if identity == compute_identity() else None
     except (Exception, SystemExit) as error:
         emit(args.job, "error", {"phase": args.phase,
                                  "reason": (f"{type(error).__name__}: {error}")[-3500:]})

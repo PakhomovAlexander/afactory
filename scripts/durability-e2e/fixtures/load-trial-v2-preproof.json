@@ -1,0 +1,32 @@
+{
+  "schema": "af-durability/load-trial@2",
+  "case": "clean",
+  "profile": "short",
+  "engine": {
+    "name": "af-native",
+    "build": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "inputs": {
+    "workload_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "fault_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "placement_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "clock": "worker monotonic case subprocess",
+    "seed": 0
+  },
+  "expectation": "control",
+  "fault_witnessed": false,
+  "verdict": "pass",
+  "violations": [],
+  "metrics": {
+    "terminal_s": 2,
+    "cpu_s": 1
+  },
+  "evidence": [
+    "/saved/schedule.json",
+    "/saved/observed-placement.json",
+    "/saved/report.json",
+    "/saved/r-101/clean"
+  ],
+  "reason": "native pass",
+  "workload_evidence_complete": true
+}

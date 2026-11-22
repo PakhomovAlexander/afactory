@@ -13,12 +13,12 @@ METRICS = {"first_progress_s", "terminal_s", "outage_s", "repeated_steps",
            "unknown_settlements"}
 
 
-def load(directory):
+def load(directory, schema=SCHEMA):
     records = {}
     for path in sorted(directory.glob("*.json")):
         entry = json.loads(path.read_text())
-        if entry.get("schema") != SCHEMA:
-            raise ValueError(f"{path}: expected {SCHEMA}")
+        if entry.get("schema") not in ((schema,) if isinstance(schema, str) else schema):
+            raise ValueError(f"{path}: expected {schema}")
         inputs = entry["inputs"]
         if set(inputs) != IDENTITY or any(value is None for value in inputs.values()):
             raise ValueError(f"{path}: incomplete paired-trial identity")

@@ -1,0 +1,1322 @@
+{
+  "restart-green": {
+    "before": {
+      "schema": "af/scenario-list@12",
+      "runs": {
+        "ant-e44e0fab1c03b88a6b86fd5b242bebd3d38f8db62d20ae92b663899baf9e6b82": {
+          "schema": "af/scenario-run@12",
+          "id": "ant-e44e0fab1c03b88a6b86fd5b242bebd3d38f8db62d20ae92b663899baf9e6b82",
+          "execution_id": "sha256:46ff58e2d808b5024632dc6ef1bca9655fe1dc7b4e587516d22ea392d4fcfcc2",
+          "pin": {
+            "schema": "af/scenario-pin@12",
+            "bundle": {
+              "schema": "af/scenario-bundle@11",
+              "root": "clean",
+              "definitions": {
+                "clean": {
+                  "schema": "af/scenario@11",
+                  "inputs": {},
+                  "outputs": {
+                    "candidate": "task",
+                    "checks": "action"
+                  },
+                  "steps": [
+                    {
+                      "id": "implement",
+                      "inputs": {},
+                      "outputs": {
+                        "result": "task"
+                      },
+                      "when": null,
+                      "max_attempts": 1,
+                      "timeout_ms": 90000,
+                      "on_timeout": "fail",
+                      "operation": {
+                        "kind": "task",
+                        "target": {
+                          "repo": "/fixture/repo",
+                          "state": "/fixture/task-store",
+                          "task_id": "pagination-cli",
+                          "plan_id": "sha256:f08bc2b77b95b06ab1789462c9c8a82822900886ccac08ca659bc49cf0d87e79",
+                          "revision_id": "sha256:0a66da6da33a8f4a8b362dbe4f57beca3434d45fa42799bc3fbea35d28e668a2",
+                          "max_tokens": 1000
+                        }
+                      }
+                    },
+                    {
+                      "id": "checks",
+                      "inputs": {
+                        "body": {
+                          "source": "literal",
+                          "value": {
+                            "type": "text",
+                            "value": "Fixture CI"
+                          }
+                        },
+                        "candidate": {
+                          "source": "step",
+                          "step": "implement",
+                          "port": "result"
+                        },
+                        "revision": {
+                          "source": "project",
+                          "value": {
+                            "source": "step",
+                            "step": "implement",
+                            "port": "result"
+                          },
+                          "projection": {
+                            "kind": "task_output_snapshot",
+                            "port": "snapshot"
+                          }
+                        },
+                        "subject": {
+                          "source": "literal",
+                          "value": {
+                            "type": "text",
+                            "value": "pagination"
+                          }
+                        }
+                      },
+                      "outputs": {
+                        "result": "action"
+                      },
+                      "when": null,
+                      "max_attempts": 4,
+                      "timeout_ms": 60000,
+                      "on_timeout": "fail",
+                      "operation": {
+                        "kind": "action",
+                        "grant": {
+                          "adapter": "checks",
+                          "operation": "experiment_submit_v1",
+                          "destination": "fixture:checks"
+                        },
+                        "requires_decision": false,
+                        "required_condition": null
+                      }
+                    }
+                  ],
+                  "result": {
+                    "candidate": {
+                      "source": "step",
+                      "step": "implement",
+                      "port": "result"
+                    },
+                    "checks": {
+                      "source": "step",
+                      "step": "checks",
+                      "port": "result"
+                    }
+                  },
+                  "completion": [
+                    {
+                      "source": "literal",
+                      "value": {
+                        "type": "boolean",
+                        "value": true
+                      }
+                    }
+                  ],
+                  "authority": {
+                    "task_plans": [
+                      "sha256:f08bc2b77b95b06ab1789462c9c8a82822900886ccac08ca659bc49cf0d87e79"
+                    ],
+                    "task_templates": [],
+                    "grants": [
+                      {
+                        "adapter": "checks",
+                        "operation": "experiment_submit_v1",
+                        "destination": "fixture:checks"
+                      }
+                    ],
+                    "decision_owners": []
+                  },
+                  "limits": {
+                    "max_tokens": 1000,
+                    "max_wall_ms": 150000,
+                    "max_dispatches": 40
+                  },
+                  "admission": null
+                }
+              }
+            },
+            "policy": {
+              "schema": "af/scenario-policy@8",
+              "adapters": {
+                "checks": {
+                  "executable": "/fixture/check-adapter",
+                  "digest": "sha256:1115413dfffdeaa6885ed0a2b9b62f163a07a346d7a3dc0c5d8b3f9e5ab7b8cf",
+                  "operations": [
+                    "experiment_submit_v1"
+                  ],
+                  "destinations": [
+                    "fixture:checks"
+                  ],
+                  "max_wall_ms": 5000,
+                  "max_output_bytes": 4096
+                }
+              },
+              "task_plans": [
+                "sha256:f08bc2b77b95b06ab1789462c9c8a82822900886ccac08ca659bc49cf0d87e79"
+              ],
+              "task_templates": [],
+              "decision_keys": {},
+              "nightly_releases": {},
+              "performance_publications": {},
+              "file_roots": [],
+              "implementation_startup": null
+            },
+            "revision": "sha256:d43b87c0be3968e82ea7d587cce41551c357b2a9f3ec57e762fb4442abe2172b",
+            "definitions": {
+              "clean": "sha256:10032d8af1f3deb879503e3ae6c8ff67321cb2d481dfd12b3fe30e5f56814d5c"
+            }
+          },
+          "limits": {
+            "max_tokens": 1000,
+            "max_wall_ms": 150000,
+            "max_dispatches": 40
+          },
+          "created_unix_ms": 1795305456995,
+          "updated_unix_ms": 1795305458081,
+          "status": "waiting",
+          "waiting": {
+            "kind": "reconcile",
+            "step": "root/checks",
+            "intent_id": "sha256:8185765386c8ae3cec72eaa313720972f81dab1f38812737a1c266dd21120a8f",
+            "diagnostic": "Adapter failed or exceeded its output bound; outcome uncertain"
+          },
+          "frames": {
+            "root": {
+              "scenario": "clean",
+              "inputs": {},
+              "started_unix_ms": 1795305456995,
+              "steps": [
+                {
+                  "step": "implement",
+                  "started_unix_ms": 1795305457012,
+                  "deadline_unix_ms": 1795305547012,
+                  "status": "succeeded",
+                  "skipped": null,
+                  "intents": [
+                    {
+                      "id": "sha256:993d2c0ef38caec7308df9c2f85f487987d83763ac2be3018d1f9e810d51831f",
+                      "input_digest": "sha256:e031f21dde9a785bf6b9d2a1763211cbabcfa09f13faeaf62600dfb8d24f9a93",
+                      "phase": "done",
+                      "evidence": []
+                    }
+                  ],
+                  "outputs": {
+                    "result": {
+                      "type": "task",
+                      "value": {
+                        "task_id": "pagination-cli",
+                        "plan_id": "sha256:f08bc2b77b95b06ab1789462c9c8a82822900886ccac08ca659bc49cf0d87e79",
+                        "revision_id": "sha256:0a66da6da33a8f4a8b362dbe4f57beca3434d45fa42799bc3fbea35d28e668a2",
+                        "result_id": "sha256:e150f869240dc6e485aca7d45d7cc65930c3f153982778bc439bf03e0fede8f6",
+                        "charged_tokens": 0,
+                        "result": {
+                          "task_revision_id": "sha256:0a66da6da33a8f4a8b362dbe4f57beca3434d45fa42799bc3fbea35d28e668a2",
+                          "execution": "completed",
+                          "acceptance": "satisfied",
+                          "domain_conclusion": "verified",
+                          "outputs": {
+                            "snapshot": {
+                              "artifact_ids": [
+                                "sha256:f4493f7b1be8f864987d747593422358185f9b4d8691fe23497b5d16091ddc16"
+                              ],
+                              "artifact_type": "af/SourceTree@1",
+                              "cardinality": "one",
+                              "snapshot_id": "sha256:01cd602bc2e0acaf3a03fd3a2dc131952cac31f5264c182ee23e88b12752cfeb"
+                            },
+                            "verification": {
+                              "artifact_ids": [
+                                "sha256:0109a32e0485827546060ae9bb9aeb20c956179382bb1958ce24bf487a705693"
+                              ],
+                              "artifact_type": "af/VerificationResult@1",
+                              "cardinality": "one",
+                              "snapshot_id": "sha256:01cd602bc2e0acaf3a03fd3a2dc131952cac31f5264c182ee23e88b12752cfeb"
+                            }
+                          },
+                          "evidence": [
+                            "sha256:0109a32e0485827546060ae9bb9aeb20c956179382bb1958ce24bf487a705693"
+                          ],
+                          "missing_obligations": []
+                        }
+                      }
+                    }
+                  },
+                  "child": null,
+                  "decision": null,
+                  "diagnostic": null
+                },
+                {
+                  "step": "checks",
+                  "started_unix_ms": 1795305457502,
+                  "deadline_unix_ms": 1795305517502,
+                  "status": "waiting",
+                  "skipped": null,
+                  "intents": [
+                    {
+                      "id": "sha256:8185765386c8ae3cec72eaa313720972f81dab1f38812737a1c266dd21120a8f",
+                      "input_digest": "sha256:693e6398d85320e47c53eded5144a5be4e6a0fdb6de54b2419eef10a6c30d7b6",
+                      "phase": "uncertain",
+                      "evidence": [
+                        "Adapter failed or exceeded its output bound; outcome uncertain",
+                        "Adapter failed or exceeded its output bound; outcome uncertain"
+                      ]
+                    }
+                  ],
+                  "outputs": {},
+                  "child": null,
+                  "decision": null,
+                  "diagnostic": null
+                }
+              ],
+              "dispatches": 3,
+              "outputs": null
+            }
+          },
+          "task_charges": {
+            "sha256:41f47738522b69df6a631dbe1929f9dcd85ef6d0b8e37de9313df70dbbf7e5dc": {
+              "maximum": 1000,
+              "charged": 0,
+              "unknown_usage": false,
+              "step": "root/implement"
+            }
+          },
+          "dispatches": 3,
+          "failure": null,
+          "cancellation": null,
+          "ant": "durability",
+          "goal_claim": null,
+          "fresh_tasks": {}
+        }
+      }
+    },
+    "ledger": {
+      "checks": [
+        {
+          "id": "c2a9cc812a1e7213edc115ff341c4448de35fedb2316338a571a805e39f85eda",
+          "revision": "sha256:01cd602bc2e0acaf3a03fd3a2dc131952cac31f5264c182ee23e88b12752cfeb"
+        }
+      ],
+      "calls": [
+        {
+          "sequence": 1,
+          "action": "read",
+          "check_id": "c2a9cc812a1e7213edc115ff341c4448de35fedb2316338a571a805e39f85eda",
+          "intent": "sha256:8185765386c8ae3cec72eaa313720972f81dab1f38812737a1c266dd21120a8f",
+          "status": 404,
+          "served_revision": null
+        },
+        {
+          "sequence": 2,
+          "action": "create",
+          "check_id": "c2a9cc812a1e7213edc115ff341c4448de35fedb2316338a571a805e39f85eda",
+          "intent": "sha256:8185765386c8ae3cec72eaa313720972f81dab1f38812737a1c266dd21120a8f",
+          "status": 0,
+          "served_revision": null
+        },
+        {
+          "sequence": 3,
+          "action": "read",
+          "check_id": "c2a9cc812a1e7213edc115ff341c4448de35fedb2316338a571a805e39f85eda",
+          "intent": "sha256:8185765386c8ae3cec72eaa313720972f81dab1f38812737a1c266dd21120a8f",
+          "status": 503,
+          "served_revision": null
+        }
+      ]
+    }
+  },
+  "restart-red": {
+    "before": {
+      "schema": "af/scenario-list@12",
+      "runs": {
+        "ant-74494abcfc2f7dcc326d58f7d9fc7473ac1b64832953a91e4563bfbab178469a": {
+          "schema": "af/scenario-run@12",
+          "id": "ant-74494abcfc2f7dcc326d58f7d9fc7473ac1b64832953a91e4563bfbab178469a",
+          "execution_id": "sha256:9ab8ac4745af1e6e58ea290a78c12d9e80c503342a454f2bc0588b70392726d7",
+          "pin": {
+            "schema": "af/scenario-pin@12",
+            "bundle": {
+              "schema": "af/scenario-bundle@11",
+              "root": "clean",
+              "definitions": {
+                "clean": {
+                  "schema": "af/scenario@11",
+                  "inputs": {},
+                  "outputs": {
+                    "candidate": "task",
+                    "checks": "action"
+                  },
+                  "steps": [
+                    {
+                      "id": "implement",
+                      "inputs": {},
+                      "outputs": {
+                        "result": "task"
+                      },
+                      "when": null,
+                      "max_attempts": 1,
+                      "timeout_ms": 90000,
+                      "on_timeout": "fail",
+                      "operation": {
+                        "kind": "task",
+                        "target": {
+                          "repo": "/fixture/repo",
+                          "state": "/fixture/task-store",
+                          "task_id": "pagination-cli",
+                          "plan_id": "sha256:a2a4b3d343743745044221ae468ac5124c47b410e30e8c22065a6dcdace064c2",
+                          "revision_id": "sha256:df319e6de3f8d40c8def4062b77ab71f2a8cb600c0b099393b2e72cc7efe3eb9",
+                          "max_tokens": 1000
+                        }
+                      }
+                    },
+                    {
+                      "id": "checks",
+                      "inputs": {
+                        "body": {
+                          "source": "literal",
+                          "value": {
+                            "type": "text",
+                            "value": "Fixture CI"
+                          }
+                        },
+                        "candidate": {
+                          "source": "step",
+                          "step": "implement",
+                          "port": "result"
+                        },
+                        "revision": {
+                          "source": "project",
+                          "value": {
+                            "source": "step",
+                            "step": "implement",
+                            "port": "result"
+                          },
+                          "projection": {
+                            "kind": "task_output_snapshot",
+                            "port": "snapshot"
+                          }
+                        },
+                        "subject": {
+                          "source": "literal",
+                          "value": {
+                            "type": "text",
+                            "value": "pagination"
+                          }
+                        }
+                      },
+                      "outputs": {
+                        "result": "action"
+                      },
+                      "when": null,
+                      "max_attempts": 4,
+                      "timeout_ms": 60000,
+                      "on_timeout": "fail",
+                      "operation": {
+                        "kind": "action",
+                        "grant": {
+                          "adapter": "checks",
+                          "operation": "experiment_submit_v1",
+                          "destination": "fixture:checks"
+                        },
+                        "requires_decision": false,
+                        "required_condition": null
+                      }
+                    }
+                  ],
+                  "result": {
+                    "candidate": {
+                      "source": "step",
+                      "step": "implement",
+                      "port": "result"
+                    },
+                    "checks": {
+                      "source": "step",
+                      "step": "checks",
+                      "port": "result"
+                    }
+                  },
+                  "completion": [
+                    {
+                      "source": "literal",
+                      "value": {
+                        "type": "boolean",
+                        "value": true
+                      }
+                    }
+                  ],
+                  "authority": {
+                    "task_plans": [
+                      "sha256:a2a4b3d343743745044221ae468ac5124c47b410e30e8c22065a6dcdace064c2"
+                    ],
+                    "task_templates": [],
+                    "grants": [
+                      {
+                        "adapter": "checks",
+                        "operation": "experiment_submit_v1",
+                        "destination": "fixture:checks"
+                      }
+                    ],
+                    "decision_owners": []
+                  },
+                  "limits": {
+                    "max_tokens": 1000,
+                    "max_wall_ms": 150000,
+                    "max_dispatches": 40
+                  },
+                  "admission": null
+                }
+              }
+            },
+            "policy": {
+              "schema": "af/scenario-policy@8",
+              "adapters": {
+                "checks": {
+                  "executable": "/fixture/check-adapter",
+                  "digest": "sha256:1115413dfffdeaa6885ed0a2b9b62f163a07a346d7a3dc0c5d8b3f9e5ab7b8cf",
+                  "operations": [
+                    "experiment_submit_v1"
+                  ],
+                  "destinations": [
+                    "fixture:checks"
+                  ],
+                  "max_wall_ms": 5000,
+                  "max_output_bytes": 4096
+                }
+              },
+              "task_plans": [
+                "sha256:a2a4b3d343743745044221ae468ac5124c47b410e30e8c22065a6dcdace064c2"
+              ],
+              "task_templates": [],
+              "decision_keys": {},
+              "nightly_releases": {},
+              "performance_publications": {},
+              "file_roots": [],
+              "implementation_startup": null
+            },
+            "revision": "sha256:27b9a9308099194fce33d72a9944f4e05eb1ff625b94ac7d6ca51d9c2abbd206",
+            "definitions": {
+              "clean": "sha256:4a977837221dc724fc099bd79d9680d9670021c275c4229eee12c412b759f6c5"
+            }
+          },
+          "limits": {
+            "max_tokens": 1000,
+            "max_wall_ms": 150000,
+            "max_dispatches": 40
+          },
+          "created_unix_ms": 1795305460883,
+          "updated_unix_ms": 1795305461976,
+          "status": "waiting",
+          "waiting": {
+            "kind": "reconcile",
+            "step": "root/checks",
+            "intent_id": "sha256:4f88e7db310975454ca7449c31029fa9fd353009c597443aa37f7f51592a50e6",
+            "diagnostic": "Adapter failed or exceeded its output bound; outcome uncertain"
+          },
+          "frames": {
+            "root": {
+              "scenario": "clean",
+              "inputs": {},
+              "started_unix_ms": 1795305460883,
+              "steps": [
+                {
+                  "step": "implement",
+                  "started_unix_ms": 1795305460908,
+                  "deadline_unix_ms": 1795305550908,
+                  "status": "succeeded",
+                  "skipped": null,
+                  "intents": [
+                    {
+                      "id": "sha256:f6b05bdca2be249d177cd268a9b23dfe97264e0f4d02f0016c6c2a4bda3b543c",
+                      "input_digest": "sha256:78f89b4a9f76d0b9c3a03b1bee7f47fe6070cc3bf89e35409c5c8ea9b5991745",
+                      "phase": "done",
+                      "evidence": []
+                    }
+                  ],
+                  "outputs": {
+                    "result": {
+                      "type": "task",
+                      "value": {
+                        "task_id": "pagination-cli",
+                        "plan_id": "sha256:a2a4b3d343743745044221ae468ac5124c47b410e30e8c22065a6dcdace064c2",
+                        "revision_id": "sha256:df319e6de3f8d40c8def4062b77ab71f2a8cb600c0b099393b2e72cc7efe3eb9",
+                        "result_id": "sha256:2fb9bed462050932345d3c2a3f65cc4f239c066d9a37d0a353cc337cee256b9f",
+                        "charged_tokens": 0,
+                        "result": {
+                          "task_revision_id": "sha256:df319e6de3f8d40c8def4062b77ab71f2a8cb600c0b099393b2e72cc7efe3eb9",
+                          "execution": "completed",
+                          "acceptance": "satisfied",
+                          "domain_conclusion": "verified",
+                          "outputs": {
+                            "snapshot": {
+                              "artifact_ids": [
+                                "sha256:baceaae933ea1bfadd7d19368ab9d1d13b9a6fec6593bbdab7c4511a5f480d6d"
+                              ],
+                              "artifact_type": "af/SourceTree@1",
+                              "cardinality": "one",
+                              "snapshot_id": "sha256:718257874e5cd34dbcd9c37b6962289445a068fb180252072f78692a23d39f14"
+                            },
+                            "verification": {
+                              "artifact_ids": [
+                                "sha256:808dd1d571bd6944f8b41174a71961cf49f1c2c5d3900418b5700af6d24708dc"
+                              ],
+                              "artifact_type": "af/VerificationResult@1",
+                              "cardinality": "one",
+                              "snapshot_id": "sha256:718257874e5cd34dbcd9c37b6962289445a068fb180252072f78692a23d39f14"
+                            }
+                          },
+                          "evidence": [
+                            "sha256:808dd1d571bd6944f8b41174a71961cf49f1c2c5d3900418b5700af6d24708dc"
+                          ],
+                          "missing_obligations": []
+                        }
+                      }
+                    }
+                  },
+                  "child": null,
+                  "decision": null,
+                  "diagnostic": null
+                },
+                {
+                  "step": "checks",
+                  "started_unix_ms": 1795305461469,
+                  "deadline_unix_ms": 1795305521469,
+                  "status": "waiting",
+                  "skipped": null,
+                  "intents": [
+                    {
+                      "id": "sha256:4f88e7db310975454ca7449c31029fa9fd353009c597443aa37f7f51592a50e6",
+                      "input_digest": "sha256:5731106d3083c8263c2ea2681f30ccdedb2963ec2e6de1684985b462364d2fee",
+                      "phase": "uncertain",
+                      "evidence": [
+                        "Adapter failed or exceeded its output bound; outcome uncertain",
+                        "Adapter failed or exceeded its output bound; outcome uncertain"
+                      ]
+                    }
+                  ],
+                  "outputs": {},
+                  "child": null,
+                  "decision": null,
+                  "diagnostic": null
+                }
+              ],
+              "dispatches": 3,
+              "outputs": null
+            }
+          },
+          "task_charges": {
+            "sha256:1e54b2ef0adaa32bc29c8340a7259a957601e6108426261463575154e2779906": {
+              "maximum": 1000,
+              "charged": 0,
+              "unknown_usage": false,
+              "step": "root/implement"
+            }
+          },
+          "dispatches": 3,
+          "failure": null,
+          "cancellation": null,
+          "ant": "durability",
+          "goal_claim": null,
+          "fresh_tasks": {}
+        }
+      }
+    },
+    "ledger": {
+      "checks": [
+        {
+          "id": "ecdf9b2af8c31b3e73885e596306e32f52e845257f2cae865c58a1252bbf211a",
+          "revision": "sha256:718257874e5cd34dbcd9c37b6962289445a068fb180252072f78692a23d39f14"
+        }
+      ],
+      "calls": [
+        {
+          "sequence": 1,
+          "action": "read",
+          "check_id": "ecdf9b2af8c31b3e73885e596306e32f52e845257f2cae865c58a1252bbf211a",
+          "intent": "sha256:4f88e7db310975454ca7449c31029fa9fd353009c597443aa37f7f51592a50e6",
+          "status": 404,
+          "served_revision": null
+        },
+        {
+          "sequence": 2,
+          "action": "create",
+          "check_id": "ecdf9b2af8c31b3e73885e596306e32f52e845257f2cae865c58a1252bbf211a",
+          "intent": "sha256:4f88e7db310975454ca7449c31029fa9fd353009c597443aa37f7f51592a50e6",
+          "status": 0,
+          "served_revision": null
+        },
+        {
+          "sequence": 3,
+          "action": "read",
+          "check_id": "ecdf9b2af8c31b3e73885e596306e32f52e845257f2cae865c58a1252bbf211a",
+          "intent": "sha256:4f88e7db310975454ca7449c31029fa9fd353009c597443aa37f7f51592a50e6",
+          "status": 503,
+          "served_revision": null
+        }
+      ]
+    }
+  },
+  "expired-auth": {
+    "before": {
+      "schema": "af/scenario-list@12",
+      "runs": {
+        "ant-bebc700cdb58e0e8a68556cd4311af26abb2c17f1a62188d36a5ebc451bd752c": {
+          "schema": "af/scenario-run@12",
+          "id": "ant-bebc700cdb58e0e8a68556cd4311af26abb2c17f1a62188d36a5ebc451bd752c",
+          "execution_id": "sha256:2b805cf5b2ab69ef8e2c49c664602fde4d8c96e48741282c456cd33093a00bd9",
+          "pin": {
+            "schema": "af/scenario-pin@12",
+            "bundle": {
+              "schema": "af/scenario-bundle@11",
+              "root": "clean",
+              "definitions": {
+                "clean": {
+                  "schema": "af/scenario@11",
+                  "inputs": {},
+                  "outputs": {
+                    "candidate": "task",
+                    "checks": "action"
+                  },
+                  "steps": [
+                    {
+                      "id": "implement",
+                      "inputs": {},
+                      "outputs": {
+                        "result": "task"
+                      },
+                      "when": null,
+                      "max_attempts": 1,
+                      "timeout_ms": 90000,
+                      "on_timeout": "fail",
+                      "operation": {
+                        "kind": "task",
+                        "target": {
+                          "repo": "/fixture/repo",
+                          "state": "/fixture/task-store",
+                          "task_id": "pagination-cli",
+                          "plan_id": "sha256:2e7a51946755fdcc2cce031df086158dd7ce84ef3058e4ee96f1c5c0943ab2b2",
+                          "revision_id": "sha256:aa938cd5711ef441559c46926142a7eb4523272eb0e1d26815113c09b734f213",
+                          "max_tokens": 1000
+                        }
+                      }
+                    },
+                    {
+                      "id": "checks",
+                      "inputs": {
+                        "body": {
+                          "source": "literal",
+                          "value": {
+                            "type": "text",
+                            "value": "Fixture CI"
+                          }
+                        },
+                        "candidate": {
+                          "source": "step",
+                          "step": "implement",
+                          "port": "result"
+                        },
+                        "revision": {
+                          "source": "project",
+                          "value": {
+                            "source": "step",
+                            "step": "implement",
+                            "port": "result"
+                          },
+                          "projection": {
+                            "kind": "task_output_snapshot",
+                            "port": "snapshot"
+                          }
+                        },
+                        "subject": {
+                          "source": "literal",
+                          "value": {
+                            "type": "text",
+                            "value": "pagination"
+                          }
+                        }
+                      },
+                      "outputs": {
+                        "result": "action"
+                      },
+                      "when": null,
+                      "max_attempts": 4,
+                      "timeout_ms": 60000,
+                      "on_timeout": "fail",
+                      "operation": {
+                        "kind": "action",
+                        "grant": {
+                          "adapter": "checks",
+                          "operation": "experiment_submit_v1",
+                          "destination": "fixture:checks"
+                        },
+                        "requires_decision": false,
+                        "required_condition": null
+                      }
+                    }
+                  ],
+                  "result": {
+                    "candidate": {
+                      "source": "step",
+                      "step": "implement",
+                      "port": "result"
+                    },
+                    "checks": {
+                      "source": "step",
+                      "step": "checks",
+                      "port": "result"
+                    }
+                  },
+                  "completion": [
+                    {
+                      "source": "literal",
+                      "value": {
+                        "type": "boolean",
+                        "value": true
+                      }
+                    }
+                  ],
+                  "authority": {
+                    "task_plans": [
+                      "sha256:2e7a51946755fdcc2cce031df086158dd7ce84ef3058e4ee96f1c5c0943ab2b2"
+                    ],
+                    "task_templates": [],
+                    "grants": [
+                      {
+                        "adapter": "checks",
+                        "operation": "experiment_submit_v1",
+                        "destination": "fixture:checks"
+                      }
+                    ],
+                    "decision_owners": []
+                  },
+                  "limits": {
+                    "max_tokens": 1000,
+                    "max_wall_ms": 150000,
+                    "max_dispatches": 40
+                  },
+                  "admission": null
+                }
+              }
+            },
+            "policy": {
+              "schema": "af/scenario-policy@8",
+              "adapters": {
+                "checks": {
+                  "executable": "/fixture/check-adapter",
+                  "digest": "sha256:1115413dfffdeaa6885ed0a2b9b62f163a07a346d7a3dc0c5d8b3f9e5ab7b8cf",
+                  "operations": [
+                    "experiment_submit_v1"
+                  ],
+                  "destinations": [
+                    "fixture:checks"
+                  ],
+                  "max_wall_ms": 5000,
+                  "max_output_bytes": 4096
+                }
+              },
+              "task_plans": [
+                "sha256:2e7a51946755fdcc2cce031df086158dd7ce84ef3058e4ee96f1c5c0943ab2b2"
+              ],
+              "task_templates": [],
+              "decision_keys": {},
+              "nightly_releases": {},
+              "performance_publications": {},
+              "file_roots": [],
+              "implementation_startup": null
+            },
+            "revision": "sha256:beb2b60b586b90eb2945b852ceb0ccb68b6155ec2b13975ebebf53aa001b900a",
+            "definitions": {
+              "clean": "sha256:35b265874d510ab273f699b5c6486b52d6b54938660ea1a72c398c4022f53816"
+            }
+          },
+          "limits": {
+            "max_tokens": 1000,
+            "max_wall_ms": 150000,
+            "max_dispatches": 40
+          },
+          "created_unix_ms": 1795305465033,
+          "updated_unix_ms": 1795305466120,
+          "status": "waiting",
+          "waiting": {
+            "kind": "reconcile",
+            "step": "root/checks",
+            "intent_id": "sha256:c1b5353ebd0ca2fa1b3c84c3a3bbda282034541de9eaa91a6b419d4ec84fbf56",
+            "diagnostic": "Adapter failed or exceeded its output bound; outcome uncertain"
+          },
+          "frames": {
+            "root": {
+              "scenario": "clean",
+              "inputs": {},
+              "started_unix_ms": 1795305465033,
+              "steps": [
+                {
+                  "step": "implement",
+                  "started_unix_ms": 1795305465055,
+                  "deadline_unix_ms": 1795305555055,
+                  "status": "succeeded",
+                  "skipped": null,
+                  "intents": [
+                    {
+                      "id": "sha256:08e7567416e7ae431ebfdcb747805893abe1c0edf04d53b5533e0f822c829cff",
+                      "input_digest": "sha256:b5145735273ed4b3c41e5bda5aec6fa63b98f9e45cb8c31c6bfdb256de7edc3e",
+                      "phase": "done",
+                      "evidence": []
+                    }
+                  ],
+                  "outputs": {
+                    "result": {
+                      "type": "task",
+                      "value": {
+                        "task_id": "pagination-cli",
+                        "plan_id": "sha256:2e7a51946755fdcc2cce031df086158dd7ce84ef3058e4ee96f1c5c0943ab2b2",
+                        "revision_id": "sha256:aa938cd5711ef441559c46926142a7eb4523272eb0e1d26815113c09b734f213",
+                        "result_id": "sha256:919f00b8f9de2b9287c8b956f87bb0789712b4d1d4d098c22e08983ff50717b9",
+                        "charged_tokens": 0,
+                        "result": {
+                          "task_revision_id": "sha256:aa938cd5711ef441559c46926142a7eb4523272eb0e1d26815113c09b734f213",
+                          "execution": "completed",
+                          "acceptance": "satisfied",
+                          "domain_conclusion": "verified",
+                          "outputs": {
+                            "snapshot": {
+                              "artifact_ids": [
+                                "sha256:68d5e3065c0edb569f74df287bd1a759d5d3c52b82149eb227393267e5a9b58a"
+                              ],
+                              "artifact_type": "af/SourceTree@1",
+                              "cardinality": "one",
+                              "snapshot_id": "sha256:369fc90e6e852bc673522e62b19975461da3136f17b6a1f3cd43add116d7f56c"
+                            },
+                            "verification": {
+                              "artifact_ids": [
+                                "sha256:5f90db1680f98879e2034421644bfbca2812ca1f891cdc496407c1d681f9b784"
+                              ],
+                              "artifact_type": "af/VerificationResult@1",
+                              "cardinality": "one",
+                              "snapshot_id": "sha256:369fc90e6e852bc673522e62b19975461da3136f17b6a1f3cd43add116d7f56c"
+                            }
+                          },
+                          "evidence": [
+                            "sha256:5f90db1680f98879e2034421644bfbca2812ca1f891cdc496407c1d681f9b784"
+                          ],
+                          "missing_obligations": []
+                        }
+                      }
+                    }
+                  },
+                  "child": null,
+                  "decision": null,
+                  "diagnostic": null
+                },
+                {
+                  "step": "checks",
+                  "started_unix_ms": 1795305465539,
+                  "deadline_unix_ms": 1795305525539,
+                  "status": "waiting",
+                  "skipped": null,
+                  "intents": [
+                    {
+                      "id": "sha256:c1b5353ebd0ca2fa1b3c84c3a3bbda282034541de9eaa91a6b419d4ec84fbf56",
+                      "input_digest": "sha256:3d48d1b77f7d56f3358602ade3726036a3da4e774ef061936da29ea075c96148",
+                      "phase": "uncertain",
+                      "evidence": [
+                        "Fixture check 57eddc9083a3aa0a4323775d388321cfc8145800b2dcd6d264924cf536c5c22f for sha256:369fc90e6e852bc673522e62b19975461da3136f17b6a1f3cd43add116d7f56c is pending",
+                        "Adapter failed or exceeded its output bound; outcome uncertain"
+                      ]
+                    }
+                  ],
+                  "outputs": {},
+                  "child": null,
+                  "decision": null,
+                  "diagnostic": null
+                }
+              ],
+              "dispatches": 3,
+              "outputs": null
+            }
+          },
+          "task_charges": {
+            "sha256:171d16206f56e486f4adc0b6646e257d580800916b29d823ac849711ccc0e232": {
+              "maximum": 1000,
+              "charged": 0,
+              "unknown_usage": false,
+              "step": "root/implement"
+            }
+          },
+          "dispatches": 3,
+          "failure": null,
+          "cancellation": null,
+          "ant": "durability",
+          "goal_claim": null,
+          "fresh_tasks": {}
+        }
+      }
+    },
+    "ledger": {
+      "checks": [
+        {
+          "id": "57eddc9083a3aa0a4323775d388321cfc8145800b2dcd6d264924cf536c5c22f",
+          "revision": "sha256:369fc90e6e852bc673522e62b19975461da3136f17b6a1f3cd43add116d7f56c"
+        }
+      ],
+      "calls": [
+        {
+          "sequence": 1,
+          "action": "read",
+          "check_id": "57eddc9083a3aa0a4323775d388321cfc8145800b2dcd6d264924cf536c5c22f",
+          "intent": "sha256:c1b5353ebd0ca2fa1b3c84c3a3bbda282034541de9eaa91a6b419d4ec84fbf56",
+          "status": 404,
+          "served_revision": null
+        },
+        {
+          "sequence": 2,
+          "action": "create",
+          "check_id": "57eddc9083a3aa0a4323775d388321cfc8145800b2dcd6d264924cf536c5c22f",
+          "intent": "sha256:c1b5353ebd0ca2fa1b3c84c3a3bbda282034541de9eaa91a6b419d4ec84fbf56",
+          "status": 201,
+          "served_revision": "sha256:369fc90e6e852bc673522e62b19975461da3136f17b6a1f3cd43add116d7f56c"
+        },
+        {
+          "sequence": 3,
+          "action": "read",
+          "check_id": "57eddc9083a3aa0a4323775d388321cfc8145800b2dcd6d264924cf536c5c22f",
+          "intent": "sha256:c1b5353ebd0ca2fa1b3c84c3a3bbda282034541de9eaa91a6b419d4ec84fbf56",
+          "status": 401,
+          "served_revision": null
+        }
+      ]
+    }
+  },
+  "wrong-revision": {
+    "before": {
+      "schema": "af/scenario-list@12",
+      "runs": {
+        "ant-27d494ba5c3854de2521de129a16efb2c418912829bd83ca73cc6927df766f29": {
+          "schema": "af/scenario-run@12",
+          "id": "ant-27d494ba5c3854de2521de129a16efb2c418912829bd83ca73cc6927df766f29",
+          "execution_id": "sha256:2a6a07c872b9ec507a833d79d61fd7030c35cec14b42baf935f7e14e77017f2a",
+          "pin": {
+            "schema": "af/scenario-pin@12",
+            "bundle": {
+              "schema": "af/scenario-bundle@11",
+              "root": "clean",
+              "definitions": {
+                "clean": {
+                  "schema": "af/scenario@11",
+                  "inputs": {},
+                  "outputs": {
+                    "candidate": "task",
+                    "checks": "action"
+                  },
+                  "steps": [
+                    {
+                      "id": "implement",
+                      "inputs": {},
+                      "outputs": {
+                        "result": "task"
+                      },
+                      "when": null,
+                      "max_attempts": 1,
+                      "timeout_ms": 90000,
+                      "on_timeout": "fail",
+                      "operation": {
+                        "kind": "task",
+                        "target": {
+                          "repo": "/fixture/repo",
+                          "state": "/fixture/task-store",
+                          "task_id": "pagination-cli",
+                          "plan_id": "sha256:52a996d0942730b3a1812ee63e7a3c93dda78234fd7fa3089a7cf232ba9f2027",
+                          "revision_id": "sha256:b0a6ff7d70b30163de76aa834ae9873cfd72d77397edac569dc570b17e713f56",
+                          "max_tokens": 1000
+                        }
+                      }
+                    },
+                    {
+                      "id": "checks",
+                      "inputs": {
+                        "body": {
+                          "source": "literal",
+                          "value": {
+                            "type": "text",
+                            "value": "Fixture CI"
+                          }
+                        },
+                        "candidate": {
+                          "source": "step",
+                          "step": "implement",
+                          "port": "result"
+                        },
+                        "revision": {
+                          "source": "project",
+                          "value": {
+                            "source": "step",
+                            "step": "implement",
+                            "port": "result"
+                          },
+                          "projection": {
+                            "kind": "task_output_snapshot",
+                            "port": "snapshot"
+                          }
+                        },
+                        "subject": {
+                          "source": "literal",
+                          "value": {
+                            "type": "text",
+                            "value": "pagination"
+                          }
+                        }
+                      },
+                      "outputs": {
+                        "result": "action"
+                      },
+                      "when": null,
+                      "max_attempts": 4,
+                      "timeout_ms": 60000,
+                      "on_timeout": "fail",
+                      "operation": {
+                        "kind": "action",
+                        "grant": {
+                          "adapter": "checks",
+                          "operation": "experiment_submit_v1",
+                          "destination": "fixture:checks"
+                        },
+                        "requires_decision": false,
+                        "required_condition": null
+                      }
+                    }
+                  ],
+                  "result": {
+                    "candidate": {
+                      "source": "step",
+                      "step": "implement",
+                      "port": "result"
+                    },
+                    "checks": {
+                      "source": "step",
+                      "step": "checks",
+                      "port": "result"
+                    }
+                  },
+                  "completion": [
+                    {
+                      "source": "literal",
+                      "value": {
+                        "type": "boolean",
+                        "value": true
+                      }
+                    }
+                  ],
+                  "authority": {
+                    "task_plans": [
+                      "sha256:52a996d0942730b3a1812ee63e7a3c93dda78234fd7fa3089a7cf232ba9f2027"
+                    ],
+                    "task_templates": [],
+                    "grants": [
+                      {
+                        "adapter": "checks",
+                        "operation": "experiment_submit_v1",
+                        "destination": "fixture:checks"
+                      }
+                    ],
+                    "decision_owners": []
+                  },
+                  "limits": {
+                    "max_tokens": 1000,
+                    "max_wall_ms": 150000,
+                    "max_dispatches": 40
+                  },
+                  "admission": null
+                }
+              }
+            },
+            "policy": {
+              "schema": "af/scenario-policy@8",
+              "adapters": {
+                "checks": {
+                  "executable": "/fixture/check-adapter",
+                  "digest": "sha256:1115413dfffdeaa6885ed0a2b9b62f163a07a346d7a3dc0c5d8b3f9e5ab7b8cf",
+                  "operations": [
+                    "experiment_submit_v1"
+                  ],
+                  "destinations": [
+                    "fixture:checks"
+                  ],
+                  "max_wall_ms": 5000,
+                  "max_output_bytes": 4096
+                }
+              },
+              "task_plans": [
+                "sha256:52a996d0942730b3a1812ee63e7a3c93dda78234fd7fa3089a7cf232ba9f2027"
+              ],
+              "task_templates": [],
+              "decision_keys": {},
+              "nightly_releases": {},
+              "performance_publications": {},
+              "file_roots": [],
+              "implementation_startup": null
+            },
+            "revision": "sha256:5a6a4b205541ec9f7da5bea691adcab9ecf4b9a418651dbf88deee34bcf49211",
+            "definitions": {
+              "clean": "sha256:94f558ce53b2bb65fb4540c0aec00db286c1cc58a75ff83a3eff344ab9926fb3"
+            }
+          },
+          "limits": {
+            "max_tokens": 1000,
+            "max_wall_ms": 150000,
+            "max_dispatches": 40
+          },
+          "created_unix_ms": 1795305468911,
+          "updated_unix_ms": 1795305469993,
+          "status": "waiting",
+          "waiting": {
+            "kind": "reconcile",
+            "step": "root/checks",
+            "intent_id": "sha256:15b63c33794b348586ac5a8343beba72fd6bdc5d5fe5ab52d868219ca85bee52",
+            "diagnostic": "Adapter failed or exceeded its output bound; outcome uncertain"
+          },
+          "frames": {
+            "root": {
+              "scenario": "clean",
+              "inputs": {},
+              "started_unix_ms": 1795305468911,
+              "steps": [
+                {
+                  "step": "implement",
+                  "started_unix_ms": 1795305468927,
+                  "deadline_unix_ms": 1795305558927,
+                  "status": "succeeded",
+                  "skipped": null,
+                  "intents": [
+                    {
+                      "id": "sha256:18f5d6e83cdf6b250c1c0272ca0aa0bd008a1c4028a50eaf29428c46db8522e2",
+                      "input_digest": "sha256:3a0dcc888282a6e7467e67b7c25b25dc74b874b8b4d4cf86a721edfc93a8b336",
+                      "phase": "done",
+                      "evidence": []
+                    }
+                  ],
+                  "outputs": {
+                    "result": {
+                      "type": "task",
+                      "value": {
+                        "task_id": "pagination-cli",
+                        "plan_id": "sha256:52a996d0942730b3a1812ee63e7a3c93dda78234fd7fa3089a7cf232ba9f2027",
+                        "revision_id": "sha256:b0a6ff7d70b30163de76aa834ae9873cfd72d77397edac569dc570b17e713f56",
+                        "result_id": "sha256:d4d9e7ecce4ddc9be5f97a595b40265eafc3b0a990f5805d0b9ccbee61344482",
+                        "charged_tokens": 0,
+                        "result": {
+                          "task_revision_id": "sha256:b0a6ff7d70b30163de76aa834ae9873cfd72d77397edac569dc570b17e713f56",
+                          "execution": "completed",
+                          "acceptance": "satisfied",
+                          "domain_conclusion": "verified",
+                          "outputs": {
+                            "snapshot": {
+                              "artifact_ids": [
+                                "sha256:df5f516d3095342e677ed065fb498c33a29309a00eb81145e21ce9fd79c6f62b"
+                              ],
+                              "artifact_type": "af/SourceTree@1",
+                              "cardinality": "one",
+                              "snapshot_id": "sha256:8122322e7624cd7ce22a8cae00f2c5ef1ebb056f50795ea540635080c0b1bc40"
+                            },
+                            "verification": {
+                              "artifact_ids": [
+                                "sha256:0d46e4dbd18c6ec5b88e81865a4dbd835c9b5359684681c5f4c4ed84c7e6834a"
+                              ],
+                              "artifact_type": "af/VerificationResult@1",
+                              "cardinality": "one",
+                              "snapshot_id": "sha256:8122322e7624cd7ce22a8cae00f2c5ef1ebb056f50795ea540635080c0b1bc40"
+                            }
+                          },
+                          "evidence": [
+                            "sha256:0d46e4dbd18c6ec5b88e81865a4dbd835c9b5359684681c5f4c4ed84c7e6834a"
+                          ],
+                          "missing_obligations": []
+                        }
+                      }
+                    }
+                  },
+                  "child": null,
+                  "decision": null,
+                  "diagnostic": null
+                },
+                {
+                  "step": "checks",
+                  "started_unix_ms": 1795305469441,
+                  "deadline_unix_ms": 1795305529441,
+                  "status": "waiting",
+                  "skipped": null,
+                  "intents": [
+                    {
+                      "id": "sha256:15b63c33794b348586ac5a8343beba72fd6bdc5d5fe5ab52d868219ca85bee52",
+                      "input_digest": "sha256:b642b77a762efc118d814dc71e7fb825b6c23e0b965f6c9e4670bda52272f1ce",
+                      "phase": "uncertain",
+                      "evidence": [
+                        "Fixture check 8e8b9df9ace3fd3724b91305d3d572bf577c0fa9ba6bd022dd7c0a83abe8e55a for sha256:8122322e7624cd7ce22a8cae00f2c5ef1ebb056f50795ea540635080c0b1bc40 is pending",
+                        "Adapter failed or exceeded its output bound; outcome uncertain"
+                      ]
+                    }
+                  ],
+                  "outputs": {},
+                  "child": null,
+                  "decision": null,
+                  "diagnostic": null
+                }
+              ],
+              "dispatches": 3,
+              "outputs": null
+            }
+          },
+          "task_charges": {
+            "sha256:b47d43021508237a59a52feb93f436670b549d2c964f0db3a7f71b2d3aba1404": {
+              "maximum": 1000,
+              "charged": 0,
+              "unknown_usage": false,
+              "step": "root/implement"
+            }
+          },
+          "dispatches": 3,
+          "failure": null,
+          "cancellation": null,
+          "ant": "durability",
+          "goal_claim": null,
+          "fresh_tasks": {}
+        }
+      }
+    },
+    "ledger": {
+      "checks": [
+        {
+          "id": "8e8b9df9ace3fd3724b91305d3d572bf577c0fa9ba6bd022dd7c0a83abe8e55a",
+          "revision": "sha256:8122322e7624cd7ce22a8cae00f2c5ef1ebb056f50795ea540635080c0b1bc40"
+        }
+      ],
+      "calls": [
+        {
+          "sequence": 1,
+          "action": "read",
+          "check_id": "8e8b9df9ace3fd3724b91305d3d572bf577c0fa9ba6bd022dd7c0a83abe8e55a",
+          "intent": "sha256:15b63c33794b348586ac5a8343beba72fd6bdc5d5fe5ab52d868219ca85bee52",
+          "status": 404,
+          "served_revision": null
+        },
+        {
+          "sequence": 2,
+          "action": "create",
+          "check_id": "8e8b9df9ace3fd3724b91305d3d572bf577c0fa9ba6bd022dd7c0a83abe8e55a",
+          "intent": "sha256:15b63c33794b348586ac5a8343beba72fd6bdc5d5fe5ab52d868219ca85bee52",
+          "status": 201,
+          "served_revision": "sha256:8122322e7624cd7ce22a8cae00f2c5ef1ebb056f50795ea540635080c0b1bc40"
+        },
+        {
+          "sequence": 3,
+          "action": "read",
+          "check_id": "8e8b9df9ace3fd3724b91305d3d572bf577c0fa9ba6bd022dd7c0a83abe8e55a",
+          "intent": "sha256:15b63c33794b348586ac5a8343beba72fd6bdc5d5fe5ab52d868219ca85bee52",
+          "status": 200,
+          "served_revision": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ]
+    }
+  }
+}
