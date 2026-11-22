@@ -160,13 +160,13 @@ def bundle(pin, destination, title, body, owner="owner", adapter="workspace", re
                   prepared=prepared_value, evidence=step_ref("merged")), "action")]
     for item in final_steps:
         add(item, final_success)
-    root = dict(schema="af/scenario@10", inputs={}, outputs={"implementation": "task", "publication": "action", "merged": "observation", "cleanup": "action"},
+    root = dict(schema="af/scenario@11", inputs={}, outputs={"implementation": "task", "publication": "action", "merged": "observation", "cleanup": "action"},
         steps=steps, result={"implementation": task_value, "publication": publication_value, "merged": step_ref("merged"), "cleanup": step_ref("cleanup")},
         completion=[final_success, project("merged", "observation_satisfied")],
         authority=dict(task_plans=[], task_templates=sorted(templates), grants=grants, decision_owners=[] if scoped else [owner]),
         limits=dict(max_tokens=sum(item["operation"]["template"]["max_tokens"] for item in steps if item["operation"]["kind"] == "fresh_task"),
                     max_wall_ms=sum(item["timeout_ms"] for item in steps), max_dispatches=len(steps) * 8), admission=None)
-    return dict(schema="af/scenario-bundle@10", root="impl", definitions={"impl": root})
+    return dict(schema="af/scenario-bundle@11", root="impl", definitions={"impl": root})
 
 
 def toml_value(value):

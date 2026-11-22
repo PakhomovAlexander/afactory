@@ -56,7 +56,8 @@ pub(crate) fn resume_admitted(
     }
     loop {
         let at = execution_time()?;
-        let prepared = store.update(|world| crate::retention::prepare_run(world, id, at))?;
+        let prepared = store
+            .update(|world| crate::retention::prepare_run(store.host.as_ref(), world, id, at))?;
         let run = store
             .read()?
             .runs
@@ -143,7 +144,7 @@ pub(crate) fn resume_admitted(
         let cancellation = std::sync::atomic::AtomicBool::new(false);
         let task_dispatch = matches!(
             dispatch.definition.operation,
-            Kind::Task { .. } | Kind::FreshTask { .. }
+            Kind::Task { .. } | Kind::CiDiagnosis { .. } | Kind::FreshTask { .. }
         );
         let full_step = format!("{}/{}", dispatch.frame, dispatch.step);
         let result = std::thread::scope(|scope| {
@@ -239,6 +240,11 @@ pub(crate) fn resume_admitted(
                     charged_tokens,
                     unknown_usage,
                     ..
+                })
+                | Ok(Settlement::CiDiagnosisDone {
+                    charged_tokens,
+                    unknown_usage,
+                    ..
                 }) => Some((*charged_tokens, *unknown_usage)),
                 Ok(Settlement::TaskDone {
                     outputs,
@@ -267,11 +273,17 @@ pub(crate) fn resume_admitted(
                     unreachable!("terminal outcomes normalized above")
                 }
                 Ok(Settlement::Done(ref outputs))
-                | Ok(Settlement::TaskDone { ref outputs, .. }) => {
+                | Ok(Settlement::TaskDone { ref outputs, .. })
+                | Ok(Settlement::CiDiagnosisDone { ref outputs, .. }) => {
                     for datum in outputs.values() {
                         datum.validate()?;
                     }
-                    run.complete(&dispatch.frame, &dispatch.step, outputs.clone())?;
+                    run.complete(
+                        store.host.as_ref(),
+                        &dispatch.frame,
+                        &dispatch.step,
+                        outputs.clone(),
+                    )?;
                     if !cancelled {
                         run.status = Status::Running;
                         run.waiting = None;
@@ -315,7 +327,7 @@ pub(crate) fn resume_admitted(
                                 deadline_unix_ms: progress.deadline_unix_ms,
                                 evidence: evidence.clone(),
                             },
-                            Kind::Task { target } => Waiting::Task {
+                            Kind::Task { target } | Kind::CiDiagnosis { target } => Waiting::Task {
                                 step,
                                 task_id: target.task_id.clone(),
                             },
@@ -478,7 +490,7 @@ pub(crate) fn reconcile_native_charges(store: &Store, id: &str, at: u64) -> Resu
             continue;
         };
         let targets: Vec<_> = match &step.operation {
-            Kind::Task { target } => vec![target.clone()],
+            Kind::Task { target } | Kind::CiDiagnosis { target } => vec![target.clone()],
             Kind::FreshTask { template, .. } => progress
                 .intents
                 .iter()
@@ -649,7 +661,7 @@ mod tests {
             None,
         )
         .unwrap();
-        run.prepare(START).unwrap().unwrap();
+        run.prepare(&TestHost::default(), START).unwrap().unwrap();
         run.fail("Native response lost".into());
         let directory = tempfile::tempdir().unwrap();
         let mut store = Store::isolated(&directory.path().join("state")).unwrap();
@@ -686,7 +698,11 @@ mod tests {
                 .all(|c| c.charged == Some(101) && !c.unknown_usage)
         );
         let dispatches = run.dispatches;
-        assert!(run.prepare(START + 2).unwrap().is_none());
+        assert!(
+            run.prepare(&TestHost::default(), START + 2)
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(run.dispatches, dispatches);
         store.host = Arc::new(TestHost {
             charge: Some((60, false)),

@@ -155,13 +155,13 @@
         "scripts/test-workspace-fixtures.py"
       ],
       "schemas": [
-        "schemas/ant-inspection-v8.json",
-        "schemas/ant-list-v13.json",
-        "schemas/ant-pin-v12.json",
+        "schemas/ant-inspection-v9.json",
+        "schemas/ant-list-v14.json",
+        "schemas/ant-pin-v13.json",
         "schemas/ant-scheduler-v1.json",
-        "schemas/ant-state-v13.json",
-        "schemas/ant-tick-v12.json",
-        "schemas/ant-v11.json",
+        "schemas/ant-state-v14.json",
+        "schemas/ant-tick-v13.json",
+        "schemas/ant-v12.json",
         "schemas/artifact-envelope-v1.json",
         "schemas/build-cache-v2.json",
         "schemas/cache-manifest-v1.json",
@@ -284,26 +284,26 @@
         "schemas/run-event-v3.json",
         "schemas/scenario-adapter-request-v8.json",
         "schemas/scenario-adapter-response-v3.json",
-        "schemas/scenario-bundle-v10.json",
+        "schemas/scenario-bundle-v11.json",
         "schemas/scenario-decision-v1.json",
         "schemas/scenario-driver-v2.json",
         "schemas/scenario-evidence-source-v1.json",
         "schemas/scenario-experiment-source-request-v1.json",
         "schemas/scenario-experiment-source-v1.json",
-        "schemas/scenario-list-v11.json",
+        "schemas/scenario-list-v12.json",
         "schemas/scenario-owned-file-v1.json",
-        "schemas/scenario-pin-v11.json",
+        "schemas/scenario-pin-v12.json",
         "schemas/scenario-policy-v8.json",
         "schemas/scenario-roadmap-list-v3.json",
         "schemas/scenario-roadmap-proposal-v2.json",
         "schemas/scenario-roadmap-revision-v2.json",
         "schemas/scenario-roadmap-v3.json",
-        "schemas/scenario-run-v11.json",
+        "schemas/scenario-run-v12.json",
         "schemas/scenario-signed-decision-v1.json",
-        "schemas/scenario-store-v17.json",
+        "schemas/scenario-store-v18.json",
         "schemas/scenario-task-template-v2.json",
         "schemas/scenario-template-pin-v2.json",
-        "schemas/scenario-v10.json",
+        "schemas/scenario-v11.json",
         "schemas/seal-ignored-v1.json",
         "schemas/self-check-v4.json",
         "schemas/self-status-v2.json",
@@ -910,6 +910,44 @@
         "schemas/task-wake-traversal-v1.json",
         "schemas/task-worker-reply-v1.json",
         "schemas/task-worker-request-v1.json"
+      ]
+    },
+    {
+      "name": "ci-health",
+      "reader_writer": [
+        "scripts/ci-health.py",
+        "scripts/ci-health-github.py",
+        "scripts/af-maintenance-watchdog.py",
+        "crates/af-contracts/src/ci_health.rs"
+      ],
+      "semantic_owner": [
+        "crates/af-scenario/src/ci_diagnosis.rs",
+        "crates/af/src/task_commands/structured.rs"
+      ],
+      "tests": [
+        "scripts/test-ci-health.py",
+        "scripts/test-af-maintenance-watchdog.py",
+        "crates/af-contracts/tests/schema_parity/ci_health.rs",
+        "crates/af/tests/it/task_custom.rs"
+      ],
+      "schemas": [
+        "fixtures/scenarios/maintenance-ci-health/task/kind/structured.json#/inputs/snapshot/schema",
+        "fixtures/scenarios/maintenance-ci-health/task/kind/structured.json#/outputs/diagnosis/schema",
+        "fixtures/scenarios/maintenance-ci-health/task/worker/input.schema.json",
+        "fixtures/scenarios/maintenance-ci-health/task/worker/outputs/diagnosis.schema.json",
+        "schemas/ci-diagnosis-selection-v1.json",
+        "schemas/ci-diagnosis-v1.json",
+        "schemas/ci-health-notification-v5.json",
+        "schemas/ci-health-snapshot-v1.json",
+        "schemas/ci-health-state-v2.json",
+        "schemas/ci-observe-occurrence-v1.json",
+        "schemas/ci-observe-service-v1.json",
+        "schemas/ci-signature-state-v5.json",
+        "schemas/maintenance-watchdog-alert-v1.json",
+        "schemas/maintenance-watchdog-config-v1.json",
+        "schemas/scenario-ci-diagnosis-v2.json",
+        "schemas/scenario-ci-notification-evidence-v2.json",
+        "schemas/scenario-task-output-field-v1.json"
       ]
     }
   ],
@@ -2556,6 +2594,18 @@
           "reason": "negative receipt fixture intentionally lacks output schema; not an executable Worker contract"
         }
       }
+    },
+    {
+      "worker": "fixtures/scenarios/maintenance-ci-health/task/worker/worker.toml",
+      "outputs": {
+        "diagnosis": "fixtures/scenarios/maintenance-ci-health/task/worker/outputs/diagnosis.schema.json"
+      },
+      "strict": true,
+      "reason": "bounded closed diagnosis projection; native acceptance binds exact selected snapshot and failed head",
+      "canonical": {
+        "diagnosis": "fixtures/scenarios/maintenance-ci-health/task/kind/structured.json#/outputs/diagnosis/schema"
+      },
+      "excluded_outputs": {}
     }
   ]
 }

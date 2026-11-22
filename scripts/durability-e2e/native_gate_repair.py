@@ -82,7 +82,7 @@ def run(binary, source, fixture_scripts):
         "when_false": project(ref("repair"), "accepted_task"),
     }
     definition = {
-        "schema": "af/scenario@10", "admission": None, "inputs": {},
+        "schema": "af/scenario@11", "admission": None, "inputs": {},
         "outputs": {"candidate": "task"},
         "steps": [fresh(template, "first", {}, None),
                   fresh(template, "repair", {"repair": ref("first")},
@@ -100,7 +100,7 @@ def run(binary, source, fixture_scripts):
                         "task_templates": [template_id], "file_roots": [], "decision_keys": {}})
     policy.chmod(0o600)
     bundle = root / "scenario.json"
-    write_json(bundle, {"schema": "af/scenario-bundle@10", "root": "gate-repair",
+    write_json(bundle, {"schema": "af/scenario-bundle@11", "root": "gate-repair",
                         "definitions": {"gate-repair": definition}})
     inputs = root / "inputs.json"
     write_json(inputs, {})

@@ -133,7 +133,7 @@ mod tests {
     fn terminal_evidence_roundtrips_without_satisfying_accepted_task_contract() {
         let value = terminal();
         value.validate().unwrap();
-        crate::tests::valid("scenario-v10.json#/$defs/TaskOutcome", &value);
+        crate::tests::valid("scenario-v11.json#/$defs/TaskOutcome", &value);
         let wire = serde_json::to_value(&value).unwrap();
         assert_eq!(
             serde_json::from_value::<TaskOutcome>(wire.clone()).unwrap(),
@@ -157,13 +157,13 @@ mod tests {
         retired.schema = "af/scenario-task-outcome@1".into();
         assert!(retired.validate().is_err());
         assert!(
-            !crate::tests::schema("scenario-v10.json#/$defs/TaskOutcome")
+            !crate::tests::schema("scenario-v11.json#/$defs/TaskOutcome")
                 .is_valid(&serde_json::to_value(retired).unwrap())
         );
         for field in ["schema", "extra"] {
             let mut bad = wire.clone();
             bad[field] = json!("unknown");
-            assert!(!crate::tests::schema("scenario-v10.json#/$defs/TaskOutcome").is_valid(&bad));
+            assert!(!crate::tests::schema("scenario-v11.json#/$defs/TaskOutcome").is_valid(&bad));
             assert!(
                 serde_json::from_value::<TaskOutcome>(bad).map_or(true, |v| v.validate().is_err())
             );
@@ -220,7 +220,7 @@ mod tests {
             value.outcome = outcome;
             value.cause = Some(cause);
             value.validate().unwrap();
-            crate::tests::valid("scenario-v10.json#/$defs/TaskOutcome", &value);
+            crate::tests::valid("scenario-v11.json#/$defs/TaskOutcome", &value);
             assert!(!value.repairable(), "{outcome:?}/{cause:?}");
             assert!(!value.accepted());
         }

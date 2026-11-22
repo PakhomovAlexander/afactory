@@ -1,0 +1,198 @@
+[
+  {
+    "name": "unused historical candidate at horizon",
+    "zone": {
+      "name": "Fixture/Pinned",
+      "initial_offset": -3600,
+      "transitions": [
+        [
+          1794096000,
+          0
+        ],
+        [
+          1794200400,
+          0
+        ]
+      ],
+      "valid_until_unix_seconds": 1794200400
+    },
+    "day": 20766,
+    "hour": 4,
+    "minute": 0,
+    "due_unix_ms": 1794196800000,
+    "gap": false
+  },
+  {
+    "name": "unused historical candidate after horizon",
+    "zone": {
+      "name": "Fixture/Pinned",
+      "initial_offset": -3600,
+      "transitions": [
+        [
+          1794096000,
+          0
+        ],
+        [
+          1794198600,
+          0
+        ]
+      ],
+      "valid_until_unix_seconds": 1794198600
+    },
+    "day": 20766,
+    "hour": 4,
+    "minute": 0,
+    "due_unix_ms": 1794196800000,
+    "gap": false
+  },
+  {
+    "name": "earliest proven fold before horizon",
+    "zone": {
+      "name": "Fixture/Pinned",
+      "initial_offset": 3600,
+      "transitions": [
+        [
+          1794196800,
+          0
+        ]
+      ],
+      "valid_until_unix_seconds": 1794196800
+    },
+    "day": 20766,
+    "hour": 4,
+    "minute": 30,
+    "due_unix_ms": 1794195000000,
+    "gap": false
+  },
+  {
+    "name": "unbounded fold remains earliest",
+    "zone": {
+      "name": "Fixture/Pinned",
+      "initial_offset": 3600,
+      "transitions": [
+        [
+          1794196800,
+          0
+        ]
+      ],
+      "valid_until_unix_seconds": null
+    },
+    "day": 20766,
+    "hour": 4,
+    "minute": 30,
+    "due_unix_ms": 1794195000000,
+    "gap": false
+  },
+  {
+    "name": "proven forward gap before horizon",
+    "zone": {
+      "name": "Fixture/Pinned",
+      "initial_offset": 0,
+      "transitions": [
+        [
+          1794196800,
+          3600
+        ],
+        [
+          1794196801,
+          3600
+        ]
+      ],
+      "valid_until_unix_seconds": 1794196801
+    },
+    "day": 20766,
+    "hour": 4,
+    "minute": 30,
+    "due_unix_ms": 1794196800000,
+    "gap": true
+  },
+  {
+    "name": "gap at exclusive horizon refused",
+    "zone": {
+      "name": "Fixture/Pinned",
+      "initial_offset": 0,
+      "transitions": [
+        [
+          1794196800,
+          3600
+        ]
+      ],
+      "valid_until_unix_seconds": 1794196800
+    },
+    "day": 20766,
+    "hour": 4,
+    "minute": 30,
+    "due_unix_ms": null,
+    "gap": false
+  },
+  {
+    "name": "actual unpinned occurrence refused",
+    "zone": {
+      "name": "Fixture/Pinned",
+      "initial_offset": -3600,
+      "transitions": [
+        [
+          1794096000,
+          0
+        ],
+        [
+          1794196800,
+          0
+        ]
+      ],
+      "valid_until_unix_seconds": 1794196800
+    },
+    "day": 20766,
+    "hour": 4,
+    "minute": 0,
+    "due_unix_ms": null,
+    "gap": false
+  },
+  {
+    "name": "UTC continuity",
+    "zone": {
+      "name": "Fixture/Pinned",
+      "initial_offset": 0,
+      "transitions": [],
+      "valid_until_unix_seconds": null
+    },
+    "day": 20766,
+    "hour": 4,
+    "minute": 0,
+    "due_unix_ms": 1794196800000,
+    "gap": false
+  },
+  {
+    "name": "fixed offset continuity",
+    "zone": {
+      "name": "Fixture/Pinned",
+      "initial_offset": 3600,
+      "transitions": [],
+      "valid_until_unix_seconds": null
+    },
+    "day": 20766,
+    "hour": 4,
+    "minute": 0,
+    "due_unix_ms": 1794193200000,
+    "gap": false
+  },
+  {
+    "name": "unbounded forward gap continuity",
+    "zone": {
+      "name": "Fixture/Pinned",
+      "initial_offset": 0,
+      "transitions": [
+        [
+          1794196800,
+          3600
+        ]
+      ],
+      "valid_until_unix_seconds": null
+    },
+    "day": 20766,
+    "hour": 4,
+    "minute": 30,
+    "due_unix_ms": 1794196800000,
+    "gap": true
+  }
+]

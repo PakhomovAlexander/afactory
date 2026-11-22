@@ -93,7 +93,7 @@
               },
               "inputs": {
                 "additionalProperties": {
-                  "$ref": "urn:af:schema:scenario:10#/$defs/Datum"
+                  "$ref": "urn:af:schema:scenario:11#/$defs/Datum"
                 },
                 "type": "object"
               },

@@ -1,0 +1,26 @@
+{
+  "repository": {
+    "type": "text",
+    "value": "octo/project"
+  },
+  "main_ref": {
+    "type": "text",
+    "value": "main"
+  },
+  "release_selector": {
+    "type": "text",
+    "value": "none"
+  },
+  "observation_start": {
+    "type": "text",
+    "value": "2026-11-08T04:00:00Z"
+  },
+  "observation_end": {
+    "type": "text",
+    "value": "2026-11-09T04:00:00Z"
+  },
+  "notification": {
+    "type": "text",
+    "value": "fixture:ci-health"
+  }
+}

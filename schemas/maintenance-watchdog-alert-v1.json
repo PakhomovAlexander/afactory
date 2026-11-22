@@ -1,0 +1,77 @@
+{
+  "$id": "urn:af:schema:maintenance-watchdog-alert:1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "alert_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "ant_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[^\\u0000]+$",
+      "type": "string"
+    },
+    "ant_revision": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "expected_date": {
+      "pattern": "^20[0-9]{2}-[0-9]{2}-[0-9]{2}$",
+      "type": "string"
+    },
+    "expected_occurrence": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "missed_occurrence",
+        "run_stalled",
+        "run_failed_before_report"
+      ]
+    },
+    "notification": {
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^[^\\u0000]+$",
+      "type": "string"
+    },
+    "observed_unix_ms": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "run_id": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\u0000]+$",
+          "type": "string"
+        }
+      ]
+    },
+    "schema": {
+      "const": "af.maintenance-watchdog-alert/1"
+    }
+  },
+  "required": [
+    "schema",
+    "alert_id",
+    "ant_id",
+    "ant_revision",
+    "expected_occurrence",
+    "expected_date",
+    "kind",
+    "run_id",
+    "notification",
+    "observed_unix_ms"
+  ],
+  "title": "Maintenance watchdog alert v1",
+  "type": "object"
+}

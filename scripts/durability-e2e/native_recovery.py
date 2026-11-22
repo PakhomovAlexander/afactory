@@ -132,7 +132,7 @@ def configure(root, policy, bundle, endpoint, token, *, broker=False, period_sec
     definition["outputs"]["checks"] = "action"
     definition["result"]["checks"] = {"source": "step", "step": "checks", "port": "result"}
     ant = {
-        "schema": "af/ant@11", "id": "durability", "scenario": bundle, "inputs": {},
+        "schema": "af/ant@12", "id": "durability", "scenario": bundle, "inputs": {},
         "schedule": {"kind": "interval", "seconds": period_seconds or (900 if broker else 300),
                      "start_unix_ms": time.time_ns() // 1_000_000 + 2000},
         "owner": "fixture", "notification": "local:fixture",

@@ -249,12 +249,12 @@ class ReleaseContract(unittest.TestCase):
         policy = json.loads((ROOT / 'scripts/release-policy.json').read_text())
         # Independent expectations: do not infer the current generation from either the
         # declaration or the schemas being checked. Both can drift together.
-        expected = {'scenario-store': 17, 'scenario-driver': 2,
+        expected = {'scenario-store': 18, 'scenario-driver': 2,
                     'scenario-adapter-response': 3, 'github-adapter-state': 9,
-                    'git-candidate-source-request': 2, 'git-candidate-source': 2, 'scenario': 10, 'scenario-bundle': 10,
-                    'scenario-pin': 11, 'scenario-run': 11, 'scenario-list': 11,
-                    'ant': 11, 'ant-pin': 12, 'ant-tick': 12, 'ant-state': 13,
-                    'ant-inspection': 8, 'ant-list': 13,
+                    'git-candidate-source-request': 2, 'git-candidate-source': 2, 'scenario': 11, 'scenario-bundle': 11,
+                    'scenario-pin': 12, 'scenario-run': 12, 'scenario-list': 12,
+                    'ant': 12, 'ant-pin': 13, 'ant-tick': 13, 'ant-state': 14,
+                    'ant-inspection': 9, 'ant-list': 14,
                     'scenario-policy': 8, 'implementation-startup-scope': 2, 'implementation-startup-failure': 1,
                     'scenario-task-template': 2, 'scenario-template-pin': 2}
         for name, version in expected.items():
@@ -290,8 +290,8 @@ class ReleaseContract(unittest.TestCase):
         expected = {
             'task-wake-route-v1.json': 'af/task-wake-route@1',
             'task-wake-status-v2.json': 'af/task-wake-status@2',
-            'scenario-v10.json': 'af/scenario@10',
-            'scenario-store-v17.json': 'af/scenario-store@17',
+            'scenario-v11.json': 'af/scenario@11',
+            'scenario-store-v18.json': 'af/scenario-store@18',
             'scenario-driver-v2.json': 'af/scenario-driver@2',
             'implementation-startup-scope-v2.json': 'af/implementation-startup-scope@2',
             'performance-executor-v5.json': 'af.perf-executor/5',
