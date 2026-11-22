@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:backlog-configured-state:2",
   "title": "Private Markdown and Jira backlog publication state",
+  "description": "Markdown observation requires the exact approved revision and keeps the item's initial remote identity. Jira observations can record changed fields or a closed issue.",
   "type": "object",
   "required": [
     "schema",

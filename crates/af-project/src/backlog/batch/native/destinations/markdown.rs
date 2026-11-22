@@ -47,18 +47,18 @@ impl Config {
         self,
         store: &ProjectStore,
         delivery: Delivery<'_>,
-        mapped_items: &BTreeMap<String, String>,
+        history: &History,
+        may_append: bool,
     ) -> Result<Observation, Pending> {
         let Delivery {
             publication,
             item,
-            operation,
+            mapped,
             cancellation,
             deadline,
             ..
         } = delivery;
-        let creating = matches!(operation, Operation::Create);
-        let conflict = if creating {
+        let conflict = if may_append {
             Pending::PrewriteConflict
         } else {
             Pending::Conflict
@@ -67,31 +67,18 @@ impl Config {
         fs::flock(&file, FlockOperation::NonBlockingLockExclusive).map_err(|_| conflict)?;
         let (original, stamp) = read_document(&mut file).map_err(|_| conflict)?;
         let document = std::str::from_utf8(&original).map_err(|_| conflict)?;
-        let content = format!("## {}\n\n{}\n", item.public.title, item.public.body);
+        let content = content(&item.item_id, &item.public, mapped.is_some());
         if content.contains(RESERVED) {
             return Err(conflict);
         }
         let digest = af_store::canonical::blob_content_id(content.as_bytes());
         let intent = &publication.intent_id;
         let entries = entries(document, &self.project_id).ok_or(conflict)?;
-        for (id, entry) in &entries {
-            if mapped_items.get(*id) != Some(&entry.remote_id)
-                && (creating
-                    || *id != item.item_id
-                    || entry.intent != intent
-                    || entry.digest != digest)
-            {
-                return Err(conflict);
-            }
-        }
-        if mapped_items
-            .keys()
-            .any(|id| !entries.contains_key(id.as_str()))
-        {
-            return Err(conflict);
-        }
+        let observed = history
+            .check(&entries, &item.item_id, intent, &digest, may_append)
+            .ok_or(conflict)?;
 
-        let (remote_id, observed_digest) = if creating {
+        if may_append {
             let append = format!(
                 "\n\n{BEGIN}{}|{}|{intent}|{digest} -->\n{content}{END}",
                 self.project_id, item.item_id
@@ -110,32 +97,105 @@ impl Config {
                 cancellation,
                 deadline,
             )?;
-            (remote_id(&item.item_id, intent, &digest), digest.as_str())
         } else {
-            let entry = entries
-                .get(item.item_id.as_str())
-                .ok_or(Pending::NotObserved)?;
-            if !still_at_path(&self.path, &parent, stamp)
-                || read_document(&mut file).map_err(|_| conflict)?.0 != original
+            if !observed {
+                return Err(Pending::NotObserved);
+            }
+            if !matches!(read_document(&mut file), Ok((bytes, current)) if bytes == original && current == stamp)
             {
                 return Err(conflict);
             }
             file.sync_all()
                 .and_then(|()| parent.sync_all())
                 .map_err(|_| Pending::AdapterUnavailable)?;
-            (entry.remote_id.clone(), entry.digest)
-        };
-        let fields_id = if observed_digest == digest {
-            value_id(&(&item.public.title, &item.public.body)).map_err(|_| Pending::Conflict)?
-        } else {
-            observed_digest.to_owned()
-        };
+            if !still_at_path(&self.path, &parent, stamp) {
+                return Err(conflict);
+            }
+        }
+        Self::load(store, &publication.destination_id)
+            .map_err(|_| Pending::AuthorityUnavailable)?;
+        running(cancellation, deadline).map_err(|_| Pending::AuthorityUnavailable)?;
         Ok(Observation {
-            remote_id,
+            remote_id: mapped
+                .map_or_else(|| remote_id(&item.item_id, intent, &digest), str::to_owned),
             issue_key: None,
             closed: false,
-            fields_id,
+            fields_id: value_id(&(&item.public.title, &item.public.body))
+                .map_err(|_| Pending::Conflict)?,
         })
+    }
+}
+
+fn content(item: &str, public: &PublicFields, revising: bool) -> String {
+    let status = if revising {
+        "Revision"
+    } else {
+        "Initial entry"
+    };
+    format!(
+        "> {status} for backlog item `{item}`. The last entry for this item is current.\n\n## {}\n\n{}\n",
+        public.title, public.body
+    )
+}
+
+/// The complete ordered revisions with durable receipts, reconstructed from approved fields.
+#[derive(Default)]
+pub(in crate::backlog::batch::native) struct History(BTreeMap<String, Vec<(String, String)>>);
+
+impl History {
+    pub(in crate::backlog::batch::native) fn record(
+        &mut self,
+        publication: &Publication,
+        public: &PublicFields,
+    ) -> Result<(), String> {
+        let chain = self.0.entry(publication.item_id.clone()).or_default();
+        let digest = af_store::canonical::blob_content_id(
+            content(&publication.item_id, public, !chain.is_empty()).as_bytes(),
+        );
+        let first = chain
+            .first()
+            .map_or((&publication.intent_id, &digest), |(intent, digest)| {
+                (intent, digest)
+            });
+        let expected = remote_id(&publication.item_id, first.0, first.1);
+        if publication.remote_id.as_deref() != Some(&expected) {
+            return Err("Markdown publication receipt has a conflicting remote identity".into());
+        }
+        chain.push((publication.intent_id.clone(), digest));
+        Ok(())
+    }
+
+    // Every receipted revision must be present. Only this attempt's exact next revision
+    // can be present without a receipt, and only when a write may already have happened.
+    fn check(
+        &self,
+        entries: &Entries<'_>,
+        item: &str,
+        intent: &str,
+        digest: &str,
+        may_append: bool,
+    ) -> Option<bool> {
+        let mut observed = false;
+        for (&id, actual) in entries {
+            let expected = self.0.get(id).map_or(&[][..], Vec::as_slice);
+            let (prefix, suffix) = actual.split_at_checked(expected.len())?;
+            if !prefix.iter().copied().eq(expected
+                .iter()
+                .map(|(intent, digest)| (intent.as_str(), digest.as_str())))
+            {
+                return None;
+            }
+            if !suffix.is_empty() {
+                if may_append || id != item || suffix != [(intent, digest)] {
+                    return None;
+                }
+                observed = true;
+            }
+        }
+        self.0
+            .keys()
+            .all(|id| entries.contains_key(id.as_str()))
+            .then_some(observed)
     }
 }
 
@@ -276,14 +336,10 @@ fn append_checked(
     Ok(())
 }
 
-struct Entry<'a> {
-    intent: &'a str,
-    digest: &'a str,
-    remote_id: String,
-}
+type Entries<'a> = BTreeMap<&'a str, Vec<(&'a str, &'a str)>>;
 
-fn entries<'a>(mut text: &'a str, project: &str) -> Option<BTreeMap<&'a str, Entry<'a>>> {
-    let mut entries = BTreeMap::new();
+fn entries<'a>(mut text: &'a str, project: &str) -> Option<Entries<'a>> {
+    let mut entries = Entries::new();
     while let Some(index) = text.find(RESERVED) {
         if index != 0 && !text[..index].ends_with('\n') {
             return None;
@@ -295,12 +351,10 @@ fn entries<'a>(mut text: &'a str, project: &str) -> Option<BTreeMap<&'a str, Ent
             return None;
         }
         let (item, intent, digest) = (fields.next()?, fields.next()?, fields.next()?);
-        if fields.next().is_some() {
-            return None;
-        }
-        if ![item, intent, digest]
-            .into_iter()
-            .all(af_contracts::is_digest)
+        if fields.next().is_some()
+            || ![item, intent, digest]
+                .into_iter()
+                .all(af_contracts::is_digest)
         {
             return None;
         }
@@ -312,19 +366,7 @@ fn entries<'a>(mut text: &'a str, project: &str) -> Option<BTreeMap<&'a str, Ent
         {
             return None;
         }
-        if entries
-            .insert(
-                item,
-                Entry {
-                    intent,
-                    digest,
-                    remote_id: remote_id(item, intent, digest),
-                },
-            )
-            .is_some()
-        {
-            return None;
-        }
+        entries.entry(item).or_default().push((intent, digest));
     }
     Some(entries)
 }

@@ -34,10 +34,13 @@ publication requires separate native authority over the repository, ref, path an
 revision.
 
 The receiver locks the file, validates existing managed entries and checks the exact file
-snapshot and identity immediately before one append. The entry binds the Project, stable
-item, first intent and approved content digest. A synced append can be observed after a
-lost receipt. Reconciliation accepts an exact matching entry and preserves human changes.
-Edited, missing or ambiguous entries remain pending. AF never replaces the document.
+snapshot and identity immediately before one append. Each entry binds the Project, stable item,
+its publication intent and approved content digest. The first entry fixes the remote identity.
+Later independently verified revisions extend that item's ordered history. The last entry for
+an item is current. The receiver checks previously receipted entries against the Project journal.
+A synced append can be observed after a lost receipt. Reconciliation requires the exact pending
+revision after its receipted history and preserves surrounding human changes. Edited, missing
+or ambiguous entries remain pending. AF never replaces the document.
 Concurrent editors can coordinate with the file lock. A confirmed conflict before the
 append can retry within the existing attempt bounds. An uncertain append may only be
 observed.

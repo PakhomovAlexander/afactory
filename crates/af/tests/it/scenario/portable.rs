@@ -163,8 +163,9 @@ else:
             claim = color.title()+' excludes its required boundary.'
             public_body = ('The boundary should be accepted alongside higher values.' if reconsidering
                            else 'The configured boundary must be inclusive.')
+            public_title = 'Accept the blue boundary value.' if reconsidering else claim
             decisions.append(decision(members, [evidence], 'verified', claim, citation,
-                                      {'title':claim, 'body':public_body}))
+                                      {'title':public_title, 'body':public_body}))
         if provider_index:
             assert 'fixture_issues_read_only' not in request
             assert all('fixture_issues_read_only' not in value for value in os.environ.values())
@@ -2990,7 +2991,7 @@ fn portable_backlog_jira_reconciles_one_create_with_stable_id_and_human_edits() 
 }
 
 #[test]
-fn portable_backlog_markdown_recovers_two_publications_in_the_configured_file() {
+fn portable_backlog_markdown_publishes_and_recovers_revisions_under_one_identity() {
     let directory = tempfile::tempdir().unwrap();
     let receiver = Receiver::for_artifact(
         directory.path().canonicalize().unwrap().join("receiver"),
@@ -3006,7 +3007,7 @@ fn portable_backlog_markdown_recovers_two_publications_in_the_configured_file() 
     let reference = capture_backlog_intake(
         &receiver,
         Some(BacklogFixture::Markdown(&path)),
-        false,
+        true,
         false,
     );
     let project = ok(receiver.af(&["project", "show", "--json"]));
@@ -3162,4 +3163,145 @@ fn portable_backlog_markdown_recovers_two_publications_in_the_configured_file() 
     assert_backlog_publication_conformance(&receiver, store, blue_receipt);
     assert_eq!(resume(), finished);
     assert_eq!(fs::read_to_string(&path).unwrap(), document);
+
+    let closed = ok(receiver.af(&["backlog", "batch", "audit"]))["batches"]
+        [reference["batch_id"].as_str().unwrap()]["closed_unix_ms"]
+        .as_u64()
+        .unwrap();
+    let due = ((closed / 86_400_000 + 2) * 86_400_000).to_string();
+    let item = blue_receipt["item_id"].as_str().unwrap();
+    ok(receiver.af(&[
+        "backlog",
+        "batch",
+        "reconsider",
+        "--item-id",
+        item,
+        "--report-id",
+        "blue-a",
+        "--eligible-unix-ms",
+        &due,
+    ]));
+    fs::write(
+        receiver.repo.join("CONTRIBUTING.md"),
+        "# New source revision\n",
+    )
+    .unwrap();
+    capture(&receiver.repo);
+    let audit = ok(receiver.af(&["backlog", "batch", "tick", "--at-unix-ms", &due]));
+
+    // A human edit within the previously approved bytes blocks the mapped revision.
+    // Recomputing the marker digest cannot make those bytes match the Project receipt.
+    let (header, after_header) = document.split_once(" -->\n").unwrap();
+    let (content, _) = after_header
+        .split_once("<!-- af-backlog-end-v1 -->")
+        .unwrap();
+    let changed_content = content.replace(first_title, "A human revised this heading.");
+    let changed_digest = af_store::canonical::blob_content_id(changed_content.as_bytes());
+    let tampered = document.replacen(
+        &format!("{header} -->\n{content}"),
+        &format!(
+            "{}|{changed_digest} -->\n{changed_content}",
+            header.rsplit_once('|').unwrap().0
+        ),
+        1,
+    );
+    fs::write(&path, &tampered).unwrap();
+    let (revised_run, waiting) = start_backlog_ant(
+        &receiver,
+        "revised-markdown-backlog",
+        &backlog_reference(&audit),
+    );
+    assert_eq!(waiting["status"], "waiting", "{}", waiting["failure"]);
+    assert_eq!(
+        configured_backlog_state(store).1["outcome"]["kind"],
+        "prewrite_conflict"
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), tampered);
+
+    // Restore the managed bytes, while preserving newly added human prose. Lose the
+    // revised receipt as well to exercise read-only recovery of a mapped item.
+    let revised_base = format!("{document}\nKeep this new operator note.\n");
+    fs::write(&path, &revised_base).unwrap();
+    database
+        .execute_batch(
+            "CREATE TRIGGER lose_markdown_revision BEFORE INSERT ON events
+         WHEN NEW.run_id = 'backlog-processing'
+           AND json_extract(NEW.payload, '$.receipt_id') IS NOT NULL
+         BEGIN SELECT RAISE(ABORT, 'fixture lost revised receipt'); END;",
+        )
+        .unwrap();
+    let resume_revision = || {
+        ok(receiver.af(&[
+            "scenario",
+            "resume",
+            &revised_run,
+            "--state",
+            receiver.scenarios.to_str().unwrap(),
+            "--json",
+        ]))
+    };
+    assert_eq!(resume_revision()["status"], "waiting");
+    let (pending, state) = configured_backlog_state(store);
+    assert!(pending["receipt_id"].is_null());
+    assert_eq!(state["outcome"]["kind"], "attempt_prepared");
+    let updated = fs::read_to_string(&path).unwrap();
+    let revision = updated.strip_prefix(&revised_base).unwrap();
+    assert!(revision.contains(&format!("Revision for backlog item `{item}`")));
+    assert!(revision.contains(pending["intent_id"].as_str().unwrap()));
+    assert!(revision.contains("## Accept the blue boundary value.\n"));
+    assert!(revision.contains("The boundary should be accepted alongside higher values."));
+    assert_eq!(revision.matches("<!-- af-backlog-entry-v1:").count(), 1);
+
+    database
+        .execute_batch("DROP TRIGGER lose_markdown_revision;")
+        .unwrap();
+    // Observing the old, valid chain alone cannot close the new revision.
+    fs::write(&path, &revised_base).unwrap();
+    assert_eq!(resume_revision()["status"], "waiting");
+    let (missing, state) = configured_backlog_state(store);
+    assert!(missing["receipt_id"].is_null());
+    assert_eq!(state["outcome"]["kind"], "not_observed");
+    assert_eq!(fs::read_to_string(&path).unwrap(), revised_base);
+    let truncated = updated
+        .strip_suffix("<!-- af-backlog-end-v1 -->\n")
+        .unwrap();
+    fs::write(&path, truncated).unwrap();
+    assert_eq!(resume_revision()["status"], "waiting");
+    let (partial, state) = configured_backlog_state(store);
+    assert!(partial["receipt_id"].is_null());
+    assert_eq!(state["outcome"]["kind"], "identity_conflict");
+    assert_eq!(fs::read_to_string(&path).unwrap(), truncated);
+    fs::write(&path, &updated).unwrap();
+    let complete = resume_revision();
+    assert_eq!(complete["status"], "succeeded", "{}", complete["failure"]);
+    let (revised, state) = configured_backlog_state(store);
+    assert_eq!(revised["item_id"], blue_receipt["item_id"]);
+    assert_eq!(revised["remote_id"], blue_receipt["remote_id"]);
+    assert_ne!(revised["revision_id"], blue_receipt["revision_id"]);
+    assert_ne!(revised["decision_id"], blue_receipt["decision_id"]);
+    assert_ne!(revised["receipt_id"], blue_receipt["receipt_id"]);
+    assert_eq!(state["outcome"]["approved_fields_match"], true);
+    let current = ok(receiver.af(&["backlog", "show", item, "--json"]));
+    assert_eq!(current["data"]["revision_id"], revised["revision_id"]);
+    assert_eq!(
+        current["data"]["public"],
+        json!({
+            "title": "Accept the blue boundary value.",
+            "body": "The boundary should be accepted alongside higher values.",
+        })
+    );
+    let events = af_store::EventStore::open_read_only(store.join("events.sqlite"))
+        .unwrap()
+        .replay("backlog-processing")
+        .unwrap();
+    let event = events.last().unwrap();
+    assert_eq!(event.payload, revised);
+    let envelope = serde_json::to_value(event).unwrap();
+    assert_eq!(envelope["schema"], "review.kernel/RunEvent@4");
+    assert_eq!(
+        serde_json::from_value::<af_contracts::RunEvent>(envelope).unwrap(),
+        *event
+    );
+    assert_eq!(resume_revision(), complete);
+    assert_eq!(fs::read_to_string(&path).unwrap(), updated);
 }

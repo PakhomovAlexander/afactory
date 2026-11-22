@@ -452,6 +452,8 @@ impl ProjectStore {
         let mut resolved_deliveries = Vec::new();
         let mut admitted = BTreeMap::new();
         let mut mapped_items = BTreeMap::new();
+        let mut markdown_history = destinations::MarkdownHistory::default();
+        let mut markdown_fields = BTreeMap::new();
         let mut other_pending = BTreeMap::new();
         for (position, event) in events.iter().enumerate() {
             if event.correlation_id.is_none() {
@@ -461,10 +463,17 @@ impl ProjectStore {
                 BacklogRecordV2::Batch(record) if record.policy_id == batch.reference.policy_id => {
                     authorized_batches.insert(value_id(&BacklogRecordV2::Batch(record))?);
                 }
-                BacklogRecordV2::ItemRevision(item)
-                    if item.source_revision == batch.source_revision =>
-                {
-                    source_revisions.insert(value_id(&BacklogRecordV2::ItemRevision(item))?);
+                BacklogRecordV2::ItemRevision(item) => {
+                    let current_source = item.source_revision == batch.source_revision;
+                    if current_source || kind == destinations::Kind::Markdown {
+                        let revision_id = value_id(&BacklogRecordV2::ItemRevision(item.clone()))?;
+                        if current_source {
+                            source_revisions.insert(revision_id.clone());
+                        }
+                        if kind == destinations::Kind::Markdown {
+                            markdown_fields.insert(revision_id, item.proposed);
+                        }
+                    }
                 }
                 BacklogRecordV2::Decision(decision)
                     if decision.disposition == Verdict::Verified
@@ -495,6 +504,17 @@ impl ProjectStore {
                             publication.item_id.clone(),
                             publication.receipt_id.is_none(),
                         );
+                    }
+                    if kind == destinations::Kind::Markdown {
+                        if publication.remote_id.is_some() != publication.receipt_id.is_some() {
+                            return Err("Incomplete Markdown publication mapping".into());
+                        }
+                        if publication.receipt_id.is_some() {
+                            let public = markdown_fields
+                                .get(&publication.revision_id)
+                                .ok_or("Markdown receipt lacks its approved revision")?;
+                            markdown_history.record(&publication, public)?;
+                        }
                     }
                     if let Some(remote) = publication.remote_id
                         && mapped_items
@@ -625,12 +645,15 @@ impl ProjectStore {
                             &state,
                             &mut publication,
                             item,
-                            &mapped_items,
+                            (&mapped_items, &markdown_history),
                             cancellation,
                         )?
                     };
                     if !resolved {
                         return Ok(None);
+                    }
+                    if kind == destinations::Kind::Markdown {
+                        markdown_history.record(&publication, &item.public)?;
                     }
                     if let Some(remote) = &publication.remote_id {
                         mapped_items.insert(publication.item_id.clone(), remote.clone());

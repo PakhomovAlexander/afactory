@@ -186,13 +186,22 @@ fn backlog_batch_journal_and_policy_are_closed_and_versioned() {
         let parsed: Journal = serde_json::from_value(payload.clone()).unwrap();
         assert_eq!(serde_json::to_value(parsed).unwrap(), payload);
         let event = json!({
-            "schema":"review.kernel/RunEvent@3",
+            "schema":"review.kernel/RunEvent@4",
             "event_id":"01jd8m4qz9k7v3n2p6r8t0w1xy","run_id":"backlog-daily-batch",
             "sequence":0,"type":event_type,"occurred_at":"2026-03-06T07:30:00Z","payload":payload
         });
-        assert_valid("run-event-v3.json", &event);
-        let decoded: RunEvent = serde_json::from_value(event).unwrap();
+        assert_valid("run-event-v4.json", &event);
+        let decoded: RunEvent = serde_json::from_value(event.clone()).unwrap();
         assert_eq!(decoded.event_type, event_type);
+        assert_eq!(serde_json::to_value(decoded).unwrap(), event);
+        let mut retired = event;
+        retired["schema"] = json!("review.kernel/RunEvent@3");
+        assert_invalid(
+            "run-event-v4.json",
+            &retired,
+            "retired backlog event envelope",
+        );
+        assert!(serde_json::from_value::<RunEvent>(retired).is_err());
 
         let mut extra = payload;
         extra["unexpected"] = json!(true);

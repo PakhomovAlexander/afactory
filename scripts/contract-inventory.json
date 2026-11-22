@@ -348,7 +348,7 @@
         "schemas/reviewed-implementation-v1.json",
         "schemas/reviewer-result-v2-conformance.json",
         "schemas/reviewer-result-v2.json",
-        "schemas/run-event-v3.json",
+        "schemas/run-event-v4.json",
         "schemas/scenario-adapter-request-v8.json",
         "schemas/scenario-adapter-response-v3.json",
         "schemas/scenario-artifact-v1.json",

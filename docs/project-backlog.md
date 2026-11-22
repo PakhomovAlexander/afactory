@@ -888,11 +888,12 @@ only the approved title and body and the metadata needed to bind the publication
 ### Markdown
 
 Markdown appends independently verified items to one existing UTF-8 Markdown file selected
-by the receiving operator. The file can already contain prose and headings. AF keeps its
-existing bytes and appends an entry with a stable Project and item marker, the approved title and
-body, and a closing marker. Raw reports, evidence files and credentials stay private. Later
-revisions observe the current entry and record whether its text matches the new approved text.
-To preserve human content, AF leaves existing managed entries in place.
+by the receiving operator. Every entry displays the stable item ID and the approved title and
+body. The last entry for each item is its current revision. Earlier entries for that item are
+history, and other items and surrounding human prose keep their original bytes. Each append
+binds the Project, item, publication intent and a digest of the exact entry text. The receiver
+checks the entire managed history against the Project journal before extending it. Raw reports,
+evidence files and credentials stay private.
 
 Use a dedicated, owner-writable regular `.md` file on a local filesystem with append and file-lock
 semantics. The file may be readable by other users. The receiver must own the file and its
@@ -1001,8 +1002,34 @@ PYTHON
 An interrupted attempt leaves the batch waiting if the receiver cannot confirm the result.
 Restore the exact configuration and adapter bytes if they were removed. Inspect the existing
 Markdown marker or Jira label, issue scope and author before resuming. A missing Jira search
-result can reflect indexing delay. A conflicting Markdown entry should be preserved while the
-operator investigates its origin. Resume with the original Run ID and Scenario Store.
+result can reflect indexing delay. For a Markdown `prewrite_conflict`, restore the exact managed
+bytes from the last confirmed revision, preserve surrounding human prose, and resume within the
+Run's limits. A document at the 8 MiB limit can accept another revision after the operator moves
+enough unmanaged prose elsewhere.
+
+After an uncertain Markdown append, AF only observes. If the revision is missing or partial,
+stop concurrent editors and preserve a copy for investigation. An authorized operator can repair
+the managed block under the file lock. Restore the complete revision from a copy if available.
+If it must be reconstructed, use the exact verified title and body from `af backlog show ITEM_ID
+--json` and the Project, item and pending intent IDs from the private publication record in the
+Project event journal. Keep the previously receipted blocks and other prose. The block uses
+the following layout with LF line endings. Use `Initial entry` in place of `Revision` for the
+first entry. The digest is lowercase SHA-256 of the bytes starting with `>` through the LF
+after the body, prefixed by the bytes `review.kernel/content-id/v1` and a zero byte, then
+written as `sha256:<hex>`.
+
+```text
+<!-- af-backlog-entry-v1:PROJECT|ITEM|INTENT|DIGEST -->
+> Revision for backlog item `ITEM`. The last entry for this item is current.
+
+## TITLE
+
+BODY
+<!-- af-backlog-end-v1 -->
+```
+
+Resume with the original Run ID and Scenario Store. AF checks the repaired entry against the
+exact approved revision and the receipted history before closing the delivery.
 
 ```bash
 af backlog batch audit
@@ -1011,7 +1038,9 @@ af backlog list --json
 ```
 
 Private publication rows reference [configured destination state](../schemas/backlog-configured-state-v2.json).
-For Markdown, `remote_id` binds the managed item, first intent and content digest.
+For Markdown, `remote_id` stays fixed and binds the managed item, first intent and first
+content digest. Each later receipt binds its own revision and intent and requires the exact
+approved fields.
 For Jira, `remote_id` is `jira:<issue-id>`
 and the private observation includes the display key. An observed digest mismatch records
 the discrepancy without replacing text or reopening an issue.
@@ -1019,9 +1048,11 @@ the discrepancy without replacing text or reopening an issue.
 ### Offline checks for all four destinations
 
 This command exercises the CLI and portable Ant with isolated Stores and deterministic
-Providers. GitHub and Jira use fake transports. The Markdown fixture runs with a disposable Project Store, recovers an append after a lost
-receipt and verifies two entries in the configured file. It also checks that the receiver
-preserves existing prose and leaves damaged or duplicate markers pending.
+Providers. GitHub and Jira use fake transports. The Markdown fixture runs with a disposable
+Project Store. It publishes two items, verifies changed fields for one item under the same
+remote identity, and recovers both initial and later appends after lost receipts. It checks
+that existing prose is preserved and damaged markers, duplicates and a stale revision leave
+delivery pending.
 
 ```sh
 cargo nextest run --workspace --locked --profile ci \

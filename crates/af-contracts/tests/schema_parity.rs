@@ -266,7 +266,7 @@ const SCHEMAS: [&str; 265] = [
     "review-slice-v1.json",
     "reviewer-result-v2.json",
     "resolution-challenge-v1.json",
-    "run-event-v3.json",
+    "run-event-v4.json",
     "backlog-batch-audit-v3.json",
     "backlog-assessment-v2.json",
     "backlog-collected-batch-v3.json",
@@ -2000,14 +2000,14 @@ fn run_event_roundtrips() {
         payload: json!({ "severity": "major" }),
     };
     let value = serde_json::to_value(&event).unwrap();
-    assert_valid("run-event-v3.json", &value);
+    assert_valid("run-event-v4.json", &value);
     assert_eq!(serde_json::from_value::<RunEvent>(value).unwrap(), event);
     assert_eq!(event.typed(), ("FindingReported", 1));
 }
 
 #[test]
 fn run_event_schema_and_rust_vocabulary_are_identical() {
-    let schema = schema("run-event-v3.json");
+    let schema = schema("run-event-v4.json");
     let declared = schema["properties"]["type"]["enum"].as_array().unwrap();
     let rust: Vec<Value> = EventType::ALL
         .into_iter()
@@ -2600,7 +2600,7 @@ fn an_execution_marker_is_its_own_task_log_event() {
     };
     let wire = serde_json::to_value(&event).unwrap();
     assert_eq!(wire["type"], "TaskExecutionStarted@1");
-    assert_valid("run-event-v3.json", &wire);
+    assert_valid("run-event-v4.json", &wire);
     assert_eq!(
         serde_json::from_value::<RunEvent>(wire.clone()).unwrap(),
         event
@@ -2640,7 +2640,7 @@ fn an_execution_marker_is_its_own_task_log_event() {
         assert_invalid("task-execution-started-v1.json", &forged, why);
         let mut wrapped = wire.clone();
         wrapped["payload"] = forged.clone();
-        assert_invalid("run-event-v3.json", &wrapped, why);
+        assert_invalid("run-event-v4.json", &wrapped, why);
         assert!(
             af_contracts::event::validate_event_payload(EventType::TaskExecutionStartedV1, &forged)
                 .is_err(),
@@ -3126,7 +3126,7 @@ fn retired_warm_set_and_session_contracts_are_refused() {
         );
         assert!(serde_json::from_value::<EventType>(json!(retired)).is_err());
         let event = json!({
-            "schema": "review.kernel/RunEvent@3", "event_id": "b".repeat(26),
+            "schema": "review.kernel/RunEvent@4", "event_id": "b".repeat(26),
             "run_id": "run",
             "sequence": 8,
             "type": retired,
@@ -3134,7 +3134,7 @@ fn retired_warm_set_and_session_contracts_are_refused() {
             "artifact_refs": [],
             "payload": {},
         });
-        assert_invalid("run-event-v3.json", &event, retired);
+        assert_invalid("run-event-v4.json", &event, retired);
     }
     assert_eq!(
         af_contracts::contract::WARM_SET_V3,
@@ -3694,7 +3694,7 @@ fn a_provider_event_is_its_own_task_log_event() {
         })
         .unwrap();
         assert_eq!(wire["type"], "TaskProviderEvent@1");
-        assert_valid("run-event-v3.json", &wire);
+        assert_valid("run-event-v4.json", &wire);
     }
     let base = serde_json::to_value(TaskProviderEventV1::new(
         "cli-4242",
@@ -3957,21 +3957,25 @@ fn implementation_evaluation_input_requires_testing_and_closed_typed_envelopes()
 
 #[test]
 fn retired_campaign_bootstrap_and_prior_event_envelopes_fail_closed() {
-    let current = json!({"schema":"review.kernel/RunEvent@3","event_id":"a".repeat(26),"run_id":"run","sequence":0,"type":"SourceCaptured@1","occurred_at":"2026-11-10T00:00:00Z","payload":{}});
-    assert_valid("run-event-v3.json", &current);
+    let current = json!({"schema":"review.kernel/RunEvent@4","event_id":"a".repeat(26),"run_id":"run","sequence":0,"type":"SourceCaptured@1","occurred_at":"2026-11-10T00:00:00Z","payload":{}});
+    assert_valid("run-event-v4.json", &current);
     serde_json::from_value::<RunEvent>(current.clone()).unwrap();
     let mut unversioned = current.clone();
     unversioned.as_object_mut().unwrap().remove("schema");
     assert_invalid(
-        "run-event-v3.json",
+        "run-event-v4.json",
         &unversioned,
         "retired unversioned envelope",
     );
     assert!(serde_json::from_value::<RunEvent>(unversioned).is_err());
-    for old in ["review.kernel/RunEvent@1", "review.kernel/RunEvent@2"] {
+    for old in [
+        "review.kernel/RunEvent@1",
+        "review.kernel/RunEvent@2",
+        "review.kernel/RunEvent@3",
+    ] {
         let mut value = current.clone();
         value["schema"] = json!(old);
-        assert_invalid("run-event-v3.json", &value, old);
+        assert_invalid("run-event-v4.json", &value, old);
         assert!(serde_json::from_value::<RunEvent>(value).is_err());
     }
     for old in [
@@ -3981,7 +3985,7 @@ fn retired_campaign_bootstrap_and_prior_event_envelopes_fail_closed() {
     ] {
         let mut value = current.clone();
         value["type"] = json!(old);
-        assert_invalid("run-event-v3.json", &value, old);
+        assert_invalid("run-event-v4.json", &value, old);
         assert!(serde_json::from_value::<RunEvent>(value).is_err());
     }
 }
@@ -4031,8 +4035,8 @@ fn scenario_template_pin_event_has_exact_reference_schema_parity() {
             false,
         ),
     ] {
-        let wire = json!({"schema":"review.kernel/RunEvent@3","event_id":"01jd8m4qz9k7v3n2p6r8t0w1xy","run_id":"scenario-template-fixture","sequence":0,"type":"ScenarioTemplatePinned@1","occurred_at":"2026-11-13T00:00:00Z","payload":payload});
-        assert_eq!(validator("run-event-v3.json").is_valid(&wire), accepted);
+        let wire = json!({"schema":"review.kernel/RunEvent@4","event_id":"01jd8m4qz9k7v3n2p6r8t0w1xy","run_id":"scenario-template-fixture","sequence":0,"type":"ScenarioTemplatePinned@1","occurred_at":"2026-11-13T00:00:00Z","payload":payload});
+        assert_eq!(validator("run-event-v4.json").is_valid(&wire), accepted);
         assert_eq!(
             af_contracts::event::validate_event_payload(
                 EventType::ScenarioTemplatePinnedV1,

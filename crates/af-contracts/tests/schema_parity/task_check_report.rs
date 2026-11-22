@@ -240,7 +240,7 @@ fn a_gate_retry_event_names_its_lease_result_and_failed_gates() {
     af_contracts::event::validate_event_payload(af_contracts::EventType::TaskGateRetriedV1, &value)
         .unwrap();
     let event = json!({
-        "schema": "review.kernel/RunEvent@3", "event_id": "01jd8m4qz9k7v3n2p6r8t0w202",
+        "schema": "review.kernel/RunEvent@4", "event_id": "01jd8m4qz9k7v3n2p6r8t0w202",
         "run_id": "task:retry",
         "sequence": 12,
         "type": "TaskGateRetried@1",
@@ -248,7 +248,7 @@ fn a_gate_retry_event_names_its_lease_result_and_failed_gates() {
         "artifact_refs": retry.artifact_refs(),
         "payload": value,
     });
-    assert_valid("run-event-v3.json", &event);
+    assert_valid("run-event-v4.json", &event);
     let mutate = |edit: &dyn Fn(&mut Value)| {
         let mut changed = serde_json::to_value(&retry).unwrap();
         edit(&mut changed);

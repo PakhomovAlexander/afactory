@@ -1,4 +1,4 @@
-//! `RunEvent@3` — the append-only source of truth.
+//! `RunEvent@4` — the append-only source of truth.
 
 use serde::{Deserialize, Serialize};
 
@@ -274,7 +274,7 @@ impl std::str::FromStr for EventType {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(
     tag = "schema",
-    rename = "review.kernel/RunEvent@3",
+    rename = "review.kernel/RunEvent@4",
     deny_unknown_fields
 )]
 pub struct RunEvent {
@@ -327,7 +327,7 @@ impl<'de> Deserialize<'de> for RunEvent {
         #[derive(Deserialize)]
         #[serde(tag = "schema")]
         enum Wire {
-            #[serde(rename = "review.kernel/RunEvent@3")]
+            #[serde(rename = "review.kernel/RunEvent@4")]
             Current(#[serde(with = "RunEventFields")] RunEvent),
         }
         match Wire::deserialize(deserializer)? {

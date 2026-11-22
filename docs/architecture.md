@@ -172,7 +172,7 @@ provenance and experiment isolation; the existing live container probes own cont
 | `finding-set-v1.json` | one Subject-bound canonical Finding view at a ledger barrier |
 | `source-snapshot-v1.json` | content identity, never a branch; committed, synthetic-worktree or derived |
 | `patch-proposal-v1.json` | an atomic change set naming the exact claims it covers |
-| `run-event-v3.json` | the append-only stream envelope; `sequence` orders, never `occurred_at` |
+| `run-event-v4.json` | the append-only stream envelope; `sequence` orders, never `occurred_at` |
 | `check-result-v1.json` | one execution of one check, per attempt — `not_run` is its own status; a remote result names its evidence instead of a command |
 | `remote-check-evidence-v1.json` | every remote fact one Remote Check's decision used: refused, published or observed (ADR-0140) |
 | `reviewer-result-v2.json` | what one reviewer attempt returned: reports, demands, and one disposition per assigned prior Finding |
@@ -185,7 +185,9 @@ Three things are deliberately unrepresentable rather than merely discouraged: a 
 status field, a best-effort copy is not a `Capture` variant, and a patch proposal cannot name
 zero claims.
 
-`RunEvent@3` enumerates the closed current type vocabulary. Native Review authority is admitted
+[`RunEvent@4`](../schemas/run-event-v4.json) enumerates the closed current type vocabulary,
+including native Project backlog events. The Store validates the same event types and payloads
+when writing and replaying its decomposed rows. Native Review authority is admitted
 through checked Task publication; a generic Store append cannot manufacture a canonical Review
 Round. Domain Finding and Demand records retain their shared canonical identities.
 
@@ -586,6 +588,6 @@ version and native `af catalog digest` pin refresh, without changing Worker auth
 
 Native Review's Store contains Task transitions and typed native Round outputs. The shared
 canonical Ledger is initialized from the Task Subject, with no Campaign manifest or bootstrap
-event. `review.kernel/RunEvent@3` refuses retired event identities. Standalone continuation
+event. `review.kernel/RunEvent@4` refuses retired event identities. Standalone continuation
 validates each prior Round against its original captured plan and graph, then binds exact
 canonical history and Base into a new Task plan under the existing history and Round bounds.

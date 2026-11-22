@@ -1809,6 +1809,17 @@ mod tests {
             .unwrap();
         assert_eq!(first.event_id, derive_event_id("run-a", 0));
         assert_ne!(derive_event_id("run-a", 0), derive_event_id("run-b", 0));
+
+        let replay = store.replay("run-a").unwrap();
+        assert_eq!(replay, [first]);
+        let mut envelope = serde_json::to_value(&replay[0]).unwrap();
+        assert_eq!(envelope["schema"], "review.kernel/RunEvent@4");
+        assert_eq!(
+            serde_json::from_value::<RunEvent>(envelope.clone()).unwrap(),
+            replay[0],
+        );
+        envelope["schema"] = json!("review.kernel/RunEvent@3");
+        assert!(serde_json::from_value::<RunEvent>(envelope).is_err());
     }
 
     #[test]

@@ -6,6 +6,7 @@ use serde_json::json;
 
 mod jira;
 mod markdown;
+pub(super) use markdown::History as MarkdownHistory;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(in crate::backlog::batch) enum Kind {
@@ -134,9 +135,10 @@ impl ProjectStore {
         state: &State,
         publication: &mut Publication,
         item: &VerifiedItem,
-        mapped_items: &BTreeMap<String, String>,
+        mappings: (&BTreeMap<String, String>, &MarkdownHistory),
         cancellation: &AtomicBool,
     ) -> Result<bool, String> {
+        let (mapped_items, markdown_history) = mappings;
         let collection = proof.collection;
         let batch = &collection.reference.batch_id;
         let destination = publication.destination_id.clone();
@@ -180,7 +182,6 @@ impl ProjectStore {
                     saved["schema"] == "af/backlog-configured-state@2"
                         && saved["attempt_id"].as_str()
                             == publication.attempt_ids.last().map(String::as_str)
-                        && saved["operation"] == "create"
                         && saved["outcome"]["kind"] == Pending::PrewriteConflict.kind()
                 })
             });
@@ -219,7 +220,12 @@ impl ProjectStore {
             Kind::Markdown => {
                 let config = markdown::Config::load(self, &destination)?;
                 journal(self, publication)?;
-                config.deliver(self, delivery(publication), mapped_items)
+                config.deliver(
+                    self,
+                    delivery(publication),
+                    markdown_history,
+                    publication.attempt_ids.len() == 1 || retry_prewrite,
+                )
             }
             Kind::Jira => {
                 let config = jira::Config::load(self, &destination)?;
@@ -233,14 +239,15 @@ impl ProjectStore {
             }
             _ => return Err("Invalid configured backlog destination".into()),
         };
+        let approved = value_id(&(&item.public.title, &item.public.body))?;
         let outcome = match outcome {
             Ok(observation)
-                if mapped.is_none_or(|expected| expected == observation.remote_id)
+                if (kind != Kind::Markdown || observation.fields_id == approved)
+                    && mapped.is_none_or(|expected| expected == observation.remote_id)
                     && !mapped_items.iter().any(|(other, remote)| {
                         other != &item.item_id && remote == &observation.remote_id
                     }) =>
             {
-                let approved = value_id(&(&item.public.title, &item.public.body))?;
                 publication.remote_id = Some(observation.remote_id.clone());
                 json!({
                     "kind": "observed", "observation": observation,
