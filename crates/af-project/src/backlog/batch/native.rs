@@ -19,6 +19,8 @@ use std::time::Instant;
 pub(super) mod destinations;
 pub(super) mod github;
 
+const MAX_ATTEMPTS: usize = 16;
+
 pub(super) fn owned_file(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     let file = std::fs::OpenOptions::new()
         .read(true)
@@ -621,7 +623,8 @@ impl ProjectStore {
                 }
                 let item = items
                     .get(&publication.revision_id)
-                    .ok_or("Backlog delivery revision is no longer current")?;
+                    .filter(|item| item.item_id == publication.item_id)
+                    .ok_or("Backlog delivery differs from the current item revision")?;
                 if !local {
                     if destinations::Kind::resolve(self, destination)
                         .is_ok_and(|configured| configured != kind)

@@ -12,6 +12,10 @@ one issue POST. An uncertain create or a later mapped revision can only read. An
 leaves an uncertain create pending. Reconciliation observes the title, body and status without
 changing them and returns only their digest and provider identities to AF.
 
+After 16 durable attempts, the coordinator can still confirm the exact issue on a read-only
+resume of the original Run within its remaining limits. See the
+[recovery steps](project-backlog.md#recovery-and-local-view).
+
 The offline adapter and Scenario regressions exercise the installed entrypoint with a fake HTTPS
 connection.
 

@@ -1958,6 +1958,40 @@ fn configure_backlog_receiver_fault_bounds(receiver: &Receiver, dispatches: u32)
     capture(&receiver.repo);
 }
 
+fn lose_ticket_receipt(
+    store: &Path,
+    resume: impl FnOnce(),
+    last_publication: impl FnOnce() -> Value,
+) -> Value {
+    let database = rusqlite::Connection::open(store.join("events.sqlite")).unwrap();
+    database
+        .execute_batch(
+            "CREATE TRIGGER lose_ticket_receipt BEFORE INSERT ON events
+         WHEN NEW.run_id = 'backlog-processing'
+           AND json_extract(NEW.payload, '$.receipt_id') IS NOT NULL
+         BEGIN SELECT RAISE(ABORT, 'fixture lost receipt'); END;",
+        )
+        .unwrap();
+    resume();
+    let pending = last_publication();
+    assert_eq!(pending["attempt_ids"].as_array().unwrap().len(), 16);
+    assert!(pending["receipt_id"].is_null());
+    assert!(pending["remote_id"].is_null());
+    database
+        .execute_batch("DROP TRIGGER lose_ticket_receipt")
+        .unwrap();
+    pending
+}
+
+fn assert_read_only_ticket_check(requests: &[Value], expected_count: usize) {
+    assert_eq!(requests.len(), expected_count);
+    assert!(
+        requests
+            .iter()
+            .all(|call| call["method"] == "GET" && call["body"].is_null())
+    );
+}
+
 #[test]
 fn portable_backlog_github_reconciles_a_lost_create_without_duplicate_writes() {
     use af_contracts::backlog::{BacklogRecordV2, Publication};
@@ -1968,7 +2002,7 @@ fn portable_backlog_github_reconciles_a_lost_create_without_duplicate_writes() {
         505,
         BACKLOG,
     );
-    configure_backlog_receiver_fault_bounds(&receiver, 11);
+    configure_backlog_receiver_fault_bounds(&receiver, 24);
     let executable = github_fixture(&receiver);
     let reference = capture_backlog_batch(&receiver, Some(&executable), true);
     let (run_id, first) = start_backlog_ant(&receiver, "github-backlog", &reference);
@@ -2048,12 +2082,46 @@ fn portable_backlog_github_reconciles_a_lost_create_without_duplicate_writes() {
     );
     let issue = read(&fake.join("issue.json"));
 
-    // Receiver authority can be removed while an intent is waiting.
+    for (mode, expected) in [
+        ("delayed", "not_observed"),
+        ("conflict", "identity_conflict"),
+        ("wrong_marker", "identity_conflict"),
+        ("wrong_repository", "identity_conflict"),
+    ] {
+        fs::write(fake.join("mode"), mode).unwrap();
+        check_pending(pending());
+        let history = publications();
+        assert_eq!(state(history.last().unwrap())["outcome"]["kind"], expected);
+        assert!(history.last().unwrap().receipt_id.is_none());
+    }
+
+    fs::write(fake.join("mode"), "delayed").unwrap();
+    for count in 6..=15 {
+        check_pending(pending());
+        let history = publications();
+        assert_eq!(history.last().unwrap().attempt_ids.len(), count);
+    }
+    fs::write(fake.join("mode"), "normal").unwrap();
+    let before = http_requests(&fake).len();
+    let exhausted = lose_ticket_receipt(
+        store_path,
+        || check_pending(pending()),
+        || json!(publications().last().unwrap()),
+    );
+    assert_read_only_ticket_check(&http_requests(&fake)[before..], 4);
+    assert_eq!(
+        state(publications().last().unwrap())["outcome"]["kind"],
+        "attempt_prepared"
+    );
+
+    // Receiver authority can be removed after the final durable attempt.
     let config = store_path.join(GITHUB_CONFIG);
     let saved = fs::read(&config).unwrap();
     fs::remove_file(&config).unwrap();
     let before = publications();
+    let requests_before_revocation = http_requests(&fake);
     check_pending(pending());
+    assert_eq!(http_requests(&fake), requests_before_revocation);
     let revoked = publications();
     assert_eq!(revoked.len(), before.len() + 1);
     assert_eq!(
@@ -2068,15 +2136,17 @@ fn portable_backlog_github_reconciles_a_lost_create_without_duplicate_writes() {
 
     for (mode, expected) in [
         ("delayed", "not_observed"),
-        ("conflict", "identity_conflict"),
-        ("wrong_marker", "identity_conflict"),
-        ("wrong_repository", "identity_conflict"),
+        ("duplicate", "identity_conflict"),
     ] {
         fs::write(fake.join("mode"), mode).unwrap();
+        let before = http_requests(&fake).len();
         check_pending(pending());
         let history = publications();
-        assert_eq!(state(history.last().unwrap())["outcome"]["kind"], expected);
-        assert!(history.last().unwrap().receipt_id.is_none());
+        let last = history.last().unwrap();
+        assert_eq!(state(last)["outcome"]["kind"], expected);
+        assert_eq!(json!(last.attempt_ids), exhausted["attempt_ids"]);
+        assert!(last.receipt_id.is_none());
+        assert_read_only_ticket_check(&http_requests(&fake)[before..], 3);
     }
 
     let mut human = issue;
@@ -2088,6 +2158,7 @@ fn portable_backlog_github_reconciles_a_lost_create_without_duplicate_writes() {
     ));
     save(&fake.join("issue.json"), &human);
     fs::write(fake.join("mode"), "normal").unwrap();
+    let before = http_requests(&fake).len();
     let mut concurrent = receiver
         .command(&receiver.repo, &resume)
         .stdout(Stdio::null())
@@ -2104,17 +2175,23 @@ fn portable_backlog_github_reconciles_a_lost_create_without_duplicate_writes() {
     assert_eq!(final_record.intent_id, intents[0].intent_id);
     assert_eq!(final_record.remote_id.as_deref(), Some("444:1"));
     assert!(final_record.receipt_id.is_some());
-    assert_eq!(final_record.attempt_ids.len(), 6);
+    assert_eq!(json!(final_record.attempt_ids), exhausted["attempt_ids"]);
     assert_backlog_publication_conformance(
         &receiver,
         store_path,
         &json!(BacklogRecordV2::Publication(final_record.clone())),
     );
     let observed = state(final_record);
+    assert_eq!(observed["attempt_id"], exhausted["attempt_ids"][15]);
+    assert_eq!(observed["operation"], "reconcile");
     assert_eq!(observed["outcome"]["state"], "closed");
     assert_eq!(observed["outcome"]["approved_fields_match"], false);
     assert_eq!(read(&fake.join("issue.json")), human);
     let requests = http_requests(&fake);
+    assert_read_only_ticket_check(&requests[before..], 4);
+    assert_eq!(ok(receiver.af(&resume))["status"], "succeeded");
+    assert_eq!(publications(), history);
+    assert_eq!(http_requests(&fake), requests);
     let writes: Vec<_> = requests
         .iter()
         .filter(|call| call["method"] == "POST")
@@ -3054,7 +3131,7 @@ fn portable_backlog_jira_reconciles_one_create_with_stable_id_and_human_edits() 
         509,
         BACKLOG,
     );
-    configure_backlog_receiver_fault_bounds(&receiver, 11);
+    configure_backlog_receiver_fault_bounds(&receiver, 24);
     let fake = receiver.root.join("fake-jira");
     fs::create_dir(&fake).unwrap();
     let script = include_str!("../../../../../scripts/project-backlog-jira.py");
@@ -3114,28 +3191,77 @@ fn portable_backlog_jira_reconciles_one_create_with_stable_id_and_human_edits() 
         assert!(publication["receipt_id"].is_null());
         assert_eq!(state["outcome"]["kind"], reason);
     }
+    fs::write(fake.join("mode"), "delayed").unwrap();
+    for count in 5..=15 {
+        assert_eq!(resume()["status"], "waiting");
+        let (pending, _) = configured_backlog_state(store);
+        assert_eq!(pending["attempt_ids"].as_array().unwrap().len(), count);
+    }
+    fs::remove_file(fake.join("mode")).unwrap();
+    let before = http_requests(&fake).len();
+    let exhausted = lose_ticket_receipt(
+        store,
+        || assert_eq!(resume()["status"], "waiting"),
+        || configured_backlog_state(store).0,
+    );
+    assert_read_only_ticket_check(&http_requests(&fake)[before..], 4);
+    assert_eq!(
+        configured_backlog_state(store).1["outcome"]["kind"],
+        "attempt_prepared"
+    );
+    for (mode, reason) in [
+        ("delayed", "not_observed"),
+        ("duplicate", "identity_conflict"),
+    ] {
+        fs::write(fake.join("mode"), mode).unwrap();
+        let before = http_requests(&fake).len();
+        assert_eq!(resume()["status"], "waiting");
+        let (pending, state) = configured_backlog_state(store);
+        assert_eq!(state["outcome"]["kind"], reason);
+        assert_eq!(pending["attempt_ids"], exhausted["attempt_ids"]);
+        assert!(pending["receipt_id"].is_null());
+        assert_read_only_ticket_check(&http_requests(&fake)[before..], 3);
+    }
     let mut human = read(&fake.join("issue.json"));
     human["key"] = json!("AF-8");
     human["fields"]["summary"] = json!("Human edit");
     human["fields"]["status"]["statusCategory"]["key"] = json!("done");
     save(&fake.join("issue.json"), &human);
     fs::remove_file(fake.join("mode")).unwrap();
+    let before = http_requests(&fake).len();
     assert_eq!(resume()["status"], "succeeded");
     let (publication, state) = configured_backlog_state(store);
     assert_backlog_publication_conformance(&receiver, store, &publication);
+    assert_eq!(publication["intent_id"], exhausted["intent_id"]);
+    assert_eq!(publication["attempt_ids"], exhausted["attempt_ids"]);
     assert_eq!(publication["remote_id"], "jira:10042");
     assert!(publication["receipt_id"].is_string());
+    assert_eq!(state["attempt_id"], exhausted["attempt_ids"][15]);
+    assert_eq!(state["operation"], "reconcile");
     assert_eq!(state["outcome"]["observation"]["issue_key"], "AF-8");
     assert_eq!(state["outcome"]["observation"]["closed"], true);
     assert_eq!(state["outcome"]["approved_fields_match"], false);
     assert_eq!(read(&fake.join("issue.json")), human);
     let requests = http_requests(&fake);
+    assert_read_only_ticket_check(&requests[before..], 4);
+    assert_eq!(resume()["status"], "succeeded");
+    assert_eq!(configured_backlog_state(store), (publication, state));
+    assert_eq!(http_requests(&fake), requests);
     let writes: Vec<_> = requests
         .iter()
-        .filter(|call| call["path"] == "/issue")
+        .filter(|call| call["method"] == "POST")
         .collect();
     assert_eq!(writes.len(), 1);
-    assert_eq!(writes[0]["body"]["fields"]["description"]["type"], "doc");
+    assert_eq!(
+        writes[0]["body"]["fields"]["summary"],
+        "Blue excludes its required boundary."
+    );
+    assert_eq!(
+        writes[0]["body"]["fields"]["description"]["content"],
+        json!([{"type":"paragraph","content":[
+            {"type":"text","text":"The configured boundary must be inclusive."}
+        ]}])
+    );
     assert!(
         !requests
             .iter()

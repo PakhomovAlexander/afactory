@@ -14,7 +14,6 @@ pub(in crate::backlog::batch) const CREDENTIAL: &str = "backlog-github-token";
 const MAX_RESPONSE: u64 = 4096;
 const MAX_EXECUTABLE: u64 = 8 * 1024 * 1024;
 const MAX_CREDENTIAL: u64 = 1024;
-const MAX_ATTEMPTS: usize = 16;
 
 fn numeric_id(id: u64) -> bool {
     (1..=af_contracts::json::SAFE_INTEGER_MAX as u64).contains(&id)
@@ -310,10 +309,15 @@ impl ProjectStore {
     ) -> Result<bool, String> {
         let batch = proof.collection;
         let batch_id = &batch.reference.batch_id;
-        let live = || -> Result<(), String> {
-            let pin =
-                self.check_native_batch(state, &batch.reference, &batch.scenario_id, proof.limits)?;
+        let live = |store: &Self, publication: &Publication| -> Result<(), String> {
+            let pin = store.check_native_batch(
+                state,
+                &batch.reference,
+                &batch.scenario_id,
+                proof.limits,
+            )?;
             if pin.policy.hold_policy != HoldPolicy::AllowLocalReservations
+                || pin.policy.destination_id != publication.destination_id
                 || state.batches[batch_id].closed_unix_ms.is_some()
                 || pin.policy.publication_limit == 0
                 || item.item_id != publication.item_id
@@ -325,10 +329,7 @@ impl ProjectStore {
             }
             running(cancellation, proof.deadline)
         };
-        live()?;
-        if publication.attempt_ids.len() >= MAX_ATTEMPTS {
-            return self.github_pending(batch_id, publication, "attempt_limit");
-        }
+        live(self, publication)?;
         let issue = mapped_items
             .get(&item.item_id)
             .map(|remote| Issue::parse(remote))
@@ -352,30 +353,46 @@ impl ProjectStore {
             return self.github_pending(batch_id, publication, "adapter_unavailable");
         };
         let approved_fields_id = value_id(&(&item.public.title, &item.public.body))?;
-        let attempt_id = value_id(&(
-            "af/backlog-github-attempt@1",
-            &publication.intent_id,
-            publication.attempt_ids.len(),
-            operation,
-        ))?;
-        live()?;
         // A committed attempt is ambiguous even if a crash prevented spawn. Only an intent
         // with no attempt may issue create. Every subsequent invocation is read-only.
-        publication.attempt_ids.push(attempt_id.clone());
-        self.record_github_state(batch_id, publication, &json!({
-            "schema":"af/backlog-github-state@1", "attempt_id":attempt_id, "operation":operation,
-            "outcome":{"kind":"attempt_prepared"}
-        }), false)?;
+        let attempt_id = if publication.attempt_ids.len() < MAX_ATTEMPTS {
+            let attempt_id = value_id(&(
+                "af/backlog-github-attempt@1",
+                &publication.intent_id,
+                publication.attempt_ids.len(),
+                operation,
+            ))?;
+            live(self, publication)?;
+            publication.attempt_ids.push(attempt_id.clone());
+            self.record_github_state(batch_id, publication, &json!({
+                "schema":"af/backlog-github-state@1", "attempt_id":attempt_id, "operation":operation,
+                "outcome":{"kind":"attempt_prepared"}
+            }), false)?;
+            attempt_id
+        } else {
+            // The Scenario still bounds reconciliation of the last prepared attempt.
+            publication
+                .attempt_ids
+                .last()
+                .cloned()
+                .ok_or("GitHub reconciliation lacks a prepared attempt")?
+        };
 
-        self.check_native_batch(state, &batch.reference, &batch.scenario_id, proof.limits)?;
-        if Config::load(self, &publication.destination_id).is_err()
-            || !matches_pin(
-                &self.directory.join(EXECUTABLE),
-                MAX_EXECUTABLE,
-                &config.executable_digest,
-            )
-            || !matches_pin(&self.directory.join(CREDENTIAL), MAX_CREDENTIAL, &token_pin)
-        {
+        let authority_current = |store: &Self| {
+            Config::load(store, &publication.destination_id).is_ok()
+                && matches_pin(
+                    &store.directory.join(EXECUTABLE),
+                    MAX_EXECUTABLE,
+                    &config.executable_digest,
+                )
+                && matches_pin(
+                    &store.directory.join(CREDENTIAL),
+                    MAX_CREDENTIAL,
+                    &token_pin,
+                )
+        };
+        live(self, publication)?;
+        if !authority_current(self) {
             return self.github_pending(batch_id, publication, "authority_unavailable");
         }
         running(cancellation, proof.deadline)?;
@@ -401,6 +418,13 @@ impl ProjectStore {
             proof.deadline,
             cancellation,
         );
+        if issue.is_some() {
+            live(self, publication)?;
+            if !authority_current(self) {
+                return self.github_pending(batch_id, publication, "authority_unavailable");
+            }
+            running(cancellation, proof.deadline)?;
+        }
         let remote_id = issue.map(Issue::stored);
         let conflict = remote_id.as_ref().is_some_and(|remote| {
             mapped_items
@@ -414,11 +438,15 @@ impl ProjectStore {
             outcome
         };
         let resolved = publication.remote_id.is_some();
-        self.record_github_state(batch_id, publication, &json!({
+        let recorded = self.record_github_state(batch_id, publication, &json!({
             "schema":"af/backlog-github-state@1", "attempt_id":attempt_id, "operation":operation,
             "outcome":outcome
-        }), resolved)?;
-        Ok(resolved)
+        }), resolved);
+        // A lost observation receipt leaves the durable attempt available on resume.
+        match recorded {
+            Err(_) if resolved => Ok(false),
+            result => result.map(|()| resolved),
+        }
     }
 
     fn github_pending(

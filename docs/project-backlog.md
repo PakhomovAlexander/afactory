@@ -736,10 +736,24 @@ whether the observed fields match the approved revision.
 
 The native Project publication journal commits the revision and decision intent before an
 attempt, and commits the attempt before launching its adapter. Once any attempt exists,
-an unresolved create only reconciles. An empty search, including delayed indexing, leaves
-the Scenario waiting. Each revision intent has at most 16 adapter attempts, further bounded
-by the Scenario. Existing item mappings allow read-only checks for later verified revisions.
-The `publication_limit` counts admitted intents, including unresolved ones.
+an unresolved create only reconciles. Each revision intent has at most 16 durable attempts.
+After attempt 16, the coordinator reuses that attempt for one read-only check per dispatch
+within the original Scenario's remaining time and dispatch limits. An empty or ambiguous
+lookup leaves the Scenario waiting. Existing item mappings allow read-only checks for later
+verified revisions. The `publication_limit` counts admitted intents, including unresolved ones.
+
+If indexing was delayed or the process stopped before saving the receipt, check that the
+issue is visible with its original Project and item marker under the pinned repository and
+publisher. Restore the pinned receiver configuration, adapter and authorized credential if
+needed. Resume the original Run using its Scenario Store.
+
+```bash
+af scenario resume "$run_id" --state "$scratch/scenarios" --json
+```
+
+When the coordinator confirms the issue, it records the exact mapping and receipt in the
+Project journal. It preserves the issue's current text and state. A resume after success
+replays the receipt without querying GitHub. A cancelled or expired Run cannot use this path.
 
 Publication rows in the Project Store's `backlog-processing` stream retain the destination,
 item, revision, decision, intent, attempts, remote ID and receipt. The `remote_id` is
@@ -748,7 +762,7 @@ item, revision, decision, intent, attempts, remote ID and receipt. The `remote_i
 `operation` and `outcome`. A preflight
 deferral can have a null attempt or operation. Outcomes include `attempt_prepared`,
 `adapter_unavailable`, `authority_unavailable`, `transport_unavailable`,
-`invalid_response`, `identity_conflict`, `not_observed`, `attempt_limit` and
+`invalid_response`, `identity_conflict`, `not_observed` and
 `observed`. The recorded observation includes issue identity, open or closed state, public
 fields digest and an `approved_fields_match` boolean. The normal `af backlog list` and
 `af backlog show` commands read the verified native projection without invoking the adapter.
@@ -1017,11 +1031,18 @@ PYTHON
 ```
 
 An interrupted attempt leaves the batch waiting if the receiver cannot confirm the result.
-Restore the exact configuration and adapter bytes if they were removed. Inspect the existing
-Markdown marker or Jira label, issue scope and author before resuming. A missing Jira search
-result can reflect indexing delay. For a Markdown `prewrite_conflict`, restore the exact managed
-bytes from the last confirmed revision, preserve surrounding human prose, and resume within the
-Run's limits. For a full document, use the volume rotation procedure below.
+Restore the exact configuration and adapter bytes if they were removed. For Jira, check that
+the issue is visible with the original Project and item label, issue scope and publisher.
+An empty search can reflect indexing delay. Resume the original Run with
+`af scenario resume "$run_id" --state "$scratch/scenarios" --json`. After attempt 16, the
+coordinator reuses the last attempt for one read-only check per dispatch, subject to the same
+remaining time and dispatch limits. A single confirmed issue settles the receipt and stable
+mapping. Ambiguous or missing observations leave the Run waiting. Successful replay requires
+no provider calls.
+
+For a Markdown `prewrite_conflict`, restore the exact managed bytes from the last confirmed
+revision, preserve surrounding human prose, and resume within the Run's limits. For a full
+document, use the volume rotation procedure below.
 
 Each Markdown publication intent allows up to 16 prepared append attempts. Once the cap is
 reached, including after a confirmed prewrite conflict, AF only observes. Observation also
@@ -1097,7 +1118,8 @@ the discrepancy without replacing text or reopening an issue.
 ### Offline checks for all four destinations
 
 This command exercises the CLI and portable Ant with isolated Stores and deterministic
-Providers. GitHub and Jira use fake transports. The Markdown fixture runs with a disposable
+Providers. The fake GitHub and Jira transports exercise delayed visibility, ambiguous matches
+and recovery after losing the receipt on attempt 16. The Markdown fixture runs with a disposable
 Project Store. It publishes two items, verifies changed fields for one item under the same
 remote identity, and recovers both initial and later appends after lost receipts. It checks
 that existing prose is preserved and damaged markers, duplicates and a stale revision leave

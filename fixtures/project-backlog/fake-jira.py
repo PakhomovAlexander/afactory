@@ -26,6 +26,8 @@ class Jira:
             query = parse_qs(path.split("?", 1)[1])
             assert query["jql"][0].startswith('project = 10001 AND labels = "af-backlog-')
             hits = [{"id": "10042"}] if issue.exists() and mode != "delayed" else []
+            if mode == "duplicate":
+                hits.append({"id": "10043"})
             return {"issues": hits, "isLast": True}
         if method == "POST" and path == "/issue":
             assert not issue.exists()

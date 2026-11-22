@@ -120,6 +120,20 @@ enum Outcome {
 }
 
 impl Adapter {
+    fn check_authority(&self, store: &ProjectStore, destination: &str) -> Result<(), Pending> {
+        let matches = |name, limit, pin: &str| {
+            owned_file(&store.directory.join(name), limit)
+                .is_ok_and(|bytes| af_store::canonical::blob_content_id(&bytes) == pin)
+        };
+        Config::load(store, destination).map_err(|_| Pending::AuthorityUnavailable)?;
+        if !matches(EXECUTABLE, EXECUTABLE_LIMIT, &self.config.executable_digest)
+            || !matches(CREDENTIAL, CREDENTIAL_LIMIT, &self.pin)
+        {
+            return Err(Pending::AuthorityUnavailable);
+        }
+        Ok(())
+    }
+
     pub(super) fn deliver(
         mut self,
         store: &ProjectStore,
@@ -133,17 +147,7 @@ impl Adapter {
             cancellation,
             deadline,
         } = delivery;
-        let matches = |name, limit, pin: &str| {
-            owned_file(&store.directory.join(name), limit)
-                .is_ok_and(|bytes| af_store::canonical::blob_content_id(&bytes) == pin)
-        };
-        Config::load(store, &publication.destination_id)
-            .map_err(|_| Pending::AuthorityUnavailable)?;
-        if !matches(EXECUTABLE, EXECUTABLE_LIMIT, &self.config.executable_digest)
-            || !matches(CREDENTIAL, CREDENTIAL_LIMIT, &self.pin)
-        {
-            return Err(Pending::AuthorityUnavailable);
-        }
+        self.check_authority(store, &publication.destination_id)?;
         let issue = mapped
             .map(|remote| {
                 remote
@@ -204,6 +208,7 @@ impl Adapter {
                 })
                 && af_contracts::is_digest(&fields_id) =>
             {
+                self.check_authority(store, &publication.destination_id)?;
                 Ok(Observation {
                     remote_id: format!("jira:{id}"),
                     issue_key: Some(key),

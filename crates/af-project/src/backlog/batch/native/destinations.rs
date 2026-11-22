@@ -4,8 +4,6 @@ use super::*;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-const MAX_ATTEMPTS: usize = 16;
-
 mod jira;
 mod markdown;
 pub(super) use markdown::History as MarkdownHistory;
@@ -114,7 +112,6 @@ enum Pending {
     Conflict,
     PrewriteConflict,
     NotObserved,
-    AttemptLimit,
 }
 
 impl Pending {
@@ -125,7 +122,6 @@ impl Pending {
             Self::Conflict => "identity_conflict",
             Self::PrewriteConflict => "prewrite_conflict",
             Self::NotObserved => "not_observed",
-            Self::AttemptLimit => "attempt_limit",
         }
     }
 }
@@ -171,14 +167,6 @@ impl ProjectStore {
         live(self)?;
         let previous_attempts = publication.attempt_ids.len();
         let capped = previous_attempts >= MAX_ATTEMPTS;
-        if capped && kind != Kind::Markdown {
-            return self.record_destination_state(
-                batch,
-                publication,
-                None,
-                json!({"kind": Pending::AttemptLimit.kind()}),
-            );
-        }
         let mapped = mapped_items.get(&item.item_id).map(String::as_str);
         let retry_prewrite = kind == Kind::Markdown
             && publication.provider_state_id.as_ref().is_some_and(|id| {
@@ -231,7 +219,11 @@ impl ProjectStore {
                 let config = jira::Config::load(self, &destination)?;
                 match config.prepare(self) {
                     Ok(adapter) => {
-                        journal(self, publication)?;
+                        if capped {
+                            live(self)?;
+                        } else {
+                            journal(self, publication)?;
+                        }
                         adapter.deliver(self, delivery(publication))
                     }
                     Err(reason) => Err(reason),
@@ -239,7 +231,7 @@ impl ProjectStore {
             }
             _ => return Err("Invalid configured backlog destination".into()),
         };
-        if kind == Kind::Markdown {
+        if kind == Kind::Markdown || outcome.is_ok() {
             live(self)?;
         }
         let approved = value_id(&(&item.public.title, &item.public.body))?;
@@ -260,14 +252,13 @@ impl ProjectStore {
             Ok(_) => json!({"kind": Pending::Conflict.kind()}),
             Err(reason) => json!({"kind": reason.kind()}),
         };
-        let operation = (kind == Kind::Markdown
-            || publication.attempt_ids.len() > previous_attempts)
-            .then_some(operation);
-        let observed_markdown = kind == Kind::Markdown && outcome["kind"] == "observed";
+        let operation =
+            (kind == Kind::Markdown || capped || publication.attempt_ids.len() > previous_attempts)
+                .then_some(operation);
+        let observed = publication.remote_id.is_some();
         match self.record_destination_state(batch, publication, operation, outcome) {
-            // The file may already contain the entry. Resume from the durable
-            // attempt and observe it again if the receipt could not be persisted.
-            Err(_) if observed_markdown => Ok(false),
+            // Resume from the durable attempt if the observation receipt could not be persisted.
+            Err(_) if observed => Ok(false),
             result => result,
         }
     }
