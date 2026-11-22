@@ -87,6 +87,9 @@ path = "junit.xml"
 #   keep every deadline, fault, cadence and accounting assertion intact.
 # - cancellation_wakes_idle_driver_without_refunding_its_due_reservation: observes
 #   cancellation inside three seconds while the dispatch reservation remains 30 s away.
+# - portable_backlog_markdown_exhausted_prewrite_recovers_only_by_observation: the
+#   revision's dispatch has one 15 s deadline across the 16 conflicts and the subsequent
+#   read-only CLI resumes. Keep parallel gate work out of that window.
 # The guarded kernel measurement is manual (`make perf-kernel-measure`).
 # Its refusal half runs in the ordinary perf class without exclusivity (ADR-0252).
 [[profile.default.overrides]]
@@ -112,6 +115,7 @@ test(/::identity_rechecks_cancel_an_inflight_status_process$/)
 | test(/scenario::performance::native_scoped_driver_recovers_transient_preflight_after_process_restart$/)
 | test(/scenario::performance::shipped_performance_loop_delivers_research_and_publishes_verified_improvement_with_recovery$/)
 | test(/driver::tests::cancellation_wakes_idle_driver_without_refunding_its_due_reservation$/)
+| test(/scenario::portable::portable_backlog_markdown_exhausted_prewrite_recovers_only_by_observation$/)
 '''
 threads-required = "num-test-threads"
 priority = 100

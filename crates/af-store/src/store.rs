@@ -74,15 +74,21 @@ fn require_event_layout(conn: &Connection) -> Result<(), StoreError> {
     Ok(())
 }
 
-fn prepare_event_journal(conn: &Connection) -> Result<(), StoreError> {
+fn prepare_event_journal(conn: &Connection) -> Result<bool, StoreError> {
     use std::time::{Duration, Instant};
 
     // SQLite can skip its busy handler when two first openers both try to
     // upgrade to WAL. Retry that race within the normal SQLite busy allowance.
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        let result = check_event_layout(conn)
-            .and_then(|_| Ok(conn.pragma_update(None, "journal_mode", "WAL")?));
+        let result = check_event_layout(conn).and_then(|initialized| {
+            // Querying the current mode is sufficient for an existing WAL Store.
+            let mode: String = conn.pragma_query_value(None, "journal_mode", |row| row.get(0))?;
+            if mode != "wal" {
+                conn.pragma_update(None, "journal_mode", "WAL")?;
+            }
+            Ok(initialized)
+        });
         match result {
             Err(StoreError::Sqlite(rusqlite::Error::SqliteFailure(error, _)))
                 if error.code == rusqlite::ErrorCode::DatabaseBusy && Instant::now() < deadline =>
@@ -569,13 +575,27 @@ impl EventStore {
         // Refuse a prior layout before setting WAL mode or writing any schema.
         let checkpoint = rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE;
         conn.set_db_config(checkpoint, true)?;
-        prepare_event_journal(&conn)?;
+        let initialized = prepare_event_journal(&conn)?;
         conn.set_db_config(checkpoint, false)?;
         // FULL, not NORMAL: an accepted effect must survive process death, which is the entire
         // reason the log exists.
         conn.pragma_update(None, "synchronous", "FULL")?;
+        if !initialized {
+            Self::initialize_layout(&mut conn)?;
+        }
+        Ok(Self {
+            conn,
+            task_cache: std::cell::RefCell::new(None),
+            commit_observer: None,
+        })
+    }
+
+    fn initialize_layout(conn: &mut Connection) -> Result<(), StoreError> {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let initialized = check_event_layout(&tx)?;
+        // A concurrent first opener may have installed the layout while we took the lock.
+        if check_event_layout(&tx)? {
+            return Ok(());
+        }
         tx.execute_batch(
             "CREATE TABLE IF NOT EXISTS events (
                  envelope       TEXT NOT NULL CHECK (envelope = 'review.kernel/RunEvent@4'),
@@ -624,15 +644,9 @@ impl EventStore {
         // The table only: this release's marker is written with its first appended event.
         tx.execute_batch(writers::CREATE)?;
         tx.execute_batch(wake::SCHEMA)?;
-        if !initialized {
-            tx.pragma_update(None, "user_version", EVENT_LAYOUT_VERSION)?;
-        }
+        tx.pragma_update(None, "user_version", EVENT_LAYOUT_VERSION)?;
         tx.commit()?;
-        Ok(Self {
-            conn,
-            task_cache: std::cell::RefCell::new(None),
-            commit_observer: None,
-        })
+        Ok(())
     }
 
     /// Read exactly one canonical Scenario template pin without replaying its stream.
@@ -1988,6 +2002,37 @@ mod tests {
         assert!(
             matches!(store.replay("run"), Err(StoreError::Conflict(message)) if message.contains(RunEvent::SCHEMA))
         );
+    }
+
+    #[test]
+    fn existing_store_opens_and_observes_committed_events_behind_a_writer() {
+        let (directory, mut writer, cas) = fixture();
+        let event = writer
+            .append(
+                "run",
+                &cas,
+                NewEvent::new(EventType::SourceCapturedV1, json!({"committed": true})),
+            )
+            .unwrap();
+        let tx = writer
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        tx.execute("UPDATE events SET payload = '{}'", []).unwrap();
+
+        let reader = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+        assert_eq!(reader.replay("run").unwrap(), [event]);
+        let journal: String = reader
+            .conn
+            .pragma_query_value(None, "journal_mode", |row| row.get(0))
+            .unwrap();
+        let synchronous: u32 = reader
+            .conn
+            .pragma_query_value(None, "synchronous", |row| row.get(0))
+            .unwrap();
+        assert_eq!(journal, "wal");
+        assert_eq!(synchronous, 2); // FULL
+        tx.rollback().unwrap();
     }
 
     #[test]

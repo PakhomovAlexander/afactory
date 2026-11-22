@@ -3277,7 +3277,8 @@ fn markdown_revision_round_trip(exhaust_revision: bool) {
         if count == 4 {
             fs::write(&archive, &tampered).unwrap();
         }
-        assert_eq!(resume_revision()["status"], "waiting");
+        let conflict = resume_revision();
+        assert_eq!(conflict["status"], "waiting", "{}", conflict["failure"]);
         let (pending, state) = configured_backlog_state(store);
         assert_eq!(pending["attempt_ids"].as_array().unwrap().len(), count);
         assert_eq!(state["outcome"]["kind"], "prewrite_conflict");
@@ -3285,11 +3286,18 @@ fn markdown_revision_round_trip(exhaust_revision: bool) {
     }
     fs::write(&archive, &full).unwrap();
 
+    let before_observation = configured_backlog_state(store).0;
     let updated = if exhaust_revision {
-        assert_eq!(resume_revision()["status"], "waiting");
+        let absent = resume_revision();
+        assert_eq!(absent["status"], "waiting", "{}", absent["failure"]);
         let (pending, state) = configured_backlog_state(store);
         assert!(pending["receipt_id"].is_null());
+        assert_eq!(pending["attempt_ids"], before_observation["attempt_ids"]);
         assert_eq!(pending["attempt_ids"].as_array().unwrap().len(), 16);
+        assert_ne!(
+            pending["provider_state_id"],
+            before_observation["provider_state_id"]
+        );
         assert_eq!(state["outcome"]["kind"], "not_observed");
         assert_eq!(fs::read_to_string(&path).unwrap(), revised_base);
 
@@ -3316,7 +3324,8 @@ fn markdown_revision_round_trip(exhaust_revision: bool) {
              BEGIN SELECT RAISE(ABORT, 'fixture lost revised receipt'); END;",
             )
             .unwrap();
-        assert_eq!(resume_revision()["status"], "waiting");
+        let lost = resume_revision();
+        assert_eq!(lost["status"], "waiting", "{}", lost["failure"]);
         let (pending, state) = configured_backlog_state(store);
         assert!(pending["receipt_id"].is_null());
         assert_eq!(state["outcome"]["kind"], "attempt_prepared");
@@ -3333,22 +3342,31 @@ fn markdown_revision_round_trip(exhaust_revision: bool) {
     assert!(revision.contains("The boundary should be accepted alongside higher values."));
     assert_eq!(revision.matches("<!-- af-backlog-entry-v1:").count(), 1);
 
-    // Observing the old, valid chain alone cannot close the new revision.
-    fs::write(&path, &revised_base).unwrap();
-    assert_eq!(resume_revision()["status"], "waiting");
-    let (missing, state) = configured_backlog_state(store);
-    assert!(missing["receipt_id"].is_null());
-    assert_eq!(state["outcome"]["kind"], "not_observed");
-    assert_eq!(fs::read_to_string(&path).unwrap(), revised_base);
     let truncated = updated
         .strip_suffix("<!-- af-backlog-end-v1 -->\n")
         .unwrap();
     fs::write(&path, truncated).unwrap();
-    assert_eq!(resume_revision()["status"], "waiting");
+    let malformed = resume_revision();
+    assert_eq!(malformed["status"], "waiting", "{}", malformed["failure"]);
     let (partial, state) = configured_backlog_state(store);
     assert!(partial["receipt_id"].is_null());
+    assert_eq!(partial["attempt_ids"], pending["attempt_ids"]);
+    assert_ne!(partial["provider_state_id"], pending["provider_state_id"]);
     assert_eq!(state["outcome"]["kind"], "identity_conflict");
     assert_eq!(fs::read_to_string(&path).unwrap(), truncated);
+
+    // The old, valid chain alone cannot close the revision. Observe it after the
+    // malformed block so a previously recorded absence cannot satisfy this check.
+    fs::write(&path, &revised_base).unwrap();
+    let absent = resume_revision();
+    assert_eq!(absent["status"], "waiting", "{}", absent["failure"]);
+    let (missing, state) = configured_backlog_state(store);
+    assert!(missing["receipt_id"].is_null());
+    assert_eq!(missing["attempt_ids"], pending["attempt_ids"]);
+    assert_ne!(missing["provider_state_id"], partial["provider_state_id"]);
+    assert_eq!(state["outcome"]["kind"], "not_observed");
+    assert_eq!(fs::read_to_string(&path).unwrap(), revised_base);
+
     fs::write(&path, &updated).unwrap();
     let complete = resume_revision();
     assert_eq!(complete["status"], "succeeded", "{}", complete["failure"]);

@@ -33,9 +33,17 @@ pub(super) fn mark(tx: &Connection, now_unix_ms: u64) -> Result<(), StoreError> 
             params![AF_VERSION],
             |_| Ok(()),
         )
-        .optional()?;
-    if present.is_some() {
-        return Ok(());
+        .optional();
+    match present {
+        Ok(Some(())) => return Ok(()),
+        Ok(None) => {}
+        Err(error) => {
+            if has_writer_table(tx)? {
+                return Err(error.into());
+            }
+            // A current-layout unmarked Store receives the table with its first append.
+            tx.execute_batch(CREATE)?;
+        }
     }
     let marker = StoreWriterV1::new(AF_VERSION, now_unix_ms);
     marker.validate().map_err(StoreError::Conflict)?;
@@ -76,17 +84,18 @@ fn provenance_of(conn: &Connection) -> Result<StoreProvenance, StoreError> {
     Ok(StoreProvenance::of(&releases, AF_VERSION))
 }
 
-/// Every release that appended to the Store, oldest first. A Store from before markers
-/// has no table, and has none; a release column that does not spell a release is skipped.
+fn has_writer_table(conn: &Connection) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'store_writers')",
+        [],
+        |row| row.get(0),
+    )
+}
+
+/// Every release that appended to the Store, oldest first. A missing table means no markers;
+/// a release column that does not spell a release is skipped.
 fn releases(conn: &Connection) -> Result<Vec<String>, StoreError> {
-    let table: Option<String> = conn
-        .query_row(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'store_writers'",
-            [],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if table.is_none() {
+    if !has_writer_table(conn)? {
         return Ok(Vec::new());
     }
     let mut statement = conn.prepare("SELECT af_version FROM store_writers ORDER BY rowid ASC")?;
@@ -250,6 +259,7 @@ mod tests {
         let mut store = EventStore::open(&path).unwrap();
         assert!(store.writer_releases().unwrap().is_empty());
         assert_eq!(store.provenance().unwrap(), StoreProvenance::Unmarked);
+        assert!(!has_writer_table(&store.conn).unwrap());
         append(&mut store, &cas).unwrap();
         assert_eq!(
             store.writer_releases().unwrap(),
