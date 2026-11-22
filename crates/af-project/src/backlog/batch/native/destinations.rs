@@ -4,6 +4,8 @@ use super::*;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+const MAX_ATTEMPTS: usize = 16;
+
 mod jira;
 mod markdown;
 pub(super) use markdown::History as MarkdownHistory;
@@ -167,7 +169,9 @@ impl ProjectStore {
             running(cancellation, proof.deadline)
         };
         live(self)?;
-        if publication.attempt_ids.len() >= 16 {
+        let previous_attempts = publication.attempt_ids.len();
+        let capped = previous_attempts >= MAX_ATTEMPTS;
+        if capped && kind != Kind::Markdown {
             return self.record_destination_state(
                 batch,
                 publication,
@@ -185,21 +189,20 @@ impl ProjectStore {
                         && saved["outcome"]["kind"] == Pending::PrewriteConflict.kind()
                 })
             });
-        let operation =
-            if mapped.is_none() && (publication.attempt_ids.is_empty() || retry_prewrite) {
-                Operation::Create
-            } else {
-                Operation::Reconcile
-            };
-        let attempt = value_id(&(
-            "af/backlog-configured-attempt@1",
-            &publication.intent_id,
-            publication.attempt_ids.len(),
-            operation,
-        ))?;
+        let may_append = !capped && (publication.attempt_ids.is_empty() || retry_prewrite);
+        let operation = if mapped.is_none() && may_append {
+            Operation::Create
+        } else {
+            Operation::Reconcile
+        };
         let journal = |store: &mut Self, publication: &mut Publication| {
             live(store)?;
-            publication.attempt_ids.push(attempt.clone());
+            publication.attempt_ids.push(value_id(&(
+                "af/backlog-configured-attempt@1",
+                &publication.intent_id,
+                previous_attempts,
+                operation,
+            ))?);
             store.record_destination_state(
                 batch,
                 publication,
@@ -219,13 +222,10 @@ impl ProjectStore {
         let outcome = match kind {
             Kind::Markdown => {
                 let config = markdown::Config::load(self, &destination)?;
-                journal(self, publication)?;
-                config.deliver(
-                    self,
-                    delivery(publication),
-                    markdown_history,
-                    publication.attempt_ids.len() == 1 || retry_prewrite,
-                )
+                if may_append {
+                    journal(self, publication)?;
+                }
+                config.deliver(self, delivery(publication), markdown_history, may_append)
             }
             Kind::Jira => {
                 let config = jira::Config::load(self, &destination)?;
@@ -239,6 +239,9 @@ impl ProjectStore {
             }
             _ => return Err("Invalid configured backlog destination".into()),
         };
+        if kind == Kind::Markdown {
+            live(self)?;
+        }
         let approved = value_id(&(&item.public.title, &item.public.body))?;
         let outcome = match outcome {
             Ok(observation)
@@ -257,11 +260,9 @@ impl ProjectStore {
             Ok(_) => json!({"kind": Pending::Conflict.kind()}),
             Err(reason) => json!({"kind": reason.kind()}),
         };
-        let operation = publication
-            .attempt_ids
-            .last()
-            .filter(|id| *id == &attempt)
-            .map(|_| operation);
+        let operation = (kind == Kind::Markdown
+            || publication.attempt_ids.len() > previous_attempts)
+            .then_some(operation);
         let observed_markdown = kind == Kind::Markdown && outcome["kind"] == "observed";
         match self.record_destination_state(batch, publication, operation, outcome) {
             // The file may already contain the entry. Resume from the durable

@@ -23,9 +23,9 @@ pub(super) const CREATE: &str = "CREATE TABLE IF NOT EXISTS store_writers (
 /// release's events: every event a Store holds was written by a release its markers name, and
 /// a Store this release only opened, read or refused gets no marker. The marker is part of the
 /// append, so a marker that cannot be written fails the append as a whole and no event is
-/// committed without it. A Store whose log holds events but no marker was written before
-/// markers existed; this release does not refuse it here — replay is the release boundary
-/// (ADR-0145) — and once this release appends to it, its marker names this release too.
+/// committed without it. A Store opened with the current event layout can receive this marker
+/// even if its log was unmarked. Envelope admission and replay enforce the event contract
+/// independently of writer provenance (ADR-0145).
 pub(super) fn mark(tx: &Connection, now_unix_ms: u64) -> Result<(), StoreError> {
     let present = tx
         .query_row(
@@ -168,9 +168,9 @@ mod tests {
 
     fn insert_event(conn: &Connection) {
         conn.execute_batch(
-            "INSERT INTO events (run_id, sequence, event_id, type, occurred_at, artifact_refs,
+            "INSERT INTO events (envelope, run_id, sequence, event_id, type, occurred_at, artifact_refs,
                                  payload)
-             VALUES ('other', 0, 'event', 'TaskTransition@9', '1970-01-01T00:00:00Z', '[]', '{}');",
+             VALUES ('review.kernel/RunEvent@4', 'other', 0, 'event', 'TaskTransition@9', '1970-01-01T00:00:00Z', '[]', '{}');",
         )
         .unwrap();
     }
@@ -235,8 +235,8 @@ mod tests {
         );
     }
 
-    /// An unmarked Store with history is not refused here; the append that this release makes
-    /// to it records this release's marker with its event.
+    /// An append to an unmarked Store in the current layout records this release's marker
+    /// with its event.
     #[test]
     fn an_append_to_an_unmarked_store_with_history_marks_it() {
         let dir = tempfile::tempdir().unwrap();

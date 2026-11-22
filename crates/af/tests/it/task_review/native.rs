@@ -2740,7 +2740,7 @@ fn assert_forged_success_refused(
         references.extend(port.snapshot_id.iter().cloned());
     }
     let connection = rusqlite::Connection::open(directory.join("events.sqlite")).unwrap();
-    connection.execute("INSERT INTO events (run_id,sequence,event_id,type,occurred_at,artifact_refs,payload) VALUES (?1,?2,?3,'TaskTransition@6',?4,?5,?6)", rusqlite::params![run, i64::try_from(sequence).unwrap(), event_id, last.occurred_at, serde_json::to_string(&references).unwrap(), serde_json::to_string(&transition).unwrap()]).unwrap();
+    connection.execute("INSERT INTO events (envelope, run_id,sequence,event_id,type,occurred_at,artifact_refs,payload) VALUES ('review.kernel/RunEvent@4', ?1,?2,?3,'TaskTransition@6',?4,?5,?6)", rusqlite::params![run, i64::try_from(sequence).unwrap(), event_id, last.occurred_at, serde_json::to_string(&references).unwrap(), serde_json::to_string(&transition).unwrap()]).unwrap();
     drop(connection);
     let error = EventStore::open_read_only(directory.join("events.sqlite"))
         .unwrap()

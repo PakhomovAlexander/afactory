@@ -1331,9 +1331,9 @@ fn foreign_store(dir: &Path, release: Option<&str>) {
     let conn = rusqlite::Connection::open(&path).unwrap();
     conn.execute_batch(
         "DELETE FROM store_writers;
-         INSERT INTO events (run_id, sequence, event_id, type, occurred_at, artifact_refs,
+         INSERT INTO events (envelope, run_id, sequence, event_id, type, occurred_at, artifact_refs,
                              payload)
-         VALUES ('task:t-1', 0, 'e', 'TaskTransition@9', '1970-01-01T00:00:00Z', '[]', '{}');",
+         VALUES ('review.kernel/RunEvent@4', 'task:t-1', 0, 'e', 'TaskTransition@9', '1970-01-01T00:00:00Z', '[]', '{}');",
     )
     .unwrap();
     if let Some(release) = release {

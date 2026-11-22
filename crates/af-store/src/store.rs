@@ -40,6 +40,60 @@ pub mod task;
 pub mod wake;
 pub mod writers;
 
+fn event_envelope_conflict() -> StoreError {
+    StoreError::Conflict(format!(
+        "events table does not use the current {} envelope",
+        RunEvent::SCHEMA
+    ))
+}
+
+// The SQLite layout version binds the database to the RunEvent envelope. The row
+// carries the full identity so replay also refuses a mixed or damaged log.
+const EVENT_LAYOUT_VERSION: u32 = 4;
+
+fn check_event_layout(conn: &Connection) -> Result<bool, StoreError> {
+    let (version, has_events, has_envelope): (u32, bool, bool) = conn.query_row(
+        "SELECT user_version,
+                EXISTS(SELECT 1 FROM sqlite_schema WHERE name='events' AND type='table'),
+                EXISTS(SELECT 1 FROM pragma_table_info('events') WHERE name='envelope' AND [notnull]=1)
+         FROM pragma_user_version",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    match (version, has_events, has_envelope) {
+        (0, false, false) => Ok(false),
+        (EVENT_LAYOUT_VERSION, true, true) => Ok(true),
+        _ => Err(event_envelope_conflict()),
+    }
+}
+
+fn require_event_layout(conn: &Connection) -> Result<(), StoreError> {
+    if !check_event_layout(conn)? {
+        return Err(event_envelope_conflict());
+    }
+    Ok(())
+}
+
+fn prepare_event_journal(conn: &Connection) -> Result<(), StoreError> {
+    use std::time::{Duration, Instant};
+
+    // SQLite can skip its busy handler when two first openers both try to
+    // upgrade to WAL. Retry that race within the normal SQLite busy allowance.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let result = check_event_layout(conn)
+            .and_then(|_| Ok(conn.pragma_update(None, "journal_mode", "WAL")?));
+        match result {
+            Err(StoreError::Sqlite(rusqlite::Error::SqliteFailure(error, _)))
+                if error.code == rusqlite::ErrorCode::DatabaseBusy && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            result => return result,
+        }
+    }
+}
+
 /// Read a non-negative SQLite integer column as `u64`.
 ///
 /// SQLite stores integers as `i64`; a negative value in a column that the schema treats as a
@@ -422,6 +476,7 @@ impl EventStore {
 
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self, StoreError> {
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        require_event_layout(&conn)?;
         Ok(Self {
             conn,
             task_cache: std::cell::RefCell::new(None),
@@ -477,6 +532,7 @@ impl EventStore {
             immutable_uri(path),
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
         )?;
+        require_event_layout(&conn)?;
         Ok(Self {
             conn,
             task_cache: std::cell::RefCell::new(None),
@@ -501,6 +557,7 @@ impl EventStore {
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         conn.pragma_update(None, "synchronous", "FULL")?;
         conn.busy_timeout(busy_timeout)?;
+        require_event_layout(&conn)?;
         Ok(Self {
             conn,
             task_cache: std::cell::RefCell::new(None),
@@ -508,13 +565,20 @@ impl EventStore {
         })
     }
 
-    fn init(conn: Connection) -> Result<Self, StoreError> {
-        conn.pragma_update(None, "journal_mode", "WAL")?;
+    fn init(mut conn: Connection) -> Result<Self, StoreError> {
+        // Refuse a prior layout before setting WAL mode or writing any schema.
+        let checkpoint = rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE;
+        conn.set_db_config(checkpoint, true)?;
+        prepare_event_journal(&conn)?;
+        conn.set_db_config(checkpoint, false)?;
         // FULL, not NORMAL: an accepted effect must survive process death, which is the entire
         // reason the log exists.
         conn.pragma_update(None, "synchronous", "FULL")?;
-        conn.execute_batch(
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let initialized = check_event_layout(&tx)?;
+        tx.execute_batch(
             "CREATE TABLE IF NOT EXISTS events (
+                 envelope       TEXT NOT NULL CHECK (envelope = 'review.kernel/RunEvent@4'),
                  run_id         TEXT    NOT NULL,
                  sequence       INTEGER NOT NULL,
                  event_id       TEXT    NOT NULL UNIQUE,
@@ -558,8 +622,12 @@ impl EventStore {
              );",
         )?;
         // The table only: this release's marker is written with its first appended event.
-        conn.execute_batch(writers::CREATE)?;
-        conn.execute_batch(wake::SCHEMA)?;
+        tx.execute_batch(writers::CREATE)?;
+        tx.execute_batch(wake::SCHEMA)?;
+        if !initialized {
+            tx.pragma_update(None, "user_version", EVENT_LAYOUT_VERSION)?;
+        }
+        tx.commit()?;
         Ok(Self {
             conn,
             task_cache: std::cell::RefCell::new(None),
@@ -992,7 +1060,7 @@ impl EventStore {
         })?;
         let mut stmt = self.conn.prepare(
             "SELECT event_id, sequence, type, occurred_at, node_id, attempt_id,
-                    causation_id, correlation_id, artifact_refs, payload
+                    causation_id, correlation_id, artifact_refs, payload, envelope
              FROM events WHERE run_id = ?1 AND sequence >= ?2 ORDER BY sequence LIMIT ?3",
         )?;
         let rows = stmt.query_map(
@@ -1030,6 +1098,7 @@ impl EventStore {
                     sequence,
                     refs,
                     payload,
+                    row.get::<_, String>(10)?,
                 ))
             },
         )?;
@@ -1038,7 +1107,11 @@ impl EventStore {
             // A row that does not parse is refused, never degraded: replaying it as an empty
             // event would rebuild a different state than the run committed, silently — the
             // exact failure the publication ordering exists to prevent, on the read side.
-            let (mut event, raw_sequence, refs, payload) = row.map_err(StoreError::from)?;
+            let (mut event, raw_sequence, refs, payload, envelope) =
+                row.map_err(StoreError::from)?;
+            if envelope != RunEvent::SCHEMA {
+                return Err(event_envelope_conflict().into());
+            }
             *bytes = bytes.saturating_add(payload.len() as u64);
             if let Some(budget) = budget.as_deref_mut() {
                 match budget.charge(refs.len() + payload.len()) {
@@ -1310,8 +1383,8 @@ fn insert_preverified_events(
         tx.execute(
             "INSERT INTO events
                    (run_id, sequence, event_id, type, occurred_at, node_id, attempt_id,
-                    causation_id, correlation_id, artifact_refs, payload)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    causation_id, correlation_id, artifact_refs, payload, envelope)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 run_id,
                 next,
@@ -1324,6 +1397,7 @@ fn insert_preverified_events(
                 event.correlation_id,
                 refs,
                 payload,
+                RunEvent::SCHEMA,
             ],
         )
         .map_err(|e| match e {
@@ -1823,6 +1897,128 @@ mod tests {
     }
 
     #[test]
+    fn refuses_base_event_layout_on_every_open_without_rewriting() {
+        for wal in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("events.sqlite");
+            let conn = Connection::open(&path).unwrap();
+            if wal {
+                conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+            }
+            // The base layout decomposed RunEvent@3 and did not store the envelope.
+            conn.execute_batch(
+                "CREATE TABLE events (
+                     run_id TEXT NOT NULL,
+                     sequence INTEGER NOT NULL,
+                     event_id TEXT NOT NULL UNIQUE,
+                     type TEXT NOT NULL,
+                     occurred_at TEXT NOT NULL,
+                     node_id TEXT,
+                     attempt_id TEXT,
+                     causation_id TEXT,
+                     correlation_id TEXT,
+                     artifact_refs TEXT NOT NULL,
+                     payload TEXT NOT NULL,
+                     PRIMARY KEY (run_id, sequence)
+                 );",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO events (run_id, sequence, event_id, type, occurred_at, artifact_refs, payload)
+                 VALUES ('base', 0, ?1, 'SourceCaptured@1', '2026-11-10T00:00:00Z', '[]', '{}')",
+                [derive_event_id("base", 0)],
+            )
+            .unwrap();
+            // Keep the base writer open so the WAL case also tests uncheckpointed rows.
+            // SQLite readers may update their own shared-memory lock index.
+            let persisted = || {
+                let bytes = std::fs::read(&path).unwrap();
+                let journal = if wal {
+                    Some(std::fs::read(directory.path().join("events.sqlite-wal")).unwrap())
+                } else {
+                    None
+                };
+                (bytes, journal)
+            };
+            let before = persisted();
+            for result in [
+                EventStore::open(&path),
+                EventStore::open_read_only(&path),
+                EventStore::open_unchanged(&path),
+            ] {
+                assert!(matches!(
+                    result,
+                    Err(StoreError::Conflict(message)) if message.contains(RunEvent::SCHEMA)
+                ));
+                assert!(persisted() == before);
+            }
+        }
+    }
+
+    #[test]
+    fn current_store_records_and_checks_the_envelope_at_replay() {
+        let (directory, mut store, cas) = fixture();
+        let event = store
+            .append(
+                "run",
+                &cas,
+                NewEvent::new(EventType::SourceCapturedV1, json!({})),
+            )
+            .unwrap();
+        let path = directory.path().join("events.sqlite");
+        drop(store);
+        let store = EventStore::open_read_only(&path).unwrap();
+        assert_eq!(store.replay("run").unwrap(), [event]);
+        let envelope: String = store
+            .conn
+            .query_row("SELECT envelope FROM events", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(envelope, RunEvent::SCHEMA);
+
+        let conn = Connection::open(path).unwrap();
+        assert!(
+            conn.execute("UPDATE events SET envelope='review.kernel/RunEvent@3'", [])
+                .is_err()
+        );
+        conn.execute_batch(
+            "PRAGMA ignore_check_constraints=ON;
+             UPDATE events SET envelope='review.kernel/RunEvent@3';",
+        )
+        .unwrap();
+        assert!(
+            matches!(store.replay("run"), Err(StoreError::Conflict(message)) if message.contains(RunEvent::SCHEMA))
+        );
+    }
+
+    #[test]
+    fn concurrent_first_open_creates_one_current_store() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("events.sqlite");
+        let barrier = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        let store = EventStore::open(&path).unwrap();
+                        assert!(store.replay("empty").unwrap().is_empty());
+                    })
+                })
+                .collect();
+            for thread in threads {
+                thread.join().unwrap();
+            }
+        });
+        assert!(
+            EventStore::open_read_only(path)
+                .unwrap()
+                .replay("empty")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn concurrent_append_if_empty_publishes_exactly_one_event() {
         let (dir, store, cas) = fixture();
         let path = store.database_path().unwrap();
@@ -1926,8 +2122,8 @@ mod tests {
             let (_dir, mut store, cas) = fixture();
             for sequence in &sequences {
                 store.conn.execute(
-                    "INSERT INTO events (run_id,sequence,event_id,type,occurred_at,artifact_refs,payload)
-                     VALUES ('pin',?1,?2,'SourceCaptured@1','2026-11-13T00:00:00Z','[]','{}')",
+                    "INSERT INTO events (envelope, run_id,sequence,event_id,type,occurred_at,artifact_refs,payload)
+                     VALUES ('review.kernel/RunEvent@4', 'pin',?1,?2,'SourceCaptured@1','2026-11-13T00:00:00Z','[]','{}')",
                     params![sequence, derive_event_id("pin", *sequence)],
                 ).unwrap();
             }
@@ -2145,7 +2341,7 @@ mod tests {
             "TaskReviewResultSelected@1",
         ] {
             let (_, store, _) = fixture();
-            store.conn.execute("INSERT INTO events (run_id,sequence,event_id,type,occurred_at,artifact_refs,payload) VALUES ('old',0,?1,?2,'2026-11-10T00:00:00Z','[]','{}')",params![derive_event_id("old",0),retired]).unwrap();
+            store.conn.execute("INSERT INTO events (envelope, run_id,sequence,event_id,type,occurred_at,artifact_refs,payload) VALUES ('review.kernel/RunEvent@4', 'old',0,?1,?2,'2026-11-10T00:00:00Z','[]','{}')",params![derive_event_id("old",0),retired]).unwrap();
             assert_eq!(
                 store.unknown_event_type().unwrap().as_deref(),
                 Some(retired)

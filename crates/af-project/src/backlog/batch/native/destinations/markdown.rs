@@ -7,6 +7,7 @@ use std::path::{Component, PathBuf};
 
 const CONFIG: &str = "backlog-markdown-destination-v2.json";
 const RESERVED: &str = "<!-- af-backlog-";
+const ARCHIVE: &str = "<!-- af-backlog-archive-v1:";
 const BEGIN: &str = "<!-- af-backlog-entry-v1:";
 const END: &str = "<!-- af-backlog-end-v1 -->\n";
 const MAX_DOCUMENT: usize = 8 * 1024 * 1024;
@@ -57,25 +58,30 @@ impl Config {
             cancellation,
             deadline,
             ..
-        } = delivery;
+        } = &delivery;
         let conflict = if may_append {
             Pending::PrewriteConflict
         } else {
             Pending::Conflict
         };
-        let (parent, mut file) = open_document(&self.path).map_err(|_| conflict)?;
+        let (parent, mut file) = open_document(&self.path, may_append).map_err(|_| conflict)?;
         fs::flock(&file, FlockOperation::NonBlockingLockExclusive).map_err(|_| conflict)?;
         let (original, stamp) = read_document(&mut file).map_err(|_| conflict)?;
-        let document = std::str::from_utf8(&original).map_err(|_| conflict)?;
         let content = content(&item.item_id, &item.public, mapped.is_some());
         if content.contains(RESERVED) {
             return Err(conflict);
         }
         let digest = af_store::canonical::blob_content_id(content.as_bytes());
         let intent = &publication.intent_id;
-        let entries = entries(document, &self.project_id).ok_or(conflict)?;
-        let observed = history
-            .check(&entries, &item.item_id, intent, &digest, may_append)
+        let checked_history = history
+            .check(
+                &parent,
+                &original,
+                &self.project_id,
+                &delivery,
+                &digest,
+                may_append,
+            )
             .ok_or(conflict)?;
 
         if may_append {
@@ -88,6 +94,9 @@ impl Config {
             }
             Self::load(store, &publication.destination_id)
                 .map_err(|_| Pending::AuthorityUnavailable)?;
+            if !checked_history.archives_unchanged(&parent, &delivery) {
+                return Err(Pending::PrewriteConflict);
+            }
             append_checked(
                 &self.path,
                 &parent,
@@ -95,10 +104,10 @@ impl Config {
                 (&original, stamp),
                 append.as_bytes(),
                 cancellation,
-                deadline,
+                *deadline,
             )?;
         } else {
-            if !observed {
+            if !checked_history.observed {
                 return Err(Pending::NotObserved);
             }
             if !matches!(read_document(&mut file), Ok((bytes, current)) if bytes == original && current == stamp)
@@ -114,7 +123,7 @@ impl Config {
         }
         Self::load(store, &publication.destination_id)
             .map_err(|_| Pending::AuthorityUnavailable)?;
-        running(cancellation, deadline).map_err(|_| Pending::AuthorityUnavailable)?;
+        running(cancellation, *deadline).map_err(|_| Pending::AuthorityUnavailable)?;
         Ok(Observation {
             remote_id: mapped
                 .map_or_else(|| remote_id(&item.item_id, intent, &digest), str::to_owned),
@@ -165,38 +174,118 @@ impl History {
         Ok(())
     }
 
-    // Every receipted revision must be present. Only this attempt's exact next revision
-    // can be present without a receipt, and only when a write may already have happened.
+    // Check from newest to oldest, consuming each exact receipt once. An archive
+    // must consume at least one receipt, so even cyclic links cannot extend the walk.
     fn check(
         &self,
-        entries: &Entries<'_>,
-        item: &str,
-        intent: &str,
+        parent: &File,
+        active: &[u8],
+        project: &str,
+        delivery: &Delivery<'_>,
         digest: &str,
         may_append: bool,
-    ) -> Option<bool> {
-        let mut observed = false;
-        for (&id, actual) in entries {
-            let expected = self.0.get(id).map_or(&[][..], Vec::as_slice);
-            let (prefix, suffix) = actual.split_at_checked(expected.len())?;
-            if !prefix.iter().copied().eq(expected
-                .iter()
-                .map(|(intent, digest)| (intent.as_str(), digest.as_str())))
-            {
+    ) -> Option<CheckedHistory> {
+        let mut remaining: BTreeMap<_, _> = self
+            .0
+            .iter()
+            .map(|(item, chain)| (item.as_str(), chain.as_slice()))
+            .collect();
+        let (archive, entries) = segment(active, project)?;
+        let pending = (!may_append).then_some((
+            delivery.item.item_id.as_str(),
+            delivery.publication.intent_id.as_str(),
+            digest,
+        ));
+        let observed = consume(&mut remaining, entries, pending)?;
+        let mut archives = Vec::new();
+        let mut next = archive.map(str::to_owned);
+        while let Some(link) = next {
+            running(delivery.cancellation, delivery.deadline).ok()?;
+            let name = format!("af-backlog-archive-{}.md", &link[7..]);
+            let mut file = open_at(parent, Path::new(&name), OFlags::RDONLY).ok()?;
+            fs::flock(&file, FlockOperation::NonBlockingLockShared).ok()?;
+            let (bytes, snapshot) = read_document(&mut file).ok()?;
+            if af_store::canonical::blob_content_id(&bytes) != link {
                 return None;
             }
-            if !suffix.is_empty() {
-                if may_append || id != item || suffix != [(intent, digest)] {
-                    return None;
-                }
-                observed = true;
+            let (archive, entries) = segment(&bytes, project)?;
+            if entries.is_empty() {
+                return None;
             }
+            consume(&mut remaining, entries, None)?;
+            file.sync_all().ok()?;
+            if stamp(&checked_stat(parent, Path::new(&name)).ok()?) != snapshot {
+                return None;
+            }
+            archives.push((name, snapshot));
+            next = archive.map(str::to_owned);
         }
-        self.0
-            .keys()
-            .all(|id| entries.contains_key(id.as_str()))
-            .then_some(observed)
+        remaining
+            .values()
+            .all(|chain| chain.is_empty())
+            .then_some(CheckedHistory { observed, archives })
     }
+}
+
+struct CheckedHistory {
+    observed: bool,
+    archives: Vec<(String, Stamp)>,
+}
+
+impl CheckedHistory {
+    fn archives_unchanged(&self, parent: &File, delivery: &Delivery<'_>) -> bool {
+        self.archives.iter().all(|(name, expected)| {
+            running(delivery.cancellation, delivery.deadline).is_ok()
+                && checked_stat(parent, Path::new(name))
+                    .is_ok_and(|current| stamp(&current) == *expected)
+        })
+    }
+}
+
+fn segment<'a>(bytes: &'a [u8], project: &str) -> Option<(Option<&'a str>, Entries<'a>)> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let (link, document) = if let Some(marker) = text.strip_prefix(ARCHIVE) {
+        let (link, document) = marker.split_once(" -->\n")?;
+        if !af_contracts::is_digest(link) {
+            return None;
+        }
+        (Some(link), document)
+    } else {
+        (None, text)
+    };
+    Some((link, entries(document, project)?))
+}
+
+// Only the active file may contain one unreceipted revision, and only on observation.
+fn consume(
+    remaining: &mut BTreeMap<&str, &[(String, String)]>,
+    entries: Entries<'_>,
+    pending: Option<(&str, &str, &str)>,
+) -> Option<bool> {
+    let mut observed = false;
+    for (id, mut actual) in entries {
+        if let Some((item, intent, digest)) = pending
+            && item == id
+            && actual.last() == Some(&(intent, digest))
+        {
+            observed = true;
+            actual.pop();
+        }
+        if actual.is_empty() {
+            continue;
+        }
+        let expected = remaining.get_mut(id)?;
+        let (prefix, suffix) =
+            expected.split_at_checked(expected.len().checked_sub(actual.len())?)?;
+        if !actual.into_iter().eq(suffix
+            .iter()
+            .map(|(intent, digest)| (intent.as_str(), digest.as_str())))
+        {
+            return None;
+        }
+        *expected = prefix;
+    }
+    Some(observed)
 }
 
 fn open_parent(path: &Path) -> rustix::io::Result<File> {
@@ -246,13 +335,22 @@ fn checked_stat(parent: &File, path: &Path) -> rustix::io::Result<Stat> {
     Ok(stat)
 }
 
-fn open_document(path: &Path) -> rustix::io::Result<(File, File)> {
+fn open_document(path: &Path, may_append: bool) -> rustix::io::Result<(File, File)> {
     let parent = open_parent(path)?;
-    let before = checked_stat(&parent, path)?;
-    let flags =
-        OFlags::RDWR | OFlags::APPEND | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    let flags = if may_append {
+        OFlags::RDWR | OFlags::APPEND
+    } else {
+        OFlags::RDONLY
+    };
+    let file = open_at(&parent, path, flags)?;
+    Ok((parent, file))
+}
+
+fn open_at(parent: &File, path: &Path, access: OFlags) -> rustix::io::Result<File> {
+    let before = checked_stat(parent, path)?;
+    let flags = access | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
     let file = File::from(fs::openat(
-        &parent,
+        parent,
         path.file_name().ok_or(Errno::INVAL)?,
         flags,
         Mode::empty(),
@@ -260,7 +358,7 @@ fn open_document(path: &Path) -> rustix::io::Result<(File, File)> {
     if stamp(&before) != stamp(&fs::fstat(&file)?) {
         return Err(Errno::AGAIN);
     }
-    Ok((parent, file))
+    Ok(file)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -403,7 +501,7 @@ mod tests {
             }
             let path = repository.join("Backlog.md");
             std_fs::write(&path, "Version-controlled prose").unwrap();
-            assert!(open_document(&path).is_err());
+            assert!(open_document(&path, true).is_err());
             assert_eq!(
                 std_fs::read_to_string(path).unwrap(),
                 "Version-controlled prose"
@@ -415,10 +513,10 @@ mod tests {
         std_fs::write(real.join("Backlog.md"), "Human notes").unwrap();
         symlink(&real, root.join("alias")).unwrap();
         symlink(real.join("Backlog.md"), root.join("Link.md")).unwrap();
-        assert!(open_document(&root.join("alias/Backlog.md")).is_err());
-        assert!(open_document(&root.join("Link.md")).is_err());
+        assert!(open_document(&root.join("alias/Backlog.md"), true).is_err());
+        assert!(open_document(&root.join("Link.md"), true).is_err());
         std_fs::hard_link(real.join("Backlog.md"), root.join("Hardlink.md")).unwrap();
-        assert!(open_document(&root.join("Hardlink.md")).is_err());
+        assert!(open_document(&root.join("Hardlink.md"), true).is_err());
         assert_eq!(
             std_fs::read_to_string(real.join("Backlog.md")).unwrap(),
             "Human notes"
@@ -431,7 +529,7 @@ mod tests {
         let path = directory.path().canonicalize().unwrap().join("Backlog.md");
         let original = b"Human notes";
         std_fs::write(&path, original).unwrap();
-        let (parent, mut file) = open_document(&path).unwrap();
+        let (parent, mut file) = open_document(&path, true).unwrap();
         let observed = fs::fstat(&file).unwrap();
         let mut changed_ctime = observed;
         changed_ctime.st_ctime_nsec ^= 1;
@@ -459,7 +557,7 @@ mod tests {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().canonicalize().unwrap().join("Backlog.md");
             std_fs::write(&path, "Before").unwrap();
-            let (parent, mut file) = open_document(&path).unwrap();
+            let (parent, mut file) = open_document(&path, true).unwrap();
             let (original, stamp) = read_document(&mut file).unwrap();
             let displaced = path.with_file_name("Displaced.md");
             match change {

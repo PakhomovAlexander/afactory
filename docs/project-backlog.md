@@ -1004,12 +1004,15 @@ Restore the exact configuration and adapter bytes if they were removed. Inspect 
 Markdown marker or Jira label, issue scope and author before resuming. A missing Jira search
 result can reflect indexing delay. For a Markdown `prewrite_conflict`, restore the exact managed
 bytes from the last confirmed revision, preserve surrounding human prose, and resume within the
-Run's limits. A document at the 8 MiB limit can accept another revision after the operator moves
-enough unmanaged prose elsewhere.
+Run's limits. For a full document, use the volume rotation procedure below.
 
-After an uncertain Markdown append, AF only observes. If the revision is missing or partial,
-stop concurrent editors and preserve a copy for investigation. An authorized operator can repair
-the managed block under the file lock. Restore the complete revision from a copy if available.
+Each Markdown publication intent allows up to 16 prepared append attempts. Once the cap is
+reached, including after a confirmed prewrite conflict, AF only observes. Observation also
+applies after an uncertain append and can use attempt 16 if that attempt lost its receipt.
+It uses the existing attempt and leaves the cap unchanged. If the revision is missing or
+partial, stop concurrent editors and preserve a copy for investigation. A receiving operator
+authorized to edit the file can repair or install one exact approved block under the file lock.
+Restore the complete revision from a copy if available.
 If it must be reconstructed, use the exact verified title and body from `af backlog show ITEM_ID
 --json` and the Project, item and pending intent IDs from the private publication record in the
 Project event journal. Keep the previously receipted blocks and other prose. The block uses
@@ -1029,7 +1032,36 @@ BODY
 ```
 
 Resume with the original Run ID and Scenario Store. AF checks the repaired entry against the
-exact approved revision and the receipted history before closing the delivery.
+exact approved revision and the receipted history before closing the delivery. If the file
+contains stale fields, a partial block, or duplicate blocks, delivery stays pending.
+
+#### Rotate a full Markdown volume
+
+AF reads at most 8 MiB per volume. Under the active file lock, with concurrent editors stopped,
+copy the entire valid volume to a sibling file named `af-backlog-archive-<hex>.md`. Use this
+procedure with at least one receipted block in the volume. If it contains an unreceipted
+pending block, keep that block in the active volume and copy the remaining exact bytes into
+the archive. If the active file contains only human prose, move enough prose elsewhere to
+make room for the managed block.
+
+Compute `<hex>` as lowercase SHA-256 of the archive's exact bytes prefixed by
+`review.kernel/content-id/v1` and a zero byte. Sync the archive before linking it. Keep the archive bytes unchanged and retain
+any older archives. At the same configured active path, put the archive marker on the first
+line and include a visible link for readers. Substitute the computed digest in both places.
+Keep or add human prose after the link.
+
+```markdown
+<!-- af-backlog-archive-v1:sha256:<hex> -->
+
+[Previous backlog volume](af-backlog-archive-<hex>.md)
+```
+
+The link points to the immediately preceding volume. Follow these links to read older entries.
+The first occurrence of an item when reading volumes newest to oldest and each volume from
+bottom to top is its current entry. AF checks the linked archive bytes and each prior receipted
+revision before appending or reconciling. A missing, changed or misplaced archive leaves the
+intent pending. The destination grant and remote item IDs continue to refer to the same active
+path and original publication.
 
 ```bash
 af backlog batch audit
@@ -1052,7 +1084,8 @@ Providers. GitHub and Jira use fake transports. The Markdown fixture runs with a
 Project Store. It publishes two items, verifies changed fields for one item under the same
 remote identity, and recovers both initial and later appends after lost receipts. It checks
 that existing prose is preserved and damaged markers, duplicates and a stale revision leave
-delivery pending.
+delivery pending. The Scenario also covers archive rotation at capacity, receipt loss on the
+final attempt, and read-only recovery of an exhausted intent after operator repair.
 
 ```sh
 cargo nextest run --workspace --locked --profile ci \

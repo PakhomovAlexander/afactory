@@ -1853,12 +1853,12 @@ fn http_requests(fake: &Path) -> Vec<Value> {
         .collect()
 }
 
-fn configure_backlog_receiver_fault_bounds(receiver: &Receiver) {
+fn configure_backlog_receiver_fault_bounds(receiver: &Receiver, dispatches: u32) {
     // Give this test-only artifact one dispatch per scripted fault and recovery. The
     // shipped artifact and synthetic-sink tests keep their ordinary five-dispatch limit.
     let artifact = receiver.repo.join(BACKLOG);
     let mut definition = read(&artifact);
-    definition["definition"]["limits"]["max_dispatches"] = json!(11);
+    definition["definition"]["limits"]["max_dispatches"] = json!(dispatches);
     save(&artifact, &definition);
     capture(&receiver.repo);
 }
@@ -1873,7 +1873,7 @@ fn portable_backlog_github_reconciles_a_lost_create_without_duplicate_writes() {
         505,
         BACKLOG,
     );
-    configure_backlog_receiver_fault_bounds(&receiver);
+    configure_backlog_receiver_fault_bounds(&receiver, 11);
     let executable = github_fixture(&receiver);
     let reference = capture_backlog_batch(&receiver, Some(&executable), true);
     let (run_id, first) = start_backlog_ant(&receiver, "github-backlog", &reference);
@@ -2901,7 +2901,7 @@ fn portable_backlog_jira_reconciles_one_create_with_stable_id_and_human_edits() 
         509,
         BACKLOG,
     );
-    configure_backlog_receiver_fault_bounds(&receiver);
+    configure_backlog_receiver_fault_bounds(&receiver, 11);
     let fake = receiver.root.join("fake-jira");
     fs::create_dir(&fake).unwrap();
     let script = include_str!("../../../../../scripts/project-backlog-jira.py");
@@ -2992,13 +2992,22 @@ fn portable_backlog_jira_reconciles_one_create_with_stable_id_and_human_edits() 
 
 #[test]
 fn portable_backlog_markdown_publishes_and_recovers_revisions_under_one_identity() {
+    markdown_revision_round_trip(false);
+}
+
+#[test]
+fn portable_backlog_markdown_exhausted_prewrite_recovers_only_by_observation() {
+    markdown_revision_round_trip(true);
+}
+
+fn markdown_revision_round_trip(exhaust_revision: bool) {
     let directory = tempfile::tempdir().unwrap();
     let receiver = Receiver::for_artifact(
         directory.path().canonicalize().unwrap().join("receiver"),
         510,
         BACKLOG,
     );
-    configure_backlog_receiver_fault_bounds(&receiver);
+    configure_backlog_receiver_fault_bounds(&receiver, 24);
     let destination = receiver.root.join("destination");
     fs::create_dir(&destination).unwrap();
     let path = destination.join("Human backlog.md");
@@ -3065,12 +3074,24 @@ fn portable_backlog_markdown_publishes_and_recovers_revisions_under_one_identity
         "prewrite_conflict"
     );
     assert_eq!(fs::read_to_string(&path).unwrap(), human);
+    if !exhaust_revision {
+        for count in 3..=15 {
+            assert_eq!(resume()["status"], "waiting");
+            let (pending, state) = configured_backlog_state(store);
+            assert_eq!(pending["attempt_ids"].as_array().unwrap().len(), count);
+            assert_eq!(state["outcome"]["kind"], "prewrite_conflict");
+        }
+    }
     fs::rename(destination.join(".git"), receiver.root.join("disabled-git")).unwrap();
 
     assert_eq!(resume()["status"], "waiting");
     let (first, state) = configured_backlog_state(store);
     assert!(first["receipt_id"].is_null());
     assert_eq!(state["outcome"]["kind"], "attempt_prepared");
+    assert_eq!(
+        first["attempt_ids"].as_array().unwrap().len(),
+        if exhaust_revision { 3 } else { 16 }
+    );
     let original = fs::read_to_string(&path).unwrap();
     let first_entry = original.strip_prefix(human).unwrap();
     let blue = "Blue excludes its required boundary.";
@@ -3158,6 +3179,7 @@ fn portable_backlog_markdown_publishes_and_recovers_revisions_under_one_identity
         .collect();
     assert_eq!(receipts.len(), 2);
     assert_eq!(receipts[0]["intent_id"], first["intent_id"]);
+    assert_eq!(receipts[0]["attempt_ids"], first["attempt_ids"]);
     assert_ne!(receipts[0]["remote_id"], receipts[1]["remote_id"]);
     let blue_receipt = &receipts[usize::from(first_title != blue)];
     assert_backlog_publication_conformance(&receiver, store, blue_receipt);
@@ -3218,18 +3240,6 @@ fn portable_backlog_markdown_publishes_and_recovers_revisions_under_one_identity
     );
     assert_eq!(fs::read_to_string(&path).unwrap(), tampered);
 
-    // Restore the managed bytes, while preserving newly added human prose. Lose the
-    // revised receipt as well to exercise read-only recovery of a mapped item.
-    let revised_base = format!("{document}\nKeep this new operator note.\n");
-    fs::write(&path, &revised_base).unwrap();
-    database
-        .execute_batch(
-            "CREATE TRIGGER lose_markdown_revision BEFORE INSERT ON events
-         WHEN NEW.run_id = 'backlog-processing'
-           AND json_extract(NEW.payload, '$.receipt_id') IS NOT NULL
-         BEGIN SELECT RAISE(ABORT, 'fixture lost revised receipt'); END;",
-        )
-        .unwrap();
     let resume_revision = || {
         ok(receiver.af(&[
             "scenario",
@@ -3240,11 +3250,82 @@ fn portable_backlog_markdown_publishes_and_recovers_revisions_under_one_identity
             "--json",
         ]))
     };
+
+    // The full volume refuses an append. Rotate the original bytes into the
+    // content-addressed archive and keep the active path and its grant unchanged.
+    let archive_text = format!("{document}\n");
+    let full = format!(
+        "{archive_text}{}",
+        "x".repeat(8 * 1024 * 1024 - archive_text.len())
+    );
+    fs::write(&path, &full).unwrap();
     assert_eq!(resume_revision()["status"], "waiting");
-    let (pending, state) = configured_backlog_state(store);
-    assert!(pending["receipt_id"].is_null());
-    assert_eq!(state["outcome"]["kind"], "attempt_prepared");
-    let updated = fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        configured_backlog_state(store).1["outcome"]["kind"],
+        "prewrite_conflict"
+    );
+    assert!(fs::read(&path).unwrap() == full.as_bytes());
+    let archive_id = af_store::canonical::blob_content_id(full.as_bytes());
+    let archive = destination.join(format!("af-backlog-archive-{}.md", &archive_id[7..]));
+    let revised_base =
+        format!("<!-- af-backlog-archive-v1:{archive_id} -->\n\nKeep this new operator note.\n");
+    fs::write(&path, &revised_base).unwrap();
+
+    // A missing or changed archive blocks even if the active file has space.
+    let final_conflict = if exhaust_revision { 16 } else { 4 };
+    for count in 3..=final_conflict {
+        if count == 4 {
+            fs::write(&archive, &tampered).unwrap();
+        }
+        assert_eq!(resume_revision()["status"], "waiting");
+        let (pending, state) = configured_backlog_state(store);
+        assert_eq!(pending["attempt_ids"].as_array().unwrap().len(), count);
+        assert_eq!(state["outcome"]["kind"], "prewrite_conflict");
+        assert_eq!(fs::read_to_string(&path).unwrap(), revised_base);
+    }
+    fs::write(&archive, &full).unwrap();
+
+    let updated = if exhaust_revision {
+        assert_eq!(resume_revision()["status"], "waiting");
+        let (pending, state) = configured_backlog_state(store);
+        assert!(pending["receipt_id"].is_null());
+        assert_eq!(pending["attempt_ids"].as_array().unwrap().len(), 16);
+        assert_eq!(state["outcome"]["kind"], "not_observed");
+        assert_eq!(fs::read_to_string(&path).unwrap(), revised_base);
+
+        // Follow the operator runbook and reconstruct exactly one approved block.
+        let approved = ok(receiver.af(&["backlog", "show", item, "--json"]));
+        assert_eq!(approved["data"]["revision_id"], pending["revision_id"]);
+        let title = approved["data"]["public"]["title"].as_str().unwrap();
+        let body = approved["data"]["public"]["body"].as_str().unwrap();
+        let project = reference["project_id"].as_str().unwrap();
+        let intent = pending["intent_id"].as_str().unwrap();
+        let content = format!(
+            "> Revision for backlog item `{item}`. The last entry for this item is current.\n\n## {title}\n\n{body}\n"
+        );
+        let digest = af_store::canonical::blob_content_id(content.as_bytes());
+        format!(
+            "{revised_base}\n\n<!-- af-backlog-entry-v1:{project}|{item}|{intent}|{digest} -->\n{content}<!-- af-backlog-end-v1 -->\n"
+        )
+    } else {
+        database
+            .execute_batch(
+                "CREATE TRIGGER lose_markdown_revision BEFORE INSERT ON events
+             WHEN NEW.run_id = 'backlog-processing'
+               AND json_extract(NEW.payload, '$.receipt_id') IS NOT NULL
+             BEGIN SELECT RAISE(ABORT, 'fixture lost revised receipt'); END;",
+            )
+            .unwrap();
+        assert_eq!(resume_revision()["status"], "waiting");
+        let (pending, state) = configured_backlog_state(store);
+        assert!(pending["receipt_id"].is_null());
+        assert_eq!(state["outcome"]["kind"], "attempt_prepared");
+        database
+            .execute_batch("DROP TRIGGER lose_markdown_revision;")
+            .unwrap();
+        fs::read_to_string(&path).unwrap()
+    };
+    let (pending, _) = configured_backlog_state(store);
     let revision = updated.strip_prefix(&revised_base).unwrap();
     assert!(revision.contains(&format!("Revision for backlog item `{item}`")));
     assert!(revision.contains(pending["intent_id"].as_str().unwrap()));
@@ -3252,9 +3333,6 @@ fn portable_backlog_markdown_publishes_and_recovers_revisions_under_one_identity
     assert!(revision.contains("The boundary should be accepted alongside higher values."));
     assert_eq!(revision.matches("<!-- af-backlog-entry-v1:").count(), 1);
 
-    database
-        .execute_batch("DROP TRIGGER lose_markdown_revision;")
-        .unwrap();
     // Observing the old, valid chain alone cannot close the new revision.
     fs::write(&path, &revised_base).unwrap();
     assert_eq!(resume_revision()["status"], "waiting");
@@ -3275,6 +3353,8 @@ fn portable_backlog_markdown_publishes_and_recovers_revisions_under_one_identity
     let complete = resume_revision();
     assert_eq!(complete["status"], "succeeded", "{}", complete["failure"]);
     let (revised, state) = configured_backlog_state(store);
+    assert_eq!(revised["attempt_ids"], pending["attempt_ids"]);
+    assert!(fs::read(&archive).unwrap() == full.as_bytes());
     assert_eq!(revised["item_id"], blue_receipt["item_id"]);
     assert_eq!(revised["remote_id"], blue_receipt["remote_id"]);
     assert_ne!(revised["revision_id"], blue_receipt["revision_id"]);

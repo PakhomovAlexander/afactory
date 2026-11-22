@@ -42,8 +42,11 @@ A synced append can be observed after a lost receipt. Reconciliation requires th
 revision after its receipted history and preserves surrounding human changes. Edited, missing
 or ambiguous entries remain pending. AF never replaces the document.
 Concurrent editors can coordinate with the file lock. A confirmed conflict before the
-append can retry within the existing attempt bounds. An uncertain append may only be
-observed.
+append can retry within the existing attempt bounds. An uncertain append or exhausted intent
+may only be observed under its last prepared attempt. An authorized operator can restore the
+exact pending block. At capacity, the operator can move receipted blocks to a volume linked by
+its content digest. The receiver validates the linked bytes and the complete receipt history
+across volumes at the same configured path.
 
 Jira Cloud publication pins the site, numeric project and issue type, publisher account and
 exact adapter bytes. The adapter maps approved title and body to Summary and an Atlassian

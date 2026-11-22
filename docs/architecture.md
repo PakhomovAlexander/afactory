@@ -588,6 +588,8 @@ version and native `af catalog digest` pin refresh, without changing Worker auth
 
 Native Review's Store contains Task transitions and typed native Round outputs. The shared
 canonical Ledger is initialized from the Task Subject, with no Campaign manifest or bootstrap
-event. `review.kernel/RunEvent@4` refuses retired event identities. Standalone continuation
+event. SQLite Stores bind their layout to `review.kernel/RunEvent@4` and stamp each event row
+with that envelope identity. Opening a Store from an earlier layout or replaying a row with
+another identity fails closed. Standalone continuation
 validates each prior Round against its original captured plan and graph, then binds exact
 canonical history and Base into a new Task plan under the existing history and Round bounds.

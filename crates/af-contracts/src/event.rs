@@ -337,6 +337,9 @@ impl<'de> Deserialize<'de> for RunEvent {
 }
 
 impl RunEvent {
+    /// The closed envelope identity written in JSON and in the event Store.
+    pub const SCHEMA: &'static str = "review.kernel/RunEvent@4";
+
     /// Split `Type@N` into its name and version.
     pub fn typed(&self) -> (&'static str, u32) {
         self.event_type.typed()

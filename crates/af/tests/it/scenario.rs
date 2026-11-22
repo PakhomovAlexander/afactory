@@ -4109,8 +4109,8 @@ fn template_repin_refuses_conflicting_corrupt_and_duplicate_durable_records() {
             .unwrap();
         for sequence in &sequences {
             db.execute(
-                "INSERT INTO events (run_id,sequence,event_id,type,occurred_at,artifact_refs,payload)
-                 VALUES (?1,?2,?3,?4,'2026-11-13T00:00:00Z',?5,?6)",
+                "INSERT INTO events (envelope, run_id,sequence,event_id,type,occurred_at,artifact_refs,payload)
+                 VALUES ('review.kernel/RunEvent@4', ?1,?2,?3,?4,'2026-11-13T00:00:00Z',?5,?6)",
                 rusqlite::params![run, sequence, format!("corrupt-{sequence}"), original.0, original.2, original.1],
             ).unwrap();
         }
