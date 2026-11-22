@@ -5,6 +5,7 @@
 //! supplies no additional publication authority.
 pub mod adapter;
 pub mod checks;
+pub mod ci_diagnosis;
 pub mod contract;
 pub mod driver;
 pub mod host;
@@ -19,6 +20,7 @@ pub mod schedule;
 pub mod source;
 pub mod state;
 pub mod store;
+pub mod task_output;
 pub mod template;
 pub mod workspace;
 pub use host::Host;

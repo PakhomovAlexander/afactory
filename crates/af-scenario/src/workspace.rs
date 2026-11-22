@@ -326,7 +326,7 @@ mod composition_tests {
             &std::fs::read(root.join("fixtures/scenarios/workspace/bundle.json")).unwrap(),
         )
         .unwrap();
-        crate::tests::valid("scenario-bundle-v10.json", &bundle);
+        crate::tests::valid("scenario-bundle-v11.json", &bundle);
         bundle.validate(&crate::tests::TestHost::default()).unwrap();
         assert_eq!(bundle.root, "documentation-update");
         let mut missing_merge = bundle.clone();

@@ -158,7 +158,7 @@ impl Scope {
             )?;
             for step in &definition.steps {
                 match &step.operation {
-                    Kind::Task { .. } => {
+                    Kind::Task { .. } | Kind::CiDiagnosis { .. } => {
                         return Err("Startup refuses pre-existing Task execution".into());
                     }
                     Kind::FreshTask { template, .. } => {
@@ -502,7 +502,7 @@ mod tests {
                 }),
             );
         }
-        valid("scenario-pin-v11.json", &pin);
+        valid("scenario-pin-v12.json", &pin);
         let host = TestHost {
             startup_reject: Some(repair.clone()),
             ..Default::default()
@@ -530,7 +530,7 @@ mod tests {
             None,
         )
         .unwrap();
-        valid("scenario-run-v11.json", &run);
+        valid("scenario-run-v12.json", &run);
         assert_eq!(
             run.pin.policy.implementation_startup,
             pin.policy.implementation_startup
@@ -883,7 +883,7 @@ mod tests {
                 "expiry" => assert_eq!(driver.resumes, 1),
                 _ => assert_eq!(driver.resumes, 2),
             }
-            valid("scenario-store-v17.json", &world);
+            valid("scenario-store-v18.json", &world);
         }
     }
 
@@ -921,6 +921,24 @@ mod tests {
             }
             assert!(scope.admits(&pin.bundle).is_err(), "case {case}");
         }
+        let mut diagnosis_bundle = pin.bundle.clone();
+        let mut scope = pin.policy.implementation_startup.clone().unwrap();
+        diagnosis_bundle.definitions.get_mut("main").unwrap().steps[0].operation =
+            Kind::CiDiagnosis {
+                target: TaskTarget {
+                    repo: scope.repo.clone(),
+                    state: scope.task_state.clone(),
+                    task_id: "diagnose".into(),
+                    plan_id: digest(b"diagnosis-plan"),
+                    revision_id: digest(b"diagnosis-revision"),
+                    max_tokens: 100,
+                },
+            };
+        scope.recipe_id = hash(&diagnosis_bundle).unwrap();
+        assert_eq!(
+            scope.admits(&diagnosis_bundle).unwrap_err(),
+            "Startup refuses pre-existing Task execution"
+        );
         let mut old = pin.clone();
         old.policy.schema = "af/scenario-policy@5".into();
         assert!(old.validate(&TestHost::default()).is_err());

@@ -1,0 +1,49 @@
+{
+  "$id": "af.ci-observe-occurrence/1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "captured_at": {
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+      "type": "string"
+    },
+    "nightly_receipt": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "type": "string"
+    },
+    "release_pr": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        }
+      ]
+    },
+    "schema": {
+      "const": "af.ci-observe-occurrence/1"
+    },
+    "since": {
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+      "type": "string"
+    },
+    "snapshot_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "snapshot_digest",
+    "since",
+    "captured_at",
+    "nightly_receipt",
+    "release_pr"
+  ],
+  "title": "Owner-authorized CI observation occurrence",
+  "type": "object"
+}

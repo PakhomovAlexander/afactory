@@ -60,6 +60,7 @@ any af command ([design](design/tui.md)).
 | [`task-execution/preflight.md`](task-execution/preflight.md) | Offline orchestration checklist for source lineage, declared budgets and evidence ordering; advisory only. |
 | [`scenarios.md`](scenarios.md) | Durable Scenarios, signed decisions, bounded adapters, owned-file cleanup, interval/daily Ant scheduling, named Markdown result observation, pinned fresh Tasks and complete-loop roadmap admission. |
 | [Manual durability E2E](../scripts/durability-e2e/README.md) | Linux qualification runbook for native Scenarios and Ants, independent fixtures and a sanitized comparison baseline. |
+| [`ci-health-maintenance.md`](ci-health-maintenance.md) | Inactive Phase 1 production and hermetic CI observation, diagnosis, native field projection, report-only Scenario routing and staged independent watchdog units; no live activation. |
 | [`scenario-github-adapter.md`](scenario-github-adapter.md) | Optional installed GitHub Scenario adapter: private authority, exact locked-head publication, durable recovery, CI/merge observations and inert examples. |
 | [`task-execution.md`](task-execution.md) | The Task runtime reference: fixed product decisions, contracts, fixtures, and walkthroughs for the common Task execution abstraction. |
 | [`task-execution/task-inputs.md`](task-execution/task-inputs.md) | The Task file's `inputs` table: binding a root input port to a recorded Task's output instead of exporting it to a file, what resolution records, and how a binding is shown. |

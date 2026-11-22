@@ -88,7 +88,7 @@ def prepare(binary, source, gate, *, edit=None, work_base=None):
               "file_roots": [], "decision_keys": {}}
     output = {"source": "step", "step": "implement", "port": "result"}
     definition = {
-        "schema": "af/scenario@10", "admission": None, "inputs": {},
+        "schema": "af/scenario@11", "admission": None, "inputs": {},
         "outputs": {"candidate": "task"},
         "steps": [{
             "id": "implement", "operation": {"kind": "task", "target": target},
@@ -100,7 +100,7 @@ def prepare(binary, source, gate, *, edit=None, work_base=None):
                       "grants": [], "decision_owners": []},
         "limits": {"max_tokens": 1000, "max_wall_ms": 95_000, "max_dispatches": 4},
     }
-    bundle = {"schema": "af/scenario-bundle@10", "root": "clean",
+    bundle = {"schema": "af/scenario-bundle@11", "root": "clean",
               "definitions": {"clean": definition}}
     return root, af, env, policy, bundle
 

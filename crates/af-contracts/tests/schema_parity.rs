@@ -22,7 +22,7 @@ use af_contracts::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 251] = [
+const SCHEMAS: [&str; 261] = [
     "task-wake-traversal-v1.json",
     "task-wake-route-traversal-v1.json",
     "task-wake-pi-config-v1.json",
@@ -39,6 +39,16 @@ const SCHEMAS: [&str; 251] = [
     "task-wake-observation-v2.json",
     "task-wake-envelope-v2.json",
     "task-wake-receipt-v1.json",
+    "ci-health-snapshot-v1.json",
+    "ci-health-state-v2.json",
+    "scenario-task-output-field-v1.json",
+    "ci-diagnosis-v1.json",
+    "ci-diagnosis-selection-v1.json",
+    "ci-health-notification-v5.json",
+    "ci-signature-state-v5.json",
+    "ci-observe-service-v1.json",
+    "maintenance-watchdog-config-v1.json",
+    "maintenance-watchdog-alert-v1.json",
     "implementation-test-evidence-v1.json",
     "implementation-evaluation-input-v1.json",
     "worker-development-v3.json",
@@ -4027,3 +4037,5 @@ fn scenario_template_pin_event_has_exact_reference_schema_parity() {
         );
     }
 }
+#[path = "schema_parity/ci_health.rs"]
+mod ci_health;

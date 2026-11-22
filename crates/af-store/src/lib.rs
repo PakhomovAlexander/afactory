@@ -15,6 +15,7 @@
 pub mod activity;
 pub mod canonical;
 pub mod cas;
+pub mod ci_health;
 pub mod ingest;
 pub mod ledger;
 pub mod local_fs;
