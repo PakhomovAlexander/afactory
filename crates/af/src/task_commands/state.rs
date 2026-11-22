@@ -107,6 +107,9 @@ pub(crate) struct CheckView {
     /// Where `stopped_step`, `failed_tests` and `flaky` came from; printed, never serialized.
     #[serde(skip)]
     pub(crate) evidence: Evidence,
+    /// An admitted report recorded at least one completed step, regardless of its exit code.
+    #[serde(skip)]
+    has_reported_steps: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) stdout_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -684,7 +687,7 @@ fn check_view(
     };
     let (stderr_id, stderr) = text("stderr")?;
     let stdout_id = result["stdout"].as_str().map(str::to_owned);
-    let (evidence, stopped_step, failed_tests, flaky) =
+    let (evidence, stopped_step, failed_tests, flaky, has_reported_steps) =
         match run.filter(|run| run.report == CheckReportStateV1::Admitted) {
             Some(run) => (
                 Evidence::Report,
@@ -699,6 +702,7 @@ fn check_view(
                 run.tests.as_ref().map_or_else(Vec::new, |tests| {
                     tests.flaky.iter().map(|test| test.name.clone()).collect()
                 }),
+                !run.steps.is_empty(),
             ),
             None => {
                 let (_, stdout) = text("stdout")?;
@@ -709,7 +713,7 @@ fn check_view(
                     exit_code,
                     stage: None,
                 });
-                (Evidence::Output, stopped_step, failed_tests, flaky)
+                (Evidence::Output, stopped_step, failed_tests, flaky, false)
             }
         };
     let lines: Vec<&str> = stderr.lines().collect();
@@ -731,6 +735,7 @@ fn check_view(
         failed_tests,
         flaky,
         evidence,
+        has_reported_steps,
         stdout_id,
         stderr_id,
         stderr_tail,
@@ -1076,6 +1081,7 @@ pub(crate) fn checks_lines(task_id: &str, view: &TaskView) -> Vec<String> {
             // Preparation can write diagnostics, so a capture ID alone does not show execution.
             (None, None)
                 if check.exit_code.is_some()
+                    || check.has_reported_steps
                     || check.stopped_step.is_some()
                     || !check.failed_tests.is_empty()
                     || !check.flaky.is_empty()
@@ -1269,6 +1275,7 @@ mod tests {
             failed_tests: tests.iter().map(|t| t.to_string()).collect(),
             flaky: flaky.iter().map(|t| t.to_string()).collect(),
             evidence: Evidence::Output,
+            has_reported_steps: false,
             stdout_id: None,
             stderr_id: None,
             stderr_tail: vec![],
@@ -1380,6 +1387,8 @@ mod tests {
 
     #[test]
     fn executed_check_with_no_span_has_unavailable_elapsed_timing() {
+        use af_contracts::task::check_report::{TaskCheckHostV1, parse_check_report};
+
         let temp = tempfile::tempdir().unwrap();
         let cas = Cas::open(temp.path()).unwrap();
         let stderr = cas.put(b"[test] 1.2s, exit 2\n").unwrap();
@@ -1400,6 +1409,34 @@ mod tests {
         step_only.name = "step-only".into();
         step_only.exit_code = None;
 
+        let (steps, tests) = parse_check_report(
+            br#"{"schema":"af.check-report/1","record":"step","label":"build","stage":"build","exit_code":0,"command":["cargo","build"]}"#,
+        )
+        .unwrap();
+        let run = TaskCheckRunV1 {
+            host: TaskCheckHostV1 {
+                cpus_start: 1,
+                cpus_end: 1,
+                load_1m_start: None,
+                load_1m_end: None,
+            },
+            report: CheckReportStateV1::Admitted,
+            refusal: None,
+            steps,
+            tests,
+        };
+        run.validate().unwrap();
+        let result = cas
+            .put_json(&json!({
+                "name": "reported-step",
+                "status": "not_run",
+                "program": "scripts/verify.sh",
+                "args": [],
+                "required": true,
+            }))
+            .unwrap();
+        let reported_step = check_view(&cas, "reported-step", &result, None, Some(&run)).unwrap();
+
         let mut unstarted = check("not_run", &[], &[], None);
         unstarted.name = "markdownlint".into();
         unstarted.exit_code = None;
@@ -1415,7 +1452,14 @@ mod tests {
         let task = TaskView {
             state: TaskStateV1::new(TaskStatePhaseV1::Finished),
             gate: None,
-            checks: Some(view(vec![kernel, step_only, unstarted, remote, timed])),
+            checks: Some(view(vec![
+                kernel,
+                step_only,
+                reported_step,
+                unstarted,
+                remote,
+                timed,
+            ])),
             failures: vec![],
         };
         let lines = checks_lines("t", &task);
@@ -1428,6 +1472,7 @@ mod tests {
             [
                 "check kernel: failed (exit 2), elapsed timing unavailable, cold (no warm cache), evidence: output",
                 "check step-only: failed, elapsed timing unavailable, cold (no warm cache), evidence: output",
+                "check reported-step: not_run, elapsed timing unavailable, cold (no warm cache)",
                 "check markdownlint: not_run, never started, cold (no warm cache)",
                 "check remote: failed, run remotely, cold (no warm cache)",
                 "check timed: failed (exit 2) in 1200 ms, cold (no warm cache), evidence: output",
