@@ -2021,8 +2021,8 @@ mod tests {
     fn refuses_malformed_current_event_layout_without_rewriting() {
         for (defect, ddl) in [
             (
-                "missing columns",
-                "CREATE TABLE events (envelope TEXT NOT NULL)".into(),
+                "missing column",
+                EVENT_TABLE.replace("                 occurred_at    TEXT    NOT NULL,\n", ""),
             ),
             (
                 "wrong sequence type",
@@ -2047,24 +2047,62 @@ mod tests {
         ] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("events.sqlite");
-            let conn = Connection::open(&path).unwrap();
-            assert_ne!(ddl, EVENT_TABLE, "{defect}");
-            conn.execute(&ddl, []).unwrap();
-            conn.pragma_update(None, "user_version", EVENT_LAYOUT_VERSION)
-                .unwrap();
-            drop(conn);
+            let wal = directory.path().join("events.sqlite-wal");
+            let store = EventStore::open(&path).unwrap();
+            EventStore::open(&path).unwrap();
+            EventStore::open_read_only(&path).unwrap();
+            EventStore::open_unchanged(&path).unwrap();
+            store.reopen(std::time::Duration::ZERO).unwrap();
+            drop(store);
+            assert!(!wal.exists());
+            EventStore::open_unchanged(&path).unwrap();
 
-            let before = std::fs::read(&path).unwrap();
-            let check = |result| {
+            let store = EventStore::open(&path).unwrap();
+            // Dropping events also drops its explicit indexes and wake triggers.
+            // Restore their exact definitions so only the table layout differs.
+            let dependents = store
+                .conn
+                .prepare(
+                    "SELECT sql FROM sqlite_schema
+                     WHERE tbl_name = 'events' AND type IN ('index', 'trigger') AND sql IS NOT NULL",
+                )
+                .unwrap()
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            assert_ne!(ddl, EVENT_TABLE, "{defect}");
+            store.conn.execute("DROP TABLE events", []).unwrap();
+            store.conn.execute(&ddl, []).unwrap();
+            for definition in dependents {
+                store.conn.execute(&definition, []).unwrap();
+            }
+
+            let persisted = || (std::fs::read(&path).unwrap(), std::fs::read(&wal).unwrap());
+            let before = persisted();
+            let check = |opener, result| {
                 assert!(
                     matches!(result, Err(StoreError::Conflict(message)) if message.contains(RunEvent::SCHEMA)),
-                    "{defect}"
+                    "{defect}: {opener}"
                 );
-                assert_eq!(std::fs::read(&path).unwrap(), before, "{defect}");
             };
-            check(EventStore::open(&path));
-            check(EventStore::open_read_only(&path));
-            check(EventStore::open_unchanged(&path));
+            let check_with_wal = |opener, result| {
+                check(opener, result);
+                assert!(persisted() == before, "{defect}: {opener} changed bytes");
+            };
+            check_with_wal("open", EventStore::open(&path));
+            check_with_wal("open_read_only", EventStore::open_read_only(&path));
+            check_with_wal("open_unchanged (WAL)", EventStore::open_unchanged(&path));
+            check_with_wal("reopen", store.reopen(std::time::Duration::ZERO));
+
+            drop(store);
+            assert!(!wal.exists(), "{defect}");
+            let before = files(directory.path());
+            check(
+                "open_unchanged (immutable)",
+                EventStore::open_unchanged(&path),
+            );
+            assert!(files(directory.path()) == before, "{defect}: changed files");
         }
     }
 
