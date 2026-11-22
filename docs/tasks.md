@@ -381,6 +381,10 @@ evidence ends with where it came from, `evidence: report` or `evidence: output`
 rows carry the same `gate` summary, and after a failed gate `af task run` names the failing
 tests, at most 20, then `… and N more; af task show ID --checks`.
 
+A local check with a run recorded for that receipt shows `elapsed timing unavailable` when it
+has no recorded duration, even if its account is absent or refused. A check with no evidence
+that it started shows `never started`.
+
 A check the kernel stopped at its wall (its per-check wall, its check Attempt's wall or a warm
 phase deadline, whichever bound its process) is recorded as such in the
 [`af/TaskCheckReceipt@2`](../schemas/task-check-receipt-v2.json) under `stopped`: the cause
