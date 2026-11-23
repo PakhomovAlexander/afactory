@@ -34,7 +34,7 @@ def run(binary, source):
 
     ant_id = "child-cancel"
     ant = {
-        "schema": "af/ant@11", "id": ant_id, "scenario": bundle, "inputs": {},
+        "schema": "af/ant@12", "id": ant_id, "scenario": bundle, "inputs": {},
         "schedule": {"kind": "interval", "seconds": 10,
                      "start_unix_ms": time.time_ns() // 1_000_000 + 1500},
         "owner": "fixture", "notification": "local:fixture",

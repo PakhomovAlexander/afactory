@@ -50,3 +50,9 @@ separate Ant enablement. No example grants publication.
 
 The inert [workspace example](workspace/README.md) composes an ordinary accepted Task with
 owned preparation, exact signed publication, actual merge waiting and safe cleanup.
+
+The [CI health fixture](maintenance-ci-health/README.md) is the hermetic Phase 1 maintenance
+Scenario: bounded offline observation, a read-only native diagnosis Task, restricted category and
+signature projections, first-match report-only remedies and notifications before Watch. Its
+independent watchdog reads native Ant/Run receipts and retains deduplicated alert intents. No
+Ant, schedule, rerun, quarantine or publication authority is activated.

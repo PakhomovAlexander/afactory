@@ -587,7 +587,7 @@ fn ant_pin(definition: &Definition) -> Result<AntPin> {
 fn normalize_targets(bundle: &mut Bundle) -> Result<()> {
     for def in bundle.definitions.values_mut() {
         for step in &mut def.steps {
-            if let Kind::Task { target } = &mut step.operation {
+            if let Kind::Task { target } | Kind::CiDiagnosis { target } = &mut step.operation {
                 require(
                     target.repo.is_absolute() && target.state.is_absolute(),
                     "Task repository and Store paths must be absolute",

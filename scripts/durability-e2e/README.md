@@ -116,6 +116,96 @@ The neutral comparison schema and fixture contract are exercised with `python3 s
 
 For journal exhaustion, use `native_recovery.py … green --fault disk-full` on Linux with user and mount namespaces. The job uses an unprivileged 4 MiB tmpfs and requires both a real ENOSPC from the pressure writer and AF's own full-Store diagnostic. The private mount disappears with the job. Preserve the already exported JSON and logs outside it.
 
+## Bounded load on existing AF workers
+
+Use Python 3.11 or later on the controller and workers. Choose at least two distinct allocated,
+running AF-profile VMs and an exclusive operator window. Stage the same suite on the controller
+and each VM. On each VM, use a pinned executable, a fixture checkout and an existing private
+scratch directory owned by the broker job user (mode `0700`). Use canonical absolute paths.
+Keep scratch separate from the checkout, suite, binary and any live Store. The driver creates a
+new run directory and each concurrent case uses isolated repos, Stores, home and fixture services.
+The controller uses its loopback API or the configured SSH helper. Fixture workers use loopback
+fixtures and synthetic credentials created inside the case.
+
+Save the worker bindings outside Git. Each worker entry has this shape. Replace the example
+paths and pins with actual values, and include one entry per allocation in the `workers` array.
+
+```json
+{
+  "schema": "af-durability/load-workers@1",
+  "workers": [
+    {
+      "worker": "r-101",
+      "binary": "/srv/af/bin/af",
+      "binary_sha256": "<sha256 of that worker's af executable>",
+      "source": "/srv/fixtures/afactory",
+      "source_commit": "<git rev-parse HEAD of that checkout>",
+      "source_workload": "<load_suite.py pins digest for those fixture bytes>",
+      "suite": "/srv/suite/durability-e2e",
+      "scratch": "/srv/durability-private"
+    }
+  ]
+}
+```
+
+Compute `source_workload` on the controller from the staged fixture checkout with
+`python3 -B scripts/durability-e2e/load_suite.py pins /path/to/fixture-checkout`.
+Each worker verifies the actual fixture bytes, binary digest, source commit and suite bytes
+before admission and again at case launch. The same binary and fixture bytes must be staged on
+all selected workers. The controller saves the schedule before submitting any broker jobs.
+Preflight refuses active unrelated jobs and checks distinct VM boot identities, scratch ownership,
+CPU affinity, available memory, disk and inodes. Reserve one CPU and 1 GiB of available RAM and
+disk per slot, plus 256 MiB and 4,096 inodes per retained trial and 4,096 inodes per slot.
+Filesystem namespaces for disk faults are probed on each relevant worker. A verified namespace
+permission refusal or independent-writer capability refusal reports `unsupported`.
+
+With a fresh evidence directory outside Git, start with the short cohort and repeat it against
+the second pinned build using the same placement and fixture inputs.
+
+```sh
+python3 -B scripts/durability-e2e/load_suite.py run \
+  --profile short --workers /private/baseline-workers.json --repeat 2 --concurrency 2 --seed 0 \
+  --evidence /private/baseline-load
+python3 -B scripts/durability-e2e/load_suite.py run \
+  --profile short --workers /private/candidate-workers.json --repeat 2 --concurrency 2 --seed 0 \
+  --evidence /private/candidate-load
+python3 -B scripts/durability-e2e/load_suite.py compare \
+  /private/baseline-load /private/candidate-load > /private/comparison.json
+```
+
+Add `--connect /absolute/path/to/controller-ssh-helper` off-controller. The versioned
+[case manifest](manifests/load-cases.json) supplies the ordered profiles. Use `--profile full`
+for qualification across all required cases, including both scheduler restart outcomes, both
+ENOSPC boundaries and the independent-writer capability probe. The `optional-fixtures` profile
+covers authorized gate repair, hostile output and malformed usage. The two-VM broker Checks
+profile below remains a separate experiment. Other contract prototype boundaries, such as a
+replenished grant, live Providers or remote stale completion, require their own adapter and
+evidence. For a pinned custom cohort, pass `--manifest PATH` with the same schema and case IDs.
+
+`report.md` summarizes verdicts and effective load. `report.json` includes evidence references,
+fault receipts, native Task and Scenario outcomes, invariants, timing, simulated Provider charges
+and separate real Provider token measurements. A correct terminal red gate or budget refusal can
+pass. A missed fault, timeout or incomplete harness receipt is invalid and retains its phase and
+diagnostic. Checks restart, expired authentication and wrong revision require both a scheduler
+SIGKILL with the fixture still alive and ordered create and fault read receipts for the same
+persisted check and intent in `ledger-before.json`.
+
+Case overlap and aggregate case wall time use complete monotonic subprocess intervals on each VM,
+including failed trials, and throughput counts those intervals. Each interval covers setup,
+post-terminal observation, teardown and orphan cleanup. The load runner leaves `terminal_s`
+unmeasured because it has no dedicated terminal timing. Worker CPU covers user and system time
+reported for the case's reaped subprocesses and excludes preflight and broker overhead. Missing
+measurements appear as null in the suite report and are omitted from the neutral records in
+`trials/`. An unresolved job submission or wait stops further submissions to that worker. A 503
+acknowledgement is reconciled by job ID without sending a second POST. Keep the retained broker
+receipts and raw VM directories private.
+
+Compare uses the neutral records and reports aggregate transitions, per-trial verdicts, input
+mismatches, missing pairs and missing metrics. Matching binds the case, repeat seed, actual fixture
+bytes (including the catalog generated for budget cases), ordered cohort, fault arguments and
+deadline, and worker placement and concurrency. Use measurements from paired passes and check
+the observed overlap and measurement coverage before interpreting timing or throughput changes.
+
 ## Two-VM profile through the control API
 
 The control host runs the trial driver as a finite detached process. AF runs on one existing AF worker and the Checks ledger lives on another. The driver uses the authenticated control API to relay the check request and final receipt. The engine receives a durable pending response until receipt delivery. Separate loopback HTTP cases exercise real socket failures and HTTP status codes. The broker profile exercises cross-VM placement, durable effects, and process recovery within the existing worker network controls.

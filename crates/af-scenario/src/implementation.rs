@@ -158,7 +158,7 @@ impl Scope {
             )?;
             for step in &definition.steps {
                 match &step.operation {
-                    Kind::Task { .. } => {
+                    Kind::Task { .. } | Kind::CiDiagnosis { .. } => {
                         return Err("Startup refuses pre-existing Task execution".into());
                     }
                     Kind::FreshTask { template, .. } => {
@@ -921,6 +921,24 @@ mod tests {
             }
             assert!(scope.admits(&pin.bundle).is_err(), "case {case}");
         }
+        let mut diagnosis_bundle = pin.bundle.clone();
+        let mut scope = pin.policy.implementation_startup.clone().unwrap();
+        diagnosis_bundle.definitions.get_mut("main").unwrap().steps[0].operation =
+            Kind::CiDiagnosis {
+                target: TaskTarget {
+                    repo: scope.repo.clone(),
+                    state: scope.task_state.clone(),
+                    task_id: "diagnose".into(),
+                    plan_id: digest(b"diagnosis-plan"),
+                    revision_id: digest(b"diagnosis-revision"),
+                    max_tokens: 100,
+                },
+            };
+        scope.recipe_id = hash(&diagnosis_bundle).unwrap();
+        assert_eq!(
+            scope.admits(&diagnosis_bundle).unwrap_err(),
+            "Startup refuses pre-existing Task execution"
+        );
         let mut old = pin.clone();
         old.policy.schema = "af/scenario-policy@5".into();
         assert!(old.validate(&TestHost::default()).is_err());

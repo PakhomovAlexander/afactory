@@ -10,6 +10,7 @@ import sys
 import time
 import tomllib
 
+from load_cases import files_identity
 from mock_provider import Ledger
 from native_recovery import process, until
 from native_smoke import literal, new_trial, write_json
@@ -82,6 +83,9 @@ def configure(root, name, binary, common_env, url, token):
         return subprocess.check_output(argv, cwd=cwd, env=env, text=True, timeout=30)
 
     command([binary, "catalog", "init", "--destination", "project", "--json"], cwd=work)
+    write_json(work / "catalog-fixture.json", {
+        "sha256": files_identity(repo, sorted(path.name for path in repo.iterdir())),
+    })
     catalog_path = repo / ".af" / "task-catalog.toml"
     catalog_text = catalog_path.read_text()
     catalog = tomllib.loads(catalog_text)
@@ -130,7 +134,7 @@ def configure(root, name, binary, common_env, url, token):
                         "file_roots": [], "decision_keys": {}})
     policy.chmod(0o600)
     definition = {
-        "schema": "af/scenario@10", "admission": None, "inputs": {},
+        "schema": "af/scenario@11", "admission": None, "inputs": {},
         "outputs": {"document": "task"}, "steps": [{
             "id": "document", "operation": {"kind": "task", "target": {
                 "repo": str(repo), "state": str(state), "task_id": name,
@@ -146,7 +150,7 @@ def configure(root, name, binary, common_env, url, token):
         "limits": limits,
     }
     bundle = work / "scenario.json"
-    write_json(bundle, {"schema": "af/scenario-bundle@10", "root": "document",
+    write_json(bundle, {"schema": "af/scenario-bundle@11", "root": "document",
                         "definitions": {"document": definition}})
     inputs = work / "inputs.json"
     write_json(inputs, {})
@@ -191,15 +195,18 @@ def run(binary, work_base, fault):
     command = [sys.executable, str(Path(__file__).with_name("mock_provider.py")),
                "--script", str(root / "script.json"), "--token-file", str(root / "token"),
                "--ledger", str(state)]
+    provider_ledger = Ledger(state)
     start = time.monotonic()
-    with process(command, log) as provider:
-        lines = until(5, lambda: log.read_text().splitlines(), provider, "provider listener")
-        address, port = json.loads(lines[0])["listening"]
-        url = f"http://{address}:{port}/v1/chat/completions"
-        exhausted = configure(root, "exhausted", binary, env, url, token)
-        funded = configure(root, "funded", binary, env, url, token)
-    evidence = Ledger(state).export()
-    write_json(root / "provider-evidence.json", evidence)
+    try:
+        with process(command, log) as provider:
+            lines = until(5, lambda: log.read_text().splitlines(), provider, "provider listener")
+            address, port = json.loads(lines[0])["listening"]
+            url = f"http://{address}:{port}/v1/chat/completions"
+            exhausted = configure(root, "exhausted", binary, env, url, token)
+            funded = configure(root, "funded", binary, env, url, token)
+    finally:
+        evidence = provider_ledger.export()
+        write_json(root / "provider-evidence.json", evidence)
     operations = [call["operation"] for call in evidence["calls"]]
     expected = ["exhausted-admission"]
     if fault in {"hostile-output", "malformed-usage"}:

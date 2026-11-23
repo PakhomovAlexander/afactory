@@ -318,7 +318,12 @@ impl Run {
                         .iter()
                         .any(|s| {
                             s.id == step
-                                && matches!(s.operation, Kind::Task { .. } | Kind::FreshTask { .. })
+                                && matches!(
+                                    s.operation,
+                                    Kind::Task { .. }
+                                        | Kind::CiDiagnosis { .. }
+                                        | Kind::FreshTask { .. }
+                                )
                         }),
                     "Cancellation targets a non-Task step",
                 )?;
@@ -377,6 +382,16 @@ impl Run {
                 )?;
                 if p.complete() && p.skipped.is_none() {
                     input_values(&step.outputs, &p.outputs)?;
+                    if matches!(
+                        step.operation,
+                        Kind::Task { .. } | Kind::CiDiagnosis { .. } | Kind::FreshTask { .. }
+                    ) {
+                        for value in p.outputs.values() {
+                            if let Some(receipt) = super::task_output::accepted_receipt(value)? {
+                                super::task_output::validate(p, receipt)?;
+                            }
+                        }
+                    }
                 }
                 if p.skipped.is_some() {
                     require(
@@ -482,7 +497,7 @@ impl Run {
                 .find(|s| s.id == step_id)
                 .ok_or("Unknown charge step")?;
             match &step.operation {
-                Kind::Task { target } => require(
+                Kind::Task { target } | Kind::CiDiagnosis { target } => require(
                     *key == hash(&(&target.state, &target.task_id, &target.revision_id))?
                         && charge.maximum == target.max_tokens,
                     "Task charge identity differs",
@@ -572,6 +587,19 @@ impl Run {
             return Ok(());
         }
         match &step.operation {
+            Kind::CiDiagnosis { target } => {
+                let Some(Datum::Observation(o)) = p.outputs.get("result") else {
+                    return Err("CI diagnosis completion lacks native observation".into());
+                };
+                let record = crate::ci_diagnosis::Record::parse(o)?;
+                record.target(target)?;
+                require(
+                    (record.receipt.charged_tokens <= target.max_tokens
+                        || matches!(self.status, Status::Failed | Status::Cancelled))
+                        && p.intents.last().is_some_and(|i| i.phase == Phase::Done),
+                    "CI diagnosis lacks settled intent or exceeds reservation",
+                )
+            }
             Kind::Scenario { scenario } => {
                 let child = self
                     .frames
@@ -680,7 +708,24 @@ impl Run {
         let frame = self.frames.get(path).ok_or("Unknown frame")?;
         let value = match binding {
             Binding::Project { value, projection } => {
-                return projection.apply(self.resolve(path, value)?);
+                let value = self.resolve(path, value)?;
+                if matches!(
+                    projection,
+                    Projection::CiDiagnosisField { .. } | Projection::CiDiagnosisRefused
+                ) {
+                    let Datum::Observation(observation) = &value else {
+                        return Err("CI diagnosis projection requires a native observation".into());
+                    };
+                    crate::ci_diagnosis::native(self, observation)?;
+                }
+                if let Projection::TaskOutputField { port, .. } = projection {
+                    let Datum::Task(receipt) = value else {
+                        return Err("Task output field requires an accepted Task receipt".into());
+                    };
+                    return projection
+                        .task_field(&receipt, super::task_output::read(self, &receipt, port)?);
+                }
+                return projection.apply(value);
             }
             Binding::Select {
                 condition,
@@ -755,7 +800,7 @@ impl Run {
         self.failure = Some(why);
         self.waiting = None;
     }
-    pub fn prepare(&mut self, now: u64) -> Result<Option<Dispatch>> {
+    pub fn prepare(&mut self, host: &dyn crate::Host, now: u64) -> Result<Option<Dispatch>> {
         if !self.status.active() {
             return Ok(None);
         }
@@ -767,9 +812,14 @@ impl Run {
         }
         self.status = Status::Running;
         self.waiting = None;
-        self.prepare_frame("root", now)
+        self.prepare_frame(host, "root", now)
     }
-    fn prepare_frame(&mut self, path: &str, now: u64) -> Result<Option<Dispatch>> {
+    fn prepare_frame(
+        &mut self,
+        host: &dyn crate::Host,
+        path: &str,
+        now: u64,
+    ) -> Result<Option<Dispatch>> {
         let frame = self.frames[path].clone();
         let def = self.pin.bundle.definitions[&frame.scenario].clone();
         if now >= frame.started_unix_ms + def.limits.max_wall_ms {
@@ -862,6 +912,7 @@ impl Run {
                     )?;
                     if decision.request.approve {
                         self.complete(
+                            host,
                             path,
                             &step.id,
                             BTreeMap::from([("result".into(), Datum::Decision(decision.clone()))]),
@@ -910,10 +961,10 @@ impl Run {
                     self.frames.get_mut(path).unwrap().steps[i].child = Some(full.clone());
                 }
                 if let Some(outputs) = self.frames[&full].outputs.clone() {
-                    self.complete(path, &step.id, outputs)?;
+                    self.complete(host, path, &step.id, outputs)?;
                     return Ok(None);
                 }
-                return self.prepare_frame(&full, now);
+                return self.prepare_frame(host, &full, now);
             }
             Kind::Action {
                 requires_decision,
@@ -973,7 +1024,7 @@ impl Run {
                 intents.len() < usize::from(step.max_attempts),
                 "Step exhausted its bounded retries",
             )?;
-            if let Kind::Task { target } = &step.operation {
+            if let Kind::Task { target } | Kind::CiDiagnosis { target } = &step.operation {
                 self.reserve_task(&full, target)?;
             }
             let intent_id = hash(&(
@@ -1132,13 +1183,38 @@ impl Run {
     }
     pub fn complete(
         &mut self,
+        host: &dyn crate::Host,
         path: &str,
         step_id: &str,
         outputs: BTreeMap<String, Datum>,
     ) -> Result<()> {
+        let frame = self.frames.get(path).ok_or("Unknown completion frame")?;
+        let step = self.pin.bundle.definitions[&frame.scenario]
+            .steps
+            .iter()
+            .find(|s| s.id == step_id)
+            .ok_or("Unknown completion step")?;
+        let mut captured = Vec::new();
+        if matches!(
+            step.operation,
+            Kind::Task { .. } | Kind::CiDiagnosis { .. } | Kind::FreshTask { .. }
+        ) {
+            for value in outputs.values() {
+                if let Some(receipt) = super::task_output::accepted_receipt(value)? {
+                    captured.extend(super::task_output::capture(host, self, receipt)?);
+                }
+            }
+        }
         let frame = self.frames.get_mut(path).ok_or("Missing frame")?;
         let p = frame.steps.last_mut().ok_or("Missing step")?;
         require(p.step == step_id && !p.complete(), "Stale step completion")?;
+        if !captured.is_empty() {
+            p.intents
+                .last_mut()
+                .ok_or("Task output lacks native dispatch intent")?
+                .evidence
+                .extend(captured);
+        }
         p.outputs = outputs;
         p.status = Status::Succeeded;
         if let Some(intent) = p.intents.last_mut() {

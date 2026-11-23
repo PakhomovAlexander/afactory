@@ -1,0 +1,60 @@
+{
+  "captured_at": "2026-11-09T04:00:00Z",
+  "complete": true,
+  "failures": [
+    {
+      "conclusion": "failure",
+      "first_seen_at": "2026-11-09T04:00:00Z",
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "job_id": 201,
+      "job_name": "functional",
+      "last_seen_at": "2026-11-09T04:00:00Z",
+      "log_artifacts": [
+        "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      ],
+      "normalized_fingerprint": "test: ci_health::ci_health_current_contracts_roundtrip_and_refuse_missing_malformed_and_old_shapes",
+      "occurrence_count": 1,
+      "occurrence_id": "sha256:e809b7900af7c427c7f33d0b29257204981f566297bfb258f6bb75cd2767c55c",
+      "platform": "linux",
+      "release_blocking": false,
+      "run_attempt": 1,
+      "run_id": 101,
+      "signature_id": "sha256:d8ac91aeb04fb0e75b7fe8ec4fe0b0493208ecf0e941d424c8fcc8ee6fd0b068",
+      "workflow_file": ".github/workflows/validate.yml",
+      "workflow_id": 1
+    },
+    {
+      "conclusion": "failure",
+      "first_seen_at": "2026-11-09T04:00:00Z",
+      "head_sha": "dddddddddddddddddddddddddddddddddddddddd",
+      "job_id": 403,
+      "job_name": "release-validation",
+      "last_seen_at": "2026-11-09T04:00:00Z",
+      "log_artifacts": [
+        "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      ],
+      "normalized_fingerprint": "test: ci_health::ci_health_current_contracts_roundtrip_and_refuse_missing_malformed_and_old_shapes",
+      "occurrence_count": 1,
+      "occurrence_id": "sha256:ffd053f87c072a8cc0c5720cec696f6c5b4b8d6f0ef10c8ee6f7c293881044ee",
+      "platform": "macos",
+      "release_blocking": true,
+      "run_attempt": 1,
+      "run_id": 301,
+      "signature_id": "sha256:eadc7e8a8d66e6b3b79cbc54c194b7e75864fd3262d0b264c8afdac8cda2a9ba",
+      "workflow_file": ".github/workflows/validate.yml",
+      "workflow_id": 1
+    }
+  ],
+  "nightly_receipt": {
+    "conclusion": "failed",
+    "identity": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "omissions": [],
+  "release_pr": {
+    "head_sha": "dddddddddddddddddddddddddddddddddddddddd",
+    "number": 7
+  },
+  "repository": "octo/project",
+  "schema": "af.ci-health-snapshot/1",
+  "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}

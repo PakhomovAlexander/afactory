@@ -613,6 +613,12 @@ Scenario and Ant documents (ADR-0274; `af help scenarios`):
   ant show: af/ant-inspection@9; ant scheduler status/stop: af/ant-scheduler@1;
   ant list: af/ant-list@14; tick: af/ant-tick@13.
   Result presentation: af/result-document@1; rendered metadata: af/result-snapshot@1.
+  CI Health Phase 1: af.ci-health-snapshot/1, af.ci-health-state/2, af.ci-diagnosis/1,
+  af.ci-diagnosis-selection/1, af.ci-health-notification/5, af.ci-signature-state/5,
+  af.ci-observe-occurrence/1, af.ci-observe-service/1, af.maintenance-watchdog-config/1 and
+  af.maintenance-watchdog-alert/1. Native diagnosis and notification records:
+  af/scenario-ci-diagnosis@2, af/scenario-ci-notification-evidence@2 and
+  af/scenario-task-output-field@1. Remedies are report-only; the watchdog is inactive.
   Definitions and machine policy: af/scenario@11, af/scenario-bundle@11, af/scenario-policy@8,
   Scoped implementation publication: af/implementation-pr-proof@1, af/implementation-pr-live@1.
   Startup scope: af/implementation-startup-scope@2.

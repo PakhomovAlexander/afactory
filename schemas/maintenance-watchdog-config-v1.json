@@ -1,0 +1,163 @@
+{
+  "$id": "urn:af:schema:maintenance-watchdog-config:1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "ant_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[^\\u0000]+$",
+      "type": "string"
+    },
+    "ant_revision": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "grace_ms": {
+      "const": 7200000
+    },
+    "hour": {
+      "maximum": 23,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "max_wall_ms": {
+      "maximum": 60000,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "minute": {
+      "maximum": 59,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "notification": {
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^[^\\u0000]+$",
+      "type": "string"
+    },
+    "notifier": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "executable": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^[^\\u0000]+$",
+              "type": "string"
+            },
+            "max_output_bytes": {
+              "maximum": 65536,
+              "minimum": 1024,
+              "type": "integer"
+            },
+            "max_wall_ms": {
+              "maximum": 30000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "executable",
+            "digest",
+            "max_wall_ms",
+            "max_output_bytes"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "report_step": {
+      "const": "report-outcome"
+    },
+    "schema": {
+      "const": "af.maintenance-watchdog-config/1"
+    },
+    "start_day": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "writer_version": {
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[^\\u0000]+$",
+      "type": "string"
+    },
+    "zone": {
+      "additionalProperties": false,
+      "properties": {
+        "initial_offset": {
+          "maximum": 86400,
+          "minimum": -86400,
+          "type": "integer"
+        },
+        "name": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\u0000]+$",
+          "type": "string"
+        },
+        "transitions": {
+          "items": {
+            "items": {
+              "maximum": 9007199254740991,
+              "minimum": -9007199254740991,
+              "type": "integer"
+            },
+            "maxItems": 2,
+            "minItems": 2,
+            "type": "array"
+          },
+          "maxItems": 100000,
+          "type": "array"
+        },
+        "valid_until_unix_seconds": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            }
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "initial_offset",
+        "transitions",
+        "valid_until_unix_seconds"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema",
+    "ant_id",
+    "ant_revision",
+    "writer_version",
+    "notification",
+    "notifier",
+    "start_day",
+    "hour",
+    "minute",
+    "zone",
+    "max_wall_ms",
+    "grace_ms",
+    "report_step"
+  ],
+  "title": "Maintenance watchdog config v1",
+  "type": "object"
+}

@@ -3,9 +3,9 @@
 //!
 //! Each schema is the file under `schemas/` compiled into the binary, so `af schema show ID`
 //! prints exactly the bytes the repository publishes for the documents this release prints, and
-//! for those of the repository's issue-triage check (`scripts/backlog-check-triage.py`). A
-//! unit test holds this table to the ids the `json` topic names, both ways, and every schema to
-//! the `schema` constant of its id.
+//! for those of the repository's issue-triage check (`scripts/backlog-check-triage.py`) and
+//! CI health services. A unit test holds this table to the ids the `json` topic names, both
+//! ways, and every schema to the `schema` constant of its id.
 
 use clap_complete::engine::CompletionCandidate;
 
@@ -20,9 +20,30 @@ macro_rules! schema {
     };
 }
 
+/// Service/artifact JSON contracts use their own established `af.NAME/N` wire identities.
+macro_rules! service_schema {
+    ($kind:literal, $version:literal) => {
+        (
+            concat!("af.", $kind, "/", $version),
+            concat!("schemas/", $kind, "-v", $version, ".json"),
+            include_str!(concat!("../../../schemas/", $kind, "-v", $version, ".json")),
+        )
+    };
+}
+
 /// Every shipped schema: its document id (the `schema` field the document carries), its file
 /// under `schemas/`, and its bytes.
 pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
+    service_schema!("ci-diagnosis-selection", 1),
+    service_schema!("ci-diagnosis", 1),
+    service_schema!("ci-health-notification", 5),
+    service_schema!("ci-health-snapshot", 1),
+    service_schema!("ci-health-state", 2),
+    service_schema!("ci-observe-occurrence", 1),
+    service_schema!("ci-observe-service", 1),
+    service_schema!("ci-signature-state", 5),
+    service_schema!("maintenance-watchdog-alert", 1),
+    service_schema!("maintenance-watchdog-config", 1),
     schema!("ant-inspection", 9),
     schema!("ant-list", 14),
     schema!("ant-pin", 13),
@@ -74,6 +95,8 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("scenario-adapter-response", 3),
     schema!("scenario-artifact", 1),
     schema!("scenario-bundle", 11),
+    schema!("scenario-ci-diagnosis", 2),
+    schema!("scenario-ci-notification-evidence", 2),
     schema!("scenario-decision", 1),
     schema!("scenario-driver", 2),
     schema!("scenario-evidence-source", 1),
@@ -90,6 +113,7 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("scenario-run", 12),
     schema!("scenario-signed-decision", 1),
     schema!("scenario-store", 18),
+    schema!("scenario-task-output-field", 1),
     schema!("scenario-task-template", 2),
     schema!("scenario-template-pin", 2),
     schema!("scenario", 11),
@@ -144,11 +168,18 @@ fn title(text: &str) -> String {
 }
 
 fn refusal(id: &str) -> String {
-    let kind = id.split_once('@').map_or(id, |(kind, _)| kind);
+    fn kind(id: &str) -> &str {
+        if id.starts_with("af.") {
+            id.rsplit_once('/').map_or(id, |(kind, _)| kind)
+        } else {
+            id.split_once('@').map_or(id, |(kind, _)| kind)
+        }
+    }
+    let requested_kind = kind(id);
     let same: Vec<&str> = SCHEMAS
         .iter()
         .map(|(shipped, _, _)| *shipped)
-        .filter(|shipped| shipped.split_once('@').map(|(kind, _)| kind) == Some(kind))
+        .filter(|shipped| kind(shipped) == requested_kind)
         .collect();
     let id = crate::terminal_text(id);
     if same.is_empty() {
@@ -177,23 +208,25 @@ pub(crate) fn complete_id(current: &std::ffi::OsStr) -> Vec<CompletionCandidate>
 mod tests {
     use super::*;
 
-    /// Every `af/NAME@N` the `json` topic names, in order of first mention.
+    /// Every `af/NAME@N` and `af.NAME/N` the `json` topic names.
     fn listed_in_the_json_topic() -> Vec<String> {
         let (_, _, text) = crate::topics::find("json").expect("json topic");
         let mut ids = Vec::new();
-        for (start, _) in text.match_indices("af/") {
-            let rest = &text[start + 3..];
-            let kind: String = rest
-                .chars()
-                .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
-                .collect();
-            let Some(version) = rest[kind.len()..].strip_prefix('@') else {
-                continue;
-            };
-            let version: String = version.chars().take_while(char::is_ascii_digit).collect();
-            let id = format!("af/{kind}@{version}");
-            if !kind.is_empty() && !version.is_empty() && !ids.contains(&id) {
-                ids.push(id);
+        for (prefix, separator) in [("af/", '@'), ("af.", '/')] {
+            for (start, _) in text.match_indices(prefix) {
+                let rest = &text[start + 3..];
+                let kind: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
+                    .collect();
+                let Some(version) = rest[kind.len()..].strip_prefix(separator) else {
+                    continue;
+                };
+                let version: String = version.chars().take_while(char::is_ascii_digit).collect();
+                let id = format!("{prefix}{kind}{separator}{version}");
+                if !kind.is_empty() && !version.is_empty() && !ids.contains(&id) {
+                    ids.push(id);
+                }
             }
         }
         ids
@@ -263,8 +296,34 @@ mod tests {
             "this af ships no schema task-status-v3.json; `af schema show` lists the ids it ships"
         );
         assert!(refusal("af/task-inspection@18").contains("only af/task-inspection@21"));
+        assert_eq!(
+            refusal("af.ci-diagnosis/0"),
+            "this af ships no schema af.ci-diagnosis/0, only af.ci-diagnosis/1; run af schema \
+             show af.ci-diagnosis/1"
+        );
+        for version in [1, 2, 3, 4] {
+            assert_eq!(
+                refusal(&format!("af.ci-health-notification/{version}")),
+                format!(
+                    "this af ships no schema af.ci-health-notification/{version}, only af.ci-health-notification/5; run af schema show af.ci-health-notification/5"
+                )
+            );
+        }
         let listing = listing();
         assert_eq!(listing.lines().count(), SCHEMAS.len());
-        assert!(listing.starts_with("af/ant-inspection@9  "), "{listing}");
+        assert!(
+            listing
+                .lines()
+                .any(|line| line.starts_with("af/ant-inspection@9  "))
+        );
+        assert!(
+            listing
+                .lines()
+                .any(|line| line.starts_with("af/ant-list@14  "))
+        );
+        assert!(
+            listing.starts_with("af.ci-diagnosis-selection/1  "),
+            "{listing}"
+        );
     }
 }

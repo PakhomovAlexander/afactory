@@ -107,6 +107,9 @@ pub(crate) struct CheckView {
     /// Where `stopped_step`, `failed_tests` and `flaky` came from; printed, never serialized.
     #[serde(skip)]
     pub(crate) evidence: Evidence,
+    /// The receipt's check report records that this local check started.
+    #[serde(skip)]
+    has_recorded_run: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) stdout_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -731,6 +734,7 @@ fn check_view(
         failed_tests,
         flaky,
         evidence,
+        has_recorded_run: run.is_some(),
         stdout_id,
         stderr_id,
         stderr_tail,
@@ -1073,6 +1077,17 @@ pub(crate) fn checks_lines(task_id: &str, view: &TaskView) -> Vec<String> {
             (Some(stop), _) => head.push_str(&format!(", {}", wall_words(stop))),
             (None, Some(ms)) => head.push_str(&format!(" in {ms} ms")),
             (None, None) if check.remote => head.push_str(", run remotely"),
+            // Preparation can write diagnostics, so a capture ID alone does not show execution.
+            (None, None)
+                if check.exit_code.is_some()
+                    || check.has_recorded_run
+                    || check.stopped_step.is_some()
+                    || !check.failed_tests.is_empty()
+                    || !check.flaky.is_empty()
+                    || check.layer.is_some() =>
+            {
+                head.push_str(", elapsed timing unavailable");
+            }
             (None, None) => head.push_str(", never started"),
         }
         head.push_str(&format!(", {}", check.cache));
@@ -1259,6 +1274,7 @@ mod tests {
             failed_tests: tests.iter().map(|t| t.to_string()).collect(),
             flaky: flaky.iter().map(|t| t.to_string()).collect(),
             evidence: Evidence::Output,
+            has_recorded_run: false,
             stdout_id: None,
             stderr_id: None,
             stderr_tail: vec![],
@@ -1366,6 +1382,197 @@ mod tests {
             "tests"
         );
         assert!(document["receipt"]["checks"][1]["layer"]["phases"]["build_ms"].is_null());
+    }
+
+    #[test]
+    fn executed_check_with_no_span_has_unavailable_elapsed_timing() {
+        use af_contracts::task::check_report::{
+            TASK_CHECK_REPORT_V1, TaskCheckHostV1, TaskCheckReportV1, parse_check_report,
+        };
+
+        let temp = tempfile::tempdir().unwrap();
+        let cas = Cas::open(temp.path()).unwrap();
+        let stderr = cas.put(b"[test] 1.2s, exit 2\n").unwrap();
+        let result = cas
+            .put_json(&json!({
+                "name": "kernel",
+                "status": "failed",
+                "exit_code": 2,
+                "program": "scripts/verify.sh",
+                "args": [],
+                "stderr": stderr,
+                "required": true,
+            }))
+            .unwrap();
+        let kernel = check_view(&cas, "kernel", &result, None, None).unwrap();
+        assert_eq!(kernel.elapsed_ms, None);
+        let mut step_only = kernel.clone();
+        step_only.name = "step-only".into();
+        step_only.exit_code = None;
+
+        let absent = TaskCheckRunV1 {
+            host: TaskCheckHostV1 {
+                cpus_start: 1,
+                cpus_end: 1,
+                load_1m_start: None,
+                load_1m_end: None,
+            },
+            report: CheckReportStateV1::Absent,
+            refusal: None,
+            steps: vec![],
+            tests: None,
+        };
+        let admitted = |record: &[u8]| {
+            let (steps, tests) = parse_check_report(record).unwrap();
+            TaskCheckRunV1 {
+                report: CheckReportStateV1::Admitted,
+                steps,
+                tests,
+                ..absent.clone()
+            }
+        };
+        let step = admitted(
+            br#"{"schema":"af.check-report/1","record":"step","label":"build","stage":"build","exit_code":0,"command":["cargo","build"]}"#,
+        );
+        let tests = admitted(
+            br#"{"schema":"af.check-report/1","record":"tests","test_threads":1,"failed_count":0,"failed":[],"flaky":[],"rerun":"not_needed"}"#,
+        );
+        let refused = TaskCheckRunV1 {
+            report: CheckReportStateV1::Refused,
+            refusal: Some("malformed check account".into()),
+            ..absent.clone()
+        };
+        let mut checks = view(vec![]);
+        let receipt_id = &checks.receipt_id;
+        let attempt_id = "01aaaaaaaaaaaaaaaaaaaaaaaa";
+        let put_report = |report: TaskCheckReportV1| {
+            cas.put_artifact(
+                TASK_CHECK_REPORT_V1,
+                af_contracts::Producer::Attempt {
+                    run_id: "state-test".into(),
+                    node_id: checks.node.clone(),
+                    attempt_id: attempt_id.into(),
+                },
+                vec![report.receipt_id.clone()],
+                None,
+                serde_json::to_value(report).unwrap(),
+            )
+            .unwrap()
+            .0
+        };
+        let report = TaskCheckReportV1 {
+            receipt_id: receipt_id.clone(),
+            checks: BTreeMap::from([
+                ("reported-step".into(), step),
+                ("tests-only".into(), tests),
+                ("absent".into(), absent.clone()),
+                ("refused".into(), refused),
+            ]),
+        };
+        report.validate().unwrap();
+        let unrelated = TaskCheckReportV1 {
+            receipt_id: format!("sha256:{}", "2".repeat(64)),
+            checks: BTreeMap::from([("markdownlint".into(), absent.clone())]),
+        };
+        unrelated.validate().unwrap();
+        let invalid = TaskCheckReportV1 {
+            receipt_id: receipt_id.clone(),
+            checks: BTreeMap::from([(
+                "markdownlint".into(),
+                TaskCheckRunV1 {
+                    report: CheckReportStateV1::Refused,
+                    ..absent
+                },
+            )]),
+        };
+        assert!(invalid.validate().is_err());
+        let attempt = TaskAttemptAccounting {
+            attempt_id: attempt_id.into(),
+            invocation_id: receipt_id.clone(),
+            plan_id: receipt_id.clone(),
+            reservation: af_attempt::task_budget::TaskReservation {
+                id: "reservation:0".into(),
+                node: checks.node.clone(),
+                tokens: 0,
+                deadline_unix_ms: 100,
+            },
+            started: true,
+            started_unix_ms: Some(1),
+            settled_unix_ms: Some(2),
+            released: false,
+            charged_tokens: 0,
+            state: None,
+            result: Some(TaskAttemptResultV1::Succeeded {
+                output_id: receipt_id.clone(),
+            }),
+            context_id: None,
+            raw_artifact_ids: vec![
+                put_report(report),
+                put_report(unrelated),
+                put_report(invalid),
+            ],
+            usage_id: None,
+            unknown_usage: None,
+            abandoned: None,
+        };
+        let runs = check_runs(&cas, receipt_id, Some(&attempt));
+        let project = |name: &str, status: &str| {
+            let result = cas
+                .put_json(&json!({"name": name, "status": status}))
+                .unwrap();
+            check_view(&cas, name, &result, Some(&attempt), runs.get(name)).unwrap()
+        };
+
+        let unstarted = project("markdownlint", "not_run");
+        let mut remote = unstarted.clone();
+        remote.name = "remote".into();
+        remote.status = "failed".into();
+        remote.remote = true;
+        let mut timed = kernel.clone();
+        timed.name = "timed".into();
+        timed.elapsed_ms = Some(1200);
+
+        checks.checks = vec![
+            kernel,
+            step_only,
+            project("reported-step", "not_run"),
+            project("tests-only", "passed"),
+            project("absent", "failed"),
+            project("refused", "not_run"),
+            unstarted,
+            remote,
+            timed,
+        ];
+        let task = TaskView {
+            state: TaskStateV1::new(TaskStatePhaseV1::Finished),
+            gate: None,
+            checks: Some(checks),
+            failures: vec![],
+        };
+        let lines = checks_lines("t", &task);
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.starts_with("check "))
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            [
+                "check kernel: failed (exit 2), elapsed timing unavailable, cold (no warm cache), evidence: output",
+                "check step-only: failed, elapsed timing unavailable, cold (no warm cache), evidence: output",
+                "check reported-step: not_run, elapsed timing unavailable, cold (no warm cache)",
+                "check tests-only: passed, elapsed timing unavailable, cold (no warm cache)",
+                "check absent: failed, elapsed timing unavailable, cold (no warm cache)",
+                "check refused: not_run, elapsed timing unavailable, cold (no warm cache)",
+                "check markdownlint: not_run, never started, cold (no warm cache)",
+                "check remote: failed, run remotely, cold (no warm cache)",
+                "check timed: failed (exit 2) in 1200 ms, cold (no warm cache), evidence: output",
+            ]
+        );
+        let document = checks_document("t", &task);
+        let shown = &document["receipt"]["checks"][0];
+        assert_eq!(shown["status"], "failed");
+        assert_eq!(shown["stderr_id"], stderr);
+        assert!(shown.get("elapsed_ms").is_none());
     }
 
     /// A check the kernel stopped at its wall (ADR-0255) is `check_failed`, and every rendering

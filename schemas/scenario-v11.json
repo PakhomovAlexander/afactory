@@ -645,6 +645,64 @@
               "const": "nightly_tag_text"
             }
           }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "port",
+            "schema",
+            "field"
+          ],
+          "properties": {
+            "kind": {
+              "const": "task_output_field"
+            },
+            "port": {
+              "$ref": "urn:af:schema:scenario:11#/$defs/name"
+            },
+            "schema": {
+              "const": "af.ci-diagnosis/1"
+            },
+            "field": {
+              "enum": [
+                "category",
+                "signature_id"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "field"
+          ],
+          "properties": {
+            "kind": {
+              "const": "ci_diagnosis_field"
+            },
+            "field": {
+              "enum": [
+                "category",
+                "signature_id"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "ci_diagnosis_refused"
+            }
+          }
         }
       ]
     },
@@ -1014,6 +1072,22 @@
             "template",
             "bindings"
           ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "target"
+          ],
+          "properties": {
+            "kind": {
+              "const": "ci_diagnosis"
+            },
+            "target": {
+              "$ref": "urn:af:schema:scenario:11#/$defs/TaskTarget"
+            }
+          }
         }
       ]
     },
@@ -2405,7 +2479,7 @@
           "$ref": "urn:af:schema:scenario:11#/$defs/digest"
         },
         "operation": {
-          "$ref": "urn:af:schema:scenario:11#/$defs/Operation"
+          "$ref": "urn:af:schema:scenario:11#/$defs/ExternalOperation"
         },
         "destination": {
           "$ref": "urn:af:schema:scenario:11#/$defs/text"

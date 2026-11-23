@@ -239,6 +239,13 @@ if name=='rustc': print('rustc 1.88.0 test');sys.exit(0)
 if name=='minisign': sys.exit(1 if d.get('bad_signature') else 0)
 if name in ('npx','make'): sys.exit(98)
 if name!='gh': sys.exit(99)
+if a[:2]==['pr','checks'] and '--help' in a:
+ d['capability_probes']=d.get('capability_probes',0)+1;save()
+ mode=d.get('gh_capability','supported')
+ if mode=='error': print('credential=secret-fixture',file=sys.stderr);sys.exit(1)
+ print('FLAGS\n      --required   Show required checks')
+ if mode!='2.46.0': print('      --json fields   Output JSON\n\nJSON FIELDS\n  '+('name, link' if mode=='missing_bucket' else 'name, bucket, link')+'\n\nLEARN MORE')
+ sys.exit(0)
 if a[0]=='api':
  request=a[1].replace('{owner}/{repo}','o/r')
  d.setdefault('api_requests',[]).append(request);save()
@@ -1761,6 +1768,63 @@ class ReleaseCLI(unittest.TestCase):
         self.assertEqual(self.state_value()['plan']['source'], self.initial)
         self.assertEqual((self.source / 'Cargo.toml').read_text(), 'dirty caller')
         self.assertNotIn('cache acquisition', self.cli('plan').stderr)
+
+    def test_incompatible_gh_refuses_fresh_plan_and_rc_without_effects(self):
+        for mode in ('2.46.0', 'missing_bucket', 'error'):
+            for command in ('plan', 'rc'):
+                with self.subTest(mode=mode, command=command):
+                    self.data(gh_capability=mode)
+                    result = self.cli(command, ok=False)
+                    self.assertIn('gh_capability: upgrade GitHub CLI', result.stderr)
+                    self.assertIn('gh pr checks --required --json name,bucket,link', result.stderr)
+                    self.assertNotIn('secret-fixture', result.stderr)
+                    self.assertFalse((self.state / 'run.json').exists())
+                    self.assertFalse((self.state / 'candidate').exists())
+                    self.assertFalse(self.data().get('api_requests'))
+                    self.assertFalse(self.data().get('effects'))
+        self.assertEqual(self.data()['capability_probes'], 6)
+
+    def test_existing_plan_rechecks_gh_before_authorization_or_effects(self):
+        # Use the supported-release fixture's published RC3 pin, not a prospective
+        # RC4 pin: the real --check-next guard must admit this plan first.
+        self.cli('plan')
+        before = (self.state / 'run.json').read_bytes()
+        self.assertIsNone(self.state_value()['authorization'])
+        self.data(gh_capability='2.46.0')
+        for command in ('rc', 'resume'):
+            result = self.cli(command, ok=False)
+            self.assertIn('gh_capability', result.stderr)
+            self.assertEqual((self.state / 'run.json').read_bytes(), before)
+            self.assertFalse((self.state / 'candidate').exists())
+            self.assertFalse(self.data().get('effects'))
+        self.data(gh_capability='supported', formal_checks='fail')
+        self.assertIn('checks_rejected', self.cli('rc', ok=False).stderr)
+        self.assertNotIn('merge', self.data()['effects'])
+
+    def test_incompatible_gh_resume_leaves_signed_release_and_receipts_untouched(self):
+        self.cli('rc')
+        self.publish_assets(self.state_value())
+        before = (self.state / 'run.json').read_bytes()
+        effects = self.data()['effects'][:]
+        releases = self.data()['releases']
+        refs = self.git('--git-dir', self.remote, 'show-ref')
+        self.data(gh_capability='2.46.0')
+        self.cli('status')  # Read-only inspection does not require the capability.
+        result = self.cli('resume', ok=False)
+        self.assertIn('gh_capability', result.stderr)
+        self.assertEqual((self.state / 'run.json').read_bytes(), before)
+        self.assertEqual(self.data()['effects'], effects)
+        self.assertEqual(self.data()['releases'], releases)
+        self.assertEqual(self.git('--git-dir', self.remote, 'show-ref'), refs)
+
+    def test_gh_probe_timeout_is_bounded_and_redacted(self):
+        module = runpy.run_path(str(ROOT / 'scripts/dev-release.py'))
+        with mock.patch('subprocess.run', side_effect=subprocess.TimeoutExpired('gh', 10)) as call:
+            with self.assertRaisesRegex(module['Refusal'], 'gh_capability: upgrade'):
+                module['check_gh_capabilities']()
+        self.assertEqual(call.call_args.kwargs['timeout'], 10)
+        self.assertEqual(call.call_args.args[0], ['gh', 'pr', 'checks', '--required',
+                                               '--json', 'name,bucket,link', '--help'])
 
     def test_plan_uses_canonical_repository_and_preserves_nested_queries(self):
         result = self.cli('plan')

@@ -18,6 +18,7 @@ pub mod backlog;
 pub mod build_cache;
 pub mod cache;
 pub mod change_set;
+pub mod ci_health;
 pub mod credential;
 pub mod demand;
 pub mod disposition;
