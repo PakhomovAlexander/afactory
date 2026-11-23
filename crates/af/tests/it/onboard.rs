@@ -1051,10 +1051,11 @@ fn afactory_authority_plans_a_three_field_task_with_its_defaults() {
         &[("codex-personal", "codex")],
     );
     let bin = root.path().join("bin");
-    crate::fake_models::install(
-        "codex",
+    let profile = crate::issue_workflows::model_profile();
+    crate::issue_workflows::install_profile_codex(
         &bin,
         &root.path().join("providers/auth-codex-personal"),
+        &profile,
     );
     let pi_auth = root.path().join("pi-auth");
     let (sdk, pi_path, _) = crate::fake_models::install_pi(root.path(), &pi_auth, "kimi-document");
@@ -1128,7 +1129,7 @@ fn afactory_authority_plans_a_three_field_task_with_its_defaults() {
         (
             "evaluator",
             "light-evaluator",
-            "gpt-6.1-sol",
+            profile.sol.as_str(),
             "medium",
             "codex",
             "codex-personal",

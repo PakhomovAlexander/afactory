@@ -16,8 +16,8 @@ python3 -I scripts/issue-workflows.py preview
 | Selection / public implementation Pipeline | Required earlier stage | Implementer | Code judges |
 |---|---|---|---|
 | `bugfix/light-kimi-terra-sol` | Known cause and narrow deterministic regression | Pi `kimi-coding/k3.1-pro` high | Terra high review; Sol medium evaluation |
-| `bugfix/light-codex` | Same light scope | `gpt-6.1-sol` medium | Terra high review; Astra medium evaluation |
-| `bugfix/default-codex` | Cause understood | `gpt-6.1-sol` medium | Terra high bugs; Terra high correctness; Astra medium evaluation |
+| `bugfix/light-codex` | Same light scope | Sol medium | Terra high review; Astra medium evaluation |
+| `bugfix/default-codex` | Cause understood | Sol medium | Terra high bugs; Terra high correctness; Astra medium evaluation |
 | `bugfix/research-fix-codex` | Accepted diagnosis from Sol high, checked independently by Terra high | Default implementer | Default judges |
 | `impl/default-codex` | Requirements understood | Default implementer | Default judges |
 | `impl/light-kimi-codex` | Small specified non-authority requirement with deterministic acceptance | Pi `kimi-coding/k3.1-pro` high | Terra high review; Sol medium evaluation |
@@ -25,7 +25,8 @@ python3 -I scripts/issue-workflows.py preview
 | `perf/research-kimi-codex` | Small known bottleneck with measured reproduction; accepted Kimi high research checked by Terra high | Default implementer | Default judges plus Astra medium measurement evaluation |
 | `perf/research-experiment-codex` | Accepted Sol high research, checked by Terra high | Default implementer | Default judges plus Astra medium measurement evaluation |
 
-Terra means `gpt-6.1-terra`, Sol means `gpt-6.1-sol`, and Astra means `gpt-6-astra`.
+Terra means `gpt-6.1-terra`. The [fixture model profile](model-profile.json) records the
+expected Sol and Astra pins for the issue workflow routes.
 Every Codex binding is `codex-personal`; Pi uses the machine-local alias `pi-personal` for an
 admitted `kimi-coding` Provider. No credential is supplied here. There is no advisory/uix Worker.
 The shared Review policy retains an optional bugs policy entry to allow light's single bound
@@ -43,6 +44,58 @@ by every selection; it is an internal capability, not nine extra selectable prof
 default accepts a Task containing only `task_id`, `kind` and `goal`, without a `standard` selector
 fact. Other staged selectors and the launcher's routing attestations remain required. Package definitions,
 role choices and pins are versioned here; local bindings may supply only personal account aliases.
+
+### Porting the fixture profiles
+
+| Source baseline | Sol | Astra |
+|---|---|---|
+| Product main `0ba8bbb70494df4d9ce6ff06709869489c212084` | `gpt-6.1-sol` | `gpt-6-astra` |
+| Derived operator `d475d3c8b350f1b9e751df6965972bfd8de699c5` | `gpt-6.2-sol` | `gpt-6.2-astra` |
+
+The Python and Rust test changes apply to either profile. Set `model-profile.json` to the
+pair approved for the destination. Verify that pair against the installed and staged Worker
+manifests for implementer, researched-implementer, investigator, design-acceptor, light-evaluator,
+codex-light-evaluator, designer, evaluator and experiment-evaluator. For each staged package,
+read its exact `version` from `worker.toml` and run `af catalog digest PACKAGE_DIR` with the
+destination build. Record that pair in both staged manifests, keeping their respective paths.
+Product main uses its existing package versions and pins.
+
+The size-S row uses the selected profile's Sol ID in the two staged issue-workflow prompts,
+the two issue-triage prompts, the custom-task prompt, the triage design document and the
+example Task JSON. On product main, keep the existing Sol 6.1 rows. On the operator baseline,
+refresh the two triage prompt pins in both issue-workflow manifests and the issue-triage
+catalog using their destination package bytes. The custom-task fixture has no checked-in
+catalog. The operator's staged rubric pins therefore differ from its installed backlog pins.
+Launcher tests install the staged catalog in disposable repositories and still require
+exact authority bytes. Production `.af/` packages and captured authority stay as recorded.
+
+The shipped-worker audit queries the exact model and effort read from each installed Codex
+Worker. The product port uses the complete 2026-11-07 response after verifying its historical
+projection. Carry the two 2026-11-22 files under `crates/af/tests/fixtures/provider-models/` with
+the operator port. The product port needs neither file. The operator files contain the exact
+normalized `af/provider-models@4` response and its capture provenance from
+`af provider models codex-personal --json --page 0` on r-400, using AF 0.15.1-rc.3 and
+Codex 0.169.0. The audit checks the pinned raw SHA-256, capture metadata and complete
+`codex-personal` listing, including Sol 6.2 medium/high and Astra 6.2 medium. These observations
+establish harness-advertised support. Synthetic catalog rows are used for hermetic planning.
+
+Verify either port with the focused commands below and the fast Task gate.
+
+#### Focused operator-port execution on 2026-11-22
+
+```sh
+python3 -I scripts/test-issue-workflows.py
+cargo nextest run --workspace --locked --profile ci -E 'binary_id(af::it) & (test(/^catalog_digest::/) | test(/^issue_workflows::/) | test(=onboard::afactory_authority_plans_a_three_field_task_with_its_defaults))'
+```
+
+Python ran 26 tests and passed. Nextest ran 22 tests, with 18 passed and 4 failed.
+The repeat with `TMPDIR="$PWD/target/worker-test-tmp"` had the same counts. All
+`catalog_digest` tests passed, including the installed-worker audit and the controls for
+missing exact model or effort and altered observation bytes or provenance. The initial
+nine-plan test hit the sandbox's 10 GiB disk floor in `/tmp`. After moving `TMPDIR`, the
+nine-plan, design acceptance and three-field onboarding tests reported that `/opt` had
+UID 65534, which failed Provider registry or disable-state ancestry checks. The launcher
+freshness test reported an unavailable `codex-personal` catalog in both runs.
 
 ## Review and install the hard migration
 
@@ -322,10 +375,9 @@ prevent measurement or acceptance, and no preview establishes a measured improve
 
 Launcher `plan` and `compose` consult token-free `af provider models ID --json` catalogs for
 all selected Worker closures, including each composed research and final verification stage.
-Stable numeric versions are compared separately for Sol, Terra, Astra and ordinary Kimi Pro;
-`k3.1-pro-highspeed` and other model families cannot supersede ordinary Pro. Astra6 remains
-selected because the verified catalog contains no Astra6.1. Exact model pins remain versioned;
-no catalog result edits authority or silently substitutes a model. Unavailable, skipped,
+Stable numeric versions are compared separately for Sol, Terra, Astra and ordinary Kimi Pro.
+`k3.1-pro-highspeed` and other model families cannot supersede ordinary Pro. Exact model pins
+remain versioned, and catalog lookups leave authority and model selections intact. Unavailable, skipped,
 ambiguous, duplicate or incomplete catalog data refuses new planning. Catalogs describe exposed
 models and effort levels, not paid admission or account usability.
 
