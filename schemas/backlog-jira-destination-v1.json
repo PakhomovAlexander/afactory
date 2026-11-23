@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:backlog-jira-destination:1",
+  "title": "Receiver-owned Jira Cloud backlog destination",
+  "type": "object",
+  "required": [
+    "schema",
+    "project_id",
+    "site",
+    "jira_project_id",
+    "issue_type_id",
+    "publisher_account_id",
+    "executable_digest"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af/backlog-jira-destination@1"
+    },
+    "project_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "site": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.atlassian\\.net$"
+    },
+    "jira_project_id": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]{0,19}$"
+    },
+    "issue_type_id": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]{0,19}$"
+    },
+    "publisher_account_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9:_-]{1,128}$"
+    },
+    "executable_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

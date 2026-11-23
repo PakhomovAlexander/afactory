@@ -7,6 +7,64 @@ examples: this change installs nothing, runs no live triage or backfill, release
 issue and migrates no plugin. Hermetic tests establish coordinator behavior, not live GitHub,
 Provider, Docker, systemd or claw-3 coverage.
 
+## Read-only open issue index
+
+The Project backlog Collect and duplicate-verification steps can use a private observation
+of one GitHub repository. Run the index from a reviewed checkout with a fine-grained token
+scoped to the intended repository with Issues read permission. The token file must be a
+private regular file owned by the operator or root. Use a new output path in a private
+directory.
+
+```sh
+python3 -I scripts/backlog-open-issues.py \
+  --repository OWNER/REPO \
+  --github-token-file /path/to/read-only-token \
+  --output /path/to/private/open-issues.json
+```
+
+The command makes only GET requests to GitHub's API, with one two-minute read budget for
+two walks of at most 20 issue pages of 100 rows each and two repository identity reads.
+It walks the listing by numeric repository ID and checks the repository name and ID before
+and after. It compares row identities, order and state across the walks, including pull
+requests and closed issues. It also compares revisions, titles, body excerpts and truncation
+flags for the open issues retained in the output. Exit 0 writes one mode-0600 JSON file of up
+to 4 MiB and leaves stdout and stderr empty. A failed,
+conflicting or detectably incomplete read exits 1 without publishing a file. An existing output path is
+preserved. Invalid command syntax exits 2.
+
+The [versioned JSON schema](../schemas/backlog-open-issues-v1.json) defines the output.
+`repository` keeps GitHub's canonical casing, `repository_id` is GitHub's stable numeric
+repository ID, and `destination` spells the destination as `github:OWNER/REPO`. Issues are
+sorted by repository-local number. Each row carries GitHub's stable issue ID, number,
+`updated_at` revision, title and a body excerpt capped at 512 Unicode characters.
+`body_truncated` records whether the excerpt omits text. GitHub text is untrusted evidence.
+Identical titles can belong to distinct issues and the index makes no duplicate decisions.
+
+The `observation` value `live-page-walk` marks agreement between two reads through the
+terminal page. If an earlier issue closes and shifts another issue past the current offset,
+the walks can disagree even when the number of pages stays the same. A disagreement refuses
+the observation. GitHub can change during or after both walks, so the result gives neither a
+point-in-time snapshot nor proof that a duplicate is absent. The daily Project Scenario uses
+a private pin to give both Workers the same observation for verification against committed
+source. See the
+[manual receiver steps](project-backlog.md#use-a-private-provider-index-for-daily-duplicate-checks)
+or [recurring enrollment setup](project-backlog.md#opt-in-to-recurring-github-issue-indexing).
+
+Run the offline example from the repository root. The harness passes synthetic responses
+through the ordinary command entrypoint and replaces the transport's socket and HTTP
+connection. The harness exits 0 after printing both cases.
+
+```sh
+python3 -I scripts/test-backlog-open-issues.py --example
+```
+
+```text
+two pages: exit 0
+{"schema":"af.backlog-open-issues/1","observation":"live-page-walk","repository":"Example/Backlog","destination":"github:Example/Backlog","repository_id":42,"issues":[{"id":1001,"number":1,"updated_at":"2026-11-19T12:30:00Z","title":"Same title","body_excerpt":"First report.","body_truncated":false},{"id":1101,"number":101,"updated_at":"2026-11-19T12:30:00Z","title":"Same title","body_excerpt":"Separate report.","body_truncated":false}]}
+incomplete second page: exit 1
+backlog-open-issues: GitHub issue page incomplete or malformed
+```
+
 ## Installation prerequisites
 
 Use the reviewed control checkout at `/opt/af-perf/control`, Python 3.9 or newer, the pinned af

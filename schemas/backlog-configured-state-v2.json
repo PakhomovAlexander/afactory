@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:backlog-configured-state:2",
+  "title": "Private Markdown and Jira backlog publication state",
+  "description": "Markdown observation requires the exact approved revision and keeps the item's initial remote identity. Jira observations can record changed fields or a closed issue.",
+  "type": "object",
+  "required": [
+    "schema",
+    "attempt_id",
+    "operation",
+    "outcome"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af/backlog-configured-state@2"
+    },
+    "attempt_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "operation": {
+      "enum": [
+        "create",
+        "reconcile",
+        null
+      ]
+    },
+    "outcome": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": [
+                "attempt_prepared",
+                "adapter_unavailable",
+                "authority_unavailable",
+                "identity_conflict",
+                "not_observed",
+                "attempt_limit",
+                "prewrite_conflict"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "observation",
+            "approved_fields_match"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "observed"
+            },
+            "observation": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "required": [
+                    "remote_id",
+                    "closed",
+                    "fields_id"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "remote_id": {
+                      "type": "string",
+                      "pattern": "^markdown:[0-9a-f]{64}:[0-9a-f]{64}:[0-9a-f]{64}$"
+                    },
+                    "closed": {
+                      "type": "boolean"
+                    },
+                    "fields_id": {
+                      "type": "string",
+                      "pattern": "^sha256:[0-9a-f]{64}$"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "remote_id",
+                    "issue_key",
+                    "closed",
+                    "fields_id"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "remote_id": {
+                      "type": "string",
+                      "pattern": "^jira:[1-9][0-9]{0,19}$"
+                    },
+                    "issue_key": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z0-9_]{0,31}-[1-9][0-9]{0,19}$"
+                    },
+                    "closed": {
+                      "type": "boolean"
+                    },
+                    "fields_id": {
+                      "type": "string",
+                      "pattern": "^sha256:[0-9a-f]{64}$"
+                    }
+                  }
+                }
+              ]
+            },
+            "approved_fields_match": {
+              "type": "boolean"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const DOCUMENT_SOURCES_V1: &str = "af/DocumentSources@1";
+pub const MAX_REPOSITORY_CITATIONS: usize = 64;
 pub const DOCUMENT_DRAFT_V3: &str = "af/DocumentDraft@3";
 pub const DOCUMENT_V1: &str = "af/Document@1";
 /// The payload version of a rendered Document: its text is the canonical Markdown of its draft
@@ -137,7 +138,7 @@ impl DocumentDraft {
                 && !self.sections.is_empty()
                 && self.sections.len() <= 32
                 && self.named_citations().count() <= 32
-                && self.repository_citations().count() <= 64,
+                && self.repository_citations().count() <= MAX_REPOSITORY_CITATIONS,
             "Document draft requires its current schema, bounded sections and typed citations",
         )?;
         for citation in &self.citations {

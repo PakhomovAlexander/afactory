@@ -165,6 +165,10 @@ pub struct RunGuard {
     _store: Box<dyn Send>,
 }
 impl Store {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     pub fn open(
         host: std::sync::Arc<dyn crate::Host>,
         requested: Option<&Path>,

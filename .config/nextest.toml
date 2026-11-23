@@ -87,6 +87,8 @@ path = "junit.xml"
 #   keep every deadline, fault, cadence and accounting assertion intact.
 # - cancellation_wakes_idle_driver_without_refunding_its_due_reservation: observes
 #   cancellation inside three seconds while the dispatch reservation remains 30 s away.
+# - the three exhausted backlog publication fixtures share each affected dispatch's 15 s
+#   deadline across 16 attempts and the subsequent read-only CLI resumes.
 # The guarded kernel measurement is manual (`make perf-kernel-measure`).
 # Its refusal half runs in the ordinary perf class without exclusivity (ADR-0252).
 [[profile.default.overrides]]
@@ -112,6 +114,9 @@ test(/::identity_rechecks_cancel_an_inflight_status_process$/)
 | test(/scenario::performance::native_scoped_driver_recovers_transient_preflight_after_process_restart$/)
 | test(/scenario::performance::shipped_performance_loop_delivers_research_and_publishes_verified_improvement_with_recovery$/)
 | test(/driver::tests::cancellation_wakes_idle_driver_without_refunding_its_due_reservation$/)
+| test(/scenario::portable::portable_backlog_markdown_exhausted_prewrite_recovers_only_by_observation$/)
+| test(/scenario::portable::portable_backlog_github_reconciles_a_lost_create_without_duplicate_writes$/)
+| test(/scenario::portable::portable_backlog_jira_reconciles_one_create_with_stable_id_and_human_edits$/)
 '''
 threads-required = "num-test-threads"
 priority = 100

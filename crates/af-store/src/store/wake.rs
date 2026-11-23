@@ -62,58 +62,59 @@ pub struct WakeJournal {
     pub expired: bool,
 }
 
-pub(super) const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS wake_route_traversal_v1 (
+pub(super) const SCHEMA: &[&str] = &[
+    "CREATE TABLE wake_route_traversal_v1 (
  route_id TEXT PRIMARY KEY, subscription_id TEXT NOT NULL, expires INTEGER NOT NULL,
  record TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS wake_traversal_v1 (
+)",
+    "CREATE TABLE wake_traversal_v1 (
  singleton INTEGER PRIMARY KEY CHECK(singleton=1), record TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS wake_incarnation_v1 (
+)",
+    "CREATE TABLE wake_incarnation_v1 (
  singleton INTEGER PRIMARY KEY CHECK(singleton=1), identity TEXT NOT NULL, owner TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS wake_subscriptions_v1 (
+)",
+    "CREATE TABLE wake_subscriptions_v1 (
  id TEXT PRIMARY KEY, registration_key TEXT UNIQUE NOT NULL, task_id TEXT NOT NULL,
  registration TEXT NOT NULL, checkpoint TEXT, checkpoint_digest TEXT, through_sequence INTEGER,
  source_sequence INTEGER, expires INTEGER NOT NULL, valid INTEGER NOT NULL DEFAULT 1
-);
-CREATE INDEX IF NOT EXISTS wake_subscriptions_task_v1 ON wake_subscriptions_v1(task_id);
-CREATE TABLE IF NOT EXISTS wake_outbox_v1 (
+)",
+    "CREATE INDEX wake_subscriptions_task_v1 ON wake_subscriptions_v1(task_id)",
+    "CREATE TABLE wake_outbox_v1 (
  delivery_id TEXT PRIMARY KEY, subscription_id TEXT NOT NULL, digest TEXT NOT NULL,
  envelope TEXT NOT NULL, expires INTEGER NOT NULL,
  FOREIGN KEY(subscription_id) REFERENCES wake_subscriptions_v1(id)
-);
-CREATE TABLE IF NOT EXISTS wake_routes_v1 (
+)",
+    "CREATE TABLE wake_routes_v1 (
  id TEXT PRIMARY KEY, route TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0, expires INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS wake_delivery_v1 (
+)",
+    "CREATE TABLE wake_delivery_v1 (
  id TEXT PRIMARY KEY, subscription_id TEXT NOT NULL, route_id TEXT NOT NULL, record TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS wake_closed_v1 (
+)",
+    "CREATE TABLE wake_closed_v1 (
  subscription_id TEXT PRIMARY KEY, reason TEXT NOT NULL, closed INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS wake_session_fences_v1 (
+)",
+    "CREATE TABLE wake_session_fences_v1 (
  session_key TEXT PRIMARY KEY, subscription_id TEXT NOT NULL, delivery_id TEXT NOT NULL,
  digest TEXT NOT NULL, intent_id TEXT NOT NULL, expires INTEGER NOT NULL,
  task_id TEXT NOT NULL, causal_sequence INTEGER NOT NULL, causal_event_id TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS wake_session_stores_v1 (
+)",
+    "CREATE TABLE wake_session_stores_v1 (
  session_key TEXT PRIMARY KEY, store_incarnation TEXT NOT NULL, binding_digest TEXT NOT NULL
-);
-CREATE TRIGGER IF NOT EXISTS wake_source_updated_v1 AFTER UPDATE ON events BEGIN
+)",
+    "CREATE TRIGGER wake_source_updated_v1 AFTER UPDATE ON events BEGIN
  UPDATE wake_subscriptions_v1 SET valid=0
  WHERE json_extract(registration,'$.subscription.task.task_run_id')=OLD.run_id;
-END;
-CREATE TRIGGER IF NOT EXISTS wake_source_deleted_v1 AFTER DELETE ON events BEGIN
+END",
+    "CREATE TRIGGER wake_source_deleted_v1 AFTER DELETE ON events BEGIN
  UPDATE wake_subscriptions_v1 SET valid=0
  WHERE json_extract(registration,'$.subscription.task.task_run_id')=OLD.run_id;
-END;
-CREATE TRIGGER IF NOT EXISTS wake_source_inserted_v1 BEFORE INSERT ON events BEGIN
+END",
+    "CREATE TRIGGER wake_source_inserted_v1 BEFORE INSERT ON events BEGIN
  UPDATE wake_subscriptions_v1 SET valid=0
  WHERE json_extract(registration,'$.subscription.task.task_run_id')=NEW.run_id
  AND EXISTS(SELECT 1 FROM events WHERE run_id=NEW.run_id AND sequence=NEW.sequence);
-END;";
+END",
+];
 
 fn owner(store: &EventStore) -> Result<String, StoreError> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};

@@ -193,7 +193,14 @@ impl std::error::Error for GitError {}
 /// attacker-chosen), so the defence is to never call a command that applies one. Enforced in
 /// [`Repo::run_raw`] so a future edit cannot reintroduce the hole by reaching for the obvious
 /// command.
-pub const SAFE_SUBCOMMANDS: &[&str] = &["ls-tree", "cat-file", "ls-files", "rev-parse", "rev-list"];
+pub const SAFE_SUBCOMMANDS: &[&str] = &[
+    "ls-tree",
+    "cat-file",
+    "ls-files",
+    "rev-parse",
+    "rev-list",
+    "show-ref",
+];
 
 /// The kernel-owned policy whose output M2.4 records with each Change Set.
 pub const RENAME_LIMIT: u32 = 1000;

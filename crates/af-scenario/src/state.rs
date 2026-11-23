@@ -690,6 +690,12 @@ impl Run {
                             "Action receipt has stale object identity",
                         )?;
                     }
+                    if grant.operation.backlog() {
+                        require(
+                            af_contracts::is_digest(&receipt.evidence),
+                            "Backlog action lacks a Project receipt identity",
+                        )?;
+                    }
                     if grant.operation == Operation::PrepareCandidateV1 {
                         super::workspace::validate_preparation(receipt, &inputs)?;
                     }

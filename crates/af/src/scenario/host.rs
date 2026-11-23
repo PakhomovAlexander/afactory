@@ -183,6 +183,25 @@ impl Host for AfHost {
         )))
     }
 
+    fn check_run_dispatch(&self, state: &Path, run: &af_scenario::state::Run) -> Result<()> {
+        super::backlog::check_dispatch(state, run)
+    }
+
+    fn run_backlog_action(
+        &self,
+        run: &af_scenario::state::Run,
+        dispatch: &af_scenario::state::Dispatch,
+        grant: &Grant,
+        cancellation: &AtomicBool,
+    ) -> Result<Option<String>> {
+        crate::task_commands::scenario_portable::run_backlog_action(
+            run,
+            dispatch,
+            grant,
+            cancellation,
+        )
+    }
+
     fn run_ci_diagnosis(
         &self,
         target: &TaskTarget,

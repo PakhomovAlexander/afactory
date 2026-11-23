@@ -1725,9 +1725,12 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
             (Some(&"doctor"), None) => af(&["doctor", "--help"]),
             (Some(&"help"), Some(topic)) => af(&["help", topic]),
             (Some(&"setup"), Some(verb)) => af(&["setup", verb, "--help"]),
+            (Some(&"backlog"), Some(verb)) => af(&["backlog", verb, "--help"]),
             (Some(&"schema"), Some(verb)) => af(&["schema", verb, "--help"]),
             (Some(&"review"), Some(verb)) => af(&["review", verb, "--help"]),
-            _ => panic!("docs/agents.md names `{span}`, which is not an af task command"),
+            _ => panic!(
+                "docs/agents.md names `{span}`, which is not a supported af command in this help check"
+            ),
         };
         assert!(help.status.success(), "`{span}`: {}", err(&help));
         for flag in words.iter().filter(|word| word.starts_with("--")) {
@@ -2381,10 +2384,59 @@ fn help_json_prints_the_generated_command_catalog() {
     }
     assert!(named("af task")["effects"].is_null());
     assert_eq!(named("af task")["runnable"], false);
+    let backlog = named("af ant backlog");
+    assert_eq!(
+        backlog["subcommands"],
+        serde_json::json!(["validate", "enroll", "show", "pause", "resume"])
+    );
+    assert!(!backlog["runnable"].as_bool().unwrap());
+    for (verb, writes, human) in [
+        ("validate", vec!["store"], serde_json::json!([])),
+        (
+            "enroll",
+            vec!["store", "machine"],
+            serde_json::json!([{
+                "need": "approval", "when": "exact revision confirmation with --confirm-pin"
+            }]),
+        ),
+        ("show", vec![], serde_json::json!([])),
+        ("pause", vec!["machine"], serde_json::json!([])),
+        ("resume", vec!["machine"], serde_json::json!([])),
+    ] {
+        let command = named(&format!("af ant backlog {verb}"));
+        let writes: Vec<_> = writes
+            .into_iter()
+            .map(|state| serde_json::json!({"state": state, "when": null}))
+            .collect();
+        assert_eq!(
+            command["effects"],
+            serde_json::json!({
+                "tokens": "free", "charges_when": null, "writes": writes, "human": human
+            }),
+            "{verb}"
+        );
+    }
+    for name in ["af ant tick", "af ant scheduler run"] {
+        assert!(
+            named(name)["effects"]["writes"]
+                .as_array()
+                .unwrap()
+                .contains(
+                    &serde_json::json!({"state": "machine", "when": "an enrolled Project backlog"})
+                )
+        );
+    }
     assert_eq!(named("af review plan")["effects"]["tokens"], "free");
     assert_eq!(
         named("af scenario performance-proof")["effects"],
         serde_json::json!({"tokens": "free", "charges_when": null, "writes": [], "human": []})
+    );
+    assert_eq!(
+        named("af scenario prepare")["effects"],
+        serde_json::json!({
+            "tokens": "free", "charges_when": null,
+            "writes": [{"state": "store", "when": null}], "human": []
+        })
     );
     assert_eq!(
         named("af task start")["effects"]["charges_when"],

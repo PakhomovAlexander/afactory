@@ -112,6 +112,9 @@ const CODEX_MODELS: When = Some("a Codex Provider");
 /// queue/session state is machine-local; any host inference uses the separate follow-up grant.
 const CODEX_WAKE: When = Some("an eligible Codex route under its owner follow-up grant");
 
+/// The scheduler advances the receiving Project's journal for an enrolled backlog.
+const RECURRING_BACKLOG: When = Some("an enrolled Project backlog");
+
 /// Every runnable command and what it may do, by the command as typed. A runnable command is a
 /// visible one without subcommands, or a namespace that also runs on its own (`af`, `af review`,
 /// `af storage`).
@@ -270,6 +273,7 @@ pub(crate) const EFFECTS: &[(&str, Effects)] = &[
     ("af scenario roadmap list", READS),
     ("af scenario validate", READS),
     ("af scenario template-pin", writes(&[(Store, None)])),
+    ("af scenario prepare", writes(&[(Store, None)])),
     ("af scenario evidence-source", READS),
     ("af scenario performance-proof", READS),
     ("af scenario implementation-proof", READS),
@@ -328,6 +332,20 @@ pub(crate) const EFFECTS: &[(&str, Effects)] = &[
     ("af ant add", writes(&[(Store, None)])),
     ("af ant show", READS),
     ("af ant output", writes(&[(Files, Some("--output"))])),
+    ("af ant backlog validate", writes(&[(Store, None)])),
+    (
+        "af ant backlog enroll",
+        Effects {
+            human: &[(
+                Approval,
+                Some("exact revision confirmation with --confirm-pin"),
+            )],
+            ..writes(&[(Store, None), (Machine, None)])
+        },
+    ),
+    ("af ant backlog show", READS),
+    ("af ant backlog pause", writes(&[(Machine, None)])),
+    ("af ant backlog resume", writes(&[(Machine, None)])),
     ("af ant scheduler status", READS),
     ("af ant scheduler stop", writes(&[(Store, None)])),
     (
@@ -336,6 +354,7 @@ pub(crate) const EFFECTS: &[(&str, Effects)] = &[
             tokens: Tokens::Charges(None),
             writes: &[
                 (Store, None),
+                (Machine, RECURRING_BACKLOG),
                 (Files, Some("authorized file action")),
                 (Remote, Some("authorized publication adapter")),
             ],
@@ -352,6 +371,7 @@ pub(crate) const EFFECTS: &[(&str, Effects)] = &[
             tokens: Tokens::Charges(None),
             writes: &[
                 (Store, None),
+                (Machine, RECURRING_BACKLOG),
                 (Files, Some("authorized file action")),
                 (Remote, Some("authorized publication adapter")),
             ],
@@ -401,6 +421,19 @@ pub(crate) const EFFECTS: &[(&str, Effects)] = &[
     ("af help", READS),
     ("af schema show", READS),
     ("af project show", READS),
+    ("af backlog accept", writes(&[(Machine, None)])),
+    ("af backlog ack", writes(&[(Machine, None)])),
+    ("af backlog batch audit", READS),
+    ("af backlog batch close", writes(&[(Machine, None)])),
+    ("af backlog batch reconsider", writes(&[(Machine, None)])),
+    ("af backlog batch settle", writes(&[(Machine, None)])),
+    ("af backlog batch tick", writes(&[(Machine, None)])),
+    ("af backlog export", READS),
+    ("af backlog outbox", READS),
+    ("af backlog record", writes(&[(Machine, None)])),
+    ("af backlog inbox", READS),
+    ("af backlog list", READS),
+    ("af backlog show", READS),
     ("af project workspaces", READS),
     ("af project survey", READS),
     ("af project refresh", writes(&[(Machine, None)])),

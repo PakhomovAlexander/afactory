@@ -60,6 +60,7 @@ pub(crate) fn validate_document(
             "Template must pin its pipeline, strategy, implementation verification and exact token limit".into(),
         );
     }
+    super::scenario_portable::bound_sources(file.requirements.as_ref())?;
     if let Some(value) = bindings {
         let _local: bindings::LocalBindings =
             serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
@@ -241,19 +242,30 @@ pub(crate) fn pin(
         .as_u64()
         .ok_or("Template must declare tokens")?;
     validate_document(&document, None, maximum)?;
-    let mut template = Template {
-        schema: "af/scenario-task-template@2".into(),
-        repo: crate::resolve_filesystem_path(&repo)?,
-        state: crate::resolve_filesystem_path(&state)?,
-        authority_commit: authority_commit.to_ascii_lowercase(),
-        repository_id: String::new(),
-        source_content_digest: String::new(),
-        authority_id: String::new(),
-        document,
-        bindings: None,
-        max_tokens: maximum,
-    };
-    let (_, state) = state_path(&template.repo, Some(&template.state))?;
+    pin_with(repo, state, authority_commit, |cas, manifest, delivery| {
+        let file: TaskFile = serde_json::from_value(document.clone()).map_err(|e| e.to_string())?;
+        let (authority, settings, compiler) =
+            capture_authority(cas, manifest, local, &file.kind, delivery)?;
+        selected_profile(&compiler, &settings, &file.kind, file.verification)?;
+        Ok((document, authority, settings, ()))
+    })
+    .map(|(template, ())| template)
+}
+
+pub(super) fn pin_with<T>(
+    repo: PathBuf,
+    state: PathBuf,
+    authority_commit: String,
+    load: impl FnOnce(
+        &Cas,
+        &Manifest,
+        af_pipeline_config::layout::UndeclaredAfPathsPolicy,
+    ) -> Result<(serde_json::Value, String, RunAuthority, T), String>,
+) -> Result<(Template, T), String> {
+    let repo_path = crate::resolve_filesystem_path(&repo)?;
+    let state_path_resolved = crate::resolve_filesystem_path(&state)?;
+    let authority_commit = authority_commit.to_ascii_lowercase();
+    let (_, state) = state_path(&repo_path, Some(&state_path_resolved))?;
     crate::storage::owned::prepare(&state, true)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let store = EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())?;
@@ -262,29 +274,36 @@ pub(crate) fn pin(
             &cas,
             || {
                 let home = tempfile::tempdir().map_err(|e| e.to_string())?;
-                let repo = Repo::open(&template.repo, home.path());
+                let repo = Repo::open(&repo_path, home.path());
                 let source = Capture::new(&repo, &cas)
-                    .committed(&template.authority_commit)
+                    .committed(&authority_commit)
                     .map_err(|e| e.to_string())?;
                 let delivery = captured_delivery_policy(&cas, &source.manifest)?;
-                let file: TaskFile =
-                    serde_json::from_value(template.document.clone()).map_err(|e| e.to_string())?;
-                let (authority, settings, compiler) =
-                    capture_authority(&cas, &source.manifest, local, &file.kind, delivery)?;
-                selected_profile(&compiler, &settings, &file.kind, file.verification)?;
+                let (document, authority_id, settings, extra) =
+                    load(&cas, &source.manifest, delivery)?;
+                let max_tokens = document["limits"]["tokens"]
+                    .as_u64()
+                    .ok_or("Template must declare tokens")?;
                 #[cfg(debug_assertions)]
                 runs::observation_barrier("template-captured")?;
-                // The process-owned CAS reservation excludes collection, including reused old
-                // package objects, without holding SQLite across Git, filesystem or compilation.
-                restore_compiler(&cas, &authority, &settings)?;
-                template.bindings = settings
+                restore_compiler(&cas, &authority_id, &settings)?;
+                let bindings = settings
                     .local_bindings_id
                     .as_ref()
                     .map(|id| cas.get_json(id).map_err(|e| e.to_string()))
                     .transpose()?;
-                template.authority_id = authority;
-                template.repository_id = source.repository_id;
-                template.source_content_digest = source.content_digest;
+                let template = Template {
+                    schema: "af/scenario-task-template@2".into(),
+                    repo: repo_path,
+                    state: state_path_resolved,
+                    authority_commit,
+                    repository_id: source.repository_id,
+                    source_content_digest: source.content_digest,
+                    authority_id,
+                    document,
+                    bindings,
+                    max_tokens,
+                };
                 template.validate(&crate::scenario::host::AfHost)?;
                 // A template pin is a durable non-Task root. Task collection traverses its native
                 // authority and package references even before the first Scenario Run exists.
@@ -305,12 +324,12 @@ pub(crate) fn pin(
                         json!({"artifact_id":template_artifact}),
                     )
                     .referencing(vec![template_artifact.clone()]),
-                    (template, template_artifact),
+                    (template, template_artifact, extra),
                 ))
             },
-            |store, (template, artifact)| validate_pin_event(store, template, artifact),
+            |store, (template, artifact, _)| validate_pin_event(store, template, artifact),
         )
-        .map(|(template, _)| template)
+        .map(|(template, _, extra)| (template, extra))
 }
 pub(crate) fn check_predecessor(
     template: &Template,

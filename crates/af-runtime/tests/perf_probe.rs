@@ -2041,8 +2041,8 @@ fn append_raw(scratch: &Path, kind: &str, payload: &str) {
     let run = af_store::store::task::task_run_id(authority::TASK_ID).unwrap();
     connection
         .execute(
-            "INSERT INTO events (run_id, sequence, event_id, type, occurred_at, artifact_refs, \
-             payload) SELECT ?1, MAX(sequence) + 1, 'evt-damage', ?2, \
+            "INSERT INTO events (envelope, run_id, sequence, event_id, type, occurred_at, artifact_refs, \
+             payload) SELECT 'review.kernel/RunEvent@4', ?1, MAX(sequence) + 1, 'evt-damage', ?2, \
              '2026-10-19T00:00:00Z', '[]', ?3 FROM events WHERE run_id = ?1",
             rusqlite::params![run, kind, payload],
         )

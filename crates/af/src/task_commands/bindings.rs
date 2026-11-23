@@ -18,7 +18,7 @@ pub(super) struct CapturedLocalBindings {
     pub files: BTreeMap<String, Vec<u8>>,
 }
 
-pub(super) fn read(path: &Path) -> Result<CapturedLocalBindings, String> {
+fn read_declaration(path: &Path) -> Result<LocalBindings, String> {
     let bytes = read_file(path, 1024 * 1024)?;
     let definition: LocalBindings = parse(path, &bytes)?;
     if definition.schema != "af.task-bindings/1"
@@ -38,6 +38,22 @@ pub(super) fn read(path: &Path) -> Result<CapturedLocalBindings, String> {
             "Local bindings require af.task-bindings/1 and unambiguous local/* packages".into(),
         );
     }
+    Ok(definition)
+}
+
+pub(super) fn read_provider_aliases(path: &Path) -> Result<CapturedLocalBindings, String> {
+    let definition = read_declaration(path)?;
+    if !definition.packages.is_empty() || !definition.slots.is_empty() {
+        return Err("Portable Scenario bindings can only supply Provider aliases".into());
+    }
+    Ok(CapturedLocalBindings {
+        definition,
+        files: BTreeMap::new(),
+    })
+}
+
+pub(super) fn read(path: &Path) -> Result<CapturedLocalBindings, String> {
+    let definition = read_declaration(path)?;
     let base = path.parent().unwrap_or(Path::new("."));
     let mut files = BTreeMap::new();
     let mut total = 0usize;

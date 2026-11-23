@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:backlog-signed-receipt:1",
+  "title": "Signed backlog authority receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "body",
+    "signature"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/backlog-signed-receipt@1"
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "project_id",
+        "authority_id",
+        "producer_id",
+        "report_id",
+        "report_digest",
+        "sequence"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af/backlog-authority-receipt@1"
+        },
+        "project_id": {
+          "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+        },
+        "authority_id": {
+          "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+        },
+        "producer_id": {
+          "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+        },
+        "report_id": {
+          "$ref": "urn:af:schema:backlog-record:2#/$defs/reportId"
+        },
+        "report_digest": {
+          "$ref": "urn:af:schema:backlog-record:2#/$defs/digest"
+        },
+        "sequence": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,19}$"
+        }
+      }
+    },
+    "signature": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    }
+  }
+}

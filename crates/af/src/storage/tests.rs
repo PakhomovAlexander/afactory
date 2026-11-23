@@ -210,8 +210,8 @@ fn unreadable_store(layout: &Layout, name: &str, old: Duration) -> PathBuf {
     let connection = rusqlite::Connection::open(path.join("events.sqlite")).unwrap();
     connection
         .execute(
-            "INSERT INTO events (run_id, sequence, event_id, type, occurred_at, artifact_refs, \
-             payload) VALUES ('task-x', 0, 'e-1', 'TaskFromTheFuture@9', '2026-01-01T00:00:00Z', \
+            "INSERT INTO events (envelope, run_id, sequence, event_id, type, occurred_at, artifact_refs, \
+             payload) VALUES ('review.kernel/RunEvent@4', 'task-x', 0, 'e-1', 'TaskFromTheFuture@9', '2026-01-01T00:00:00Z', \
              '[]', '{}')",
             [],
         )
@@ -2329,8 +2329,8 @@ fn a_project_store_another_release_wrote_survives_a_sweep_under_pressure() {
     let connection = rusqlite::Connection::open(store.join("events.sqlite")).unwrap();
     connection
         .execute(
-            "INSERT INTO events (run_id, sequence, event_id, type, occurred_at, artifact_refs, \
-             payload) VALUES ('project', 0, 'e-1', 'ProjectFromTheFuture@9', \
+            "INSERT INTO events (envelope, run_id, sequence, event_id, type, occurred_at, artifact_refs, \
+             payload) VALUES ('review.kernel/RunEvent@4', 'project', 0, 'e-1', 'ProjectFromTheFuture@9', \
              '2026-01-01T00:00:00Z', '[]', '{}')",
             [],
         )

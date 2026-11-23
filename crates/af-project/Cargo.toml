@@ -18,9 +18,11 @@ af-pipeline-config = { path = "../af-pipeline-config" }
 af-process = { path = "../af-process" }
 af-source-git = { path = "../af-source-git" }
 af-store = { path = "../af-store" }
+af-scenario = { path = "../af-scenario" }
 af-sandbox = { path = "../af-sandbox" }
 af-runtime = { path = "../af-runtime" }
 af-runner = { path = "../af-runner" }
+minisign = "0.10.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
 sha2 = "0.11.0"

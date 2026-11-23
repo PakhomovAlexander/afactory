@@ -1,0 +1,60 @@
+{
+  "schema": "af/backlog-scenario-artifact@1",
+  "definition": {
+    "id": "daily-backlog",
+    "step": "analyze-and-verify",
+    "result": "assessment",
+    "limits": {
+      "max_tokens": 150000,
+      "max_wall_ms": 1230000,
+      "max_dispatches": 5
+    },
+    "task": {
+      "kind": "daily-backlog",
+      "kind_package": "backlog/daily-kind",
+      "pipeline": "backlog/daily",
+      "goal": "Assess the exact frozen Project backlog batch against the committed source. Bind each decision to its frozen members, evidence IDs and the current source. Independently inspect the current behavior or capability gap and the proposed public fields.",
+      "limits": {
+        "tokens": 150000,
+        "max_attempts": 8,
+        "wall_ms": 1200000,
+        "verification": {
+          "tokens": 72768,
+          "attempts": 3,
+          "wall_ms": 605000
+        }
+      }
+    }
+  },
+  "inputs": {
+    "backlog-batch": "backlog_batch"
+  },
+  "packages": {
+    "backlog/daily": {
+      "digest": "sha256:370d9296e2628d9b5a56e3b6c88c89cdba4b31a4bd62ba5704f2edcd0354b86f",
+      "path": "task-packages/backlog/daily",
+      "version": "1.0.0"
+    },
+    "backlog/daily-author": {
+      "digest": "sha256:3e3c646ea28ba141ac0e307ea68275fd6187e425e536365c0a753b16ee627205",
+      "path": "task-packages/backlog/daily-author",
+      "version": "1.0.0"
+    },
+    "backlog/daily-kind": {
+      "digest": "sha256:b16a48593ed989e24fb0d756b9620d7d6bcb729a827db426b2c54ba5fd42e45b",
+      "path": "task-packages/backlog/daily-kind",
+      "version": "1.0.0"
+    },
+    "backlog/daily-verifier": {
+      "digest": "sha256:2039dc3c89ac6c2fdba8047ebc3425abb3b7775f06384f5f0127d64639662689",
+      "path": "task-packages/backlog/daily-verifier",
+      "version": "1.0.0"
+    }
+  },
+  "schemas": {
+    "assessment": {
+      "path": "assessment.schema.json",
+      "digest": "sha256:db88776b05544e611cd609234ed1ea8106b5913a7463348f0ec338f2420f2dfb"
+    }
+  }
+}

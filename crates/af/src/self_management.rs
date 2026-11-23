@@ -2144,6 +2144,12 @@ fn plan_invocation(argv: &[String]) -> bool {
         && argv.iter().skip(index + 1).any(|word| word == "plan")
 }
 
+// Backlog capture and inspection need only the current machine and local release bytes.
+fn backlog_invocation(argv: &[String]) -> bool {
+    argv.get(command_index(argv))
+        .is_some_and(|word| word == "backlog")
+}
+
 fn exempt_from_dispatch(argv: &[String]) -> bool {
     if browser_invocation(argv) {
         return true;
@@ -2381,6 +2387,9 @@ pub(crate) fn maybe_dispatch(argv: &[String]) {
                 let attempt = match policy {
                     Err(error) => Err(InstallError::Other(format!("self policy: {error}"))),
                     Ok(_) if offline() => Err(InstallError::Other(format!("{OFFLINE_ENV} is set"))),
+                    Ok(_) if backlog_invocation(argv) => Err(InstallError::Other(
+                        "`af backlog` uses only locally installed releases".to_string(),
+                    )),
                     Ok(_) if plan_invocation(argv) => Err(InstallError::Other(
                         "`af review plan` never installs a release".to_string(),
                     )),
@@ -2584,7 +2593,7 @@ static CHECK_SCHEDULED: AtomicBool = AtomicBool::new(false);
 /// browser),
 /// offline, under CI, with `update_check = false`, or with `auto_update = "never"`.
 fn update_policy(argv: &[String]) -> Option<(Paths, SelfPolicy)> {
-    if exempt_from_dispatch(argv) || offline() || ci() {
+    if exempt_from_dispatch(argv) || backlog_invocation(argv) || offline() || ci() {
         return None;
     }
     let paths = paths().ok()?;

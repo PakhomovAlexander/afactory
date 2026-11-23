@@ -282,7 +282,7 @@ bounded parents. Two polls must fit strictly inside every enclosing Scenario, in
 and publication-step bound; equality is refused. See the
 [preflight and schedule decision](adr/2026-11-17-retry-typed-startup-observations-within-enclosing-bounds.md).
 
-The Scenario journal is `af/scenario-store@17`; driver status is `af/scenario-driver@2`.
+The Scenario journal is `af/scenario-store@18`; driver status is `af/scenario-driver@2`.
 Terminal evidence is `af/scenario-task-outcome@2`, including native
 `execution_failed/kernel_execution` (Task exit 8). That failure never authorizes code repair
 or publication, even when candidate/check/findings evidence is present. Ordinary gate and review

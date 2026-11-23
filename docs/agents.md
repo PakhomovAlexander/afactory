@@ -78,6 +78,17 @@ that sandbox or approve the needed host permission, then retry the command. Rein
 does not grant a sandbox permission. `af doctor` shows the detected harness, sandbox and network
 context; these markers explain the environment but never prove that a Provider CLI is compatible.
 
+## Capture a defect or gap
+
+From the Project checkout, immediately record the observed fact with
+`af backlog record --report-id ID --title TITLE --observed FACT --json`. Choose a unique
+producer ID before capture. Attach private evidence with `--evidence-file`. If you lose
+the receipt, repeat the identical command from the same Workspace and source revision.
+Continue the current Task after local capture. In an isolated Worker tree, give the
+supervising developer the fact and bounded private evidence to record in the Project
+checkout. Classification, duplicate decisions and ticket publication happen separately.
+[Project backlog runbook](project-backlog.md)
+
 ## Learning the commands
 
 `af help --json` prints every command as one `af/command-catalog@1` document, generated from

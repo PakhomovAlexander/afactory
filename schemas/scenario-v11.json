@@ -168,7 +168,15 @@
         "nightly_build_v1",
         "nightly_compare_v1",
         "nightly_report_v1",
-        "publish_nightly_v1"
+        "publish_nightly_v1",
+        "backlog_settle_v1",
+        "backlog_dispatch_v1"
+      ]
+    },
+    "ExternalOperation": {
+      "allOf": [
+        { "$ref": "#/$defs/Operation" },
+        { "not": { "enum": ["backlog_settle_v1", "backlog_dispatch_v1"] } }
       ]
     },
     "ActionReceipt": {
@@ -1280,7 +1288,7 @@
         "operations": {
           "type": "array",
           "items": {
-            "$ref": "urn:af:schema:scenario:11#/$defs/Operation"
+            "$ref": "urn:af:schema:scenario:11#/$defs/ExternalOperation"
           },
           "minItems": 1,
           "uniqueItems": true
@@ -2471,7 +2479,7 @@
           "$ref": "urn:af:schema:scenario:11#/$defs/digest"
         },
         "operation": {
-          "$ref": "urn:af:schema:scenario:11#/$defs/Operation"
+          "$ref": "urn:af:schema:scenario:11#/$defs/ExternalOperation"
         },
         "destination": {
           "$ref": "urn:af:schema:scenario:11#/$defs/text"

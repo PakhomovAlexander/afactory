@@ -1,0 +1,543 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:backlog-record:2",
+  "title": "BacklogRecordStored@2 payload",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/report"
+    },
+    {
+      "$ref": "#/$defs/revision"
+    },
+    {
+      "$ref": "#/$defs/batch"
+    },
+    {
+      "$ref": "#/$defs/decision"
+    },
+    {
+      "$ref": "#/$defs/publication"
+    }
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "commit": {
+      "type": "string",
+      "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "reportId": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+    },
+    "decimal": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,19})$"
+    },
+    "title": {
+      "allOf": [
+        {
+          "type": "string",
+          "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f]*$",
+          "maxLength": 256
+        },
+        {
+          "type": "string",
+          "pattern": "\\S"
+        }
+      ],
+      "description": "Nonblank text, at most 256 UTF-8 bytes in AF."
+    },
+    "note": {
+      "allOf": [
+        {
+          "type": "string",
+          "pattern": "^[^\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f-\\x9f]*$",
+          "maxLength": 8192
+        },
+        {
+          "type": "string",
+          "pattern": "\\S"
+        }
+      ],
+      "description": "Nonblank text, at most 8192 UTF-8 bytes in AF."
+    },
+    "public": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "body"
+      ],
+      "properties": {
+        "title": {
+          "$ref": "#/$defs/title"
+        },
+        "body": {
+          "$ref": "#/$defs/note"
+        }
+      }
+    },
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "project_id",
+        "report_id",
+        "workspace_id",
+        "captured_unix_ms",
+        "title",
+        "observed",
+        "privacy",
+        "evidence"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af/BacklogReport@1"
+        },
+        "project_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "report_id": {
+          "$ref": "#/$defs/reportId"
+        },
+        "workspace_id": {
+          "type": "string",
+          "pattern": "^w-[0-9a-f]{16}$"
+        },
+        "captured_unix_ms": {
+          "$ref": "#/$defs/decimal"
+        },
+        "title": {
+          "$ref": "#/$defs/title"
+        },
+        "observed": {
+          "$ref": "#/$defs/note"
+        },
+        "repro": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/note"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "task_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/title"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/title"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_revision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/commit"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "privacy": {
+          "const": "private"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "content_id",
+              "media_type",
+              "text"
+            ],
+            "properties": {
+              "content_id": {
+                "$ref": "#/$defs/digest"
+              },
+              "media_type": {
+                "const": "text/plain"
+              },
+              "text": {
+                "allOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[^\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f-\\x9f]*$",
+                    "maxLength": 65536
+                  },
+                  {
+                    "type": "string",
+                    "pattern": "\\S"
+                  }
+                ],
+                "description": "Nonblank text, at most 65536 UTF-8 bytes in AF."
+              }
+            }
+          },
+          "maxItems": 8,
+          "description": "The total evidence is limited to 65536 UTF-8 bytes in AF."
+        }
+      }
+    },
+    "revision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "project_id",
+        "item_id",
+        "report_ids",
+        "claim",
+        "evidence_ids",
+        "source_revision",
+        "proposed"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af/BacklogItemRevision@1"
+        },
+        "project_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "item_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "report_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reportId"
+          },
+          "minItems": 1
+        },
+        "claim": {
+          "$ref": "#/$defs/note"
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/digest"
+          }
+        },
+        "source_revision": {
+          "$ref": "#/$defs/commit"
+        },
+        "proposed": {
+          "$ref": "#/$defs/public"
+        }
+      }
+    },
+    "batch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "project_id",
+        "authority_id",
+        "first_sequence",
+        "last_sequence",
+        "report_ids",
+        "scenario_id",
+        "policy_id",
+        "settlement_id"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af/BacklogBatch@2"
+        },
+        "project_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "authority_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "first_sequence": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,19}$"
+        },
+        "last_sequence": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,19}$"
+        },
+        "report_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reportId"
+          }
+        },
+        "scenario_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "policy_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "settlement_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "report_ids": {
+                "maxItems": 0
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "settlement_id": {
+                "$ref": "#/$defs/digest"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "project_id",
+        "batch_id",
+        "revision_id",
+        "task_results",
+        "disposition",
+        "reason",
+        "evidence_ids",
+        "local_match"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af/BacklogDecision@2"
+        },
+        "project_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "batch_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "revision_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "task_results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/digest"
+          }
+        },
+        "independent_verification_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "disposition": {
+          "enum": [
+            "verified",
+            "already_tracked",
+            "needs_evidence",
+            "dismissed",
+            "held"
+          ]
+        },
+        "reason": {
+          "$ref": "#/$defs/note"
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/digest"
+          }
+        },
+        "local_match": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/localMatch"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "disposition": {
+                "const": "verified"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "independent_verification_id"
+            ],
+            "properties": {
+              "independent_verification_id": {
+                "$ref": "#/$defs/digest"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "disposition": {
+                "not": {
+                  "const": "already_tracked"
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "local_match": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "local_match": {
+                "type": "object"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "independent_verification_id"
+            ],
+            "properties": {
+              "independent_verification_id": {
+                "$ref": "#/$defs/digest"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "project_id",
+        "item_id",
+        "revision_id",
+        "decision_id",
+        "destination_id",
+        "intent_id",
+        "attempt_ids"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af/BacklogPublication@1"
+        },
+        "project_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "item_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "revision_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "decision_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "destination_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "intent_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "attempt_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/digest"
+          }
+        },
+        "remote_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/title"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "provider_state_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "receipt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "localMatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "item_id",
+        "revision_id"
+      ],
+      "properties": {
+        "item_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "revision_id": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    }
+  }
+}

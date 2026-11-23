@@ -1,6 +1,6 @@
 //! Survey collection (ADR-0159 clause 13): `SurveyCollected@1`, the tombstone a collected
 //! Survey leaves in its Project Store's log and that binds every identity field of its record,
-//! against its own schema, inside `run-event-v3.json` and through the Rust validator alike; and
+//! against its own schema, inside `run-event-v4.json` and through the Rust validator alike; and
 //! `af/TaskStorageSweep@2`, whose kind set Survey collection leaves unchanged, so a Survey's
 //! removal is counted and never listed; and `af/ProjectSurveysSettled@2`, the machine-local
 //! record of each collection's selected object and of the settled Surveys that collection keeps
@@ -22,7 +22,7 @@ const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
 
 fn event(payload: Value) -> Value {
     json!({
-        "schema": "review.kernel/RunEvent@3", "event_id": "0".repeat(26),
+        "schema": "review.kernel/RunEvent@4", "event_id": "0".repeat(26),
         "run_id": "survey-collection",
         "sequence": 0,
         "type": "SurveyCollected@1",
@@ -78,7 +78,7 @@ fn a_survey_tombstone_binds_the_records_identity_keeps_its_totals_and_never_a_pa
     );
     for accepted in [&value, &bare, &unreadable, &first] {
         assert_valid(SCHEMA, accepted);
-        assert_valid("run-event-v3.json", &event(accepted.clone()));
+        assert_valid("run-event-v4.json", &event(accepted.clone()));
         validate_event_payload(EventType::SurveyCollectedV1, accepted).unwrap();
     }
     assert_eq!(
@@ -165,7 +165,7 @@ fn a_survey_tombstone_binds_the_records_identity_keeps_its_totals_and_never_a_pa
         ),
     ] {
         assert_invalid(SCHEMA, &broken, why);
-        assert_invalid("run-event-v3.json", &event(broken.clone()), why);
+        assert_invalid("run-event-v4.json", &event(broken.clone()), why);
         assert!(
             validate_event_payload(EventType::SurveyCollectedV1, &broken).is_err(),
             "the Rust validator accepted it ({why})"

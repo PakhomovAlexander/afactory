@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:review-kernel:schema:run-event:3",
-  "title": "review.kernel/RunEvent@3 envelope",
+  "$id": "urn:review-kernel:schema:run-event:4",
+  "title": "review.kernel/RunEvent@4 envelope",
   "description": "The source of truth. One kernel sequencer allocates a monotonic per-run sequence while many reviewers execute concurrently. Events are never edited: a correction is a new compensating event. Large values live in content-addressed artifacts referenced by digest, never inline.",
   "type": "object",
   "additionalProperties": false,
@@ -60,11 +60,14 @@
         "WorkspaceDelivered@1",
         "SurveyRecorded@1",
         "SurveyFailed@1",
-        "SurveyCollected@1"
+        "SurveyCollected@1",
+        "BacklogRecordStored@2",
+        "BacklogBatchStored@6",
+        "BacklogIntakeStored@1"
       ]
     },
     "occurred_at": {
-      "description": "Wall-clock observation, for humans and forensics. NOT an ordering authority \u2014 `sequence` is. Replay must never depend on this field.",
+      "description": "Wall-clock observation, for humans and forensics. NOT an ordering authority — `sequence` is. Replay must never depend on this field.",
       "type": "string",
       "format": "date-time"
     },
@@ -97,10 +100,76 @@
       "type": "object"
     },
     "schema": {
-      "const": "review.kernel/RunEvent@3"
+      "const": "review.kernel/RunEvent@4"
     }
   },
   "allOf": [
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "BacklogRecordStored@2"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "urn:af:schema:backlog-record:2"
+          },
+          "artifact_refs": {
+            "maxItems": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "BacklogBatchStored@6"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "urn:af:schema:backlog-batch-record:6"
+          },
+          "artifact_refs": {
+            "maxItems": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "BacklogIntakeStored@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "urn:af:schema:backlog-intake-record:1"
+          },
+          "artifact_refs": {
+            "maxItems": 0
+          }
+        }
+      }
+    },
     {
       "if": {
         "properties": {

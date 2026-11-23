@@ -597,7 +597,16 @@ report view. The previous Campaign Ledger document is retired and refused.
 Campaign selectors and their inspection documents are retired. Review plan captures a native
 Task plan; --authority selects trusted authority independently of source/base selectors.
 
+Backlog record, inbox, list, show, outbox and ack: af/backlog@2.
+Backlog export: af/backlog-signed-submission@1. Backlog accept: af/backlog-signed-receipt@1.
+Portable backlog: af/backlog-scenario-artifact@1.
+Portable backlog inputs: af/backlog-batch-reference@1 and af/backlog-collected-batch@3.
+Independent backlog assessment: af/backlog-assessment@2.
+  The capture receipt separates local capture from designated authority receipt.
+  Inbox and show --private carry private Report data. List and ordinary show carry verified fields.
+
 Scenario and Ant documents (ADR-0274; `af help scenarios`):
+  scenario prepare: af/scenario-bundle@11 from af/scenario-artifact@1.
   scenario validate: af/scenario-pin@12; start, show, resume, decide, cancel: af/scenario-run@12.
   scenario decision-payload: af/scenario-decision@1; list: af/scenario-list@12.
   ant validate: af/ant-pin@13; add, enable, pause, disable: af/ant-state@14;

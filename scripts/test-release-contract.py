@@ -112,6 +112,13 @@ class HostedReleaseDependencies(unittest.TestCase):
         self.assertEqual(policy['pr_validation']['source_files']['.github/workflows/validate.yml'],
                          hashlib.sha256(workflow.strip().encode()).hexdigest())
 
+    def test_reviewed_release_validation_binds_the_current_source_files(self):
+        policy = json.loads((ROOT / 'scripts/release-policy.json').read_text())
+        for path, checksum in policy['pr_validation']['source_files'].items():
+            with self.subTest(path=path):
+                self.assertEqual(hashlib.sha256((ROOT / path).read_text().strip().encode()).hexdigest(),
+                                 checksum)
+
     def test_release_build_installs_private_account_dependencies_for_each_linux_target(self):
         import re
         workflow = (ROOT / '.github/workflows/release.yml').read_text()
@@ -256,7 +263,8 @@ class ReleaseContract(unittest.TestCase):
                     'ant': 12, 'ant-pin': 13, 'ant-tick': 13, 'ant-state': 14,
                     'ant-inspection': 9, 'ant-list': 14,
                     'scenario-policy': 8, 'implementation-startup-scope': 2, 'implementation-startup-failure': 1,
-                    'scenario-task-template': 2, 'scenario-template-pin': 2}
+                    'scenario-task-template': 2, 'scenario-template-pin': 2,
+                    'scenario-artifact': 1}
         for name, version in expected.items():
             relative = 'schemas/%s-v%s.json' % (name, version)
             with self.subTest(schema=relative):
@@ -284,13 +292,19 @@ class ReleaseContract(unittest.TestCase):
         self.assertIn('bindings', template['required'])
         self.assertEqual(PREFLIGHT.check(self.root), '0.15.1-rc.3')
 
-    def test_combined_wake_and_long_flow_contracts_are_bound_by_one_declaration(self):
+    def test_combined_contracts_are_bound_by_one_declaration(self):
         # Neither merge parent's capability pin covers the combined schema closure.
         policy = json.loads((ROOT / 'scripts/release-policy.json').read_text())
         expected = {
             'task-wake-route-v1.json': 'af/task-wake-route@1',
             'task-wake-status-v2.json': 'af/task-wake-status@2',
             'scenario-v11.json': 'af/scenario@11',
+            'scenario-artifact-v1.json': 'af/scenario-artifact@1',
+            'backlog-scenario-artifact-v1.json': 'af/backlog-scenario-artifact@1',
+            'ci-health-snapshot-v1.json': 'af.ci-health-snapshot/1',
+            'ci-health-notification-v5.json': 'af.ci-health-notification/5',
+            'scenario-ci-diagnosis-v2.json': 'af/scenario-ci-diagnosis@2',
+            'scenario-ci-notification-evidence-v2.json': 'af/scenario-ci-notification-evidence@2',
             'scenario-store-v18.json': 'af/scenario-store@18',
             'scenario-driver-v2.json': 'af/scenario-driver@2',
             'implementation-startup-scope-v2.json': 'af/implementation-startup-scope@2',
@@ -310,7 +324,9 @@ class ReleaseContract(unittest.TestCase):
             with self.subTest(schema=name):
                 self.assertEqual(document['properties']['schema']['const'], identity)
                 self.assertFalse(document['additionalProperties'])
-                if name in ('performance-executor-v5.json', 'performance-history-v2.json',
+                if name in ('scenario-artifact-v1.json', 'backlog-scenario-artifact-v1.json',
+                            'scenario-ci-diagnosis-v2.json', 'scenario-ci-notification-evidence-v2.json',
+                            'performance-executor-v5.json', 'performance-history-v2.json',
                             'performance-equivalence-v2.json', 'performance-schedule-v3.json'):
                     self.assertIn(identity, policy['required_features']['schemas/' + name])
                 # Even a semantically harmless byte change must invalidate the pin.
@@ -318,6 +334,20 @@ class ReleaseContract(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'stale|capabilities differ'):
                     PREFLIGHT.check(self.root)
             path.write_bytes(original)
+        self.assertEqual(PREFLIGHT.check(self.root), '0.15.1-rc.3')
+
+    def test_project_backlog_schema_bytes_are_bound_by_the_release_contract(self):
+        for name in ('backlog-v2.json', 'backlog-record-v2.json',
+                     'backlog-schedule-v3.json', 'backlog-batch-record-v6.json', 'run-event-v4.json'):
+            with self.subTest(schema=name):
+                path = self.root / 'schemas' / name
+                original = path.read_bytes()
+                path.write_bytes(original + b'\n')
+                try:
+                    with self.assertRaisesRegex(ValueError, 'capabilities differ'):
+                        PREFLIGHT.check(self.root)
+                finally:
+                    path.write_bytes(original)
         self.assertEqual(PREFLIGHT.check(self.root), '0.15.1-rc.3')
 
     def test_preparation_refuses_changed_capabilities(self):

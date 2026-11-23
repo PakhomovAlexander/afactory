@@ -249,6 +249,7 @@ pub struct ModelRunner {
     /// Every spelling of a granted value scrubbed from what is stored, longest first.
     redactions: Vec<String>,
     environment: Vec<Grant>,
+    isolate_ticket_auth: bool,
     exit_policy: ExitPolicy,
     /// What the `af.harness` span names: the GenAI provider and the bound model.
     harness: Option<(&'static str, Option<String>)>,
@@ -264,6 +265,7 @@ impl ModelRunner {
             grants: Vec::new(),
             redactions: Vec::new(),
             environment: Vec::new(),
+            isolate_ticket_auth: false,
             exit_policy: ExitPolicy::PreserveProcessGroup,
             harness: None,
             output_cap: MAX_CAPTURED_STREAM_BYTES,
@@ -298,6 +300,13 @@ impl ModelRunner {
     /// the kernel is about to seal; deadline and cancellation already kill the group.
     pub fn killing_process_group_on_exit(mut self) -> Self {
         self.exit_policy = ExitPolicy::KillDescendants;
+        self
+    }
+
+    /// Keep ambient GitHub login selectors and Git credential helpers out of a Worker.
+    /// The publisher credential itself belongs to a separate operating-system account.
+    pub fn isolating_ticket_auth(mut self) -> Self {
+        self.isolate_ticket_auth = true;
         self
     }
 
@@ -531,6 +540,33 @@ impl ModelRunner {
         }
         for grant in &self.grants {
             cmd.env(&grant.name, &grant.value);
+        }
+        if self.isolate_ticket_auth {
+            for name in [
+                "AF_BACKLOG_GITHUB_TOKEN",
+                "AF_BACKLOG_GITHUB_SCOPE",
+                "AF_BACKLOG_JIRA_CREDENTIAL",
+                "AF_BACKLOG_JIRA_SCOPE",
+                "GH_TOKEN",
+                "GITHUB_TOKEN",
+                "GH_ENTERPRISE_TOKEN",
+                "GITHUB_ENTERPRISE_TOKEN",
+                "GH_HOST",
+                "SSH_AUTH_SOCK",
+                "GIT_ASKPASS",
+                "SSH_ASKPASS",
+                "GIT_CONFIG_PARAMETERS",
+            ] {
+                cmd.env_remove(name);
+            }
+            cmd.env("GH_CONFIG_DIR", "/dev/null")
+                .env("GH_PROMPT_DISABLED", "1")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .env("GIT_CONFIG_COUNT", "1")
+                .env("GIT_CONFIG_KEY_0", "credential.helper")
+                .env("GIT_CONFIG_VALUE_0", "");
         }
         // The harness process is the Attempt's `af.harness` span (design §7.1, §7.2): the
         // program only, never its arguments; its stream-derived children are the tap's.

@@ -32,7 +32,7 @@
       "$ref": "urn:af:schema:scenario:11#/$defs/digest"
     },
     "operation": {
-      "$ref": "urn:af:schema:scenario:11#/$defs/Operation"
+      "$ref": "urn:af:schema:scenario:11#/$defs/ExternalOperation"
     },
     "destination": {
       "$ref": "urn:af:schema:scenario:11#/$defs/text"

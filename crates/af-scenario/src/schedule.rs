@@ -179,7 +179,7 @@ impl Zone {
             .find(|(at, _)| *at <= seconds)
             .map_or(self.initial_offset, |(_, o)| *o))
     }
-    fn local_day(&self, seconds: i64) -> Result<i64> {
+    pub fn local_day(&self, seconds: i64) -> Result<i64> {
         Ok((seconds + i64::from(self.offset(seconds)?)).div_euclid(DAY))
     }
     fn occurrence(&self, day: i64, hour: u8, minute: u8) -> Result<(i64, bool)> {
@@ -252,6 +252,35 @@ impl Schedule {
             Self::Interval { .. } => "UTC",
         }
     }
+    pub fn initial_index(&self, zone: &Zone) -> Result<i64> {
+        match self {
+            Self::Interval { .. } => Ok(0),
+            _ => zone.local_day((self.start() / 1000) as i64),
+        }
+    }
+
+    pub fn due_index(&self, zone: &Zone, now: u64, next: i64) -> Result<Option<i64>> {
+        require(
+            now <= MAX_TIME && self.valid(),
+            "Invalid Ant tick time or schedule",
+        )?;
+        match self {
+            Self::Daily { .. } => {
+                let day = zone.local_day((now / 1000) as i64)?;
+                require(
+                    day - next < 4096,
+                    "More than 4096 missed daily occurrences; tick through bounded intermediate times",
+                )?;
+                Ok(Some(day))
+            }
+            Self::Interval {
+                seconds,
+                start_unix_ms,
+            } => Ok(now
+                .checked_sub(*start_unix_ms)
+                .map(|elapsed| (u128::from(elapsed) / (u128::from(*seconds) * 1000)) as i64)),
+        }
+    }
     fn valid(&self) -> bool {
         self.start() > 0
             && self.start() <= MAX_TIME
@@ -262,7 +291,7 @@ impl Schedule {
                 }
             }
     }
-    fn due(&self, zone: &Zone, index: i64) -> Result<(u64, bool)> {
+    pub fn due(&self, zone: &Zone, index: i64) -> Result<(u64, bool)> {
         match self {
             Self::Daily { hour, minute, .. } => {
                 let (seconds, gap) = zone.occurrence(index, *hour, *minute)?;
@@ -294,6 +323,67 @@ pub struct Execution {
     pub rolling_tokens: u64,
     pub rolling_window_ms: u64,
 }
+impl Execution {
+    pub fn validate_schedule(&self, schedule: &Schedule) -> Result<()> {
+        self.per_run.validate()?;
+        require(
+            schedule.valid()
+                && self.lateness_ms < DAY as u64 * 1000
+                && self.rolling_window_ms > 0
+                && self.rolling_window_ms <= MAX_TIME
+                && self.rolling_tokens <= af_contracts::json::SAFE_INTEGER_MAX as u64
+                && self.per_run.max_tokens <= self.rolling_tokens,
+            "Invalid Ant schedule or spending limits",
+        )
+    }
+
+    pub fn in_rolling_window(&self, completed_at: u64, now: u64) -> bool {
+        completed_at > now.saturating_sub(self.rolling_window_ms)
+    }
+
+    pub fn admission_block(
+        &self,
+        gap: bool,
+        lateness: u64,
+        due_mode: AntMode,
+        stopped: Option<AntMode>,
+        active: bool,
+        used: u64,
+    ) -> Option<OccurrenceOutcome> {
+        if gap {
+            Some(OccurrenceOutcome::SkippedMissingTime)
+        } else if due_mode == AntMode::Paused {
+            Some(OccurrenceOutcome::SkippedPaused)
+        } else if due_mode == AntMode::Disabled {
+            Some(OccurrenceOutcome::SkippedDisabled)
+        } else if lateness > self.lateness_ms {
+            Some(OccurrenceOutcome::SkippedMissed)
+        } else if stopped == Some(AntMode::Paused) {
+            Some(OccurrenceOutcome::SkippedPaused)
+        } else if stopped == Some(AntMode::Disabled) {
+            Some(OccurrenceOutcome::SkippedDisabled)
+        } else if active {
+            Some(OccurrenceOutcome::SkippedBusy)
+        } else if used.saturating_add(self.per_run.max_tokens) > self.rolling_tokens {
+            Some(OccurrenceOutcome::SkippedBudget)
+        } else {
+            None
+        }
+    }
+}
+
+pub fn pin_revision(
+    definition: &impl Serialize,
+    scenario: &impl Serialize,
+    zone: &Zone,
+) -> Result<String> {
+    hash(&(definition, scenario, zone))
+}
+
+pub fn occurrence_id(id: &str, revision: &str, day: i64) -> Result<String> {
+    hash(&(id, revision, day))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Ant {
@@ -334,7 +424,6 @@ impl Ant {
         name(&self.owner)?;
         text(&self.notification)?;
         self.scenario.validate(host)?;
-        self.execution.per_run.validate()?;
         let def = &self.scenario.definitions[&self.scenario.root];
         require(
             self.execution.per_run.within(&def.limits),
@@ -351,15 +440,7 @@ impl Ant {
             self.inputs.values().all(Datum::scalar),
             "Ant cannot manufacture receipts",
         )?;
-        require(
-            self.schedule.valid()
-                && self.execution.lateness_ms < DAY as u64 * 1000
-                && self.execution.rolling_window_ms > 0
-                && self.execution.rolling_window_ms <= MAX_TIME
-                && self.execution.rolling_tokens <= af_contracts::json::SAFE_INTEGER_MAX as u64
-                && self.execution.per_run.max_tokens <= self.execution.rolling_tokens,
-            "Invalid Ant schedule or spending limits",
-        )
+        self.execution.validate_schedule(&self.schedule)
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -376,7 +457,7 @@ impl AntPin {
         definition.validate(host)?;
         let scenario = Pin::new(host, definition.scenario.clone(), policy)?;
         let zone = Zone::load(definition.schedule.timezone())?;
-        let revision = hash(&(&definition, &scenario, &zone))?;
+        let revision = pin_revision(&definition, &scenario, &zone)?;
         Ok(Self {
             schema: "af/ant-pin@13".into(),
             definition,
@@ -393,7 +474,7 @@ impl AntPin {
             self.schema == "af/ant-pin@13"
                 && self.definition.scenario == self.scenario.bundle
                 && self.definition.schedule.timezone() == self.zone.name
-                && self.revision == hash(&(&self.definition, &self.scenario, &self.zone))?,
+                && self.revision == pin_revision(&self.definition, &self.scenario, &self.zone)?,
             "Corrupt Ant pin",
         )
     }
@@ -448,10 +529,7 @@ pub struct AntState {
 }
 impl AntState {
     pub fn new(pin: AntPin, now: u64) -> Result<Self> {
-        let next_day = match &pin.definition.schedule {
-            Schedule::Interval { .. } => 0,
-            schedule => pin.zone.local_day((schedule.start() / 1000) as i64)?,
-        };
+        let next_day = pin.definition.schedule.initial_index(&pin.zone)?;
         Ok(Self {
             schema: "af/ant-state@14".into(),
             pin,
@@ -557,7 +635,7 @@ impl AntState {
         Ok((at <= MAX_TIME).then_some(at))
     }
     fn occurrence_id(&self, day: i64) -> Result<String> {
-        hash(&(&self.pin.definition.id, &self.pin.revision, day))
+        occurrence_id(&self.pin.definition.id, &self.pin.revision, day)
     }
     pub fn change(&mut self, state: AntMode, now: u64) -> Result<()> {
         require(
@@ -594,24 +672,10 @@ impl AntState {
             "Ant tick clock moved backwards or exceeds the calendar bound",
         )?;
         let schedule = &self.pin.definition.schedule;
-        require(schedule.valid(), "Invalid interval or daily schedule")?;
-        let day_now = match schedule {
-            Schedule::Daily { .. } => self.pin.zone.local_day((now / 1000) as i64)?,
-            Schedule::Interval {
-                seconds,
-                start_unix_ms,
-            } => {
-                if now < *start_unix_ms {
-                    self.last_tick_unix_ms = now;
-                    return Ok(Vec::new());
-                }
-                ((now - start_unix_ms) as u128 / (u128::from(*seconds) * 1000)) as i64
-            }
+        let Some(day_now) = schedule.due_index(&self.pin.zone, now, self.next_day)? else {
+            self.last_tick_unix_ms = now;
+            return Ok(Vec::new());
         };
-        require(
-            matches!(schedule, Schedule::Interval { .. }) || day_now - self.next_day < 4096,
-            "More than 4096 missed daily occurrences; tick through bounded intermediate times",
-        )?;
         let mut started = Vec::new();
         // Compact arbitrarily long interval downtime into one durable skipped range. Never
         // replay a burst, even if lateness policy would admit an older index.
@@ -663,10 +727,11 @@ impl AntState {
                                 if r.task_charges
                                     .values()
                                     .any(crate::state::TaskCharge::uncertain)
-                                    || r.updated_unix_ms
-                                        > now.saturating_sub(
-                                            self.pin.definition.execution.rolling_window_ms,
-                                        )
+                                    || self
+                                        .pin
+                                        .definition
+                                        .execution
+                                        .in_rolling_window(r.updated_unix_ms, now)
                                 {
                                     u64::try_from(r.accounted_tokens()?).unwrap_or(u64::MAX)
                                 } else {
@@ -692,24 +757,15 @@ impl AntState {
                 .take_while(|(t, _)| *t > at)
                 .find(|(_, mode)| *mode != AntMode::Enabled)
                 .map(|(_, mode)| *mode);
-            let outcome = if gap {
-                OccurrenceOutcome::SkippedMissingTime
-            } else if state == AntMode::Paused {
-                OccurrenceOutcome::SkippedPaused
-            } else if state == AntMode::Disabled {
-                OccurrenceOutcome::SkippedDisabled
-            } else if now - at > self.pin.definition.execution.lateness_ms {
-                OccurrenceOutcome::SkippedMissed
-            } else if stopped == Some(AntMode::Paused) {
-                OccurrenceOutcome::SkippedPaused
-            } else if stopped == Some(AntMode::Disabled) {
-                OccurrenceOutcome::SkippedDisabled
-            } else if active {
-                OccurrenceOutcome::SkippedBusy
-            } else if used.saturating_add(self.pin.definition.execution.per_run.max_tokens)
-                > self.pin.definition.execution.rolling_tokens
-            {
-                OccurrenceOutcome::SkippedBudget
+            let outcome = if let Some(block) = self.pin.definition.execution.admission_block(
+                gap,
+                now - at,
+                state,
+                stopped,
+                active,
+                used,
+            ) {
+                block
             } else {
                 let run_id = format!("ant-{}", id.strip_prefix("sha256:").unwrap());
                 require(

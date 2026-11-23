@@ -237,6 +237,56 @@ fn scenario_task_receipts_resolve_current_task_contracts_and_keep_closed_results
 }
 
 #[test]
+fn scenario_adapter_contracts_allow_ci_notification_and_keep_backlog_actions_builtin() {
+    let (_, mut policy) = publication();
+    let policy_schema = schema("scenario-policy-v8.json");
+    let request_schema = schema("scenario-adapter-request-v8.json");
+    let embedded_request_schema = schema("scenario-v11.json#/$defs/Request");
+    let grant_schema = schema("scenario-v11.json#/$defs/Grant");
+    let mut request = Request {
+        schema: "af/scenario-adapter-request@8".into(),
+        method: Method::Execute,
+        intent_id: digest(b"intent"),
+        input_digest: digest(b"inputs"),
+        operation: Operation::Notify,
+        destination: "fixture:repository".into(),
+        inputs: BTreeMap::new(),
+    };
+    for (operation, external) in [
+        (Operation::Notify, true),
+        (Operation::BacklogSettleV1, false),
+        (Operation::BacklogDispatchV1, false),
+    ] {
+        policy.adapters.get_mut("publisher").unwrap().operations = [operation].into();
+        request.operation = operation;
+        assert_eq!(policy.validate().is_ok(), external, "{operation:?}");
+        assert_eq!(
+            policy_schema.is_valid(&json!(policy)),
+            external,
+            "{operation:?}"
+        );
+        assert_eq!(
+            request_schema.is_valid(&json!(request)),
+            external,
+            "{operation:?}"
+        );
+        assert_eq!(
+            embedded_request_schema.is_valid(&json!(request)),
+            external,
+            "{operation:?}"
+        );
+        if !external {
+            let grant = Grant {
+                adapter: "builtin".into(),
+                operation,
+                destination: format!("local-backlog:{}", digest(b"project")),
+            };
+            assert!(grant_schema.is_valid(&json!(grant)), "{operation:?}");
+        }
+    }
+}
+
+#[test]
 fn contracts_roundtrip_schemas_and_old_versions_fail_closed() {
     let (bundle, policy) = simple();
     let pin = Pin::new(&TestHost::default(), bundle.clone(), policy.clone()).unwrap();

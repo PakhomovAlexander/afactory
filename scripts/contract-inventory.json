@@ -2,6 +2,16 @@
   "schema": "af.contract-inventory/1",
   "families": [
     {
+      "name": "backlog-open-issues",
+      "reader_writer": [
+        "scripts/backlog-open-issues.py",
+        "crates/af-contracts/src/backlog/batch/provider_index.rs"
+      ],
+      "semantic_owner": ["scripts/backlog-open-issues.py"],
+      "tests": ["scripts/test-backlog-open-issues.py"],
+      "schemas": ["schemas/backlog-open-issues-v1.json"]
+    },
+    {
       "name": "laboratory",
       "reader_writer": [
         "scripts/performance/perflab/contracts.py"
@@ -124,11 +134,65 @@
       ]
     },
     {
+      "name": "project-backlog",
+      "reader_writer": [
+        "crates/af/src/backlog.rs",
+        "crates/af/src/scenario/backlog.rs",
+        "crates/af-contracts/src/backlog.rs",
+        "crates/af-contracts/src/backlog/batch.rs",
+        "crates/af-contracts/src/backlog/batch/assessment.rs",
+        "crates/af-contracts/src/backlog/intake.rs",
+        "crates/af/src/task_commands/scenario_portable/backlog.rs",
+        "crates/af-project/src/backlog/batch/native/github.rs",
+        "crates/af-project/src/backlog/batch/native/destinations.rs",
+        "crates/af-project/src/backlog/batch/native/destinations/jira.rs",
+        "crates/af-project/src/backlog/batch/native/destinations/markdown.rs",
+        "crates/af-project/src/backlog/batch/provider_index.rs"
+      ],
+      "semantic_owner": [
+        "crates/af-project/src/backlog.rs",
+        "crates/af-project/src/backlog/batch.rs",
+        "crates/af-project/src/backlog/batch/native.rs",
+        "scripts/project-backlog-jira.py",
+        "crates/af-project/src/backlog/intake.rs",
+        "crates/af-scenario/src/schedule.rs",
+        "crates/af-runtime/src/task/report_domain.rs"
+      ],
+      "tests": [
+        "crates/af-contracts/tests/schema_parity/backlog.rs",
+        "crates/af/tests/it/project.rs",
+        "crates/af/tests/it/scenario/portable.rs",
+        "scripts/test-project-backlog-jira.py"
+      ],
+      "schemas": [
+        "schemas/backlog-assessment-v2.json",
+        "fixtures/project-backlog/assessment.schema.json",
+        "schemas/backlog-batch-audit-v3.json",
+        "schemas/backlog-batch-policy-v2.json",
+        "schemas/backlog-batch-record-v6.json",
+        "schemas/backlog-schedule-v3.json",
+        "schemas/backlog-batch-reference-v1.json",
+        "schemas/backlog-collected-batch-v3.json",
+        "schemas/backlog-github-state-v1.json",
+        "schemas/backlog-configured-state-v2.json",
+        "schemas/backlog-jira-destination-v1.json",
+        "schemas/backlog-markdown-destination-v2.json",
+        "schemas/backlog-provider-index-pin-v1.json",
+        "schemas/backlog-intake-policy-v1.json",
+        "schemas/backlog-intake-record-v1.json",
+        "schemas/backlog-record-v2.json",
+        "schemas/backlog-signed-receipt-v1.json",
+        "schemas/backlog-signed-submission-v1.json",
+        "schemas/backlog-v2.json"
+      ]
+    },
+    {
       "name": "kernel-current-contracts",
       "reader_writer": [
         "crates/af-contracts/src/lib.rs",
         "crates/af-store/src/store/task.rs",
         "crates/af-scenario/src/lib.rs",
+        "crates/af/src/task_commands/scenario_portable.rs",
         "scripts/scenario-git-workspace.py",
         "scripts/scenario-github-adapter.py",
         "crates/af/src/task_commands/candidate/implementation.rs",
@@ -142,6 +206,7 @@
         "scripts/scenario-git-workspace.py",
         "scripts/scenario-github-adapter.py",
         "crates/af-scenario/src/workspace.rs",
+        "crates/af/src/task_commands/scenario_portable.rs",
         "scripts/benchmark-workspace-fixtures.py"
       ],
       "tests": [
@@ -150,6 +215,7 @@
         "crates/af-scenario/src/tests.rs",
         "crates/af-scenario/src/implementation.rs",
         "crates/af-scenario/src/driver.rs",
+        "crates/af/tests/it/scenario/portable.rs",
         "scripts/test-scenario-git-workspace.py",
         "scripts/test-scenario-github-adapter.py",
         "scripts/test-workspace-fixtures.py"
@@ -211,6 +277,7 @@
         "schemas/issue-triage-hold-v1.json",
         "schemas/issue-triage-merged-v1.json",
         "schemas/issue-triage-runner-v3.json",
+        "fixtures/issue-triage/portable-issue-triage-v1.json",
         "schemas/issue-triage-v1.json",
         "schemas/issue-workflow-pilot-v1.json",
         "schemas/measurement-comparison-v1.json",
@@ -281,9 +348,11 @@
         "schemas/reviewed-implementation-v1.json",
         "schemas/reviewer-result-v2-conformance.json",
         "schemas/reviewer-result-v2.json",
-        "schemas/run-event-v3.json",
+        "schemas/run-event-v4.json",
         "schemas/scenario-adapter-request-v8.json",
         "schemas/scenario-adapter-response-v3.json",
+        "schemas/scenario-artifact-v1.json",
+        "schemas/backlog-scenario-artifact-v1.json",
         "schemas/scenario-bundle-v11.json",
         "schemas/scenario-decision-v1.json",
         "schemas/scenario-driver-v2.json",
@@ -410,9 +479,13 @@
         "fixtures/custom-tasks/triage/worker/input.schema.json",
         "fixtures/custom-tasks/triage/worker/outputs/triage.schema.json",
         "fixtures/issue-triage/task-packages/backlog/triage-author/input.schema.json",
+        "fixtures/project-backlog/task-packages/backlog/daily-author/input.schema.json",
         "fixtures/issue-triage/task-packages/backlog/triage-author/outputs/draft.schema.json",
+        "fixtures/project-backlog/task-packages/backlog/daily-author/outputs/draft.schema.json",
         "fixtures/issue-triage/task-packages/backlog/triage-verifier/input.schema.json",
+        "fixtures/project-backlog/task-packages/backlog/daily-verifier/input.schema.json",
         "fixtures/issue-triage/task-packages/backlog/triage-verifier/outputs/result.schema.json",
+        "fixtures/project-backlog/task-packages/backlog/daily-verifier/outputs/result.schema.json",
         "fixtures/issue-workflows/task-packages/backlog/triage-author/input.schema.json",
         "fixtures/issue-workflows/task-packages/backlog/triage-author/outputs/draft.schema.json",
         "fixtures/issue-workflows/task-packages/backlog/triage-verifier/input.schema.json",
@@ -1042,9 +1115,33 @@
       "excluded_outputs": {}
     },
     {
+      "worker": "fixtures/project-backlog/task-packages/backlog/daily-author/worker.toml",
+      "outputs": {
+        "draft": "fixtures/project-backlog/task-packages/backlog/daily-author/outputs/draft.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "draft": "schemas/document-draft-v3.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
       "worker": "fixtures/issue-triage/task-packages/backlog/triage-verifier/worker.toml",
       "outputs": {
         "result": "fixtures/issue-triage/task-packages/backlog/triage-verifier/outputs/result.schema.json"
+      },
+      "strict": true,
+      "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
+      "canonical": {
+        "result": "schemas/report-evaluation-v1.json"
+      },
+      "excluded_outputs": {}
+    },
+    {
+      "worker": "fixtures/project-backlog/task-packages/backlog/daily-verifier/worker.toml",
+      "outputs": {
+        "result": "fixtures/project-backlog/task-packages/backlog/daily-verifier/outputs/result.schema.json"
       },
       "strict": true,
       "reason": "all output ports have a bounded strict projection; full constraints stay kernel-owned",
