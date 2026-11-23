@@ -381,6 +381,10 @@ evidence ends with where it came from, `evidence: report` or `evidence: output`
 rows carry the same `gate` summary, and after a failed gate `af task run` names the failing
 tests, at most 20, then `… and N more; af task show ID --checks`.
 
+A local check with a run recorded for that receipt shows `elapsed timing unavailable` when it
+has no recorded duration, even if its account is absent or refused. A check with no evidence
+that it started shows `never started`.
+
 A check the kernel stopped at its wall (its per-check wall, its check Attempt's wall or a warm
 phase deadline, whichever bound its process) is recorded as such in the
 [`af/TaskCheckReceipt@2`](../schemas/task-check-receipt-v2.json) under `stopped`: the cause
@@ -392,8 +396,9 @@ detail) and the run's stderr each say `check kernel stopped at its 90 min wall a
 what to do: make the check faster, or raise its wall in `.af/code-policy.toml`
 (`check_wall_ms`, `check_process_wall_ms` or `[warm] build_wall_ms`) and plan the Task again;
 `af task run ID --retry-gate` runs it again under the same wall. The wall is what the check's
-process ran under, so it is what was left of the check's wall after preparation. Only a check that
-did not start still says `never started`.
+process ran under, so it is what was left of the check's wall after preparation. A check that
+did not start says `never started`. When a local check has execution evidence and no recorded
+duration, `af task show --checks` says `elapsed timing unavailable`.
 
 A Task's wall clock starts at its first `af task run`, not when it is planned: the preview says
 `deadline starts when you run`, the Store moves the recorded deadline by the time the Task waited
