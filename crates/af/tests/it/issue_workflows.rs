@@ -8,6 +8,55 @@ fn workspace() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
 }
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ModelProfile {
+    pub(crate) sol: String,
+    pub(crate) astra: String,
+}
+
+// Expected pins are fixture data independent of the installed and staged Worker manifests.
+pub(crate) fn model_profile() -> ModelProfile {
+    let profile: ModelProfile = serde_json::from_slice(
+        &std::fs::read(workspace().join("fixtures/issue-workflows/model-profile.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        matches!(
+            (profile.sol.as_str(), profile.astra.as_str()),
+            ("gpt-6.1-sol", "gpt-6-astra") | ("gpt-6.2-sol", "gpt-6.2-astra")
+        ),
+        "unrecognized issue-workflow model profile"
+    );
+    profile
+}
+
+pub(crate) fn install_profile_codex(bin: &Path, auth: &Path, profile: &ModelProfile) {
+    fake_models::install("codex", bin, auth);
+    let catalog = auth.join("codex-model-list.json");
+    let mut document: Value = serde_json::from_slice(&std::fs::read(&catalog).unwrap()).unwrap();
+    let rows = document["data"].as_array_mut().unwrap();
+    // Extend only this test's private fake. These entries simulate the app-server protocol.
+    for (original, selected) in [
+        ("gpt-6.1-sol", &profile.sol),
+        ("gpt-6-astra", &profile.astra),
+    ] {
+        if original != selected {
+            let mut row = rows
+                .iter()
+                .find(|row| row["id"] == original)
+                .unwrap()
+                .clone();
+            row["id"] = json!(selected);
+            row["model"] = json!(selected);
+            row["displayName"] = json!(selected);
+            row["isDefault"] = json!(false);
+            rows.push(row);
+        }
+    }
+    std::fs::write(catalog, serde_json::to_vec(&document).unwrap()).unwrap();
+}
 fn git(repo: &Path, args: &[&str]) {
     let o = std::process::Command::new("git")
         .current_dir(repo)
@@ -102,6 +151,8 @@ fn private_catalog_copy_is_writable_and_preserves_read_only_source() {
 
 #[test]
 fn catalog_contracts_and_all_nine_native_plans_preserve_roles_gates_and_stage_dataflow() {
+    let profile = model_profile();
+    let (sol, astra) = (profile.sol.as_str(), profile.astra.as_str());
     let temp = tempfile::tempdir().unwrap();
     let (repo, state) = crate::task_report::starter(temp.path());
     let original = std::process::Command::new("git")
@@ -158,7 +209,7 @@ fn catalog_contracts_and_all_nine_native_plans_preserve_roles_gates_and_stage_da
     std::fs::write(&sdk, sdk_text).unwrap();
     let bin = PathBuf::from(&path);
     let auth = home.join("codex");
-    fake_models::install("codex", &bin, &auth);
+    install_profile_codex(&bin, &auth, &profile);
     for (name, source) in [("env", "/usr/bin/env"), ("bash", "/bin/bash")] {
         std::os::unix::fs::symlink(source, bin.join(name)).unwrap();
     }
@@ -299,12 +350,12 @@ fn catalog_contracts_and_all_nine_native_plans_preserve_roles_gates_and_stage_da
             let role = slot.rsplit('.').next().unwrap();
             let (model, effort) = match role {
                 "implementer" if light && name.contains("kimi") => ("k3.1-pro", "high"),
-                "implementer" => ("gpt-6.1-sol", "medium"),
+                "implementer" => (sol, "medium"),
                 "bugs" | "correctness" => ("gpt-6.1-terra", "high"),
-                "evaluator" if light && name.contains("kimi") => ("gpt-6.1-sol", "medium"),
-                "evaluator" | "measurement_evaluator" => ("gpt-6-astra", "medium"),
-                "author" if name.contains("design") => ("gpt-6-astra", "medium"),
-                "author" => ("gpt-6.1-sol", "high"),
+                "evaluator" if light && name.contains("kimi") => (sol, "medium"),
+                "evaluator" | "measurement_evaluator" => (astra, "medium"),
+                "author" if name.contains("design") => (astra, "medium"),
+                "author" => (sol, "high"),
                 "verifier" => ("gpt-6.1-terra", "high"),
                 _ => panic!("unexpected role {slot}"),
             };
@@ -712,10 +763,10 @@ else:
                 final_inputs["document"]
             );
             for (role, model, effort) in [
-                ("author", "gpt-6-astra", "medium"),
+                ("author", astra, "medium"),
                 ("terra_challenger", "gpt-6.1-terra", "high"),
                 ("kimi_challenger", "k3.1-pro", "high"),
-                ("verifier", "gpt-6.1-sol", "medium"),
+                ("verifier", sol, "medium"),
             ] {
                 let execution = &v["plan"]["bindings"][format!("root.slots.{role}")]["execution"];
                 assert_eq!(execution["model"], model);
@@ -727,7 +778,7 @@ else:
             for (role, model, effort) in [
                 ("bugs", "gpt-6.1-terra", "high"),
                 ("correctness", "gpt-6.1-terra", "high"),
-                ("evaluator", "gpt-6-astra", "medium"),
+                ("evaluator", astra, "medium"),
             ] {
                 let slot = format!("root.slots.{role}");
                 assert_eq!(
@@ -1573,7 +1624,8 @@ fn launcher_freshness_uses_native_catalog_and_refuses_stale_or_unavailable_witho
     let home = temp.path().join("home");
     let auth = home.join("codex");
     let bin = temp.path().join("bin");
-    fake_models::install("codex", &bin, &auth);
+    let profile = model_profile();
+    install_profile_codex(&bin, &auth, &profile);
     let providers = home.join("providers.toml");
     std::fs::write(
         &providers,
@@ -1587,7 +1639,7 @@ fn launcher_freshness_uses_native_catalog_and_refuses_stale_or_unavailable_witho
             .env("HOME", &home).env("XDG_CONFIG_HOME", home.join("config"))
             .env("XDG_STATE_HOME", home.join("state")).env("XDG_CACHE_HOME", home.join("cache"))
             .env("AF_PROVIDERS_FILE", &providers).env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
-            .args(["-I", "-c", "import importlib.util,sys; s=importlib.util.spec_from_file_location('w',sys.argv[1]); w=importlib.util.module_from_spec(s); s.loader.exec_module(w); w.check_latest_models(sys.argv[2], 'bugfix/default-codex')"])
+            .args(["-I", "-B", "-c", "import importlib.util,sys; s=importlib.util.spec_from_file_location('w',sys.argv[1]); w=importlib.util.module_from_spec(s); s.loader.exec_module(w); w.check_latest_models(sys.argv[2], 'bugfix/default-codex')"])
             .arg(workspace().join("scripts/issue-workflows.py")).arg(common::af().get_program())
             .output().unwrap()
     };
@@ -1596,15 +1648,20 @@ fn launcher_freshness_uses_native_catalog_and_refuses_stale_or_unavailable_witho
     let catalog = auth.join("codex-model-list.json");
     let original = std::fs::read(&catalog).unwrap();
     let mut changed: Value = serde_json::from_slice(&original).unwrap();
-    let mut newer = changed["data"][0].clone();
-    newer["id"] = json!("gpt-6.2-sol");
-    newer["model"] = json!("gpt-6.2-sol");
-    changed["data"].as_array_mut().unwrap().push(newer);
+    let rows = changed["data"].as_array_mut().unwrap();
+    let mut newer = rows
+        .iter()
+        .find(|row| row["id"] == profile.sol)
+        .unwrap()
+        .clone();
+    newer["id"] = json!("gpt-6.10-sol");
+    newer["model"] = json!("gpt-6.10-sol");
+    rows.push(newer);
     std::fs::write(&catalog, serde_json::to_vec(&changed).unwrap()).unwrap();
     let stale = probe();
     assert!(!stale.status.success());
     assert!(
-        text(&stale).contains("superseded or unavailable active model pin"),
+        text(&stale).contains("superseded or unavailable active model pin: issue-internal/implementer; latest gpt-6.10-sol"),
         "{}",
         text(&stale)
     );
