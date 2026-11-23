@@ -61,7 +61,7 @@ FIXTURES = (
     "schemas/implementation-evaluation-input-v1.json",
 )
 SUITE_FILES = (
-    "load_cases.py", "load_worker.py", "worker_failover.py", "check_trace.py", "compare.py", "native_smoke.py", "native_recovery.py",
+    "load_suite.py", "control.py", "load_identity.py", "load_cases.py", "load_worker.py", "recovery_evidence.py", "worker_failover.py", "check_trace.py", "compare.py", "native_smoke.py", "native_recovery.py",
     "native_budget.py", "native_child_cancel.py", "native_writer_loss.py", "native_admission.py",
     "native_artifact_fault.py", "native_gate_repair.py", "native_worker_capabilities.py",
     "check_adapter.py", "check_service.py", "codex_fixture.py", "mock_provider.py",

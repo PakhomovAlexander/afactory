@@ -22,6 +22,11 @@ import time
 from native_smoke import literal, prepare, require_linux, write_json
 
 
+def check_identity(subject, revision):
+    """Match check_adapter.py's HTTP resource encoding (including JSON spaces)."""
+    return sha256(json.dumps([subject, revision]).encode()).hexdigest()
+
+
 @contextmanager
 def process(argv, log, **options):
     with log.open("w+") as stream:
@@ -232,7 +237,7 @@ def run(binary, source, result, fault):
     intent_before = steps_before[1]["intents"][0]
     intent_after = steps_after[1]["intents"][0]
     candidate = steps_after[0]["outputs"]["result"]["value"]["result"]["outputs"]["snapshot"]
-    identity = sha256(json.dumps(["pagination", candidate["snapshot_id"]]).encode()).hexdigest()
+    identity = check_identity("pagination", candidate["snapshot_id"])
     statuses = Counter(f"{call['action']}:{call['status']}" for call in history["calls"])
     requirements = {
         "scheduler_replaced": first.pid != second.pid,

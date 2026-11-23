@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 import os
+import platform
 from pathlib import Path
 import re
 import secrets
@@ -14,12 +15,16 @@ import time
 
 import compare
 from control import Control, HTTPError, save
-from load_cases import CASES, DIGEST_PATTERN, FIXTURES, MARKER, SUITE_FILES, digest, files_identity, load_profiles
+from load_cases import CASES, DIGEST_PATTERN, FIXTURES, MARKER, SUITE_FILES, digest, file_sha, files_identity, load_profiles
+
+from load_identity import complete_identity
 
 SUITE = Path(__file__).resolve().parent
 CHECKOUT = SUITE.parents[1]
 BINDINGS_SCHEMA = "af-durability/load-workers@1"
-RUN_SCHEMA = "af-durability/load-report@1"
+RUN_SCHEMA = "af-durability/load-report@2"
+LEGACY_TRIAL_SCHEMA = "af-durability/load-trial@2"
+TRIAL_SCHEMA = "af-durability/load-trial@3"
 WORKER_PATH = r"/[A-Za-z0-9_./-]+"
 STATUS = {"pass": "pass", "fail": "engine-failure", "invalid": "invalid/harness",
           "unsupported": "unsupported"}
@@ -164,6 +169,8 @@ def preflight(control, directory, run_id, bindings, rows, slots):
             if not ok or "preflight" not in events:
                 raise ValueError(events.get("error", {}).get("reason", "preflight produced no valid receipt"))
             receipt = events["preflight"]
+            if receipt.get("schema") != "af-durability/load-preflight@2":
+                raise ValueError("expected af-durability/load-preflight@2")
             if any(receipt["pins"][key] != binding[key] for key in receipt["pins"]):
                 raise ValueError("preflight returned different workload pins")
             return receipt
@@ -287,8 +294,15 @@ def normalized(directory, row, result, profile, binding, placement):
     case = CASES[row["case"]]
     outputs = result.get("catalog_fixtures")
     workload = {"source": binding["source_workload"], "suite": binding["suite_workload"],
-                "catalog_fixtures": outputs}
-    identities_complete = ("worker_environment" in placement
+                "catalog_fixtures": outputs, "producer": placement.get("producer_sha256")}
+    environments = placement.get("worker_environment", {})
+    identities_complete = (row["worker"] in environments
+                           and set(environments) == set(placement.get("workers", []))
+                           and all(complete_identity(env.get("compute_identity"))
+                                   for env in environments.values())
+                           and complete_identity(result.get("compute_identity"))
+                           and result["compute_identity"] == environments[row["worker"]]["compute_identity"]
+                           and bool(re.fullmatch(DIGEST_PATTERN, placement.get("producer_sha256") or ""))
                            and (case.script != "budget" or bool(outputs and all(outputs))))
     paths = [str(directory / name) for name in ("schedule.json", "observed-placement.json", "report.json")]
     if (directory / "preflight.json").exists():
@@ -298,16 +312,21 @@ def normalized(directory, row, result, profile, binding, placement):
         paths.append(str(broker))
     paths.extend(result[name] for name in ("evidence_dir", "native_dir") if result.get(name))
     return {
-        "schema": compare.SCHEMA, "case": row["case"], "profile": profile,
+        "schema": TRIAL_SCHEMA, "case": row["case"], "profile": profile,
         "engine": {"name": "af-native", "build": binding["binary_sha256"]},
         "inputs": {"workload_sha256": digest(workload), "fault_sha256": digest(
             {"case": row["case"], "arguments": case.args, "deadline_s": case.seconds}),
-            "placement_sha256": digest({"cohort": placement, "worker": row["worker"]}),
+            "placement_sha256": digest({"cohort": placement, "worker": row["worker"],
+                                        "compute_identity": result.get("compute_identity")}),
             "clock": CLOCK, "seed": row["seed"]},
         "expectation": case.expectation,
         "fault_witnessed": bool(result.get("fault_witness")), "verdict": result["verdict"],
         "violations": result.get("violations", []), "metrics": result["metrics"], "evidence": paths,
         "reason": result["reason"], "workload_evidence_complete": identities_complete,
+        "compute_evidence": {"worker": row["worker"],
+                             "cohort": {worker: env.get("compute_identity")
+                                        for worker, env in environments.items()},
+                             "trial": result.get("compute_identity")} if identities_complete else None,
     }
 
 
@@ -391,11 +410,14 @@ def run(args, control):
         binding["suite_workload"] = suite_identity
         (directory / worker).mkdir(mode=0o700)
     rows = schedule(args.run_id, cases, list(bindings), args.repeat, args.seed)
-    placement = {"profile": args.profile, "workers": list(bindings), "cases": cases,
+    producer = {"suite": suite_identity, "python": platform.python_version(),
+                "connect": file_sha(Path(control.connect)) if control.connect else "loopback"}
+    placement = {"producer_sha256": digest(producer), "profile": args.profile,
+                 "workers": list(bindings), "cases": cases,
                  "repeat": args.repeat, "concurrency": args.concurrency, "seed": args.seed,
                  "assignments": [(row["case"], row["worker"], row["seed"]) for row in rows]}
-    save(directory / "schedule.json", {"schema": "af-durability/load-schedule@1", "run": args.run_id,
-                                     "placement": placement, "workers": bindings, "trials": rows})
+    save(directory / "schedule.json", {"schema": "af-durability/load-schedule@2", "run": args.run_id,
+                                     "placement": placement, "producer": producer, "workers": bindings, "trials": rows})
     preflight_started = time.monotonic()
     preflight_error = None
     try:
@@ -425,14 +447,33 @@ def run(args, control):
     return write_reports(directory, args.profile, bindings, rows, elapsed, preflight_seconds, preflight_error)
 
 
+def proven_trial(record):
+    proof = record.get("compute_evidence")
+    return (record.get("schema") == TRIAL_SCHEMA
+            and record.get("workload_evidence_complete") is True
+            and isinstance(proof, dict) and set(proof) == {"worker", "cohort", "trial"}
+            and isinstance(proof["worker"], str) and isinstance(proof["cohort"], dict)
+            and 2 <= len(proof["cohort"]) <= 16
+            and proof["worker"] in proof["cohort"]
+            and all(complete_identity(identity) for identity in proof["cohort"].values())
+            and complete_identity(proof["trial"])
+            and proof["trial"] == proof["cohort"][proof["worker"]])
+
+
 def compare_runs(baseline, candidate):
-    result = compare.compare(compare.load(baseline / "trials"), compare.load(candidate / "trials"))
+    # Old records retain their exact outcomes, receipts and metrics, but never
+    # acquire proof by being read by a newer comparison implementation.
+    result = compare.compare(compare.load(baseline / "trials", (TRIAL_SCHEMA, LEGACY_TRIAL_SCHEMA)),
+                             compare.load(candidate / "trials", (TRIAL_SCHEMA, LEGACY_TRIAL_SCHEMA)))
     transitions = Counter()
     for row in result["pairs"]:
         before, after = row["before"], row["after"]
         if before and after and not all(
-                item.get("workload_evidence_complete", True) for item in (before, after)):
+                proven_trial(item) for item in (before, after)):
             row["comparison"] = "unavailable_inputs"
+            row["delta"] = {}
+        elif before and after and before["compute_evidence"] != after["compute_evidence"]:
+            row["comparison"] = "different_inputs"
             row["delta"] = {}
         transition = row["comparison"]
         if transition == "paired":
@@ -448,7 +489,7 @@ def compare_runs(baseline, candidate):
                                          if not record or name not in record["metrics"]]
                                   for name in METRICS}
         transitions[transition] += 1
-    return {**result, "schema": "af-durability/load-comparison@1", "transitions": dict(transitions)}
+    return {**result, "schema": "af-durability/load-comparison@2", "transitions": dict(transitions)}
 
 
 def main():

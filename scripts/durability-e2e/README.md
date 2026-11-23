@@ -188,22 +188,92 @@ and separate real Provider token measurements. A correct terminal red gate or bu
 pass. A missed fault, timeout or incomplete harness receipt is invalid and retains its phase and
 diagnostic. Checks restart, expired authentication and wrong revision require both a scheduler
 SIGKILL with the fixture still alive and ordered create and fault read receipts for the same
-persisted check and intent in `ledger-before.json`.
+persisted check and intent in `ledger-before.json`. Their expected identity comes independently
+from the native `before.json` Scenario list: the completed implementation's candidate Snapshot
+and the single uncertain Checks intent named by `root/checks` reconciliation. The Python-only
+`recovery_evidence.py` validator requires the complete native list, Run, root Frame, both Progress
+records, pin, limits, Waiting and accepted Task result for `native_recovery.configure()`'s fixed
+two-step projection. It checks the pinned definition and policy shapes, recomputes native pin,
+definition, intent and input digests, and binds the Task receipt and charge to the pinned target.
+It accepts only matched list/Run/pin v12 with bundle/definition v11 tags, or the retained
+v11 list/Run/pin with v10 bundle/definition tags. Mixed versions fail closed. It also checks
+lifecycle, timestamps, safe-integer deadlines and dispatch bounds. Every pinned step timeout must
+fit the definition wall limit; a Run may still select a lower wall limit than its definition.
+Other Scenario projections cannot establish these fault witnesses. Missing, malformed or ambiguous before evidence is
+invalid, even if a summary claims recovery succeeded. The before receipt is retained with the
+ledger and crash receipt; witnessing a fault does not require an after-Scenario receipt, so failed
+recovery remains distinguishable from invalid setup. No native invocation or schema package is
+needed to validate the witness; execution prerequisites and offline binary pins are unchanged.
 
-Case overlap and aggregate case wall time use complete monotonic subprocess intervals on each VM,
-including failed trials, and throughput counts those intervals. Each interval covers setup,
-post-terminal observation, teardown and orphan cleanup. The load runner leaves `terminal_s`
-unmeasured because it has no dedicated terminal timing. Worker CPU covers user and system time
-reported for the case's reaped subprocesses and excludes preflight and broker overhead. Missing
-measurements appear as null in the suite report and are omitted from the neutral records in
-`trials/`. An unresolved job submission or wait stops further submissions to that worker. A 503
-acknowledgement is reconciled by job ID without sending a second POST. Keep the retained broker
-receipts and raw VM directories private.
+`fixtures/recovery-before-native.json` retains complete before lists and ordered ledgers from the
+four fresh native Checks recovery trials supplied for this follow-up (successful and red
+lost-reply, expired authentication and wrong revision). Only before receipts and ledger exports
+were imported. `fixtures/recovery-before-native-v12.json` adds the same four complete receipt
+pairs captured from the staged native v12 runtime, with canonical schema and native Run roundtrip
+coverage. The v11 receipts remain unchanged as retained evidence for this harness only; native
+runtime readers and contracts are unchanged. Repository, Task Store and adapter paths are replaced
+by stable `/fixture/` paths;
+the affected pin, definition, intent, input and charge identities are recomputed together with
+the ledger's intent references. No credentials or original private paths are retained. Tests
+remove and corrupt required native contract fields and check identity near misses through the
+same witness and judge paths used by the worker. Rehashed short-wall definitions and overflowing
+Progress deadlines remain invalid even with matching ledger links. A witnessed restart-red
+recovery with a terminal Scenario and running Checks step remains a failure. These fixtures
+establish validator correctness, not a new recovery execution or a performance measurement.
 
-Compare uses the neutral records and reports aggregate transitions, per-trial verdicts, input
+Case overlap uses complete monotonic subprocess intervals on each VM, including
+failed trials. The interval ends when the subprocess returns or times out, before required
+orphan-descendant cleanup; cleanup time does not inflate terminal timing or overlap. Worker CPU
+covers user and system time reported for the case's reaped subprocesses and excludes preflight
+and broker overhead. Missing measurements appear as null in the suite
+report and are omitted from the load trial records in `trials/`. An unresolved job submission or
+wait stops further submissions to that worker. A 503 acknowledgement is reconciled by job ID
+without sending a second POST. Keep the retained broker receipts and raw VM directories private.
+
+Compare uses `af-durability/load-trial@3` records and reports aggregate transitions, per-trial verdicts, input
 mismatches, missing pairs and missing metrics. Matching binds the case, repeat seed, actual fixture
 bytes (including the catalog generated for budget cases), ordered cohort, fault arguments and
-deadline, and worker placement and concurrency. Use measurements from paired passes and check
+deadline, and worker placement and concurrency. The workload fingerprint also binds all native
+suite implementation bytes, including the controller (`load_suite.py`, `control.py`) and comparison
+code. The producer identity includes the controller Python version and the exact SSH helper file
+bytes when `--connect` is used. Stage the same complete suite on the controller and every worker.
+
+Placement includes bounded, read-only Linux CPU vendor/family/model/stepping/features and usable
+CPU topology/affinity, total memory capacity, visible cgroup v2 ancestor CPU quotas/weights,
+cpusets and memory/swap constraints, and inherited process resource limits. Preflight and each
+case retain compute identity; each case checks it again after execution. Process IDs, cgroup path
+names, boot IDs and current free memory do not enter this stable capacity identity. Raw preflight
+boot and available-capacity evidence remains retained and keeps its admission role.
+
+Missing or incomplete compute identity on any cohort worker or trial, an unavailable producer,
+or missing or invalid retained ancestry proof makes comparison `unavailable_inputs`, with no deltas. Changed
+known producer or placement makes it `different_inputs`. Unknown CPU formats (currently only the
+required x86 fields are recognized), legacy/hybrid cgroups, hidden ancestors, read failures or
+exceeded bounds retain case outcomes and receipts but cannot prove comparable placement.
+Full ancestry requires both a full cgroup v2 mount and the known initial Linux cgroup namespace
+identity from `/proc/self/ns/cgroup` (`cgroup:[4026531835]`, the kernel's reserved
+[`PROC_CGROUP_INIT_INO`](https://github.com/torvalds/linux/blob/v6.12/include/linux/proc_ns.h)).
+An apparent mount root and membership of `/` alone cannot prove ancestry: a private cgroup
+namespace can hide enclosing quotas. Equality with PID 1 is insufficient, including inside a
+nested PID namespace. Missing, unreadable or unrecognized namespace evidence makes identity
+unavailable; bare Linux workers and ordinary KVM guests with the recognized initial namespace
+and full hierarchy remain supported. Covered or stacked mounts, submounts inside the hierarchy,
+and enclosing mounts outside its parent chain cannot prove visibility, regardless of mountinfo
+entry order. The configured cgroup root must resolve to itself.
+The version 2 compute identity retains the initial namespace and unambiguous full-root proof;
+version 3 trials retain each cohort worker's identity and the case identity, which must match
+its preflight worker. Comparison validates that proof independently of fingerprints and requires
+equivalent complete evidence on both sides. The wire schemas live in
+`../../schemas/durability-compute-identity-v2.json` and `manifests/load-trial-v3.schema.json`.
+A disabled cgroup controller is recorded as inapplicable only when the parent controller inventory
+proves it; a missing enabled control makes the identity unavailable. The load schedule, preflight,
+run report and comparison remain version 2. Saved version 2 load trials remain readable with
+outcomes, raw evidence references and metrics intact, but always return `unavailable_inputs`
+without deltas: their completeness flag and fingerprints cannot prove ancestry. No proof is
+inferred or migrated from an older record. The separate neutral adapter protocol
+remains `af-durability/trial-report@1`.
+
+Use measurements from paired passes and check
 the observed overlap and measurement coverage before interpreting timing or throughput changes.
 
 ## Two-VM profile through the control API
