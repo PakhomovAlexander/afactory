@@ -22,7 +22,7 @@ import zipfile
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMA = 'af.dev-release-run/2'
+SCHEMA = 'af.dev-release-run/3'
 AUTHORIZATION = 'normal-release-pr-check-merge-and-signed-publication-v1'
 DRIVER_DEADLINE = None
 
@@ -41,7 +41,7 @@ PLAN_FIELDS = ('repo', 'remote', 'source', 'version', 'branch', 'policy', 'profi
                'executor', 'date', 'signing_readiness', 'main_policy')
 STAGES = ('preflight', 'preparation', 'validation', 'branch', 'pr', 'checks', 'merge', 'publication')
 RECEIPT_FIELDS = ('status', 'at', 'source', 'checks', 'planned_paths', 'paths', 'key',
-                  'commit', 'url', 'number', 'next', 'checksums', 'features', 'commands')
+                  'commit', 'url', 'number', 'next', 'checksums', 'features', 'commands', 'creation')
 
 
 def canonical_workflow(path, expected):
@@ -52,6 +52,17 @@ def canonical_workflow(path, expected):
 
 
 def state_schema():
+    def receipt_schema(stage):
+        fields = {key: {} for key in RECEIPT_FIELDS if key != 'creation'}
+        schema = {'type': 'object', 'additionalProperties': False,
+                  'required': ['status', 'at'], 'properties': fields}
+        if stage == 'branch':
+            fields['creation'] = {'type': 'string', 'pattern': '^[0-9a-f]{64}$'}
+            schema.update({'if': {'properties': {'status': {'const': 'complete'}}},
+                           'then': {'required': ['commit', 'creation']},
+                           'else': {'not': {'required': ['creation']}}})
+        return schema
+
     properties = {key: {'type': 'string'} for key in (*RUN_REQUIRED, *RUN_OPTIONAL)}
     properties.update({
         'schema': {'const': SCHEMA}, 'authorization': {'enum': [None, AUTHORIZATION]},
@@ -61,11 +72,7 @@ def state_schema():
                  'properties': {key: {'type': 'object' if key == 'policy' else 'string'}
                                 for key in PLAN_FIELDS}},
         'receipts': {'type': 'object', 'additionalProperties': False,
-                     'properties': {stage: {
-                         'type': 'object', 'additionalProperties': False,
-                         'required': ['status', 'at'],
-                         'properties': {key: {} for key in RECEIPT_FIELDS}}
-                         for stage in STAGES}},
+                     'properties': {stage: receipt_schema(stage) for stage in STAGES}},
     })
     return {'$schema': 'https://json-schema.org/draft/2020-12/schema',
             'title': SCHEMA, 'type': 'object', 'additionalProperties': False,
@@ -82,10 +89,20 @@ def validate_state(state):
     policy = state['plan']['policy']
     if not isinstance(policy, dict) or policy.get('schema') != 'af.dev-release-policy/3':
         raise Refusal('foreign_state: unsupported release policy version')
-    for receipt in state['receipts'].values():
+    for stage, receipt in state['receipts'].items():
         if (not isinstance(receipt, dict) or set(receipt) - set(RECEIPT_FIELDS)
                 or not {'status', 'at'} <= set(receipt)):
             raise Refusal('foreign_state: invalid receipt fields')
+        if stage == 'branch' and receipt['status'] == 'complete':
+            candidate = state.get('candidate')
+            if (not isinstance(candidate, str) or not re.fullmatch('[0-9a-f]{40}', candidate)
+                    or not isinstance(state['plan']['branch'], str)
+                    or not isinstance(state['plan']['remote'], str)
+                    or receipt.get('commit') != state['candidate']
+                    or receipt.get('creation') != branch_creation_key(state)):
+                raise Refusal('foreign_state: invalid branch creation receipt')
+        elif 'creation' in receipt:
+            raise Refusal('foreign_state: unexpected branch creation evidence')
     if (state['authorization'] not in (None, AUTHORIZATION)
             or not isinstance(state['created'], int) or not isinstance(state['updated'], int)
             or state['stage'] not in STAGES):
@@ -112,9 +129,11 @@ def remaining():
     return min(14400, seconds)
 
 
-def run(argv, cwd=None, accepted=(0,), git_env=None):
+def run(argv, cwd=None, accepted=(0,), git_env=None, stdout=None):
     try:
-        result = subprocess.run([str(x) for x in argv], cwd=cwd, capture_output=True, text=True,
+        result = subprocess.run([str(x) for x in argv], cwd=cwd,
+                                stdout=subprocess.PIPE if stdout is None else stdout,
+                                stderr=subprocess.PIPE, text=True,
                                 env={**{k: v for k, v in os.environ.items() if not k.startswith('GIT_')},
                                      **(git_env or {}), 'GIT_TERMINAL_PROMPT': '0',
                                      'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1'},
@@ -129,7 +148,7 @@ def run(argv, cwd=None, accepted=(0,), git_env=None):
                           {'fetch', 'push', 'add', 'worktree', 'update-ref', 'commit-tree', 'api'}), str(argv[1]))
         raise Refusal('command_failed: %s %s (exit %s); inspect credentials/checks independently' %
                       (argv[0], operation, result.returncode))
-    return result.stdout.strip()
+    return result.stdout.strip() if stdout is None else None
 
 
 def check_gh_capabilities():
@@ -157,6 +176,12 @@ def check_gh_capabilities():
 
 def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+def branch_creation_key(state):
+    plan = state['plan']
+    return digest(['af.dev-release-branch-creation/1', state['identity'], plan['remote'],
+                   'refs/heads/' + plan['branch'], state['candidate']])
 
 
 def save(path, state):
@@ -414,9 +439,9 @@ class Controller:
         self.tree = directory / 'candidate'
         self.state = None
 
-    def git(self, *args):
+    def git(self, *args, **kwargs):
         return run(['git', '-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-credential',
-                    '--git-dir', self.mirror, *args])
+                    '--git-dir', self.mirror, *args], **kwargs)
 
     def gh(self, *args):
         return run(['gh', *args, '--repo', self.args.repo])
@@ -484,8 +509,70 @@ class Controller:
               int(time.time()) - self.state['created'], details.get('next', details.get('url', ''))), file=sys.stderr)
 
     def remote_branch(self):
-        rows = self.git('ls-remote', 'origin', 'refs/heads/' + self.state['plan']['branch']).split()
+        plan = self.state['plan']
+        rows = self.git('ls-remote', plan['remote'], 'refs/heads/' + plan['branch']).split()
         return rows[0] if rows else None
+
+    def branch_output_path(self):
+        return self.directory / ('branch-push-' + branch_creation_key(self.state))
+
+    @contextlib.contextmanager
+    def branch_output(self, create=False):
+        # Git inherits the locked open file description as stdout. A recovering
+        # controller cannot inspect or clear it while an earlier Git still holds it.
+        flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
+        try:
+            fd = os.open(self.branch_output_path(), flags | (os.O_CREAT if create else 0), 0o600)
+        except FileNotFoundError:
+            if create:
+                raise
+            yield None
+            return
+        with os.fdopen(fd, 'r+b', buffering=0) as stream:
+            metadata = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid()
+                    or metadata.st_mode & 0o077 or metadata.st_nlink != 1):
+                raise Refusal('foreign_state: invalid branch push output')
+            try:
+                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise Refusal('branch_ambiguous: earlier Git push still holds the result; resume later') from None
+            yield stream
+
+    def branch_was_created(self, stream):
+        if stream is None:
+            return False
+        plan = self.state['plan']
+        refspec = self.state['candidate'] + ':refs/heads/' + plan['branch']
+        # Porcelain '*' means creation, whereas '=' is an up-to-date no-op
+        # even when Git exits successfully under an empty force-with-lease.
+        expected = os.fsencode('To ' + plan['remote'] + '\n*\t' + refspec + '\t[new branch]\nDone\n')
+        stream.seek(0)
+        return stream.read(len(expected) + 1) == expected
+
+    def push_branch(self):
+        plan = self.state['plan']
+        candidate = self.state['candidate']
+        ref = 'refs/heads/' + plan['branch']
+        if self.state['receipts'].get('branch', {}).get('status') == 'complete':
+            raise Refusal('branch_collision: previously created release head is missing')
+        self.receipt('branch', 'intent', commit=candidate)
+        with self.branch_output(create=True) as stream:
+            if self.branch_was_created(stream):
+                raise Refusal('branch_collision: previously created release head changed during reconciliation')
+            stream.seek(0)
+            stream.truncate()
+            # Keep the result reachable even if the controller dies before it
+            # can receive Git's exit status. Keep stderr out of retained state.
+            sync_directory(self.directory)
+            try:
+                self.git('push', '--porcelain', '--no-follow-tags', '--recurse-submodules=no',
+                         '--force-with-lease=' + ref + ':', plan['remote'],
+                         candidate + ':' + ref, stdout=stream, git_env={'LC_ALL': 'C'})
+            finally:
+                os.fsync(stream.fileno())
+            if not self.branch_was_created(stream):
+                raise Refusal('branch_collision: Git did not report creating the release head')
 
     def reconcile_branch(self):
         remote = self.remote_branch()
@@ -493,9 +580,13 @@ class Controller:
             if remote != self.state['candidate']:
                 raise Refusal('branch_collision: foreign release head')
             prior = self.state['receipts'].get('branch', {})
-            # A waiting receipt only preserves push intent if it carries the commit.
             if prior.get('status') not in ('intent', 'waiting', 'complete') or prior.get('commit') != remote:
                 raise Refusal('branch_collision: no durable matching push intent')
+            if prior.get('creation') != branch_creation_key(self.state):
+                with self.branch_output() as stream:
+                    if not self.branch_was_created(stream):
+                        raise Refusal('branch_collision: no durable Git result creating the release head')
+                    os.fsync(stream.fileno())
         return remote
 
     def preflight(self, source):
@@ -1065,14 +1156,12 @@ class Controller:
                 self.select_version(p['source'], p['version'])
             # Recheck absence after PR, main and version lookups, before recording intent.
             if not remote and not self.reconcile_branch():
-                ref = 'refs/heads/' + p['branch']
-                self.receipt('branch', 'intent', commit=self.state['candidate'])
-                # An empty expected value requires an absent ref, even for a fast-forward.
-                self.git('push', '--force-with-lease=' + ref + ':', 'origin',
-                         self.state['candidate'] + ':' + ref)
+                self.push_branch()
                 if self.remote_branch() != self.state['candidate']:
                     raise Refusal('branch_ambiguous: reconcile with resume')
-            self.receipt('branch', 'complete', commit=self.state['candidate'])
+            self.receipt('branch', 'complete', commit=self.state['candidate'],
+                         creation=branch_creation_key(self.state))
+            self.branch_output_path().unlink(missing_ok=True)
             if not pr:
                 self.receipt('pr', 'intent')
                 self.gh('pr', 'create', '--base', 'main', '--head', p['branch'],
@@ -1108,6 +1197,8 @@ class Controller:
                 self.receipt('merge', 'waiting', commit=self.state['candidate'],
                              next='waiting to reconcile merge; resume if stopped')
                 return
+        if self.state['receipts'].get('branch', {}).get('status') != 'complete':
+            raise Refusal('branch_collision: merged release PR has no verified branch creation')
         merged = pr['mergeCommit']['oid']
         self.fetch()
         if (self.git('rev-parse', merged + '^{tree}') != self.state['candidate_tree']

@@ -196,12 +196,13 @@ source in the owned registered worktree. Foreign state is refused. Publication r
 assets and verify an existing signature instead of overwriting assets.
 
 For both RC cuts and stable promotions, the push creates the release branch only while its
-remote ref is absent. If another creator wins, even a branch at the approved main commit
-stays at that commit. The controller rechecks the ref before recording push intent. To recover
-an existing branch after an interrupted or timed-out push, `resume` requires both the durable
-branch receipt for that exact push and a remote head matching the sealed candidate. A competing
-branch observed without a matching receipt produces `branch_collision` even if its commit is
-identical to the candidate.
+remote ref is absent. The controller records intent before starting Git and directs Git's
+machine-readable result to private state. It requires Git to report a new branch. An exit
+zero with an up-to-date result does not establish ownership. After an interrupted or timed-out
+push, `resume` requires the creation result bound to this run, remote, ref and sealed candidate,
+plus a matching remote head. Once verified, that result becomes part of the branch receipt.
+If the ref exists and creation cannot be established, the controller reports `branch_collision`
+and stops before creating or merging a PR. Preserve the run for investigation.
 
 Release inventory requires two matching complete traversals, each bounded to ten pages of
 100 records. Ordered records (including drafts and assets) and pagination links must match;

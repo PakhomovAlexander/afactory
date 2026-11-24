@@ -237,7 +237,7 @@
         "schemas/code-task-policy-v1.json",
         "schemas/codex-model-catalog-observation-v1.json",
         "schemas/command-catalog-v1.json",
-        "schemas/dev-release-run-v2.json",
+        "schemas/dev-release-run-v3.json",
         "schemas/diff-subject-v1.json",
         "schemas/doctor-v3.json",
         "schemas/error-v2.json",

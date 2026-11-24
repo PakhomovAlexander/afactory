@@ -231,10 +231,14 @@ if name=='git':
                   'update-ref', ref, 'refs/heads/main', ''], check=True)
  p=subprocess.run([os.environ['REAL_GIT'],*a],capture_output=True)
  sys.stdout.buffer.write(p.stdout); sys.stderr.buffer.write(p.stderr)
+ sys.stdout.buffer.flush()
  if p.returncode: d['last_git_error']=p.stderr.decode();save()
+ if key=='push' and '--porcelain' in a:
+  d['push_result']={'exit':p.returncode,'porcelain':p.stdout.decode()};save()
  if key and p.returncode==0:
-  d.setdefault('effects',[]).append(key);save();crash(key,'after')
-  if key=='push' and d.get('hold_push_response'): time.sleep(60)
+  if key!='push' or not any(line.startswith(b'=\t') for line in p.stdout.splitlines()):
+   d.setdefault('effects',[]).append(key);save()
+  crash(key,'after')
  sys.exit(p.returncode)
 if name=='cargo':
  if a==['--version']: print('cargo test');sys.exit(0)
@@ -451,6 +455,64 @@ def write_fixture_gate(path):
                     'subprocess.run([sys.executable,"-I","scripts/release-contract.py"],check=True)\n'
                     'sys.exit(9 if d.get("gate_fail") else 0)\n')
     path.chmod(0o755)
+
+
+def run_with_push_fault():
+    """Inject controller faults while all Git transport still runs against the real remote."""
+    import json
+    import os
+    from pathlib import Path
+    import runpy
+    import subprocess
+    import sys
+    import time
+    import types
+    from unittest import mock
+
+    mode, state_path, *args = sys.argv[1:]
+    sys.argv = ['dev', *args]
+    sys.dont_write_bytecode = True
+    main = runpy.run_path('scripts/dev-release.py')['main']
+    clock = 0
+    main.__globals__['time'] = types.SimpleNamespace(
+        monotonic=lambda: clock, time=time.time, strftime=time.strftime, gmtime=time.gmtime)
+    real_run = subprocess.run
+    branch_reads = 0
+
+    def invoke(argv, **kwargs):
+        nonlocal clock, branch_reads
+        push = argv[0] == 'git' and 'push' in argv
+        if push and mode == 'interrupt':
+            state = json.loads(Path(state_path).read_text())
+            assert state['receipts']['branch']['status'] == 'intent'
+            raise KeyboardInterrupt()
+        result = real_run(argv, **kwargs)
+        if mode == 'timeout':
+            if argv[:2] == ['cargo', 'update']:
+                # Deliberately slow preparation, under the normal driver budget.
+                clock += 7200
+            if push:
+                assert clock == 7200 and result.returncode == 0
+                clock = main.__globals__['DRIVER_DEADLINE']
+                raise subprocess.TimeoutExpired(argv, kwargs['timeout'])
+        if (mode == 'compete' and argv[0] == 'git' and 'ls-remote' in argv
+                and argv[-1].startswith('refs/heads/release/v') and Path(state_path).exists()):
+            state = json.loads(Path(state_path).read_text())
+            if state['receipts'].get('validation', {}).get('status') == 'complete':
+                branch_reads += 1
+                if branch_reads == 2:
+                    # The final lookup really observed absence. The competitor
+                    # acts before the controller receives that result or saves intent.
+                    assert result.returncode == 0 and not result.stdout
+                    assert 'branch' not in state['receipts']
+                    real_run([os.environ['REAL_GIT'], '--git-dir',
+                              str(Path(state_path).parent / 'repository.git'), 'push',
+                              state['plan']['remote'], state['candidate'] + ':' + argv[-1]],
+                             check=True, capture_output=True)
+        return result
+
+    with mock.patch.object(subprocess, 'run', side_effect=invoke):
+        sys.exit(main())
 
 
 def fixture_data(path, **changes):
@@ -1379,8 +1441,13 @@ class ReleaseCLI(unittest.TestCase):
     def data(self, **changes):
         return fixture_data(self.db, **changes)
 
-    def cli(self, command, *args, ok=True, extra_env=None, drive=False):
-        result = subprocess.run([sys.executable, str(self.source / 'dev'), 'release', command,
+    def cli(self, command, *args, ok=True, extra_env=None, drive=False, push_fault=None):
+        if push_fault:
+            entry = ['-c', inspect.getsource(run_with_push_fault) + '\nrun_with_push_fault()',
+                     push_fault, str(self.state / 'run.json')]
+        else:
+            entry = [str(self.source / 'dev'), 'release']
+        result = subprocess.run([sys.executable, *entry, command,
                                  '--repo', 'o/r', '--remote', str(self.remote), '--state', str(self.state),
                                  '--format', 'json', *([] if drive or command not in ('rc', 'resume') else ['--step']), *args], cwd=self.source,
                                 env={**self.env, **(extra_env or {})}, text=True, capture_output=True)
@@ -1713,7 +1780,7 @@ class ReleaseCLI(unittest.TestCase):
         import runpy
         module = runpy.run_path(str(ROOT / 'scripts/dev-release.py'))
         self.assertEqual(module['state_schema'](),
-                         json.loads((ROOT / 'schemas/dev-release-run-v2.json').read_text()))
+                         json.loads((ROOT / 'schemas/dev-release-run-v3.json').read_text()))
         self.cli('plan')
         path = self.state / 'run.json'
         state = json.loads(path.read_text())
@@ -1724,7 +1791,7 @@ class ReleaseCLI(unittest.TestCase):
         self.assertIn('foreign_state', self.cli('status', ok=False).stderr)
         state['plan']['policy']['schema'] = original_policy
         state['identity'] = module['digest'](state['plan'])
-        state['schema'] = 'af.dev-release-run/1'
+        state['schema'] = 'af.dev-release-run/2'
         path.write_text(json.dumps(state))
         self.assertIn('foreign_state', self.cli('resume', ok=False).stderr)
         state['schema'] = module['SCHEMA']
@@ -2436,25 +2503,81 @@ class ReleaseCLI(unittest.TestCase):
         ref = 'refs/heads/' + state['plan']['branch']
         self.assertEqual(self.git('--git-dir', self.remote, 'rev-parse', ref), state['candidate'])
 
-    def test_push_timeout_reconciles_exact_branch_intent(self):
-        self.data(hold_push_response=True, checks='pending')
-        result = self.cli('rc', '--timeout', '10', ok=False)
-        self.assertEqual(result.returncode, 124, result.stderr)
-        state = self.state_value()
-        receipt = state['receipts']['branch']
-        self.assertEqual(receipt['status'], 'waiting')
-        self.assertEqual(receipt['commit'], state['candidate'])
-        self.assertIn('driver_timeout', receipt['next'])
-        self.assertEqual(self.data()['effects'].count('push'), 1)
-        self.assertNotIn('pr', self.data()['effects'])
-        self.data(hold_push_response=False)
-        self.cli('resume')
-        current = self.state_value()
-        self.assertEqual(current['identity'], state['identity'])
-        self.assertEqual(current['receipts']['branch']['status'], 'complete')
-        self.assertEqual(current['receipts']['branch']['commit'], state['candidate'])
-        self.assertEqual(self.data()['effects'].count('push'), 1)
-        self.assertEqual(self.data()['effects'].count('pr'), 1)
+    def test_branch_creation_requires_git_evidence(self):
+        self.set_published_main('0.15.1-rc.3')
+        published_remote = self.remote
+        releases = self.data()['releases']
+        refs = ('for-each-ref', '--format=%(objectname) %(refname)')
+        original_refs = set(self.git('--git-dir', published_remote, *refs).splitlines())
+        for version, args in (('0.15.1-rc.4', ()), ('0.15.1', ('--version', '0.15.1'))):
+            for mode in ('compete', 'interrupt', 'timeout'):
+                with self.subTest(version=version, mode=mode):
+                    suffix = version + '-' + mode
+                    self.state = self.base / ('state-' + suffix)
+                    self.remote = self.base / ('remote-' + suffix + '.git')
+                    self.git('clone', '--bare', '--no-local', published_remote, self.remote)
+                    publish_fixture_db(self.db, {'remote': str(self.remote), 'source': str(self.source),
+                                                 'releases': releases, 'checks': 'pending'})
+                    result = self.cli('rc', *args, ok=False, push_fault=mode)
+                    state = self.state_value()
+                    self.assertEqual(state['plan']['version'], version)
+                    receipt = state['receipts']['branch']
+                    self.assertEqual(receipt['commit'], state['candidate'])
+                    spec = state['candidate'] + ':refs/heads/' + state['plan']['branch']
+                    if mode == 'compete':
+                        self.assertEqual(result.returncode, 1, result.stderr)
+                        self.assert_unowned_branch_refused(result.stderr, state)
+                        self.assertEqual(receipt['status'], 'intent')
+                        push = self.data()['push_result']
+                        self.assertEqual(push['exit'], 0)
+                        self.assertIn('=\t' + spec + '\t[up to date]', push['porcelain'])
+                    elif mode == 'interrupt':
+                        self.assertEqual(result.returncode, 130, result.stderr)
+                        self.assertEqual(receipt['status'], 'waiting')
+                        self.assertIn('operator_interrupted', receipt['next'])
+                        self.assertNotIn('push_result', self.data())
+                        self.assertEqual(set(self.git('--git-dir', self.remote, *refs).splitlines()), original_refs)
+                        self.push_foreign_candidate(state)
+                    else:
+                        self.assertEqual(result.returncode, 124, result.stderr)
+                        self.assertEqual(receipt['status'], 'waiting')
+                        self.assertIn('driver_timeout', receipt['next'])
+                        push = self.data()['push_result']
+                        self.assertEqual(push['exit'], 0)
+                        self.assertIn('*\t' + spec + '\t[new branch]', push['porcelain'])
+                        self.assertEqual(self.data()['effects'].count('push'), 1)
+                        self.assertNotIn('pr', self.data()['effects'])
+                    expected_refs = original_refs | {
+                        state['candidate'] + ' refs/heads/' + state['plan']['branch']}
+                    self.assertEqual(set(self.git('--git-dir', self.remote, *refs).splitlines()), expected_refs)
+                    if mode != 'timeout':
+                        self.assert_unowned_branch_refused(self.cli('resume', ok=False).stderr, state)
+                    else:
+                        self.cli('resume')
+                        current = self.state_value()
+                        self.assertEqual(current['identity'], state['identity'])
+                        receipt = current['receipts']['branch']
+                        self.assertEqual(receipt['status'], 'complete')
+                        self.assertEqual(receipt['commit'], state['candidate'])
+                        self.assertRegex(receipt['creation'], '^[0-9a-f]{64}$')
+                        self.assertEqual(self.data()['effects'].count('push'), 1)
+                        self.assertEqual(self.data()['effects'].count('pr'), 1)
+                    self.assertEqual(set(self.git('--git-dir', self.remote, *refs).splitlines()), expected_refs)
+                    if mode == 'interrupt':
+                        # A merged PR can survive automatic deletion of its head
+                        # ref. That history cannot replace this run's proof.
+                        ref = 'refs/heads/' + state['plan']['branch']
+                        self.git('--git-dir', self.remote, 'update-ref', '-d', ref, state['candidate'])
+                        self.data(pr_branch=state['plan']['branch'],
+                                  pr={'number': 1, 'url': 'https://example.test/pr/1', 'state': 'MERGED',
+                                      'headRefOid': state['candidate'], 'baseRefName': 'main',
+                                      'mergeCommit': {'oid': state['candidate']}, 'isCrossRepository': False,
+                                      'labels': [{'name': 'release:fast'}]})
+                        result = self.cli('resume', ok=False)
+                        self.assertIn('merged release PR has no verified branch creation', result.stderr)
+                        current = self.state_value()
+                        self.assertEqual(current['receipts']['branch'], receipt)
+                        self.assertNotIn('publication', current['receipts'])
 
     def test_conflicting_source_version_and_foreign_branch(self):
         self.assertIn('authority_source_mismatch', self.cli('plan', '--source', '0' * 40, ok=False).stderr)
