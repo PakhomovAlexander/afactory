@@ -53,6 +53,12 @@ class ValidationTests(unittest.TestCase):
                                '--check', *args],
                               capture_output=True, text=True, timeout=10, check=False)
 
+    def validate(self, measurement_log=None, claim_source=None):
+        """Exercise the production check without starting a Python child process."""
+        selected = (self.claim.get('source_sha256', 'sha256:' + 'f' * 64)
+                    if claim_source is None else claim_source)
+        return VALIDATION.check(self.root, self.record, selected, measurement_log)
+
     def test_future_checkout_needs_no_new_measurement_and_no_implicit_source_is_verified(self):
         # Normal functional CI parses retained evidence, never compares it to today's tree.
         claims = VALIDATION.read_claims(ROOT / VALIDATION.RECORD)
@@ -130,7 +136,8 @@ class ValidationTests(unittest.TestCase):
                 original = self.claim[field]
                 self.claim[field] = original + 1 if isinstance(original, int) else 'sha256:' + '0'*64
                 self.write_claim()
-                self.assertNotEqual(self.cli().returncode, 0)
+                with self.assertRaises(ValueError):
+                    self.validate()
                 self.claim[field] = original
 
     def test_exact_three_exclusions_allow_record_edits_but_include_nested_and_hidden_paths(self):
@@ -143,7 +150,8 @@ class ValidationTests(unittest.TestCase):
             with self.subTest(path=name):
                 path = self.root / name
                 path.write_text('included')
-                self.assertNotEqual(self.cli().returncode, 0)
+                with self.assertRaises(ValueError):
+                    self.validate()
                 path.unlink()
         self.assertEqual(self.cli().returncode, 0)
 
@@ -180,14 +188,16 @@ class ValidationTests(unittest.TestCase):
                 original = dict(self.claim)
                 self.claim[field] = value
                 self.write_claim()
-                self.assertNotEqual(self.cli().returncode, 0)
+                with self.assertRaises(ValueError):
+                    self.validate()
                 self.claim = original
         for field in list(self.claim):
             with self.subTest(missing=field):
                 original = dict(self.claim)
                 del self.claim[field]
                 self.write_claim()
-                self.assertNotEqual(self.cli().returncode, 0)
+                with self.assertRaises(ValueError):
+                    self.validate()
                 self.claim = original
         self.write_claim()
         valid = self.record.read_text()
@@ -196,7 +206,8 @@ class ValidationTests(unittest.TestCase):
                           valid.replace('af-pi-validation-claim', 'af-pi-validation-current'),
                           valid.replace('"schema":', '"entries": 0, "schema":')]:
             self.record.write_text(malformed)
-            self.assertNotEqual(self.cli().returncode, 0)
+            with self.assertRaises(ValueError):
+                self.validate()
 
     def test_unconsumed_opening_and_closing_claim_family_markers_fail_closed(self):
         valid = self.record.read_text()
@@ -235,10 +246,9 @@ class ValidationTests(unittest.TestCase):
                                  'after': valid + '\n' + marker,
                                  'replacement': valid.replace(VALIDATION.END, marker)}[position]
                     self.record.write_text(malformed)
-                    # Exercise production validation in-process (scoped issue537 trial); the
-                    # hidden-summary case below keeps representative CLI stderr/exit coverage.
+                    # The hidden-summary case below keeps representative CLI stderr/exit coverage.
                     with self.assertRaisesRegex(ValueError, 'unsupported or malformed'):
-                        VALIDATION.read_claims(self.record)
+                        self.validate()
         # Marker counts alone cannot detect a marker hidden inside a consumed block.
         self.claim['summary'] += ' <!-- /af-pi-validation-claim:v2 -->'
         self.write_claim()
@@ -259,10 +269,7 @@ class ValidationTests(unittest.TestCase):
             with self.subTest(record=malformed):
                 self.record.write_text(malformed)
                 with self.assertRaisesRegex(ValueError, 'unsupported or malformed'):
-                    VALIDATION.read_claims(self.record)
-                result = self.cli()
-                self.assertNotEqual(result.returncode, 0, result.stdout)
-                self.assertIn('unsupported or malformed', result.stderr)
+                    self.validate()
 
     def test_reserved_comment_namespace_is_ascii_case_sensitive_and_prose_is_allowed(self):
         self.write_claim('\nHistorical af-pi-validation prose remains ordinary text.\n'
@@ -307,12 +314,15 @@ class ValidationTests(unittest.TestCase):
             bad = list(lines)
             bad[index] = replacement
             bind_log('\n'.join(bad) + '\n')
-            self.assertNotEqual(self.cli('--measurement-log', str(log)).returncode, 0)
+            with self.assertRaises(ValueError):
+                self.validate(log)
         for duplicate in lines:
             bind_log('\n'.join(lines + [duplicate]) + '\n')
-            self.assertNotEqual(self.cli('--measurement-log', str(log)).returncode, 0)
+            with self.assertRaises(ValueError):
+                self.validate(log)
         log.unlink()
-        self.assertNotEqual(self.cli('--measurement-log', str(log)).returncode, 0)
+        with self.assertRaises(FileNotFoundError):
+            self.validate(log)
         source_only = self.cli()
         self.assertEqual(source_only.returncode, 0)
         self.assertIn('measurement log not supplied (not read)', source_only.stdout)
