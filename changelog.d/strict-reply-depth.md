@@ -1,0 +1,1 @@
+- Preserve a strict reply payload unchanged when optional-null cleanup reaches its depth limit.
