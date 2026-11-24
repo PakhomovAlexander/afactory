@@ -1046,7 +1046,7 @@ fn this_repositorys_report_pipeline_installs_idempotently_passes_its_catalog_tes
         analyst["signature"]["effects"],
         toml::Value::try_from(["execute-checks", "read-source"]).unwrap()
     );
-    assert_eq!(analyst["runner"]["model"], "gpt-6.1-sol".into());
+    assert_eq!(analyst["runner"]["model"], "gpt-6.2-sol".into());
     assert_eq!(analyst["signature"]["attempt"]["tokens"], 1_500_000.into());
     assert_eq!(
         analyst["signature"]["attempt"]["wall_ms"],

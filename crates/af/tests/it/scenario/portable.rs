@@ -1383,12 +1383,35 @@ fn portable_backlog_scheduler_enrolls_once_and_replays_two_daily_batches() {
 
 #[test]
 fn portable_backlog_settles_and_dispatches_the_frozen_batch_in_two_receivers() {
+    use af_pipeline_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
+
     let directory = tempfile::tempdir().unwrap();
     let parent = directory.path().canonicalize().unwrap();
     let mut receipts = Vec::new();
+    let artifact_path = workspace().join(BACKLOG);
+    let artifact = read(&artifact_path);
     schemas::valid(
         &schemas::validator("backlog-scenario-artifact-v1.json"),
-        &read(&workspace().join(BACKLOG)),
+        &artifact,
+    );
+    let author_path = artifact_path
+        .parent()
+        .unwrap()
+        .join(
+            artifact["packages"]["backlog/daily-author"]["path"]
+                .as_str()
+                .unwrap(),
+        )
+        .join("worker.toml");
+    let author: TaskWorkerManifest =
+        toml::from_str(&fs::read_to_string(author_path).unwrap()).unwrap();
+    assert_eq!(
+        author.runner,
+        TaskWorkerRunner::Model {
+            provider_kind: "codex".into(),
+            model: "gpt-6.2-sol".into(),
+            effort: "medium".into(),
+        }
     );
     for issue in [303, 404, 505] {
         let receiver = Receiver::for_artifact(parent.join(issue.to_string()), issue, BACKLOG);

@@ -23,7 +23,7 @@
 
 ["packages"."backlog/triage-author"]
 "version" = "1.0.3"
-"digest" = "sha256:f2d19c66787808d9eb31e4d777809ee7f764622c6ab5789770409f2d8cbcc9fb"
+"digest" = "sha256:7fd741bf87a8b22c39f40c9b91ad4b3d418354dce56f5a191eb7cd9c33719b4e"
 "path" = ".af/task-packages/backlog/triage-author"
 
 ["packages"."backlog/triage-kind"]
@@ -33,7 +33,7 @@
 
 ["packages"."backlog/triage-verifier"]
 "version" = "1.0.3"
-"digest" = "sha256:062d97e9aa6252c81a2f3a387e9851f4aca85ef2ca9ec464d31313b51ff0465c"
+"digest" = "sha256:9277dca7bc6282cdedcf2e67a2aa8333f10a7a323b8e9ef7f37252d4709fee56"
 "path" = ".af/task-packages/backlog/triage-verifier"
 
 ["packages"."bugfix/default-codex"]

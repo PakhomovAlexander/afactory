@@ -1,0 +1,15 @@
+{
+  "schema": "af.codex-model-catalog-observation/1",
+  "observed_at_utc": "2026-11-23T12:13:53.000000+00:00",
+  "capture_command": "AF_PROVIDERS_FILE=<machine-local registry> af provider models codex-personal --json",
+  "raw_response_sha256": "sha256:ef3f4c9e6b46fa6d928db94476fd6672e31835c5d8f166b86d4c53d446df52e5",
+  "source": "codex app-server model/list",
+  "harness_version": "0.171.0",
+  "freshness": {
+    "source": "models_cache",
+    "fetched_at": "2026-11-23T12:11:54.077768Z"
+  },
+  "scope": "Real token-free harness observation of advertised model IDs and effort levels, projected to Sol 6.2 and Astra 6.2. Not a synthetic parser fixture and not proof of inference access. No credentials, account identifiers or authentication paths are included.",
+  "projection": "Filter the models array of the adjacent in-tree codex-provider-models-raw-20261123.json to gpt-6.2-sol and gpt-6.2-astra, retaining array order, selected model objects and every other field unchanged. The raw_response_sha256 identifies its exact original bytes; recorded_projection_sha256 identifies the pretty-printed codex-provider-models-recorded-20261123.json. Other raw model entries are observational data, not configured pipeline selections.",
+  "recorded_projection_sha256": "sha256:84548913aa17fa5a6c6a425147eb4f0e74c2507ed5c597e6eda8aad814068638"
+}

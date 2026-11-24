@@ -562,6 +562,9 @@ def observe(options, *, opener=None, clock=time.monotonic, expected_sha=None, ex
 @contextmanager
 def occurrence_directory(path):
     root = Path(path)
+    if root.is_absolute() and len(root.parts) > 1 and root.parts[1] == 'var' \
+            and Path('/var').resolve() == Path('/private/var'):
+        root = Path('/private/var') / Path(*root.parts[2:])
     C.require(root.is_absolute() and '..' not in root.parts, 'Invalid occurrence directory')
     fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
     try:
