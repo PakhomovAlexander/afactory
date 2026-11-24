@@ -354,7 +354,7 @@ if a[0]=='api':
   if d.get('new_run_during_read'):
    d.update(ci_run_id=20,ci_prior_run=True,ci_superseded=True,checks=d.pop('new_run_during_read'));save()
   out({'total_count':len(jobs)+(1 if d.get('ci_partial_page') else 0),'jobs':jobs})
- if endpoint.startswith('actions/workflows'): out({'workflow_runs':[{'id':1,'head_sha':d['merged'],'status':d.get('workflow_status','in_progress'),'conclusion':'failure'}]})
+ if endpoint.startswith('actions/workflows'): out({'workflow_runs':[{'id':d.get('release_run_id',1),'head_sha':d['merged'],'status':d.get('workflow_status','in_progress'),'conclusion':'failure'}]})
  if endpoint.startswith('actions/runs'): out({'jobs':d.get('jobs',[{'name':'sign and publish','conclusion':'success'},{'name':'pin the release in .af/af.lock','conclusion':'failure'}])})
 if a[:2]==['run','download']:
  import shutil
@@ -368,6 +368,7 @@ if a[:2]==['pr','create']:
   head=a[a.index('--head')+1]
   sha=subprocess.check_output([os.environ['REAL_GIT'],'--git-dir',d['remote'],'rev-parse','refs/heads/'+head],text=True).strip()
   d['pr_branch']=head
+  d.pop('ci_merge',None)
   d['pr']={'number':1,'url':'https://example.test/pr/1','state':'OPEN','headRefOid':sha,'baseRefName':'main','mergeCommit':None,'isCrossRepository':False,'labels':[{'name':a[a.index('--label')+1]}]}
  effect('pr',create);print('https://example.test/pr/1');sys.exit(0)
 if a[:2]==['pr','checks']:
@@ -1918,22 +1919,133 @@ class ReleaseCLI(unittest.TestCase):
         self.assertEqual(self.state_value()['pin']['state'], 'MERGED')
 
     def publish_assets(self, state):
-        self.git('--git-dir', self.remote, 'update-ref', 'refs/tags/v0.15.1-rc.4', state['candidate'])
+        tag = 'v' + state['plan']['version']
+        self.git('--git-dir', self.remote, 'update-ref', 'refs/tags/' + tag, state['candidate'])
         assets = self.base / 'assets'
         assets.mkdir()
-        names = ['af-v0.15.1-rc.4-' + t + '.tar.gz' for t in state['plan']['policy']['targets']]
+        names = ['af-' + tag + '-' + t + '.tar.gz' for t in state['plan']['policy']['targets']]
         import hashlib
         for name in names:
             (assets / name).write_bytes(name.encode())
         (assets / 'release-provenance.json').write_text(json.dumps({
             'schema': 'af.release-provenance/1', 'version': state['plan']['version'],
-            'source': state['candidate'], 'repository': 'o/r', 'run_id': '1'}))
+            'source': state['candidate'], 'repository': 'o/r',
+            'run_id': str(self.data().get('release_run_id', 1))}))
         names.append('release-provenance.json')
         (assets / 'SHA256SUMS').write_text(''.join(hashlib.sha256((assets / n).read_bytes()).hexdigest() + '  ' + n + '\n' for n in names))
         (assets / 'SHA256SUMS.minisig').write_text('fixture signature checked by fake minisign')
-        self.data(assets=str(assets), releases=[{'id':1, 'tag_name': 'v0.15.1-rc.4', 'draft': False,
-                  'html_url': 'https://example.test/release', 'assets': [{'name': n} for n in
-                  [*names, 'SHA256SUMS', 'SHA256SUMS.minisig']]}])
+        releases = self.data().get('releases', [])
+        self.data(assets=str(assets), releases=[*releases, {
+            'id': len(releases) + 1, 'tag_name': tag, 'draft': False,
+            'prerelease': '-rc.' in tag, 'html_url': 'https://example.test/release',
+            'assets': [{'name': n} for n in [*names, 'SHA256SUMS', 'SHA256SUMS.minisig']]}])
+
+    def set_published_main(self, version):
+        manifest = self.source / 'Cargo.toml'
+        manifest.write_text(f'[workspace.package]\nversion = "{version}"\n')
+        path = self.source / 'scripts/release-contract.json'
+        declaration = json.loads(path.read_text())
+        declaration['version'] = version
+        path.write_text(json.dumps(declaration))
+        lock = self.source / '.af/af.lock'
+        lock.write_text(lock.read_text().replace('0.15.1-rc.3', version))
+        changelog = self.source / 'CHANGELOG.md'
+        changelog.write_text(changelog.read_text().replace(
+            '## [Unreleased]\n', f'## [Unreleased]\n\n## [{version}] - today\n'))
+        self.commit('published source')
+        self.git('-C', self.source, 'push', str(self.remote), 'main')
+        self.git('--git-dir', self.remote, 'tag', 'v' + version, 'main')
+        self.data(releases=[{'id': 1, 'tag_name': 'v' + version, 'draft': False,
+                             'prerelease': '-rc.' in version}])
+
+    def merge_release_pin(self, old, new):
+        self.git('-C', self.source, 'fetch', str(self.remote), 'main')
+        self.git('-C', self.source, 'reset', '--hard', 'FETCH_HEAD')
+        lock = self.source / '.af/af.lock'
+        lock.write_text(lock.read_text().replace(old, new))
+        self.commit('reviewed release pin')
+        self.git('-C', self.source, 'push', str(self.remote), 'main')
+
+    def test_two_next_patch_rcs_and_explicit_stable_have_separate_runs(self):
+        self.set_published_main('0.15.1')
+        expected = ('0.15.2-rc.1', '0.15.2-rc.2', '0.15.2')
+        previous = '0.15.1'
+        for run_id, version in enumerate(expected, 1):
+            with self.subTest(version=version):
+                args = [] if previous == '0.15.1' else ['--new']
+                if version == '0.15.2':
+                    before = (self.state / 'run.json').read_bytes()
+                    self.assertIn('version_conflict',
+                                  self.cli('rc', '--version', version, ok=False).stderr)
+                    self.assertEqual((self.state / 'run.json').read_bytes(), before)
+                    args += ['--version', version]
+                source = self.git('--git-dir', self.remote, 'rev-parse', 'main')
+                self.data(release_run_id=run_id)
+                self.cli('rc', *args)
+                waiting = self.state_value()
+                self.assertEqual(waiting['plan']['version'], version)
+                self.assertEqual(waiting['plan']['source'], source)
+                self.assertEqual(waiting['receipts']['checks']['checks'][0]['plan']['version'], version)
+                self.assertFalse(waiting['published'])
+                self.publish_assets(waiting)
+                self.cli('resume')
+                ready = self.state_value()
+                self.assertTrue(ready['published'])
+                self.assertEqual(ready['pin']['state'], 'PENDING')
+                self.assertEqual(ready['identity'], waiting['identity'])
+                shutil.rmtree(self.base / 'assets')
+                self.merge_release_pin(previous, version)
+                previous = version
+        self.assertEqual(self.data()['effects'].count('merge'), 3)
+        self.assertEqual(len(list((self.state / 'history').glob('0.15.2-rc.*-*.json'))), 2)
+        before = (self.state / 'run.json').read_bytes()
+        self.assertIn('version_conflict', self.cli('rc', ok=False).stderr)
+        self.assertEqual((self.state / 'run.json').read_bytes(), before)
+        self.assertEqual(json.loads(self.cli('plan', '--new').stdout)['plan']['version'], '0.15.3-rc.1')
+
+    def test_next_patch_respects_inventory_and_preserves_a_late_draft(self):
+        self.set_published_main('0.15.1')
+        published = self.data()['releases']
+        self.git('--git-dir', self.remote, 'tag', 'v0.15.2-rc.2', 'main')
+        self.data(releases=[*published, {'id': 2, 'tag_name': 'v0.15.2-rc.3', 'draft': True}])
+        self.assertIn('version_conflict',
+                      self.cli('plan', '--version', '0.15.1-rc.4', ok=False).stderr)
+        branch = 'refs/heads/release/v0.15.2-rc.4'
+        self.git('--git-dir', self.remote, 'branch', 'release/v0.15.2-rc.4', 'main')
+        self.assertIn('branch_collision', self.cli('plan', ok=False).stderr)
+        self.git('--git-dir', self.remote, 'update-ref', '-d', branch)
+        self.assertEqual(json.loads(self.cli('plan').stdout)['plan']['version'], '0.15.2-rc.4')
+        releases = [*self.data()['releases'], {'id': 3, 'tag_name': 'v0.15.2-rc.4', 'draft': True}]
+        self.data(releases=releases)
+        self.assertIn('version_conflict', self.cli('rc', ok=False).stderr)
+        self.assertEqual(self.state_value()['plan']['version'], '0.15.2-rc.4')
+        self.assertEqual(self.data()['releases'], releases)
+        self.assertNotIn('push', self.data()['effects'])
+        self.assertNotIn('merge', self.data()['effects'])
+
+    def test_stable_promotion_refuses_unpublished_superseded_and_unpinned_rcs(self):
+        self.set_published_main('0.15.1-rc.8')
+        release = self.data()['releases'][0]
+        for releases, message in (
+                ([{**release, 'draft': True}], 'promotion_prerequisite'),
+                ([], 'promotion_prerequisite'),
+                ([release, {'id': 2, 'tag_name': 'v0.15.1', 'draft': True}], 'version_conflict'),
+                ([release, {'id': 2, 'tag_name': 'v0.15.1-rc.9', 'draft': True}], 'version_conflict')):
+            with self.subTest(releases=releases):
+                self.data(releases=releases)
+                self.assertIn(message, self.cli('rc', '--version', '0.15.1', ok=False).stderr)
+                self.assertFalse((self.state / 'run.json').exists())
+        self.data(releases=[release])
+        self.assertIn('promotion_prerequisite', self.cli('rc', '--version', '0.15.2', ok=False).stderr)
+        self.git('--git-dir', self.remote, 'tag', '-f', 'v0.15.1-rc.8', self.initial)
+        self.assertIn('promotion_prerequisite', self.cli('rc', '--version', '0.15.1', ok=False).stderr)
+        self.git('--git-dir', self.remote, 'tag', '-f', 'v0.15.1-rc.8', 'main')
+        self.merge_release_pin('0.15.1-rc.8', '0.15.1')
+        self.assertIn('pin_prerequisite', self.cli('rc', '--version', '0.15.1', ok=False).stderr)
+        self.merge_release_pin('0.15.1', '0.15.1-rc.8')
+        self.merge_release_pin('0.15.1-rc.8', '0.15.1-rc.3')
+        self.assertIn('pin_prerequisite', self.cli('rc', '--version', '0.15.1', ok=False).stderr)
+        self.assertEqual(self.data().get('effects', []), [])
 
     def test_next_cut_requires_explicit_new_and_keeps_terminal_receipt(self):
         self.cli('rc')

@@ -32,6 +32,7 @@ observation = importlib.util.module_from_spec(_observation_spec)
 _observation_spec.loader.exec_module(observation)
 
 ALLOWED = ('Cargo.toml', 'Cargo.lock', 'CHANGELOG.md', 'scripts/release-contract.json')
+RELEASE_VERSION = re.compile(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-rc\.([1-9][0-9]*))?')
 
 RUN_REQUIRED = ('schema', 'plan', 'identity', 'authorization', 'created', 'updated',
                 'receipts', 'stage', 'status')
@@ -211,7 +212,7 @@ def safe_prepublication_failure(state, tree):
             or not state['failure'] or state['stage'] not in STAGES[:3]
             or any(key in state for key in ('merged', 'published'))
             or set(state['receipts']) != set(STAGES[:STAGES.index(state['stage']) + 1])
-            or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+-rc\.[1-9][0-9]*', plan['version'])):
+            or not RELEASE_VERSION.fullmatch(plan['version'])):
         return False
     shapes = {
         ('preflight', 'planned'): {'status', 'at', 'source', 'checks', 'features', 'planned_paths'},
@@ -752,7 +753,10 @@ class Controller:
                     for name in ('scripts/af-pin.py', '.af/af.lock', 'CHANGELOG.md',
                                  '.github/workflows/release.yml'):
                         cache_path(tree / name)
-                    run(['python3', '-I', 'scripts/af-pin.py', '--check-next', version], tree)
+                    pin_check = ['python3', '-I', 'scripts/af-pin.py', '--check-next', version]
+                    if '-rc.' not in version:
+                        pin_check += ['--from', self.workspace_version(source)]
+                    run(pin_check, tree)
                 except (Refusal, OSError, ValueError):
                     raise Refusal(f'pin_prerequisite: prospective release {version} requires the current or previous '
                                   'non-yanked release pin and every target digest; prepare and merge a '
@@ -766,6 +770,54 @@ class Controller:
             finally:
                 self.git('worktree', 'remove', '--force', tree)
 
+    def workspace_version(self, source):
+        manifest = self.blob(source, 'Cargo.toml')
+        match = re.search(r'^version = "([^"]+)"', manifest, re.M)
+        if not match or not RELEASE_VERSION.fullmatch(match[1]):
+            raise Refusal('version_conflict: invalid workspace release version')
+        return match[1]
+
+    def require_published_source(self, source, version, tags, releases, prerelease):
+        tag = 'v' + version
+        release = releases.get(tag, {})
+        if (tag not in tags or release.get('draft') is not False
+                or release.get('prerelease') is not prerelease):
+            raise Refusal('promotion_prerequisite: fetched main must contain a published ' + tag)
+        commit = self.git('rev-parse', 'refs/tags/' + tag + '^{commit}')
+        if self.git('merge-base', source, commit) != commit or self.workspace_version(commit) != version:
+            raise Refusal('promotion_prerequisite: published tag must name matching release source on main')
+
+    def select_version(self, source, requested):
+        current = self.workspace_version(source)
+        major, minor, patch, rc = RELEASE_VERSION.fullmatch(current).groups()
+        tags = set(self.git('tag', '--list').splitlines())
+        releases = {row['tag_name']: row for row in self.releases()}
+        used = tags | releases.keys()
+        base = f'{major}.{minor}.{patch}'
+        selected = RELEASE_VERSION.fullmatch(requested) if requested is not None else None
+        if requested is not None and not selected:
+            raise Refusal('version_conflict: expected X.Y.Z or X.Y.Z-rc.N')
+        stable = selected is not None and selected[4] is None
+        if stable and (rc is None or requested != base):
+            raise Refusal('promotion_prerequisite: stable version must match the RC on fetched main')
+        if rc is None:
+            self.require_published_source(source, current, tags, releases, prerelease=False)
+            base = f'{major}.{minor}.{int(patch) + 1}'
+        if 'v' + base in used:
+            raise Refusal('version_conflict: stable version on the selected line is already reserved')
+        numbers = [int(match[1]) for tag in used
+                   if (match := re.fullmatch('v' + re.escape(base) + r'-rc\.([1-9][0-9]*)', tag))]
+        latest = max(numbers, default=0)
+        if stable:
+            if latest > int(rc):
+                raise Refusal('version_conflict: a newer RC on this line is already reserved')
+            self.require_published_source(source, current, tags, releases, prerelease=True)
+            return requested
+        latest = max(latest, int(rc or 0))
+        if selected and (requested.rsplit('-rc.', 1)[0] != base or int(selected[4]) <= latest):
+            raise Refusal('version_conflict: RC must be on the selected line and higher than all reserved RCs')
+        return requested or f'{base}-rc.{latest + 1}'
+
     def new_run(self):
         if not self.path.exists() and not self.path.is_symlink():
             return
@@ -774,7 +826,7 @@ class Controller:
         if previous['plan']['repo'] != self.args.repo or previous['plan']['remote'] != self.args.remote:
             raise Refusal('foreign_state: repository differs')
         version = previous['plan']['version']
-        if not isinstance(version, str) or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-rc\.[1-9][0-9]*)?', version):
+        if not isinstance(version, str) or not RELEASE_VERSION.fullmatch(version):
             raise Refusal('foreign_state: invalid archived version')
         ready = previous.get('published') is True and previous['status'] == 'ready'
         if not ready and not safe_prepublication_failure(previous, self.tree):
@@ -823,16 +875,19 @@ class Controller:
 
     def plan(self, authorized):
         if self.path.exists():
-            self.state = load(self.path)
-            p = self.state['plan']
+            retained = load(self.path)
+            p = retained['plan']
             if p['repo'] != self.args.repo or p['remote'] != self.args.remote:
                 raise Refusal('identity_conflict: repository or remote differs')
-            if self.args.version and p['version'] != self.args.version:
+            if self.args.version is not None and p['version'] != self.args.version:
                 raise Refusal('version_conflict: resume never selects another version')
             if self.args.profile and p['profile'] != self.args.profile:
                 raise Refusal('profile_conflict: resume retains captured validation policy')
             if self.args.source and p['source'] != self.args.source:
                 raise Refusal('source_conflict: resume never retargets source')
+            if authorized and self.args.version is None and '-rc.' not in p['version']:
+                raise Refusal('version_conflict: specify the exact stable version or resume its authorized run')
+            self.state = retained
             if authorized and not self.state['authorization']:
                 self.state['authorization'] = AUTHORIZATION
                 save(self.path, self.state)
@@ -857,21 +912,7 @@ class Controller:
         if self.args.source and self.args.source != source:
             raise Refusal('authority_source_mismatch: --source must equal fetched main')
         policy = self.preflight(source)
-        manifest = self.blob(source, 'Cargo.toml')
-        current = re.search(r'^version = "([^"]+)"', manifest, re.M)[1]
-        base = current.split('-')[0]
-        versions = set(self.git('tag', '--list').splitlines())
-        releases = self.releases()
-        versions.update(row['tag_name'] for row in releases)
-        numbers = [int(t.rsplit('.', 1)[1]) for t in versions
-                   if re.fullmatch('v' + re.escape(base) + r'-rc\.\d+', t)]
-        if '-rc.' in current:
-            numbers.append(int(current.rsplit('.', 1)[1]))
-        version = self.args.version or (base + '-rc.' + str(max(numbers, default=0) + 1))
-        if not re.fullmatch(re.escape(base) + r'-rc\.[1-9]\d*', version):
-            raise Refusal('version_conflict: RC must use the current reviewed version base')
-        if int(version.rsplit('.', 1)[1]) <= max(numbers, default=0):
-            raise Refusal('version_conflict: version already used or older than source')
+        version = self.select_version(source, self.args.version)
         self.source_checks(source, version)
         branch = 'release/v' + version
         if self.git('ls-remote', 'origin', 'refs/heads/' + branch):
@@ -1011,6 +1052,8 @@ class Controller:
         pr = self.find_pr()
         if not pr or pr['state'] != 'MERGED':
             self.unchanged_main()
+            if not pr:
+                self.select_version(p['source'], p['version'])
             if not remote:
                 self.receipt('branch', 'intent', commit=self.state['candidate'])
                 self.git('push', 'origin', self.state['candidate'] + ':refs/heads/' + p['branch'])
@@ -1043,6 +1086,7 @@ class Controller:
                              next='waiting for acknowledged merge; resume if stopped')
                 return
             self.unchanged_main()
+            self.select_version(p['source'], p['version'])
             self.merge_prerequisite()
             self.receipt('merge', 'intent', number=pr['number'])
             self.gh('pr', 'merge', str(pr['number']), '--squash', '--match-head-commit', self.state['candidate'])
@@ -1147,7 +1191,7 @@ class Controller:
         self.state['published'] = True
         self.state['pin'] = pins[0] if len(pins) == 1 else self.state.get('pin', {'state': 'PENDING', 'url': None})
         self.receipt('publication', 'ready', url=release['html_url'], checksums=sums,
-                     next='test RC; review pin-only PR separately')
+                     next=('test RC; ' if '-rc.' in p['version'] else '') + 'review pin-only PR separately')
 
     def drive(self):
         while True:
@@ -1203,7 +1247,7 @@ def main():
     parser.add_argument('--state', type=Path, help='owned private directory outside source')
     parser.add_argument('--profile', choices=('fast', 'full'), help='hosted CI validation profile (default fast)')
     parser.add_argument('--source', help='optional required exact fetched main SHA')
-    parser.add_argument('--version', help='optional exact reserved RC version')
+    parser.add_argument('--version', help='exact RC version or explicit stable promotion')
     parser.add_argument('--format', choices=('json', 'markdown'), default='markdown')
     parser.add_argument('--new', action='store_true', help='archive ready or conclusively failed prepublication run and plan separately')
     parser.add_argument('--timeout', type=int, default=21600,
