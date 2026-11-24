@@ -487,6 +487,17 @@ class Controller:
         rows = self.git('ls-remote', 'origin', 'refs/heads/' + self.state['plan']['branch']).split()
         return rows[0] if rows else None
 
+    def reconcile_branch(self):
+        remote = self.remote_branch()
+        if remote:
+            if remote != self.state['candidate']:
+                raise Refusal('branch_collision: foreign release head')
+            prior = self.state['receipts'].get('branch', {})
+            # A waiting receipt only preserves push intent if it carries the commit.
+            if prior.get('status') not in ('intent', 'waiting', 'complete') or prior.get('commit') != remote:
+                raise Refusal('branch_collision: no durable matching push intent')
+        return remote
+
     def preflight(self, source):
         policy = json.loads((ROOT / 'scripts/release-policy.json').read_text())
         for name in ('dev', 'scripts/dev-release.py', 'scripts/release-policy.json',
@@ -1046,15 +1057,14 @@ class Controller:
                 raise Refusal('tag_collision: reserved version was tagged before this release merged')
         self.prepare()
         self.validate()
-        remote = self.remote_branch()
-        if remote and remote != self.state['candidate']:
-            raise Refusal('branch_collision: foreign release head')
+        remote = self.reconcile_branch()
         pr = self.find_pr()
         if not pr or pr['state'] != 'MERGED':
             self.unchanged_main()
             if not pr:
                 self.select_version(p['source'], p['version'])
-            if not remote:
+            # Recheck absence after PR, main and version lookups, before recording intent.
+            if not remote and not self.reconcile_branch():
                 ref = 'refs/heads/' + p['branch']
                 self.receipt('branch', 'intent', commit=self.state['candidate'])
                 # An empty expected value requires an absent ref, even for a fast-forward.

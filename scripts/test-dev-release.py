@@ -104,7 +104,7 @@ def fixture_barrier(path, args, command='git'):
     generation = data.get('control_generation', 0)
     validation = stage == 'validation'
     if validation:
-        # execute(): validate -> remote_branch -> find_pr -> branch intent/push.
+        # execute(): validate -> reconcile_branch -> find_pr -> recheck before push.
         # Hold find_pr BEFORE running it, never claim its response was consumed.
         expected = ['pr', 'list', '--head', state.get('plan', {}).get('branch'),
                     '--state', 'all', '--json',
@@ -234,6 +234,7 @@ if name=='git':
  if p.returncode: d['last_git_error']=p.stderr.decode();save()
  if key and p.returncode==0:
   d.setdefault('effects',[]).append(key);save();crash(key,'after')
+  if key=='push' and d.get('hold_push_response'): time.sleep(60)
  sys.exit(p.returncode)
 if name=='cargo':
  if a==['--version']: print('cargo test');sys.exit(0)
@@ -2383,6 +2384,77 @@ class ReleaseCLI(unittest.TestCase):
                 self.assertEqual(self.git(*remote, 'rev-parse', ref), source)
                 self.assertEqual(self.state_value()['identity'], state['identity'])
                 self.assertFalse({'push', 'pr', 'merge'} & set(self.data()['effects']))
+
+    def test_identical_foreign_branch_without_push_intent(self):
+        self.set_published_main('0.15.1-rc.3')
+        self.data(metadata_check_fail=True)
+        self.cli('rc', '--version', '0.15.1', ok=False)
+        state = self.state_value()
+        self.assertNotIn('branch', state['receipts'])
+        self.push_foreign_candidate(state)
+        self.data(metadata_check_fail=False)
+        self.assert_unowned_branch_refused(self.cli('resume', ok=False).stderr, state)
+
+    def test_identical_foreign_branch_after_first_lookup(self):
+        for interrupted in (False, True):
+            with self.subTest(interrupted=interrupted):
+                self.state = self.base / ('state-' + str(interrupted))
+                self.remote = self.base / ('remote-' + str(interrupted) + '.git')
+                self.git('clone', '--bare', '--no-local', self.source, self.remote)
+                publish_fixture_db(self.db, {'remote': str(self.remote), 'source': str(self.source)})
+                self.data(barrier_stage='validation', checks='fail')
+                process = self.start_driver()
+                state = self.await_stage(process, 'validation')
+                generation = self.data()['control_generation']
+                self.push_foreign_candidate(state)
+                if interrupted:
+                    process.send_signal(signal.SIGINT)
+                self.release_barrier(process, 'validation', generation)
+                _, err = process.communicate(timeout=10)
+                if interrupted:
+                    self.assertEqual(process.returncode, 130, err)
+                    state = self.state_value()
+                    self.assertEqual(state['receipts']['branch']['status'], 'waiting')
+                    self.assertNotIn('commit', state['receipts']['branch'])
+                    err = self.cli('resume', ok=False).stderr
+                else:
+                    self.assertEqual(process.returncode, 1, err)
+                self.assert_unowned_branch_refused(err, state)
+
+    def push_foreign_candidate(self, state):
+        ref = 'refs/heads/' + state['plan']['branch']
+        self.git('--git-dir', self.state / 'repository.git', 'push', str(self.remote),
+                 state['candidate'] + ':' + ref)
+
+    def assert_unowned_branch_refused(self, stderr, state):
+        self.assertIn('branch_collision', stderr)
+        current = self.state_value()
+        self.assertEqual(current['identity'], state['identity'])
+        self.assertEqual(current['receipts'].get('branch'), state['receipts'].get('branch'))
+        self.assertFalse({'pr', 'checks', 'merge', 'publication'} & current['receipts'].keys())
+        self.assertFalse({'push', 'pr', 'merge'} & set(self.data().get('effects', [])))
+        ref = 'refs/heads/' + state['plan']['branch']
+        self.assertEqual(self.git('--git-dir', self.remote, 'rev-parse', ref), state['candidate'])
+
+    def test_push_timeout_reconciles_exact_branch_intent(self):
+        self.data(hold_push_response=True, checks='pending')
+        result = self.cli('rc', '--timeout', '10', ok=False)
+        self.assertEqual(result.returncode, 124, result.stderr)
+        state = self.state_value()
+        receipt = state['receipts']['branch']
+        self.assertEqual(receipt['status'], 'waiting')
+        self.assertEqual(receipt['commit'], state['candidate'])
+        self.assertIn('driver_timeout', receipt['next'])
+        self.assertEqual(self.data()['effects'].count('push'), 1)
+        self.assertNotIn('pr', self.data()['effects'])
+        self.data(hold_push_response=False)
+        self.cli('resume')
+        current = self.state_value()
+        self.assertEqual(current['identity'], state['identity'])
+        self.assertEqual(current['receipts']['branch']['status'], 'complete')
+        self.assertEqual(current['receipts']['branch']['commit'], state['candidate'])
+        self.assertEqual(self.data()['effects'].count('push'), 1)
+        self.assertEqual(self.data()['effects'].count('pr'), 1)
 
     def test_conflicting_source_version_and_foreign_branch(self):
         self.assertIn('authority_source_mismatch', self.cli('plan', '--source', '0' * 40, ok=False).stderr)
