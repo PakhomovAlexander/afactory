@@ -195,6 +195,11 @@ because its last command failed. Interrupted unsealed preparation can be reconst
 source in the owned registered worktree. Foreign state is refused. Publication reruns retain matching
 assets and verify an existing signature instead of overwriting assets.
 
+For both RC cuts and stable promotions, the push creates the release branch only while its
+remote ref is absent. If another creator wins, even a branch at the approved main commit
+stays at that commit. After a lost push response, `resume` can continue when the remote head
+matches the run's sealed candidate exactly.
+
 Release inventory requires two matching complete traversals, each bounded to ten pages of
 100 records. Ordered records (including drafts and assets) and pagination links must match;
 a detected change fails closed. Requests use locally constructed page endpoints, never Link

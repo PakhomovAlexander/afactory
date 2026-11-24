@@ -1055,8 +1055,11 @@ class Controller:
             if not pr:
                 self.select_version(p['source'], p['version'])
             if not remote:
+                ref = 'refs/heads/' + p['branch']
                 self.receipt('branch', 'intent', commit=self.state['candidate'])
-                self.git('push', 'origin', self.state['candidate'] + ':refs/heads/' + p['branch'])
+                # An empty expected value requires an absent ref, even for a fast-forward.
+                self.git('push', '--force-with-lease=' + ref + ':', 'origin',
+                         self.state['candidate'] + ':' + ref)
                 if self.remote_branch() != self.state['candidate']:
                     raise Refusal('branch_ambiguous: reconcile with resume')
             self.receipt('branch', 'complete', commit=self.state['candidate'])

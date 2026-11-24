@@ -225,6 +225,10 @@ if name=='git':
   print('fixture branch lookup failed after validation',file=sys.stderr);sys.exit(56)
  key = 'push' if 'push' in a else ('prepare' if 'commit-tree' in a else '')
  if key: crash(key,'before')
+ if key=='push' and d.get('compete_before_push'):
+  ref = a[-1].split(':', 1)[1]
+  subprocess.run([os.environ['REAL_GIT'], '--git-dir', d['remote'],
+                  'update-ref', ref, 'refs/heads/main', ''], check=True)
  p=subprocess.run([os.environ['REAL_GIT'],*a],capture_output=True)
  sys.stdout.buffer.write(p.stdout); sys.stderr.buffer.write(p.stderr)
  if p.returncode: d['last_git_error']=p.stderr.decode();save()
@@ -2342,10 +2346,43 @@ class ReleaseCLI(unittest.TestCase):
                     self.git('clone', '--bare', '--no-local', self.source, self.remote)
                     publish_fixture_db(self.db, {'remote': str(self.remote), 'source':str(self.source), 'crash': effect + ':' + when})
                     self.cli('rc', ok=False)
+                    if effect == 'push':
+                        state = self.state_value()
+                        self.assertEqual(state['receipts']['branch']['status'], 'intent')
+                        self.assertEqual(state['receipts']['branch']['commit'], state['candidate'])
                     self.cli('resume')
+                    self.assertEqual(self.data()['effects'].count('push'), 1)
                     self.assertEqual(self.data()['effects'].count('pr'), 1)
                     self.assertEqual(self.data()['effects'].count('merge'), 1)
                     self.assertEqual(self.state_value()['status'], 'waiting')
+
+    def test_release_push_never_updates_a_competing_branch(self):
+        self.set_published_main('0.15.1-rc.3')
+        published_remote = self.remote
+        releases = self.data()['releases']
+        for version, args in (('0.15.1-rc.4', ()), ('0.15.1', ('--version', '0.15.1'))):
+            with self.subTest(version=version):
+                self.state = self.base / ('state-' + version)
+                self.remote = self.base / ('remote-' + version + '.git')
+                self.git('clone', '--bare', '--no-local', published_remote, self.remote)
+                publish_fixture_db(self.db, {'remote': str(self.remote), 'source': str(self.source),
+                                             'releases': releases, 'compete_before_push': True})
+                result = self.cli('rc', *args, ok=False)
+                self.assertIn('command_failed: git push', result.stderr)
+                state = self.state_value()
+                ref = 'refs/heads/release/v' + version
+                remote = ('--git-dir', self.remote)
+                self.assertEqual(state['plan']['version'], version)
+                source = state['plan']['source']
+                self.assertEqual(self.git('--git-dir', self.state / 'repository.git',
+                                          'rev-parse', state['candidate'] + '^'), source)
+                self.assertEqual(self.git(*remote, 'rev-parse', ref), source)
+                self.assertEqual(state['receipts']['branch']['status'], 'intent')
+                self.assertEqual(state['receipts']['branch']['commit'], state['candidate'])
+                self.assertIn('branch_collision', self.cli('resume', ok=False).stderr)
+                self.assertEqual(self.git(*remote, 'rev-parse', ref), source)
+                self.assertEqual(self.state_value()['identity'], state['identity'])
+                self.assertFalse({'push', 'pr', 'merge'} & set(self.data()['effects']))
 
     def test_conflicting_source_version_and_foreign_branch(self):
         self.assertIn('authority_source_mismatch', self.cli('plan', '--source', '0' * 40, ok=False).stderr)
