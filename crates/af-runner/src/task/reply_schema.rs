@@ -358,19 +358,22 @@ pub fn normalize_strict_reply(input: &[u8], reply: &[u8]) -> Vec<u8> {
             continue;
         };
         for item in items {
-            strip_optional_nulls(item, schema, 0);
+            let mut normalized = item.clone();
+            if strip_optional_nulls(&mut normalized, schema, 0) {
+                *item = normalized;
+            }
         }
     }
     serde_json::to_vec(&value).unwrap_or_else(|_| reply.to_vec())
 }
 
-fn strip_optional_nulls(value: &mut Value, schema: &Value, depth: usize) {
+fn strip_optional_nulls(value: &mut Value, schema: &Value, depth: usize) -> bool {
     if depth > 32 {
-        return;
+        return false;
     }
     // Preserve original valid values before attempting synthetic-null removal in a union.
     if super::schema_validator(schema).is_ok_and(|v| v.is_valid(value)) {
-        return;
+        return true;
     }
     if let (Some(object), Some(properties)) = (
         value.as_object_mut(),
@@ -391,18 +394,22 @@ fn strip_optional_nulls(value: &mut Value, schema: &Value, depth: usize) {
                 })
         });
         for (name, field) in object.iter_mut() {
-            if let Some(property) = properties.get(name) {
-                strip_optional_nulls(field, property, depth + 1);
+            if let Some(property) = properties.get(name)
+                && !strip_optional_nulls(field, property, depth + 1)
+            {
+                return false;
             }
         }
     }
     if let (Some(items), Some(item_schema)) = (value.as_array_mut(), schema.get("items")) {
         for item in items {
-            strip_optional_nulls(item, item_schema, depth + 1);
+            if !strip_optional_nulls(item, item_schema, depth + 1) {
+                return false;
+            }
         }
     }
     if super::schema_validator(schema).is_ok_and(|v| v.is_valid(value)) {
-        return;
+        return true;
     }
     // Normalize siblings first; a branch may only remove nulls when the complete
     // enclosing contract accepts the result. Prefer the valid candidate retaining the
@@ -420,7 +427,9 @@ fn strip_optional_nulls(value: &mut Value, schema: &Value, depth: usize) {
         if let Some(branches) = schema.get(keyword).and_then(Value::as_array) {
             for branch in branches {
                 let mut normalized = value.clone();
-                strip_optional_nulls(&mut normalized, branch, depth + 1);
+                if !strip_optional_nulls(&mut normalized, branch, depth + 1) {
+                    return false;
+                }
                 let retained = nulls(&normalized);
                 if super::schema_validator(schema).is_ok_and(|v| v.is_valid(&normalized))
                     && best.as_ref().is_none_or(|(count, _)| retained > *count)
@@ -433,6 +442,7 @@ fn strip_optional_nulls(value: &mut Value, schema: &Value, depth: usize) {
     if let Some((_, normalized)) = best {
         *value = normalized;
     }
+    true
 }
 
 #[cfg(test)]
@@ -849,6 +859,32 @@ mod tests {
             json!({"nullable":null,"items":[{"tag":"a"},null]})
         );
     }
+    #[test]
+    fn depth_cutoff_discards_partial_payload_cleanup() {
+        let mut nested_schema = json!({"type":"string"});
+        let mut nested_value = json!(null);
+        for _ in 0..34 {
+            nested_schema = json!({"type":"object","properties":{"child":nested_schema},"required":["child"],"additionalProperties":false});
+            nested_value = json!({"child":nested_value});
+        }
+        let payload = json!({"type":"object","properties":{
+            "optional":{"type":"string"}, "nested":nested_schema
+        },"required":["nested"],"additionalProperties":false});
+        let input = request(BTreeMap::from([("result".into(), payload)]));
+        let reply = json!({"schema":"af.worker-reply/1","outputs":{"result":[
+            {"optional":null,"nested":nested_value}
+        ]}});
+        // Projection declines this depth, so exercise the bounded normalizer directly
+        // through its typed-reply API, independently of projection admission.
+        assert_eq!(strict(&input).unwrap(), None);
+        let normalized: Value = serde_json::from_slice(&normalize_strict_reply(
+            &input,
+            &serde_json::to_vec(&reply).unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(normalized, reply);
+    }
+
     #[test]
     fn union_normalization_respects_enclosing_required_nullable_fields() {
         for required in [json!(["a"]), json!([])] {
