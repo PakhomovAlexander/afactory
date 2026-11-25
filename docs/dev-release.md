@@ -25,7 +25,7 @@ the CLI has no admin or ruleset bypass mode.
 Use an owned mode-0700 state directory outside any source checkout. The default is
 `$XDG_STATE_HOME/afactory-release/OWNER--REPO` (falling back to `~/.local/state`). Share that directory
 between concurrent callers on one machine. A run retains its reservation and never automatically
-selects another version when resumed. Use `rc --new` after the existing release is ready, or to
+selects another version when resumed. Use `rc --new` (`make release NEW=1`) after the existing release is ready, or to
 replace a conclusively failed local prepublication run on corrected fetched source. `plan --new`
 creates a nonpublishing plan; a new explicit `rc` supplies its own authorization. Recovery refuses
 active/waiting runs, branch intent or later receipts, publication evidence and ambiguous state.
@@ -49,7 +49,34 @@ There is no background daemon.
 ./dev release resume --repo PakhomovAlexander/afactory
 ```
 
-The normal single command is `./dev release rc --repo OWNER/REPO`. Fresh or incomplete
+## Cutting RCs and promoting to stable
+
+From published stable `X.Y.Z` on fetched main, `make release` starts the next patch line at
+`X.Y.(Z+1)-rc.1` when unused. When main carries an RC, the next RC stays on that line.
+Tags and GitHub release records, including drafts, reserve their versions. The controller chooses
+an RC number above the workspace RC and all reserved RCs on the selected line. An existing release
+branch or PR for the selected version requires reconciliation before a new run can use it.
+
+For example, from published `0.15.1` with its pin merged, run the following commands in order.
+After each command reaches readiness, review and merge its separate pin PR before continuing.
+
+```sh
+make release                         # 0.15.2-rc.1
+make release NEW=1                   # 0.15.2-rc.2
+make release NEW=1 VERSION=0.15.2    # stable promotion of 0.15.2-rc.2
+```
+
+`VERSION=X.Y.Z` requires the matching RC on fetched main. Its published prerelease tag must
+name matching release source in main's history, no higher RC on that line can be reserved, and the
+plain version must be unused. The RC must be the newest non-yanked changelog entry and its reviewed
+pin must include every target digest. Stable promotion builds, validates and signs its own version
+from exact fetched main and opens its own pin PR. An implicit cut selects only an RC.
+`NEW=1` archives the earlier run before reserving another version. To continue an authorized stable
+run, repeat its exact `VERSION` without `NEW=1` or use `./dev release resume --repo OWNER/REPO`.
+
+## Source acquisition and prerequisites
+
+The controller entry point is `./dev release rc --repo OWNER/REPO`. Fresh or incomplete
 initialization automatically tries the invoking checkout as a local object cache when its actual
 origin is the selected GitHub repository (canonical HTTPS or `git@github.com:` spelling). Dirty
 files and local tags contribute no release authority. An isolated temporary bundle transfers only
@@ -109,8 +136,9 @@ independent of publication readiness.
 drives work.
 JSON includes the immutable plan and receipts; Markdown shows stages, elapsed seconds, next actions
 and URLs. `--source SHA` optionally asserts the exact fetched main. `--profile full` selects full hosted CI validation (fast is the default).
-`--version X.Y.Z-rc.N` asserts
-an exact unused RC on the current base; neither selector retargets an existing run.
+`--version X.Y.Z-rc.N` asserts an exact unused RC on the selected line, and
+`--version X.Y.Z` requests the explicit stable promotion. Both `plan` and `rc` take these selectors.
+An existing run retains its source and version.
 
 The optional `--remote /absolute/path/to/local.git` supports disposable local Git transports;
 GitHub identity still requires explicit `--repo`. Production defaults to matching credential-free
@@ -166,6 +194,15 @@ tag and release inventory; it does not promise exactly-once transport. Never del
 because its last command failed. Interrupted unsealed preparation can be reconstructed from pinned
 source in the owned registered worktree. Foreign state is refused. Publication reruns retain matching
 assets and verify an existing signature instead of overwriting assets.
+
+For both RC cuts and stable promotions, the push creates the release branch only while its
+remote ref is absent. The controller records intent before starting Git and directs Git's
+machine-readable result to private state. It requires Git to report a new branch. An exit
+zero with an up-to-date result does not establish ownership. After an interrupted or timed-out
+push, `resume` requires the creation result bound to this run, remote, ref and sealed candidate,
+plus a matching remote head. Once verified, that result becomes part of the branch receipt.
+If the ref exists and creation cannot be established, the controller reports `branch_collision`
+and stops before creating or merging a PR. Preserve the run for investigation.
 
 Release inventory requires two matching complete traversals, each bounded to ten pages of
 100 records. Ordered records (including drafts and assets) and pagination links must match;

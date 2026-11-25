@@ -463,7 +463,9 @@ manual measurement: run `make perf-kernel-measure` before a pull request changin
 ([ADR-0252](docs/adr/0252-keep-the-kernel-experiment-measurement-out-of-every-gate.md)).
 
 `make release` (or `./dev release rc --repo PakhomovAlexander/afactory`) reserves the next RC
-and opens a normal release PR with `release:fast` by default;
+and opens a normal release PR with `release:fast` by default. A published stable on main starts
+the next patch line. After publication and the separate pin PR merge, use `make release NEW=1` to
+cut another RC or `make release NEW=1 VERSION=X.Y.Z` to promote the matching published RC.
 `PROFILE=full` selects all classes. Provision the ten canonical labels with `make test-labels` (dry-run),
 then explicitly `make test-labels APPLY=1`; no PR labels are assigned by that setup command.
 Release preparation checks the profile label exists before changing source, committing or pushing.

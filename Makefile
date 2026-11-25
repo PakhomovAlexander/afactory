@@ -52,10 +52,10 @@ else
 	$(error TEST_RUNNER must be nextest or cargo)
 endif
 
-# Reserve the next RC and run the repository developer release controller. The
+# Select the next RC or an explicit stable version and run the release controller. The
 # workflow tags, checks, builds, signs, and publishes; reviewed metadata states compatibility.
 release:
-	./dev release rc --repo PakhomovAlexander/afactory --profile "$(or $(PROFILE),fast)" $(if $(VERSION),--version "$(VERSION)")
+	./dev release rc --repo PakhomovAlexander/afactory --profile "$(or $(PROFILE),fast)" $(if $(VERSION),--version "$(VERSION)") $(if $(filter 1,$(NEW)),--new)
 
 # Run the tests NEXTEST_FILTER selects NEXTEST_REPEAT times in a row under the gate's scheduling,
 # stopping at the first run that fails and never rerunning anything: the proof that a flake is

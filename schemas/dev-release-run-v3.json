@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "af.dev-release-run/2",
+  "title": "af.dev-release-run/3",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -16,7 +16,7 @@
   ],
   "properties": {
     "schema": {
-      "const": "af.dev-release-run/2"
+      "const": "af.dev-release-run/3"
     },
     "plan": {
       "type": "object",
@@ -182,7 +182,31 @@
             "next": {},
             "checksums": {},
             "features": {},
-            "commands": {}
+            "commands": {},
+            "creation": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          },
+          "if": {
+            "properties": {
+              "status": {
+                "const": "complete"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "commit",
+              "creation"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "creation"
+              ]
+            }
           }
         },
         "pr": {

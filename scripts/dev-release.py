@@ -22,7 +22,7 @@ import zipfile
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMA = 'af.dev-release-run/2'
+SCHEMA = 'af.dev-release-run/3'
 AUTHORIZATION = 'normal-release-pr-check-merge-and-signed-publication-v1'
 DRIVER_DEADLINE = None
 
@@ -32,6 +32,7 @@ observation = importlib.util.module_from_spec(_observation_spec)
 _observation_spec.loader.exec_module(observation)
 
 ALLOWED = ('Cargo.toml', 'Cargo.lock', 'CHANGELOG.md', 'scripts/release-contract.json')
+RELEASE_VERSION = re.compile(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-rc\.([1-9][0-9]*))?')
 
 RUN_REQUIRED = ('schema', 'plan', 'identity', 'authorization', 'created', 'updated',
                 'receipts', 'stage', 'status')
@@ -40,7 +41,7 @@ PLAN_FIELDS = ('repo', 'remote', 'source', 'version', 'branch', 'policy', 'profi
                'executor', 'date', 'signing_readiness', 'main_policy')
 STAGES = ('preflight', 'preparation', 'validation', 'branch', 'pr', 'checks', 'merge', 'publication')
 RECEIPT_FIELDS = ('status', 'at', 'source', 'checks', 'planned_paths', 'paths', 'key',
-                  'commit', 'url', 'number', 'next', 'checksums', 'features', 'commands')
+                  'commit', 'url', 'number', 'next', 'checksums', 'features', 'commands', 'creation')
 
 
 def canonical_workflow(path, expected):
@@ -51,6 +52,17 @@ def canonical_workflow(path, expected):
 
 
 def state_schema():
+    def receipt_schema(stage):
+        fields = {key: {} for key in RECEIPT_FIELDS if key != 'creation'}
+        schema = {'type': 'object', 'additionalProperties': False,
+                  'required': ['status', 'at'], 'properties': fields}
+        if stage == 'branch':
+            fields['creation'] = {'type': 'string', 'pattern': '^[0-9a-f]{64}$'}
+            schema.update({'if': {'properties': {'status': {'const': 'complete'}}},
+                           'then': {'required': ['commit', 'creation']},
+                           'else': {'not': {'required': ['creation']}}})
+        return schema
+
     properties = {key: {'type': 'string'} for key in (*RUN_REQUIRED, *RUN_OPTIONAL)}
     properties.update({
         'schema': {'const': SCHEMA}, 'authorization': {'enum': [None, AUTHORIZATION]},
@@ -60,11 +72,7 @@ def state_schema():
                  'properties': {key: {'type': 'object' if key == 'policy' else 'string'}
                                 for key in PLAN_FIELDS}},
         'receipts': {'type': 'object', 'additionalProperties': False,
-                     'properties': {stage: {
-                         'type': 'object', 'additionalProperties': False,
-                         'required': ['status', 'at'],
-                         'properties': {key: {} for key in RECEIPT_FIELDS}}
-                         for stage in STAGES}},
+                     'properties': {stage: receipt_schema(stage) for stage in STAGES}},
     })
     return {'$schema': 'https://json-schema.org/draft/2020-12/schema',
             'title': SCHEMA, 'type': 'object', 'additionalProperties': False,
@@ -81,10 +89,20 @@ def validate_state(state):
     policy = state['plan']['policy']
     if not isinstance(policy, dict) or policy.get('schema') != 'af.dev-release-policy/3':
         raise Refusal('foreign_state: unsupported release policy version')
-    for receipt in state['receipts'].values():
+    for stage, receipt in state['receipts'].items():
         if (not isinstance(receipt, dict) or set(receipt) - set(RECEIPT_FIELDS)
                 or not {'status', 'at'} <= set(receipt)):
             raise Refusal('foreign_state: invalid receipt fields')
+        if stage == 'branch' and receipt['status'] == 'complete':
+            candidate = state.get('candidate')
+            if (not isinstance(candidate, str) or not re.fullmatch('[0-9a-f]{40}', candidate)
+                    or not isinstance(state['plan']['branch'], str)
+                    or not isinstance(state['plan']['remote'], str)
+                    or receipt.get('commit') != state['candidate']
+                    or receipt.get('creation') != branch_creation_key(state)):
+                raise Refusal('foreign_state: invalid branch creation receipt')
+        elif 'creation' in receipt:
+            raise Refusal('foreign_state: unexpected branch creation evidence')
     if (state['authorization'] not in (None, AUTHORIZATION)
             or not isinstance(state['created'], int) or not isinstance(state['updated'], int)
             or state['stage'] not in STAGES):
@@ -111,9 +129,11 @@ def remaining():
     return min(14400, seconds)
 
 
-def run(argv, cwd=None, accepted=(0,), git_env=None):
+def run(argv, cwd=None, accepted=(0,), git_env=None, stdout=None):
     try:
-        result = subprocess.run([str(x) for x in argv], cwd=cwd, capture_output=True, text=True,
+        result = subprocess.run([str(x) for x in argv], cwd=cwd,
+                                stdout=subprocess.PIPE if stdout is None else stdout,
+                                stderr=subprocess.PIPE, text=True,
                                 env={**{k: v for k, v in os.environ.items() if not k.startswith('GIT_')},
                                      **(git_env or {}), 'GIT_TERMINAL_PROMPT': '0',
                                      'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1'},
@@ -128,7 +148,7 @@ def run(argv, cwd=None, accepted=(0,), git_env=None):
                           {'fetch', 'push', 'add', 'worktree', 'update-ref', 'commit-tree', 'api'}), str(argv[1]))
         raise Refusal('command_failed: %s %s (exit %s); inspect credentials/checks independently' %
                       (argv[0], operation, result.returncode))
-    return result.stdout.strip()
+    return result.stdout.strip() if stdout is None else None
 
 
 def check_gh_capabilities():
@@ -156,6 +176,12 @@ def check_gh_capabilities():
 
 def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+def branch_creation_key(state):
+    plan = state['plan']
+    return digest(['af.dev-release-branch-creation/1', state['identity'], plan['remote'],
+                   'refs/heads/' + plan['branch'], state['candidate']])
 
 
 def save(path, state):
@@ -211,7 +237,7 @@ def safe_prepublication_failure(state, tree):
             or not state['failure'] or state['stage'] not in STAGES[:3]
             or any(key in state for key in ('merged', 'published'))
             or set(state['receipts']) != set(STAGES[:STAGES.index(state['stage']) + 1])
-            or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+-rc\.[1-9][0-9]*', plan['version'])):
+            or not RELEASE_VERSION.fullmatch(plan['version'])):
         return False
     shapes = {
         ('preflight', 'planned'): {'status', 'at', 'source', 'checks', 'features', 'planned_paths'},
@@ -413,9 +439,9 @@ class Controller:
         self.tree = directory / 'candidate'
         self.state = None
 
-    def git(self, *args):
+    def git(self, *args, **kwargs):
         return run(['git', '-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-credential',
-                    '--git-dir', self.mirror, *args])
+                    '--git-dir', self.mirror, *args], **kwargs)
 
     def gh(self, *args):
         return run(['gh', *args, '--repo', self.args.repo])
@@ -483,8 +509,85 @@ class Controller:
               int(time.time()) - self.state['created'], details.get('next', details.get('url', ''))), file=sys.stderr)
 
     def remote_branch(self):
-        rows = self.git('ls-remote', 'origin', 'refs/heads/' + self.state['plan']['branch']).split()
+        plan = self.state['plan']
+        rows = self.git('ls-remote', plan['remote'], 'refs/heads/' + plan['branch']).split()
         return rows[0] if rows else None
+
+    def branch_output_path(self):
+        return self.directory / ('branch-push-' + branch_creation_key(self.state))
+
+    @contextlib.contextmanager
+    def branch_output(self, create=False):
+        # Git inherits the locked open file description as stdout. A recovering
+        # controller cannot inspect or clear it while an earlier Git still holds it.
+        flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
+        try:
+            fd = os.open(self.branch_output_path(), flags | (os.O_CREAT if create else 0), 0o600)
+        except FileNotFoundError:
+            if create:
+                raise
+            yield None
+            return
+        with os.fdopen(fd, 'r+b', buffering=0) as stream:
+            metadata = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid()
+                    or metadata.st_mode & 0o077 or metadata.st_nlink != 1):
+                raise Refusal('foreign_state: invalid branch push output')
+            try:
+                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise Refusal('branch_ambiguous: earlier Git push still holds the result; resume later') from None
+            yield stream
+
+    def branch_was_created(self, stream):
+        if stream is None:
+            return False
+        plan = self.state['plan']
+        refspec = self.state['candidate'] + ':refs/heads/' + plan['branch']
+        # Porcelain '*' means creation, whereas '=' is an up-to-date no-op
+        # even when Git exits successfully under an empty force-with-lease.
+        expected = os.fsencode('To ' + plan['remote'] + '\n*\t' + refspec + '\t[new branch]\nDone\n')
+        stream.seek(0)
+        return stream.read(len(expected) + 1) == expected
+
+    def push_branch(self):
+        plan = self.state['plan']
+        candidate = self.state['candidate']
+        ref = 'refs/heads/' + plan['branch']
+        if self.state['receipts'].get('branch', {}).get('status') == 'complete':
+            raise Refusal('branch_collision: previously created release head is missing')
+        self.receipt('branch', 'intent', commit=candidate)
+        with self.branch_output(create=True) as stream:
+            if self.branch_was_created(stream):
+                raise Refusal('branch_collision: previously created release head changed during reconciliation')
+            stream.seek(0)
+            stream.truncate()
+            # Keep the result reachable even if the controller dies before it
+            # can receive Git's exit status. Keep stderr out of retained state.
+            sync_directory(self.directory)
+            try:
+                self.git('push', '--porcelain', '--no-follow-tags', '--recurse-submodules=no',
+                         '--force-with-lease=' + ref + ':', plan['remote'],
+                         candidate + ':' + ref, stdout=stream, git_env={'LC_ALL': 'C'})
+            finally:
+                os.fsync(stream.fileno())
+            if not self.branch_was_created(stream):
+                raise Refusal('branch_collision: Git did not report creating the release head')
+
+    def reconcile_branch(self):
+        remote = self.remote_branch()
+        if remote:
+            if remote != self.state['candidate']:
+                raise Refusal('branch_collision: foreign release head')
+            prior = self.state['receipts'].get('branch', {})
+            if prior.get('status') not in ('intent', 'waiting', 'complete') or prior.get('commit') != remote:
+                raise Refusal('branch_collision: no durable matching push intent')
+            if prior.get('creation') != branch_creation_key(self.state):
+                with self.branch_output() as stream:
+                    if not self.branch_was_created(stream):
+                        raise Refusal('branch_collision: no durable Git result creating the release head')
+                    os.fsync(stream.fileno())
+        return remote
 
     def preflight(self, source):
         policy = json.loads((ROOT / 'scripts/release-policy.json').read_text())
@@ -752,7 +855,10 @@ class Controller:
                     for name in ('scripts/af-pin.py', '.af/af.lock', 'CHANGELOG.md',
                                  '.github/workflows/release.yml'):
                         cache_path(tree / name)
-                    run(['python3', '-I', 'scripts/af-pin.py', '--check-next', version], tree)
+                    pin_check = ['python3', '-I', 'scripts/af-pin.py', '--check-next', version]
+                    if '-rc.' not in version:
+                        pin_check += ['--from', self.workspace_version(source)]
+                    run(pin_check, tree)
                 except (Refusal, OSError, ValueError):
                     raise Refusal(f'pin_prerequisite: prospective release {version} requires the current or previous '
                                   'non-yanked release pin and every target digest; prepare and merge a '
@@ -766,6 +872,54 @@ class Controller:
             finally:
                 self.git('worktree', 'remove', '--force', tree)
 
+    def workspace_version(self, source):
+        manifest = self.blob(source, 'Cargo.toml')
+        match = re.search(r'^version = "([^"]+)"', manifest, re.M)
+        if not match or not RELEASE_VERSION.fullmatch(match[1]):
+            raise Refusal('version_conflict: invalid workspace release version')
+        return match[1]
+
+    def require_published_source(self, source, version, tags, releases, prerelease):
+        tag = 'v' + version
+        release = releases.get(tag, {})
+        if (tag not in tags or release.get('draft') is not False
+                or release.get('prerelease') is not prerelease):
+            raise Refusal('promotion_prerequisite: fetched main must contain a published ' + tag)
+        commit = self.git('rev-parse', 'refs/tags/' + tag + '^{commit}')
+        if self.git('merge-base', source, commit) != commit or self.workspace_version(commit) != version:
+            raise Refusal('promotion_prerequisite: published tag must name matching release source on main')
+
+    def select_version(self, source, requested):
+        current = self.workspace_version(source)
+        major, minor, patch, rc = RELEASE_VERSION.fullmatch(current).groups()
+        tags = set(self.git('tag', '--list').splitlines())
+        releases = {row['tag_name']: row for row in self.releases()}
+        used = tags | releases.keys()
+        base = f'{major}.{minor}.{patch}'
+        selected = RELEASE_VERSION.fullmatch(requested) if requested is not None else None
+        if requested is not None and not selected:
+            raise Refusal('version_conflict: expected X.Y.Z or X.Y.Z-rc.N')
+        stable = selected is not None and selected[4] is None
+        if stable and (rc is None or requested != base):
+            raise Refusal('promotion_prerequisite: stable version must match the RC on fetched main')
+        if rc is None:
+            self.require_published_source(source, current, tags, releases, prerelease=False)
+            base = f'{major}.{minor}.{int(patch) + 1}'
+        if 'v' + base in used:
+            raise Refusal('version_conflict: stable version on the selected line is already reserved')
+        numbers = [int(match[1]) for tag in used
+                   if (match := re.fullmatch('v' + re.escape(base) + r'-rc\.([1-9][0-9]*)', tag))]
+        latest = max(numbers, default=0)
+        if stable:
+            if latest > int(rc):
+                raise Refusal('version_conflict: a newer RC on this line is already reserved')
+            self.require_published_source(source, current, tags, releases, prerelease=True)
+            return requested
+        latest = max(latest, int(rc or 0))
+        if selected and (requested.rsplit('-rc.', 1)[0] != base or int(selected[4]) <= latest):
+            raise Refusal('version_conflict: RC must be on the selected line and higher than all reserved RCs')
+        return requested or f'{base}-rc.{latest + 1}'
+
     def new_run(self):
         if not self.path.exists() and not self.path.is_symlink():
             return
@@ -774,7 +928,7 @@ class Controller:
         if previous['plan']['repo'] != self.args.repo or previous['plan']['remote'] != self.args.remote:
             raise Refusal('foreign_state: repository differs')
         version = previous['plan']['version']
-        if not isinstance(version, str) or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-rc\.[1-9][0-9]*)?', version):
+        if not isinstance(version, str) or not RELEASE_VERSION.fullmatch(version):
             raise Refusal('foreign_state: invalid archived version')
         ready = previous.get('published') is True and previous['status'] == 'ready'
         if not ready and not safe_prepublication_failure(previous, self.tree):
@@ -823,16 +977,19 @@ class Controller:
 
     def plan(self, authorized):
         if self.path.exists():
-            self.state = load(self.path)
-            p = self.state['plan']
+            retained = load(self.path)
+            p = retained['plan']
             if p['repo'] != self.args.repo or p['remote'] != self.args.remote:
                 raise Refusal('identity_conflict: repository or remote differs')
-            if self.args.version and p['version'] != self.args.version:
+            if self.args.version is not None and p['version'] != self.args.version:
                 raise Refusal('version_conflict: resume never selects another version')
             if self.args.profile and p['profile'] != self.args.profile:
                 raise Refusal('profile_conflict: resume retains captured validation policy')
             if self.args.source and p['source'] != self.args.source:
                 raise Refusal('source_conflict: resume never retargets source')
+            if authorized and self.args.version is None and '-rc.' not in p['version']:
+                raise Refusal('version_conflict: specify the exact stable version or resume its authorized run')
+            self.state = retained
             if authorized and not self.state['authorization']:
                 self.state['authorization'] = AUTHORIZATION
                 save(self.path, self.state)
@@ -857,21 +1014,7 @@ class Controller:
         if self.args.source and self.args.source != source:
             raise Refusal('authority_source_mismatch: --source must equal fetched main')
         policy = self.preflight(source)
-        manifest = self.blob(source, 'Cargo.toml')
-        current = re.search(r'^version = "([^"]+)"', manifest, re.M)[1]
-        base = current.split('-')[0]
-        versions = set(self.git('tag', '--list').splitlines())
-        releases = self.releases()
-        versions.update(row['tag_name'] for row in releases)
-        numbers = [int(t.rsplit('.', 1)[1]) for t in versions
-                   if re.fullmatch('v' + re.escape(base) + r'-rc\.\d+', t)]
-        if '-rc.' in current:
-            numbers.append(int(current.rsplit('.', 1)[1]))
-        version = self.args.version or (base + '-rc.' + str(max(numbers, default=0) + 1))
-        if not re.fullmatch(re.escape(base) + r'-rc\.[1-9]\d*', version):
-            raise Refusal('version_conflict: RC must use the current reviewed version base')
-        if int(version.rsplit('.', 1)[1]) <= max(numbers, default=0):
-            raise Refusal('version_conflict: version already used or older than source')
+        version = self.select_version(source, self.args.version)
         self.source_checks(source, version)
         branch = 'release/v' + version
         if self.git('ls-remote', 'origin', 'refs/heads/' + branch):
@@ -1005,18 +1148,20 @@ class Controller:
                 raise Refusal('tag_collision: reserved version was tagged before this release merged')
         self.prepare()
         self.validate()
-        remote = self.remote_branch()
-        if remote and remote != self.state['candidate']:
-            raise Refusal('branch_collision: foreign release head')
+        remote = self.reconcile_branch()
         pr = self.find_pr()
         if not pr or pr['state'] != 'MERGED':
             self.unchanged_main()
-            if not remote:
-                self.receipt('branch', 'intent', commit=self.state['candidate'])
-                self.git('push', 'origin', self.state['candidate'] + ':refs/heads/' + p['branch'])
+            if not pr:
+                self.select_version(p['source'], p['version'])
+            # Recheck absence after PR, main and version lookups, before recording intent.
+            if not remote and not self.reconcile_branch():
+                self.push_branch()
                 if self.remote_branch() != self.state['candidate']:
                     raise Refusal('branch_ambiguous: reconcile with resume')
-            self.receipt('branch', 'complete', commit=self.state['candidate'])
+            self.receipt('branch', 'complete', commit=self.state['candidate'],
+                         creation=branch_creation_key(self.state))
+            self.branch_output_path().unlink(missing_ok=True)
             if not pr:
                 self.receipt('pr', 'intent')
                 self.gh('pr', 'create', '--base', 'main', '--head', p['branch'],
@@ -1043,6 +1188,7 @@ class Controller:
                              next='waiting for acknowledged merge; resume if stopped')
                 return
             self.unchanged_main()
+            self.select_version(p['source'], p['version'])
             self.merge_prerequisite()
             self.receipt('merge', 'intent', number=pr['number'])
             self.gh('pr', 'merge', str(pr['number']), '--squash', '--match-head-commit', self.state['candidate'])
@@ -1051,6 +1197,8 @@ class Controller:
                 self.receipt('merge', 'waiting', commit=self.state['candidate'],
                              next='waiting to reconcile merge; resume if stopped')
                 return
+        if self.state['receipts'].get('branch', {}).get('status') != 'complete':
+            raise Refusal('branch_collision: merged release PR has no verified branch creation')
         merged = pr['mergeCommit']['oid']
         self.fetch()
         if (self.git('rev-parse', merged + '^{tree}') != self.state['candidate_tree']
@@ -1147,7 +1295,7 @@ class Controller:
         self.state['published'] = True
         self.state['pin'] = pins[0] if len(pins) == 1 else self.state.get('pin', {'state': 'PENDING', 'url': None})
         self.receipt('publication', 'ready', url=release['html_url'], checksums=sums,
-                     next='test RC; review pin-only PR separately')
+                     next=('test RC; ' if '-rc.' in p['version'] else '') + 'review pin-only PR separately')
 
     def drive(self):
         while True:
@@ -1203,7 +1351,7 @@ def main():
     parser.add_argument('--state', type=Path, help='owned private directory outside source')
     parser.add_argument('--profile', choices=('fast', 'full'), help='hosted CI validation profile (default fast)')
     parser.add_argument('--source', help='optional required exact fetched main SHA')
-    parser.add_argument('--version', help='optional exact reserved RC version')
+    parser.add_argument('--version', help='exact RC version or explicit stable promotion')
     parser.add_argument('--format', choices=('json', 'markdown'), default='markdown')
     parser.add_argument('--new', action='store_true', help='archive ready or conclusively failed prepublication run and plan separately')
     parser.add_argument('--timeout', type=int, default=21600,
