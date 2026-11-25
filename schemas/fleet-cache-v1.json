@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:fleet-cache:1",
+  "title": "Machine-local fleet infrastructure observation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "visibility", "binding_id", "source", "subject", "observed_unix_ms", "data"],
+  "properties": {
+    "schema": {"const": "af/fleet-cache@1"},
+    "visibility": {"const": "infrastructure"},
+    "binding_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "source": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+    "subject": {"enum": ["pools", "allocations"]},
+    "observed_unix_ms": {"type": "integer", "minimum": 0},
+    "data": {}
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "subject": {"const": "pools"},
+        "data": {"$ref": "urn:af:schema:fleet-briefing:1#/$defs/inventory"}
+      }
+    },
+    {
+      "properties": {
+        "subject": {"const": "allocations"},
+        "data": {
+          "type": "array",
+          "items": {"$ref": "urn:af:schema:fleet-briefing:1#/$defs/allocation"}
+        }
+      }
+    }
+  ]
+}

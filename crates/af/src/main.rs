@@ -11,6 +11,7 @@ mod command_catalog;
 mod config;
 mod doctor;
 mod error_document;
+mod fleet;
 mod human;
 mod interrupt;
 mod model_check;
@@ -375,6 +376,8 @@ fn main() {
     drop(startup);
     let dispatched = perf_trace::span(Phase::CliCommand);
     let (prefix, outcome): (&str, Result<i32, String>) = match command {
+        cli::Command::Infra(args) => ("af infra", fleet::infra(args)),
+        cli::Command::Cluster(args) => ("af cluster", fleet::cluster(args)),
         cli::Command::Review(namespace) => ("af review", review_task::run(namespace.command)),
         cli::Command::Provider { command } => ("af provider", provider_command(command)),
         cli::Command::Onboard(args) => ("af onboard", onboard::run_cli(args).map(|()| 0)),

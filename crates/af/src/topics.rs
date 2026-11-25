@@ -681,6 +681,11 @@ beside af, not an af command, prints and reads:
                                        (schemas/issue-triage-merged-v1.json)
   the private hold record, exit 3      af/issue-triage-hold@1 (schemas/issue-triage-hold-v1.json)
 
+Fleet visibility:
+
+  af infra [status|allocations] --json  af/fleet-briefing@1 (schemas/fleet-briefing-v1.json)
+  af cluster [inbox] --json              the same briefing for authorized Project origins
+
 The command catalog, the help pages and the schemas:
 
   af help --json                       af/command-catalog@1 (schemas/command-catalog-v1.json):

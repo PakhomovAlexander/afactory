@@ -25,6 +25,7 @@ mod build_metadata;
 mod catalog_digest;
 mod cli_surface;
 mod doctor;
+mod fleet;
 mod help_examples;
 mod help_hygiene;
 mod install_script;

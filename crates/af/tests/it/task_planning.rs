@@ -77,7 +77,11 @@ fn package(repo: &Path, catalog: &mut toml::Value, name: &str) {
         .unwrap(),
     );
 }
-fn setup(root: &Path, repair: bool, nested: bool) -> (PathBuf, PathBuf, minisign::KeyPair) {
+pub(super) fn setup(
+    root: &Path,
+    repair: bool,
+    nested: bool,
+) -> (PathBuf, PathBuf, minisign::KeyPair) {
     setup_variant(root, repair, nested, "pagination")
 }
 fn setup_variant(

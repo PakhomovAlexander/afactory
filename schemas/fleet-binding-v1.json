@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:fleet-binding:1",
+  "title": "Machine-local fleet binding",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "credential_ref", "descriptor"],
+  "properties": {
+    "schema": {"const": "af/fleet-binding@1"},
+    "credential_ref": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+    "descriptor": {"$ref": "urn:af:schema:fleet-context:1"}
+  }
+}

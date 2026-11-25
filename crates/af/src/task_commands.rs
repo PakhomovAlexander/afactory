@@ -4384,6 +4384,81 @@ pub(super) fn list_common(state: &Path) -> Result<Vec<serde_json::Value>, String
     Ok(entries)
 }
 
+/// Project-reader projection over the same validated native Task streams as local inspection.
+pub(super) fn fleet_waiting_tasks(
+    state: &Path,
+    origin: &str,
+    developer: Option<&str>,
+    now: u64,
+) -> Result<Vec<af_contracts::fleet::WaitingTask>, String> {
+    use af_contracts::fleet::{Freshness, Observation, PlanDecision, WaitingPhase, WaitingTask};
+    use af_contracts::task::TaskWaitingReasonV1;
+
+    require_store(state)?;
+    let cas = Cas::open_existing(state.join("cas")).map_err(|error| error.to_string())?;
+    let store = EventStore::open_read_only(state.join("events.sqlite"))
+        .map_err(|error| error.to_string())?;
+    store
+        .map_tasks(&cas, |task| -> Result<Option<WaitingTask>, String> {
+            let TaskPhaseV1::Waiting { reason } = task.phase else {
+                return Ok(None);
+            };
+            let mut decision = None;
+            if let Some(developer) = developer
+                && reason == TaskWaitingReasonV1::NeedsPlanReview
+                && now < task.revision.limits.deadline_unix_ms
+            {
+                let candidate = if task.admitted {
+                    task.pending_experiment()
+                        .map(|(id, prepared)| (prepared.compiled_child_plan_id.as_str(), Some(id)))
+                } else {
+                    task.plan_id
+                        .as_deref()
+                        .filter(|id| task.plan_decision(id).is_none())
+                        .map(|id| (id, None))
+                };
+                if let Some((plan_id, prepared_id)) = candidate {
+                    let authority: RunAuthority = serde_json::from_value(
+                        cas.get_json(&task.revision.authority.policy_id)
+                            .map_err(|error| error.to_string())?,
+                    )
+                    .map_err(|error| error.to_string())?;
+                    if let Some(policy) = authority.developers {
+                        policy.validate()?;
+                        if policy.keys.contains_key(developer) {
+                            decision = Some(PlanDecision {
+                                task_revision_id: task.revision_id.clone(),
+                                plan_id: plan_id.into(),
+                                developer: developer.into(),
+                                prepared_id: prepared_id.map(str::to_owned),
+                            });
+                        }
+                    }
+                }
+            }
+            let observed = task.last_event_unix_ms();
+            Ok(Some(WaitingTask {
+                observation: Observation {
+                    source: origin.into(),
+                    subject: task.task_id.clone(),
+                    revision: task.next_sequence.checked_sub(1),
+                    observed_unix_ms: Some(observed),
+                    age_ms: Some(now.saturating_sub(observed)),
+                    freshness: Freshness::Fresh,
+                },
+                task_id: task.task_id,
+                placement: None,
+                phase: WaitingPhase::Waiting,
+                reason,
+                decision,
+            }))
+        })
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter_map(Result::transpose)
+        .collect()
+}
+
 /// One entry of `af task list --json`.
 pub(crate) const TASK_LIST_ENTRY_V5: &str = "af/task-list-entry@5";
 

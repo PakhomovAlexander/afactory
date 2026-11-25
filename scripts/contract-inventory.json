@@ -12,6 +12,32 @@
       "schemas": ["schemas/backlog-open-issues-v1.json"]
     },
     {
+      "name": "fleet-visibility",
+      "reader_writer": [
+        "crates/af-contracts/src/fleet.rs",
+        "crates/af/src/fleet.rs",
+        "crates/af/src/fleet/cache.rs",
+        "crates/af/src/fleet/context.rs",
+        "crates/af/src/fleet/origin.rs"
+      ],
+      "semantic_owner": [
+        "crates/af/src/fleet.rs",
+        "crates/af/src/fleet/cache.rs",
+        "crates/af/src/fleet/context.rs",
+        "crates/af/src/fleet/inventory.rs",
+        "crates/af/src/fleet/origin.rs",
+        "crates/af/src/fleet/transport.rs"
+      ],
+      "tests": ["crates/af/tests/it/fleet.rs"],
+      "schemas": [
+        "schemas/fleet-binding-v1.json",
+        "schemas/fleet-briefing-v1.json",
+        "schemas/fleet-cache-v1.json",
+        "schemas/fleet-context-v1.json",
+        "schemas/fleet-origin-v1.json"
+      ]
+    },
+    {
       "name": "laboratory",
       "reader_writer": [
         "scripts/performance/perflab/contracts.py"

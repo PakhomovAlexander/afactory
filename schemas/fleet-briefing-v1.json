@@ -1,0 +1,226 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:fleet-briefing:1",
+  "title": "Fleet visibility briefing",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "view",
+    "context",
+    "scope",
+    "configured_contexts",
+    "discovery",
+    "cluster",
+    "distributed_execution_ready",
+    "desired_footprint",
+    "inventory",
+    "allocations",
+    "origins",
+    "next_action"
+  ],
+  "properties": {
+    "schema": {"const": "af/fleet-briefing@1"},
+    "view": {"enum": ["connect", "infra", "status", "allocations", "cluster", "inbox"]},
+    "context": {
+      "anyOf": [
+        {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+        {"type": "null"}
+      ]
+    },
+    "scope": {
+      "anyOf": [
+        {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+        {"type": "null"}
+      ]
+    },
+    "configured_contexts": {
+      "type": "array",
+      "items": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"}
+    },
+    "discovery": {"enum": ["unconfigured", "ready", "partial", "unavailable"]},
+    "cluster": {"enum": ["absent", "unknown"]},
+    "distributed_execution_ready": {"const": false},
+    "desired_footprint": {"anyOf": [{"$ref": "#/$defs/capacity"}, {"type": "null"}]},
+    "inventory": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["observation", "data"],
+          "properties": {
+            "observation": {"$ref": "#/$defs/observation"},
+            "data": {"anyOf": [{"$ref": "#/$defs/inventory"}, {"type": "null"}]}
+          }
+        },
+        {"type": "null"}
+      ]
+    },
+    "allocations": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["observation", "data"],
+          "properties": {
+            "observation": {"$ref": "#/$defs/observation"},
+            "data": {
+              "anyOf": [
+                {"type": "array", "items": {"$ref": "#/$defs/allocation"}},
+                {"type": "null"}
+              ]
+            }
+          }
+        },
+        {"type": "null"}
+      ]
+    },
+    "origins": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["observation", "data"],
+        "properties": {
+          "observation": {"$ref": "#/$defs/observation"},
+          "data": {"anyOf": [{"$ref": "#/$defs/project_origin"}, {"type": "null"}]}
+        }
+      }
+    },
+    "next_action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "reason", "success_condition"],
+      "properties": {
+        "action": {"enum": ["run", "ask_owner", "wait", "repair"]},
+        "reason": {"type": "string"},
+        "success_condition": {"type": "string"}
+      }
+    }
+  },
+  "$defs": {
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "subject", "revision", "observed_unix_ms", "age_ms", "freshness"],
+      "properties": {
+        "source": {"type": "string"},
+        "subject": {"type": "string"},
+        "revision": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "observed_unix_ms": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "age_ms": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "freshness": {
+          "enum": [
+            "fresh",
+            "stale",
+            "unavailable",
+            "denied",
+            "identity_mismatch",
+            "missing_credential",
+            "invalid_response"
+          ]
+        }
+      }
+    },
+    "project_origin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["origin", "project_id", "store_id", "principal", "tasks"],
+      "properties": {
+        "origin": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+        "project_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "store_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "principal": {"type": "string"},
+        "tasks": {"type": "array", "items": {"$ref": "#/$defs/waiting_task"}}
+      }
+    },
+    "waiting_task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task_id", "placement", "phase", "reason", "decision", "observation"],
+      "properties": {
+        "task_id": {"type": "string"},
+        "placement": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "phase": {"enum": ["waiting"]},
+        "reason": {"enum": ["needs_resources", "needs_input", "needs_human", "needs_plan_review"]},
+        "decision": {"anyOf": [{"$ref": "#/$defs/decision"}, {"type": "null"}]},
+        "observation": {"$ref": "#/$defs/observation"}
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task_revision_id", "plan_id", "developer", "prepared_id"],
+      "properties": {
+        "task_revision_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "plan_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "developer": {"type": "string"},
+        "prepared_id": {"type": ["string", "null"], "pattern": "^sha256:[a-f0-9]{64}$"}
+      }
+    },
+    "capacity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cpu_ids", "ram_gib", "ssd_gib"],
+      "properties": {
+        "cpu_ids": {
+          "type": "array",
+          "items": {"type": "integer", "minimum": 0, "maximum": 4294967295}
+        },
+        "ram_gib": {"type": "number", "minimum": 0},
+        "ssd_gib": {"type": "number", "minimum": 0}
+      }
+    },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node", "available", "static_available", "physical_totals", "reservations"],
+      "properties": {
+        "node": {"type": "string"},
+        "available": {"$ref": "#/$defs/capacity"},
+        "static_available": {"anyOf": [{"$ref": "#/$defs/capacity"}, {"type": "null"}]},
+        "physical_totals": {"anyOf": [{"$ref": "#/$defs/capacity"}, {"type": "null"}]},
+        "reservations": {"anyOf": [{"$ref": "#/$defs/capacity"}, {"type": "null"}]}
+      }
+    },
+    "pool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "static_pool", "dynamic_pool", "available_gib"],
+      "properties": {
+        "name": {"type": "string"},
+        "static_pool": {"type": "boolean"},
+        "dynamic_pool": {"type": "boolean"},
+        "available_gib": {"anyOf": [{"type": "number", "minimum": 0}, {"type": "null"}]}
+      }
+    },
+    "inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hosts", "pools", "release"],
+      "properties": {
+        "hosts": {"type": "array", "items": {"$ref": "#/$defs/host"}},
+        "pools": {
+          "description": "Storage pools identified by the provider. An empty list means none were reported.",
+          "type": "array",
+          "items": {"$ref": "#/$defs/pool"}
+        },
+        "release": {"enum": ["explicit"]}
+      }
+    },
+    "allocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["vmid", "name", "node", "power", "state", "charged", "executor"],
+      "properties": {
+        "vmid": {"type": "integer", "minimum": 1},
+        "name": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "node": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "power": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "state": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "charged": {"anyOf": [{"$ref": "#/$defs/capacity"}, {"type": "null"}]},
+        "executor": {"anyOf": [{"type": "string"}, {"type": "null"}]}
+      }
+    }
+  }
+}

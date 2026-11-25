@@ -96,6 +96,15 @@ live Claw proof and deployment remain operator work. No real Ant or Mac schedule
 A normalized, source-addressed fact about project execution, intervention, cache behavior or
 outcome. It carries no instruction or causal authority, and absent measurements remain unknown.
 
+**Fleet context**:
+A machine-local name for an owner-provided infrastructure scope and its pinned readers. A fleet
+briefing exposes their observations, freshness, discovery readiness and the operator's next action.
+
+**Project origin**:
+A pinned, independently authorized reader of one registered Workspace's native Task Store.
+Its authenticated principal can see waiting Tasks and any pending plan Decision the origin's
+grant and captured developer policy allow it to show.
+
 **History Capture**:
 One immutable, project-scoped set of Observation records plus exact source-prefix receipts,
 exclusions, cutoff and completeness. Appended captures retain predecessor identity; overlap is

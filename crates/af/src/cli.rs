@@ -122,6 +122,12 @@ pub(crate) fn usage_error(error: clap::Error) -> clap::Error {
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum Command {
+    /// Connect to an infrastructure scope and observe hosts and allocations
+    #[command(display_order = 33)]
+    Infra(crate::fleet::InfraArgs),
+    /// Discover Project Task origins and inspect pending Decisions
+    #[command(display_order = 34)]
+    Cluster(crate::fleet::ClusterArgs),
     /// Orchestrate Tasks, decisions, waits and bounded actions
     #[command(display_order = 30)]
     Scenario {
