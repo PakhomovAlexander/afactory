@@ -19,6 +19,16 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
+## [0.15.2] - 2026-11-25
+
+### Authority compatibility
+
+Breaking combined Scenario/Ant and publication shapes: Scenario definitions/bundles 11, policy 8, pins/runs/list 12, Store 18 with retained driver 2 and typed bounded preflight waits; Ant definition 12, pin/tick 13, state/list 14, inspection 9; adapter request 8/response 3, workspace config 3/state 6 and GitHub journal 9, native Git candidate request/export 2. Nightly config/publish 2 and native nightly service/job/completion 1 retain separate release scope and external signing permission. Implementation startup scope 2 retains exact native scoped publication, finite progress and bounded repairs. Builtin backlog Actions settle native verified Documents and dispatch to receiver-owned native, GitHub, Markdown or Jira destinations. Markdown configuration and configured publication observations use version 2. Generic signed and performance authority stay separate. Finish or discard prior-release state; no migration or replay of retired shapes. Review and commit authority and refresh its lock before adoption. Performance executor 5, history 2, equivalence 2 and schedule 3 remain required. Native Task kernel failures are execution_failed/kernel_execution (exit 8); Task state/status/findings 3, inspection 21 and report/checks 4 replace their earlier public formats. Scenario terminal outcome 2 carries that failure without repair or publication authority. CI Health Phase 1 retains typed accepted/refused diagnosis, exact-head evidence and report-only remedies. Its watchdog remains inactive.
+
+### Changes
+
+- Release of reviewed source `119942e4e7c7edc65dc0f48ae2f6bf9eba01e89b`; collected change notes follow.
+
 ## [0.15.2-rc.3] - 2026-11-25
 
 ### Authority compatibility
