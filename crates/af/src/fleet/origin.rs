@@ -52,7 +52,7 @@ pub(super) fn serve(args: ReaderArgs) -> Result<i32, String> {
     {
         return Err("Invalid Project reader configuration".into());
     }
-    let project = ProjectStore::open_read_only(&args.state_home, &args.project)?;
+    let project = ProjectStore::open_origin_snapshot(&args.state_home, &args.project)?;
     let log = project.log()?;
     if log.project.as_ref().map(|p| p.project_id.as_str()) != Some(&args.project) {
         return Err("Project reader identity mismatch".into());

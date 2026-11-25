@@ -62,9 +62,14 @@ are selected by the server. An example with placeholders follows.
   --workspace WORKSPACE_LABEL --principal PRINCIPAL --state-home /path/to/xdg-state
 ```
 
-The SSH account needs read access to the Project's registered Workspace and Task Store. Running
-that command on the origin also shows the precise Project and Store identities to put in the
-descriptor. For a principal separately authorized to take native plan Decisions, add
+The SSH account needs read access to the Project's registered Workspace and Task Store,
+including existing SQLite WAL and shared-memory files when present. The reader takes a private
+snapshot under SQLite's local file locks and replays committed frames from that snapshot. The
+reader creates no sidecars in either Store and needs temporary space for the copied database
+and WAL files. An active write, checkpoint, or inaccessible snapshot can make the origin
+temporarily unavailable. Running the command on the origin also shows the precise Project and
+Store identities to put in the descriptor. For a principal separately authorized to take native
+plan Decisions, add
 `--allow-plan-decisions` and map `--principal` to their captured native developer identity.
 An undecided, unexpired outer plan or prepared experimental child plan waiting for review can
 then show a Decision. A principal with
@@ -93,8 +98,9 @@ reader is temporarily unavailable after upgrade and only an obsolete record exis
 observation is unavailable until a successful read refreshes it.
 
 The [fleet integration tests](../crates/af/tests/it/fleet.rs) exercise the six public commands with
-local OpenSSH endpoints, disposable keys, the management wire formats and a native Task waiting
-for plan review. They also exercise a fresh offline standalone Task workflow.
+local OpenSSH endpoints, disposable keys, the management wire formats and a native Task whose
+waiting transition is still in the WAL. They also cover clean shutdown, read-only Store files
+and directories, concurrent writes, and a fresh offline standalone Task workflow.
 
 Run the Fleet tests from an ordinary macOS user shell with `cargo test --locked -p af --test it
 fleet::`. The native SSH test hands accepted loopback sockets to Apple's inetd-mode `sshd` so it

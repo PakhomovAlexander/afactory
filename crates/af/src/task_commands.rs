@@ -4396,7 +4396,7 @@ pub(super) fn fleet_waiting_tasks(
 
     require_store(state)?;
     let cas = Cas::open_existing(state.join("cas")).map_err(|error| error.to_string())?;
-    let store = EventStore::open_read_only(state.join("events.sqlite"))
+    let store = EventStore::open_observation_snapshot(&state.join("events.sqlite"))
         .map_err(|error| error.to_string())?;
     store
         .map_tasks(&cas, |task| -> Result<Option<WaitingTask>, String> {

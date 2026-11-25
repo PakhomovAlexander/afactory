@@ -72,6 +72,52 @@ fn require_failure(output: Output, message: &str) {
     );
 }
 
+fn sqlite_bytes(file: &Path) -> Vec<u8> {
+    // POSIX byte locks belong to the process. Opening and closing these files here
+    // would drop any locks SQLite is holding on the same files in this test process.
+    let output = Command::new("/bin/cat").arg(file).output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    output.stdout
+}
+
+fn sqlite_files(state: &Path) -> Vec<(String, Vec<u8>)> {
+    let mut files = fs::read_dir(state)
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().unwrap();
+            name.starts_with("events.sqlite")
+                .then(|| (name, sqlite_bytes(&entry.path())))
+        })
+        .collect::<Vec<_>>();
+    files.sort();
+    files
+}
+
+fn project_for(machine: &Machine, repo: &Path) -> Value {
+    as_json(
+        machine
+            .af(&["project", "show", "--json"])
+            .current_dir(repo)
+            .output()
+            .unwrap(),
+    )
+}
+
+// Keep a read transaction on the planned state so the later waiting transition must
+// be obtained from committed WAL frames, even if the Task writer checkpoints.
+fn pin_planned_database(database: &Path) -> rusqlite::Connection {
+    let connection = rusqlite::Connection::open_with_flags(
+        database,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
+    )
+    .unwrap();
+    connection
+        .execute_batch("PRAGMA wal_autocheckpoint=0; BEGIN; SELECT count(*) FROM events;")
+        .unwrap();
+    connection
+}
+
 #[test]
 fn fresh_install_and_offline_standalone() {
     let machine = Machine::new();
@@ -120,6 +166,133 @@ fn fresh_install_and_offline_standalone() {
     );
     assert_eq!(shown["plan_id"], planned["plan_id"]);
     assert!(shown["plan_id"].is_string());
+}
+
+#[test]
+fn native_origin_observes_clean_and_live_stores_without_writing_sidecars() {
+    let machine = Machine::new();
+    let (repo, _, _) = crate::task_planning::setup(machine.root.path(), false, false);
+    as_json(
+        machine
+            .af(&["task", "plan", "--file", "ticket.json", "--json"])
+            .current_dir(&repo)
+            .output()
+            .unwrap(),
+    );
+    let project = project_for(&machine, &repo);
+    let workspace = &project["workspaces"][0];
+    let state = Path::new(workspace["state"].as_str().unwrap());
+    let database = state.join("events.sqlite");
+    let reader = || {
+        machine
+            .af(&[
+                "cluster",
+                "origin-read",
+                "--scope",
+                "fleet-fixture",
+                "--origin",
+                "project",
+                "--project",
+                project["project_id"].as_str().unwrap(),
+                "--workspace",
+                workspace["label"].as_str().unwrap(),
+                "--principal",
+                "owner",
+                "--allow-plan-decisions",
+                "--state-home",
+                path(&machine.path("state")),
+            ])
+            .output()
+            .unwrap()
+    };
+    let anchor = pin_planned_database(&database);
+    let planned_database = sqlite_bytes(&database);
+    assert_eq!(as_json(reader())["origin"]["tasks"], json!([]));
+    let waiting = as_json(
+        machine
+            .af(&["task", "run", "--execute", "pagination-cli", "--json"])
+            .current_dir(&repo)
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(waiting["phase"]["reason"], "needs_plan_review");
+    assert_eq!(sqlite_bytes(&database), planned_database);
+    let live_files = sqlite_files(state);
+    assert_eq!(live_files.len(), 3);
+    let live_permissions: Vec<_> = live_files
+        .iter()
+        .map(|(name, _)| {
+            let file = state.join(name);
+            let permissions = fs::metadata(&file).unwrap().permissions();
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o444)).unwrap();
+            (file, permissions)
+        })
+        .collect();
+    let dir_permissions = fs::metadata(state).unwrap().permissions();
+    fs::set_permissions(state, fs::Permissions::from_mode(0o555)).unwrap();
+    let live = reader();
+    fs::set_permissions(state, dir_permissions.clone()).unwrap();
+    for (file, permissions) in live_permissions {
+        fs::set_permissions(file, permissions).unwrap();
+    }
+    let live = as_json(live);
+    let decision = &live["origin"]["tasks"][0]["decision"];
+    assert_eq!(decision["plan_id"], waiting["plan_id"]);
+    assert_eq!(decision["task_revision_id"], waiting["revision_id"]);
+    assert_eq!(sqlite_files(state), live_files);
+
+    // A writer holding SQLite's WAL write lock makes this observation explicitly
+    // unavailable. Its uncommitted update must never be projected.
+    anchor
+        .execute_batch("COMMIT; BEGIN IMMEDIATE; DELETE FROM events;")
+        .unwrap();
+    let busy_files = sqlite_files(state);
+    let busy = reader();
+    assert!(busy.stdout.is_empty(), "{busy:?}");
+    require_failure(busy, "cannot observe");
+    assert_eq!(sqlite_files(state), busy_files);
+    anchor.execute_batch("ROLLBACK").unwrap();
+    let recovered = as_json(reader());
+    assert_eq!(recovered["origin"]["tasks"][0]["decision"], *decision);
+    anchor
+        .set_db_config(
+            rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
+            true,
+        )
+        .unwrap();
+    drop(anchor);
+
+    // The index is disposable after the writer exits. The remaining committed WAL
+    // must still be replayed, without rebuilding the index in the original Store.
+    fs::remove_file(state.join("events.sqlite-shm")).unwrap();
+    let cold_wal = sqlite_files(state);
+    assert_eq!(cold_wal.len(), 2);
+    assert_eq!(
+        as_json(reader())["origin"]["tasks"][0]["decision"],
+        *decision
+    );
+    assert_eq!(sqlite_files(state), cold_wal);
+
+    let checkpoint = rusqlite::Connection::open(&database).unwrap();
+    checkpoint
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+        .unwrap();
+    drop(checkpoint);
+    let clean_files = sqlite_files(state);
+    assert_eq!(clean_files.len(), 1);
+    let clean = as_json(reader());
+    assert_eq!(clean["origin"]["tasks"][0]["decision"], *decision);
+    assert_eq!(sqlite_files(state), clean_files);
+
+    fs::set_permissions(&database, fs::Permissions::from_mode(0o444)).unwrap();
+    fs::set_permissions(state, fs::Permissions::from_mode(0o555)).unwrap();
+    let clean_read_only = reader();
+    fs::set_permissions(state, dir_permissions).unwrap();
+    assert_eq!(
+        as_json(clean_read_only)["origin"]["tasks"][0]["decision"],
+        *decision
+    );
+    assert_eq!(sqlite_files(state), clean_files);
 }
 
 fn executable(file: &Path, text: &str) {
@@ -475,6 +648,14 @@ fn pinned_ssh_broker_and_project_origin_keep_independent_read_authority() {
         .output()
         .unwrap();
     as_json(plan);
+    let project = project_for(&machine, &repo);
+    let project_id = project["project_id"].as_str().unwrap();
+    let workspace = &project["workspaces"][0];
+    let state = Path::new(workspace["state"].as_str().unwrap());
+    let store_id = format!("sha256:{}", af_telemetry::trace::store_id(state).unwrap());
+    let database = state.join("events.sqlite");
+    let _anchor = pin_planned_database(&database);
+    let planned_database = sqlite_bytes(&database);
     let waiting = as_json(
         machine
             .af(&["task", "run", "--execute", "pagination-cli", "--json"])
@@ -483,19 +664,9 @@ fn pinned_ssh_broker_and_project_origin_keep_independent_read_authority() {
             .unwrap(),
     );
     assert_eq!(waiting["phase"]["reason"], "needs_plan_review");
-    let project = as_json(
-        machine
-            .af(&["project", "show", "--json"])
-            .current_dir(&repo)
-            .output()
-            .unwrap(),
-    );
-    let project_id = project["project_id"].as_str().unwrap();
-    let workspace = &project["workspaces"][0];
-    let state = Path::new(workspace["state"].as_str().unwrap());
-    let store_id = format!("sha256:{}", af_telemetry::trace::store_id(state).unwrap());
-    let database = state.join("events.sqlite");
-    let native_history = fs::read(&database).unwrap();
+    assert_eq!(sqlite_bytes(&database), planned_database);
+    let native_history = sqlite_files(state);
+    assert_eq!(native_history.len(), 3);
 
     let host_key = key(&machine, "host-key");
     let wrong_host_key = key(&machine, "wrong-host-key");
@@ -832,7 +1003,7 @@ if [ -e {} ]; then exec /bin/cat {}; fi
         mixed["origins"][2]["data"]["tasks"][0]["task_id"],
         "pagination-cli"
     );
-    assert_eq!(native_history, fs::read(database).unwrap());
+    assert_eq!(native_history, sqlite_files(state));
     assert!(
         !machine
             .path("state/af/fleet-cache/lab/waiting_tasks.json")

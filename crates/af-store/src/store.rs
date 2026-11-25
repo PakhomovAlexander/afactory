@@ -35,6 +35,7 @@ impl Drop for ReplayReadsGuard {
 }
 
 mod attempt_wall;
+mod observation_snapshot;
 pub mod observer;
 pub mod task;
 pub mod wake;
@@ -370,6 +371,8 @@ pub struct EventStore {
     /// Told of every commit through this connection ([`observer`]); `None` defers to the
     /// process's observer, if any.
     commit_observer: Option<Arc<dyn observer::CommitObserver>>,
+    // Drop the connection before removing its private database and any recovery files.
+    _observation_snapshot: Option<tempfile::TempDir>,
 }
 
 /// A bounded, process-local observation of this connection's database. This is only an
@@ -575,6 +578,7 @@ impl EventStore {
             conn,
             task_cache: std::cell::RefCell::new(None),
             commit_observer: None,
+            _observation_snapshot: None,
         })
     }
 
@@ -631,6 +635,7 @@ impl EventStore {
             conn,
             task_cache: std::cell::RefCell::new(None),
             commit_observer: None,
+            _observation_snapshot: None,
         })
     }
 
@@ -659,6 +664,7 @@ impl EventStore {
             conn,
             task_cache: std::cell::RefCell::new(None),
             commit_observer: self.commit_observer.clone(),
+            _observation_snapshot: None,
         })
     }
 
@@ -678,6 +684,7 @@ impl EventStore {
             conn,
             task_cache: std::cell::RefCell::new(None),
             commit_observer: None,
+            _observation_snapshot: None,
         })
     }
 
