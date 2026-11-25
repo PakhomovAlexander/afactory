@@ -495,6 +495,101 @@ class AdapterTests(unittest.TestCase):
             else:
                 self.assertEqual(self.adapter().green(SHA), green)
 
+    def test_required_actions_checks_resolve_by_workflow_and_attempt(self):
+        self.config["required_checks"].append({"kind": "check", "name": "Lint", "app_id": 4})
+        pub = self.publish()
+        original = self.service()
+        # The workflows deliberately share the app, head, display name and run number.
+        original["checks"][0]["app"]["slug"] = "github-actions"
+        original["suites"][0]["app"]["slug"] = "github-actions"
+        original["checks"].append(dict(original["checks"][0], id=32, name="Lint", check_suite={"id": 22}))
+        original["suites"].append(dict(original["suites"][0], id=22))
+        original["workflow_runs"] = [
+            dict(id=41, workflow_id=51, check_suite_id=21, head_sha=SHA, name="build",
+                 run_number=1, run_attempt=1, status="completed"),
+            dict(id=42, workflow_id=52, check_suite_id=22, head_sha=SHA, name="build",
+                 run_number=1, run_attempt=1, status="completed"),
+        ]
+
+        ready_ci = ("CI", 31, 21, "ready")
+        ready_lint = ("Lint", 32, 22, "ready")
+        pending_ci = ("CI", 31, 21, "pending")
+
+        def expect(state, expected_state, expected_checks):
+            self.service(state)
+            if expected_state == "refused":
+                with self.assertRaises(A.Refused):
+                    self.adapter().green(SHA)
+                result = self.observe(pub, "checks_completed")
+                self.assertEqual(result["outcome"], "pending", result)
+                self.assertIsNone(result["observation"])
+                return
+            self.assertEqual(self.adapter().green(SHA), expected_state == "ready")
+            result = self.observe(pub, "checks_completed")
+            self.assertEqual(result["outcome"], "done", result)
+            self.assertEqual(result["observation"]["satisfied"], expected_state != "pending")
+            packet = json.loads(result["observation"]["evidence"])
+            self.assertEqual(packet["state"], expected_state)
+            self.assertEqual([(c["identity"]["name"], c["id"], c["suite_id"], c["outcome"])
+                              for c in packet["checks"]], expected_checks)
+
+        expect(original, "ready", [ready_ci, ready_lint])
+
+        mixed = copy.deepcopy(original)
+        mixed["checks"][1]["conclusion"] = mixed["suites"][1]["conclusion"] = "failure"
+        expect(mixed, "repairable", [ready_ci, ("Lint", 32, 22, "repairable")])
+
+        rerun = copy.deepcopy(original)
+        rerun["workflow_runs"][0].update(run_attempt=2, status="in_progress")
+        rerun["attempt_jobs"] = {"41/attempts/2/jobs": []}
+        expect(rerun, "pending", [pending_ci, ready_lint])
+        # Even a completed partial rerun may carry old success on the same suite.
+        rerun["workflow_runs"][0]["status"] = "completed"
+        expect(rerun, "pending", [pending_ci, ready_lint])
+        rerun["checks"].append(dict(rerun["checks"][0], id=33))
+        rerun["attempt_jobs"]["41/attempts/2/jobs"].append(
+            dict(id=33, run_id=41, head_sha=SHA,
+                 check_run_url="https://api.github.com/repos/octo/project/check-runs/33"))
+        expect(rerun, "ready", [("CI", 33, 21, "ready"), ready_lint])
+
+        newer = copy.deepcopy(original)
+        newer["suites"].append(dict(newer["suites"][0], id=23, status="queued", conclusion=None))
+        expect(newer, "pending", [])
+        newer["workflow_runs"].append(dict(newer["workflow_runs"][0], id=43, check_suite_id=23,
+                                            run_number=2, status="queued"))
+        expect(newer, "pending", [pending_ci, ready_lint])
+        unrelated = copy.deepcopy(newer)
+        unrelated["workflow_runs"][-1]["workflow_id"] = 53
+        expect(unrelated, "ready", [ready_ci, ready_lint])
+        newer["workflow_runs"][-1]["status"] = "completed"
+        newer["suites"][-1].update(status="completed", conclusion="success")
+        expect(newer, "pending", [pending_ci, ready_lint])
+        newer["checks"].append(dict(newer["checks"][0], id=33, check_suite={"id": 23}))
+        expect(newer, "ready", [("CI", 33, 23, "ready"), ready_lint])
+
+        missing = copy.deepcopy(original)
+        missing["checks"].pop(0)
+        expect(missing, "pending", [ready_lint])
+
+        ambiguous = copy.deepcopy(original)
+        ambiguous["checks"].append(dict(ambiguous["checks"][1], id=33, name="CI"))
+        expect(ambiguous, "pending", [ready_lint])
+
+        wrong_suite_app = copy.deepcopy(original)
+        wrong_suite_app["suites"][0]["app"] = {"id": 99, "slug": "github-actions"}
+        expect(wrong_suite_app, "pending", [ready_lint])
+
+        for table, replacement in (
+            ("checks", {"head_sha": "2" * 40}),
+            ("suites", {"head_sha": "2" * 40}),
+            ("workflow_runs", {"head_sha": "2" * 40}),
+            ("checks", {"app": {"id": 99, "slug": "github-actions"}}),
+        ):
+            with self.subTest(table=table, replacement=replacement):
+                rejected = copy.deepcopy(original)
+                rejected[table][0].update(replacement)
+                expect(rejected, "refused", None)
+
     def test_check_pagination_is_complete_bounded_and_rejects_untrusted_links(self):
         pub = self.publish()
         state = self.service()
