@@ -1,12 +1,12 @@
 version = 1
 
 [af]
-version = "0.15.1"
+version = "0.15.2-rc.2"
 
 [af.digests]
-aarch64-apple-darwin = "sha256:5bae9f172f080a97ac83cc25d57d159b4233a9e66206444cf53c40fe298d23c4"
-aarch64-unknown-linux-musl = "sha256:2ed5b27cad601e3116f4dd94028b3d18158d69f5fdc25bd956276ed573988d17"
-x86_64-unknown-linux-musl = "sha256:9b1d6fbc0a21f4dab6bfc7ec200107bf508e56c52b1c7099138ef705ffceb8f7"
+aarch64-apple-darwin = "sha256:7d9c700f4c2447b6cd4400a9b6e1d7cee83add6c9edc77a765f83a68eee2f64f"
+aarch64-unknown-linux-musl = "sha256:6851e2ac3e5ac8beaea41e418010a1e30b52f29513945ca1b40ac3c24819b747"
+x86_64-unknown-linux-musl = "sha256:d043a1742c67a46c95491585c882339d751920c8ff13f9bab40493ce6a92f2f2"
 
 [workers.bugs]
 version = "1.0.1"
