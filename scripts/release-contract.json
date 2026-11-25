@@ -1,7 +1,7 @@
 {
   "schema": "af.dev-release-contract/1",
-  "version": "0.15.2-rc.2",
-  "source": "ae9773af20714fd8d0c1b5601bc2ba188494da9b",
+  "version": "0.15.2",
+  "source": "119942e4e7c7edc65dc0f48ae2f6bf9eba01e89b",
   "capabilities": "sha256:5ad2030254401115a1799149d2f2824b72fa8613d233ae55372c932a12d1793f",
   "contract": "native-task-review@1",
   "receipt": "af/TaskCheckReceipt@2"
