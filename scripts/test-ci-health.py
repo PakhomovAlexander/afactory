@@ -1506,7 +1506,7 @@ class ProductionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.publish = json.loads((ROOT / 'fixtures/performance/schema/nightly-publish/valid-published.json').read_text())
         old = self.publish['tag']
         self.publish.update(repository='octo/project', head_sha='a' * 40, date='2026-11-09', tag='nightly-2026.11.09',

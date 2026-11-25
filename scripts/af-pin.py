@@ -5,7 +5,9 @@
                                                 CHANGELOG.md (or the one before it, while that
                                                 release is in flight), or lacks the digest of a
                                                 released target (run by `make check`)
-    scripts/af-pin.py --check-next VERSION      check the prospective release before planning
+    scripts/af-pin.py --check-next VERSION [--from RC]
+                                                check the prospective release before planning
+                                                and require the RC pin when promoting
     scripts/af-pin.py --only-pin-moved REV VER  fail unless .af/af.lock differs from REV only in
                                                 its [af] tables and now pins VER, with every
                                                 target's digest (run by scripts/pin-release.sh)
@@ -133,14 +135,19 @@ def missing_digests(digests):
     return []
 
 
-def check(next_version=None):
+def check(next_version=None, previous=None):
     version, digests = pin(LOCK.read_text())
     recent = (([next_version] if next_version else []) + releases())[:2]
     if not recent:
         print(f"{CHANGELOG} has no release section", file=sys.stderr)
         return 1
     problems = []
-    if version not in recent:
+    if previous is not None:
+        if recent[1:2] != [previous]:
+            problems.append(f"{CHANGELOG} must list {previous} as the newest non-yanked release")
+        if version != previous:
+            problems.append(f"{LOCK} must pin {previous} before promoting it")
+    elif version not in recent:
         allowed = recent[0] + (f" (or {recent[1]} while {recent[0]} awaits its pin PR merge)" if len(recent) > 1 else "")
         problems.append(f"{LOCK} pins af {version}; it must pin the newest release, {allowed}")
     problems += missing_digests(digests)
@@ -178,8 +185,14 @@ def only_pin_moved(rev, version):
 def main(argv):
     if argv == ["--check"]:
         return check()
-    if len(argv) == 2 and argv[0] == "--check-next" and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-rc\.[1-9][0-9]*)?", argv[1]):
-        return check(argv[1])
+    base = r"[0-9]+\.[0-9]+\.[0-9]+"
+    rc = r"-rc\.[1-9][0-9]*"
+    if argv[:1] == ["--check-next"]:
+        if len(argv) == 2 and re.fullmatch(base + "(?:" + rc + ")?", argv[1]):
+            return check(argv[1])
+        if (len(argv) == 4 and argv[2] == "--from" and re.fullmatch(base, argv[1])
+                and re.fullmatch(re.escape(argv[1]) + rc, argv[3])):
+            return check(argv[1], argv[3])
     if len(argv) == 3 and argv[0] == "--only-pin-moved":
         return only_pin_moved(argv[1], argv[2])
     print(__doc__, file=sys.stderr)
