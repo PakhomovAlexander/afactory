@@ -109,8 +109,9 @@ pub struct Pool {
 #[serde(deny_unknown_fields)]
 pub struct Inventory {
     pub hosts: Vec<Host>,
-    /// Storage pools identified by the provider. An empty list means none were reported.
-    pub pools: Vec<Pool>,
+    /// `None` means inventory is unknown. An empty list means the provider observed no pools.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub pools: Option<Vec<Pool>>,
     pub release: ReleasePolicy,
 }
 
@@ -197,11 +198,22 @@ pub enum ClusterState {
     Unknown,
 }
 
-pub const FLEET_BRIEFING_V1: &str = "af/fleet-briefing@1";
+pub const FLEET_BRIEFING_V2: &str = "af/fleet-briefing@2";
+
+fn briefing_schema<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    let schema = String::deserialize(deserializer)?;
+    if schema != FLEET_BRIEFING_V2 {
+        return Err(serde::de::Error::custom(
+            "unsupported fleet briefing version",
+        ));
+    }
+    Ok(schema)
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct BriefingV1 {
+pub struct BriefingV2 {
+    #[serde(deserialize_with = "briefing_schema")]
     pub schema: String,
     pub view: View,
     #[serde(deserialize_with = "Option::deserialize")]

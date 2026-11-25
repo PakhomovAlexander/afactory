@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use af_contracts::fleet::{
-    Action, BriefingV1, ClusterState, FLEET_BRIEFING_V1, Freshness, NextAction, Observation,
+    Action, BriefingV2, ClusterState, FLEET_BRIEFING_V2, Freshness, NextAction, Observation,
     Readiness, Reading, View,
 };
 use clap::{Args, Subcommand};
@@ -155,9 +155,9 @@ fn connect(
     print(&briefing, false)
 }
 
-fn initial(view: View, context: Option<String>, configured_contexts: Vec<String>) -> BriefingV1 {
-    BriefingV1 {
-        schema: FLEET_BRIEFING_V1.into(),
+fn initial(view: View, context: Option<String>, configured_contexts: Vec<String>) -> BriefingV2 {
+    BriefingV2 {
+        schema: FLEET_BRIEFING_V2.into(),
         view,
         context,
         scope: None,
@@ -421,7 +421,7 @@ fn validate_label(label: &str) -> Result<(), String> {
     }
 }
 
-fn print(briefing: &BriefingV1, json: bool) -> Result<i32, String> {
+fn print(briefing: &BriefingV2, json: bool) -> Result<i32, String> {
     if json {
         println!(
             "{}",
@@ -452,7 +452,7 @@ fn describe(observation: &Observation) {
     );
 }
 
-fn render(briefing: &BriefingV1) {
+fn render(briefing: &BriefingV2) {
     let context = briefing.context.as_deref().unwrap_or("no context");
     println!("{context} · discovery {}", word(briefing.discovery));
     if let Some(scope) = &briefing.scope {
@@ -493,19 +493,22 @@ fn render(briefing: &BriefingV1) {
                     );
                 }
             }
-            if inventory.pools.is_empty() {
-                println!("    Storage pool inventory unknown");
-            }
-            for pool in &inventory.pools {
-                let classes = match (pool.static_pool, pool.dynamic_pool) {
-                    (true, true) => "static and dynamic",
-                    (true, false) => "static",
-                    _ => "dynamic",
-                };
-                println!(
-                    "    Pool {} ({classes}) · capacity unknown",
-                    crate::terminal_text(&pool.name)
-                );
+            match inventory.pools.as_deref() {
+                None => println!("    Storage pool inventory unknown"),
+                Some([]) => println!("    No storage pools"),
+                Some(pools) => {
+                    for pool in pools {
+                        let classes = match (pool.static_pool, pool.dynamic_pool) {
+                            (true, true) => "static and dynamic",
+                            (true, false) => "static",
+                            _ => "dynamic",
+                        };
+                        println!(
+                            "    Pool {} ({classes}) · capacity unknown",
+                            crate::terminal_text(&pool.name)
+                        );
+                    }
+                }
             }
             println!(
                 "    Reservations and physical totals unknown · release {}",

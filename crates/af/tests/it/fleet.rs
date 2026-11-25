@@ -75,14 +75,14 @@ fn require_failure(output: Output, message: &str) {
 #[test]
 fn fresh_install_and_offline_standalone() {
     let machine = Machine::new();
-    let validator = schemas::validator("fleet-briefing-v1.json");
+    let validator = schemas::validator("fleet-briefing-v2.json");
     let infra = machine.json(&["infra", "--json"]);
     schemas::valid(&validator, &infra);
-    assert!(serde_json::from_value::<af_contracts::fleet::BriefingV1>(infra.clone()).is_ok());
+    assert!(serde_json::from_value::<af_contracts::fleet::BriefingV2>(infra.clone()).is_ok());
     let mut invalid = infra.clone();
     invalid.as_object_mut().unwrap().remove("inventory");
     assert!(!validator.is_valid(&invalid));
-    assert!(serde_json::from_value::<af_contracts::fleet::BriefingV1>(invalid).is_err());
+    assert!(serde_json::from_value::<af_contracts::fleet::BriefingV2>(invalid).is_err());
     assert_eq!(infra["configured_contexts"], json!([]));
     assert_eq!(infra["discovery"], "unconfigured");
     assert_eq!(infra["next_action"]["action"], "ask_owner");
@@ -125,6 +125,144 @@ fn fresh_install_and_offline_standalone() {
 fn executable(file: &Path, text: &str) {
     fs::write(file, text).unwrap();
     fs::set_permissions(file, fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+#[test]
+fn storage_pool_inventory_survives_only_current_cache_format() {
+    let machine = Machine::new();
+    let host_key = key(&machine, "host-key");
+    key(&machine, "management");
+    link(
+        &machine,
+        "management",
+        "config/af/fleet/credentials/operator",
+    );
+    machine.write(
+        "lab.afcontext",
+        &json!({
+            "schema": "af/fleet-context@1",
+            "scope": "fleet-fixture",
+            "management": {
+                "host": "broker.invalid", "port": 22, "user": "operator", "host_key": host_key
+            }
+        }),
+    );
+    // The real pinned OpenSSH fixture below covers authentication. Here, exit 75 makes
+    // the outage deterministic and independent of the host's sshd setup.
+    executable(
+        &machine.path("bin/ssh"),
+        r#"#!/bin/sh
+for operation do :; done
+case "$operation" in
+  'control-api http://localhost/pools')
+    [ ! -e temporary ] || exit 75
+    echo '{"static":["static-builder"],"dynamic":["dynamic-worker"],"release":"explicit","available":[]}' ;;
+  'control-api http://localhost/dynamic/allocations') echo '[]' ;;
+  *) exit 77 ;;
+esac
+"#,
+    );
+    success(
+        machine
+            .af(&[
+                "infra",
+                "connect",
+                "--context",
+                "lab",
+                "--from",
+                "lab.afcontext",
+                "--credential-ref",
+                "operator",
+            ])
+            .output()
+            .unwrap(),
+    );
+
+    let status = || machine.json(&["infra", "status", "--context", "lab", "--json"]);
+    let render = || {
+        success(
+            machine
+                .af(&["infra", "status", "--context", "lab"])
+                .output()
+                .unwrap(),
+        )
+    };
+    let briefing_schema = schemas::validator("fleet-briefing-v2.json");
+    let cache_schema = schemas::validator("fleet-cache-v2.json");
+    let fresh = status();
+    schemas::valid(&briefing_schema, &fresh);
+    let typed = serde_json::from_value::<af_contracts::fleet::BriefingV2>(fresh.clone()).unwrap();
+    assert!(typed.inventory.unwrap().data.unwrap().pools.is_none());
+    assert!(render().contains("Storage pool inventory unknown"));
+    let mut missing = fresh.clone();
+    missing["inventory"]["data"]
+        .as_object_mut()
+        .unwrap()
+        .remove("pools");
+    assert!(!briefing_schema.is_valid(&missing));
+    assert!(serde_json::from_value::<af_contracts::fleet::BriefingV2>(missing).is_err());
+    let mut old_briefing = fresh.clone();
+    old_briefing["schema"] = json!("af/fleet-briefing@1");
+    assert!(!briefing_schema.is_valid(&old_briefing));
+    assert!(serde_json::from_value::<af_contracts::fleet::BriefingV2>(old_briefing).is_err());
+
+    let cache = "state/af/fleet-cache/lab/pools.json";
+    let record: Value = serde_json::from_slice(&fs::read(machine.path(cache)).unwrap()).unwrap();
+    schemas::valid(&cache_schema, &record);
+    assert_eq!(record["data"], fresh["inventory"]["data"]);
+    fs::write(machine.path("temporary"), "").unwrap();
+    let stale = status();
+    assert_eq!(stale["inventory"]["observation"]["freshness"], "stale");
+    assert_eq!(stale["inventory"]["data"], record["data"]);
+
+    // Only the current-format synthetic observation has explicitly observed an empty list.
+    let mut empty = record;
+    empty["data"]["pools"] = json!([]);
+    schemas::valid(&cache_schema, &empty);
+    machine.write(cache, &empty);
+    let known_empty = status();
+    schemas::valid(&briefing_schema, &known_empty);
+    assert_eq!(
+        known_empty["inventory"]["observation"]["freshness"],
+        "stale"
+    );
+    assert_eq!(known_empty["inventory"]["data"]["pools"], json!([]));
+    let text = render();
+    assert!(text.contains("No storage pools") && !text.contains("Storage pool inventory unknown"));
+
+    // Simulate a previous release's record with the same binding, subject, and fresh timestamp.
+    let mut obsolete = empty;
+    obsolete["schema"] = json!("af/fleet-cache@1");
+    obsolete["data"]["pools"] = json!([
+        {"name":"static-builder","static_pool":true,"dynamic_pool":false,"available_gib":null},
+        {"name":"dynamic-worker","static_pool":false,"dynamic_pool":true,"available_gib":null}
+    ]);
+    assert!(!cache_schema.is_valid(&obsolete));
+    machine.write(cache, &obsolete);
+    let unavailable = status();
+    schemas::valid(&briefing_schema, &unavailable);
+    assert_eq!(
+        unavailable["inventory"]["observation"]["freshness"],
+        "unavailable"
+    );
+    assert!(unavailable["inventory"]["data"].is_null());
+    let text = render();
+    assert!(
+        text.contains("pools") && text.contains("unavailable"),
+        "{text}"
+    );
+    for vm in ["static-builder", "dynamic-worker"] {
+        assert!(!unavailable.to_string().contains(vm));
+        assert!(!text.contains(vm), "{text}");
+    }
+
+    fs::remove_file(machine.path("temporary")).unwrap();
+    let recovered = status();
+    assert_eq!(recovered["inventory"]["observation"]["freshness"], "fresh");
+    assert_eq!(recovered["inventory"]["data"], fresh["inventory"]["data"]);
+    let refreshed: Value = serde_json::from_slice(&fs::read(machine.path(cache)).unwrap()).unwrap();
+    schemas::valid(&cache_schema, &refreshed);
+    assert_eq!(refreshed["data"], recovered["inventory"]["data"]);
 }
 
 fn key(machine: &Machine, name: &str) -> String {
@@ -462,7 +600,7 @@ if [ -e {} ]; then exec /bin/cat {}; fi
         "management":target(broker.address,&host_key),
         "origins":{"project":origin(project.address,&store_id)}
     });
-    let validator = schemas::validator("fleet-briefing-v1.json");
+    let validator = schemas::validator("fleet-briefing-v2.json");
     schemas::valid(&schemas::validator("fleet-context-v1.json"), &descriptor);
     machine.write("lab.afcontext", &descriptor);
     let connect = |alias, file| {
@@ -521,6 +659,7 @@ if [ -e {} ]; then exec /bin/cat {}; fi
     assert_eq!(brief["discovery"], "ready");
     assert!(brief["desired_footprint"].is_null());
     let status = machine.json(&["infra", "status", "--context", "lab", "--json"]);
+    schemas::valid(&validator, &status);
     assert_eq!(status["next_action"]["action"], "run");
     let inventory = &status["inventory"]["data"];
     assert_eq!(inventory["hosts"].as_array().unwrap().len(), 1);
@@ -533,7 +672,7 @@ if [ -e {} ]; then exec /bin/cat {}; fi
     assert_eq!(host["static_available"]["ssd_gib"].as_f64(), Some(90.0));
     assert!(host["physical_totals"].is_null() && host["reservations"].is_null());
     assert!(status["inventory"]["observation"]["revision"].is_null());
-    assert_eq!(inventory["pools"], json!([]));
+    assert_eq!(inventory["pools"], Value::Null);
     let text = success(
         machine
             .af(&["infra", "status", "--context", "lab"])
@@ -560,7 +699,7 @@ if [ -e {} ]; then exec /bin/cat {}; fi
 
     let cache = machine.path("state/af/fleet-cache/lab/pools.json");
     let mut record: Value = serde_json::from_slice(&fs::read(&cache).unwrap()).unwrap();
-    schemas::valid(&schemas::validator("fleet-cache-v1.json"), &record);
+    schemas::valid(&schemas::validator("fleet-cache-v2.json"), &record);
     fs::write(machine.path("temporary"), "").unwrap();
     let stale = machine.json(&["infra", "status", "--context", "lab", "--json"]);
     assert_eq!(stale["inventory"]["observation"]["freshness"], "stale");

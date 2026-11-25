@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:fleet-briefing:1",
+  "$id": "urn:af:schema:fleet-briefing:2",
   "title": "Fleet visibility briefing",
   "type": "object",
   "additionalProperties": false,
@@ -20,7 +20,7 @@
     "next_action"
   ],
   "properties": {
-    "schema": {"const": "af/fleet-briefing@1"},
+    "schema": {"const": "af/fleet-briefing@2"},
     "view": {"enum": ["connect", "infra", "status", "allocations", "cluster", "inbox"]},
     "context": {
       "anyOf": [
@@ -201,9 +201,11 @@
       "properties": {
         "hosts": {"type": "array", "items": {"$ref": "#/$defs/host"}},
         "pools": {
-          "description": "Storage pools identified by the provider. An empty list means none were reported.",
-          "type": "array",
-          "items": {"$ref": "#/$defs/pool"}
+          "description": "Null means storage pool inventory is unknown. An empty array means the provider observed no storage pools.",
+          "anyOf": [
+            {"type": "null"},
+            {"type": "array", "items": {"$ref": "#/$defs/pool"}}
+          ]
         },
         "release": {"enum": ["explicit"]}
       }

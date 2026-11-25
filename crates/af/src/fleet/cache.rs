@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use super::context::{Binding, write_record};
 use super::transport::MAX_REPLY_BYTES;
 
-const SCHEMA: &str = "af/fleet-cache@1";
+const SCHEMA: &str = "af/fleet-cache@2";
 pub(super) const MAX_AGE_MS: u64 = 24 * 60 * 60 * 1000;
 
 #[derive(Serialize, Deserialize)]

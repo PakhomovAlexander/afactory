@@ -63,7 +63,7 @@ impl Pools {
         }
         Ok(Inventory {
             hosts: hosts.into_values().collect(),
-            pools: Vec::new(),
+            pools: None,
             release: self.release,
         })
     }

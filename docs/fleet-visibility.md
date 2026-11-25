@@ -39,8 +39,7 @@ control-api http://localhost/dynamic/allocations
 ```
 
 The broker's `static` and `dynamic` lists contain VM names from resource pool membership.
-It reports SSD headroom at the host level. Text shows storage pool inventory as unknown, and
-an empty JSON `pools` list means the provider reported no storage pool identities. Static
+It reports SSD headroom at the host level and leaves storage pool inventory unknown. Static
 availability is a separate view of the same host capacity and is excluded from the host's
 headroom total. Physical totals, reservations and desired footprint are unknown. A stopped
 allocation remains visible with unknown charges and executor. The infrastructure view withholds
@@ -80,12 +79,18 @@ stale and its Decisions are withheld. Discovery readiness does not indicate exec
 
 ## Reading the briefing
 
-Text and JSON render the same [briefing](../schemas/fleet-briefing-v1.json), including the next
-action, its reason and its success condition. The infrastructure cache lives under
+Text and JSON render the same [briefing](../schemas/fleet-briefing-v2.json), including the next
+action, its reason and its success condition. JSON reports unknown storage pool inventory as
+`inventory.data.pools: null` and a known empty inventory as `inventory.data.pools: []`. Text
+displays “Storage pool inventory unknown” and “No storage pools” respectively. Host-level SSD
+availability is reported independently. The infrastructure cache lives under
 `${XDG_STATE_HOME:-$HOME/.local/state}/af/fleet-cache`. A successful management read refreshes its
 per-context observation. An authenticated management command can return exit 75 to carry forward
 a stale observation from the exact binding for up to 24 hours. A failed connection, refused
-credential, host-key mismatch or invalid response cannot disclose a cached observation.
+credential, host-key mismatch or invalid response cannot disclose a cached observation. Only
+current [version 2 cache records](../schemas/fleet-cache-v2.json) are eligible. If the management
+reader is temporarily unavailable after upgrade and only an obsolete record exists, the
+observation is unavailable until a successful read refreshes it.
 
 The [fleet integration tests](../crates/af/tests/it/fleet.rs) exercise the six public commands with
 local OpenSSH endpoints, disposable keys, the management wire formats and a native Task waiting
