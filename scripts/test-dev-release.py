@@ -1389,6 +1389,11 @@ class ReleaseCLI(unittest.TestCase):
         self.env = {**os.environ, 'PATH': str(self.bin) + os.pathsep + os.environ['PATH'],
                     'FAKE_DB': str(self.db), 'REAL_GIT': GIT,
                     'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1',
+                    # Automatic maintenance must finish inside each real Git command. Apple
+                    # Git's detached maintenance can otherwise recreate metadata during teardown.
+                    'GIT_CONFIG_COUNT': '2',
+                    'GIT_CONFIG_KEY_0': 'maintenance.autoDetach', 'GIT_CONFIG_VALUE_0': 'false',
+                    'GIT_CONFIG_KEY_1': 'gc.autoDetach', 'GIT_CONFIG_VALUE_1': 'false',
                     'HOME': str(self.base / 'home'), 'TMPDIR': str(self.base / 'tmp')}
         for name in ('dev', 'scripts/dev-release.py', 'scripts/release-contract.py',
                      'scripts/release-contract.json', 'scripts/release-policy.json',
@@ -1477,14 +1482,17 @@ class ReleaseCLI(unittest.TestCase):
     def state_value(self):
         return json.loads((self.state / 'run.json').read_text())
 
-    def start_driver(self, command='rc', timeout=30, profile=None):
+    def start_driver(self, command='rc', timeout=None, profile=None):
         self.env['FIXTURE_RUN_STATE'] = str(self.state / 'run.json')
         token = secrets.token_hex(16)
         self.env['FIXTURE_DRIVER_TOKEN'] = token
         sequence = self.data().get('observation_sequence', 0)
         process = subprocess.Popen([sys.executable, str(self.source / 'dev'), 'release', command,
                     '--repo', 'o/r', '--remote', str(self.remote), '--state', str(self.state),
-                    '--format', 'json', '--poll-interval', '1', '--timeout', str(timeout),
+                    '--format', 'json', '--poll-interval', '1',
+                    # Only deliberate timeout tests replace the CLI's normal driver deadline.
+                    # Successful lifecycles remain bounded by await_stage, communicate and cleanup.
+                    *([] if timeout is None else ['--timeout', str(timeout)]),
                     *(['--profile', profile] if profile else [])],
                     cwd=self.source, env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     text=True)
@@ -1636,15 +1644,18 @@ class ReleaseCLI(unittest.TestCase):
         ready = json.loads(out)
         self.assertEqual(ready['identity'], identity)
         self.assertEqual(ready['status'], 'ready')
+        self.assertEqual(ready['receipts']['checks']['status'], 'complete')
         self.assertTrue(ready['published'])
         self.assertEqual(ready['pin']['state'], 'PENDING')
-        self.assertEqual(self.data()['effects'].count('pr'), 1)
-        self.assertEqual(self.data()['effects'].count('merge'), 1)
-        self.assertEqual(self.data()['metadata_check_runs'], 1)
+        data = self.data()
+        for effect in ('metadata', 'push', 'prepare', 'pr', 'merge'):
+            self.assertEqual(data['effects'].count(effect), 1, effect)
+        self.assertEqual(data['effects'].count('download'), len(state['plan']['policy']['targets']) + 3)
+        self.assertEqual(data['metadata_check_runs'], 1)
 
     def test_one_full_invocation_waits_for_labeled_plan_after_opened_fast(self):
         self.data(ci_plan_labels=[], barrier_stage='checks', barrier_check='fast')
-        process = self.start_driver(profile='full', timeout=60)
+        process = self.start_driver(profile='full')
         self.await_stage(process, 'checks')
         generation = self.data()['control_generation']
         self.assertNotIn('merge', self.data()['effects'])
