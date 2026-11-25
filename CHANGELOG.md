@@ -19,6 +19,352 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
+## [0.15.2-rc.1] - 2026-11-25
+
+### Authority compatibility
+
+Breaking combined Scenario/Ant and publication shapes: Scenario definitions/bundles 11, policy 8, pins/runs/list 12, Store 18 with retained driver 2 and typed bounded preflight waits; Ant definition 12, pin/tick 13, state/list 14, inspection 9; adapter request 8/response 3, workspace config 3/state 6 and GitHub journal 9, native Git candidate request/export 2. Nightly config/publish 2 and native nightly service/job/completion 1 retain separate release scope and external signing permission. Implementation startup scope 2 retains exact native scoped publication, finite progress and bounded repairs. Builtin backlog Actions settle native verified Documents and dispatch to receiver-owned native, GitHub, Markdown or Jira destinations. Markdown configuration and configured publication observations use version 2. Generic signed and performance authority stay separate. Finish or discard prior-release state; no migration or replay of retired shapes. Review and commit authority and refresh its lock before adoption. Performance executor 5, history 2, equivalence 2 and schedule 3 remain required. Native Task kernel failures are execution_failed/kernel_execution (exit 8); Task state/status/findings 3, inspection 21 and report/checks 4 replace their earlier public formats. Scenario terminal outcome 2 carries that failure without repair or publication authority. CI Health Phase 1 retains typed accepted/refused diagnosis, exact-head evidence and report-only remedies. Its watchdog remains inactive.
+
+### Changes
+
+- Release of reviewed source `0d97940b3788f8d43a7da0c050b722b0dab542bc`; collected change notes follow.
+
+- Withhold authentication-sensitive saved stderr excerpts and CLI repair hints in Claude and
+  Codex Worker failure diagnostics, including mixed authentication/schema rejections. Preserve
+  deterministic classification, reported usage and ordinary network evidence.
+
+- Fix const/enum type inference for strict Worker provider schemas, including nullable custom
+  triage fields. Preflight invalid schemas and stop automatic retries of native schema rejections
+  while preserving original kernel validation, evidence and usage accounting.
+- Add an offline inventory-backed `make contract-check` covering public and shipped Worker
+  contracts, whole-request projection, parity and current Store refusal boundaries. See the
+  [decision](docs/adr/2026-11-17-preflight-provider-schemas-and-inventory-contracts.md)
+  and [gate documentation](docs/contract-gate.md).
+- Refresh the reviewed release validation catalog pin for the added functional contract coverage;
+  retain exact-source refusal checks for workflow, resolver and catalog drift.
+- Preserve native authentication redaction before and after deterministic schema rejection,
+  while retaining parsed usage and suppressing same-schema retries.
+- Match the kernel's JSON Schema numeric equality when checking const/enum contradictions,
+  including nested literal data and distinct large integers. Make the Linux measurement argv
+  contract test explicitly simulate Linux on other hosts while retaining its account assertions.
+- Refresh the staged protected-harness digest and inventory for the portable argv test;
+  preserve historical receipts and installed authority.
+- Preserve enclosing union constraints and legal nulls during strict reply normalization;
+  keep pattern-property maps explicitly unsupported. Give native stderr and unframed schema
+  rejections deterministic priority while retaining rejection evidence after privacy filtering.
+- Canonicalize the Wake recorder fixture path on macOS and assert unsupported-platform
+  admission refuses without creating provenance; retain Linux private-key lifecycle coverage.
+- Inspect local reference targets under shared schema bounds, decoding URI fragments before
+  pointer unescaping. Preserve impossible alternatives and optional omissions with kernel-only
+  projection, require explicit object closure, and redact combined authentication/schema failures.
+- Align inventory URI fragment decoding with the kernel and retain legal nullable values
+  declared only within union alternatives, including nested arrays and reversed branch order.
+- Preserve original native evidence for transport failures during OAuth refresh; explicit
+  authentication signals remain redacted alongside network and deterministic schema failures.
+- Keep untyped object/array constraints, including nested union branches, in explicit kernel-only
+  mode. Preserve authentication sensitivity independently of retry classification across Claude
+  native envelopes, unframed output, stderr and shared telemetry capture.
+- Keep unions with sibling object/array types in whole-request kernel-only mode to avoid
+  conflicting required/nullable rewrites; preserve standalone typed unions and scalar projection.
+
+- Align the contract inventory with current Scenario, Ant, workspace, worker storage and
+  fixture benchmark schema versions after rebasing the schema hardening changes. Include
+  implementation startup/publication and Scenario driver contracts with their source owners
+  and existing validation evidence. Retired schema entries continue to fail closed.
+- Add regression coverage requiring a schema replacement to update both inventory membership
+  and canonical Worker port mappings; stale output copies still fail validation.
+
+- Allow quarantine confirmation and application to recover expired input entries on fresh
+  evidence, while keeping normal expiry checks and strict validation of the full written catalog.
+  Clean cross-platform evidence keeps original dates and cannot renew expired entries.
+  Apply refuses reports more than 14 days old or predating an entry’s current window, including
+  clean and always-failing results. Flaky renewal dates follow the confirmation report date,
+  so delayed or repeated application cannot extend the evidence’s 14-day window.
+
+- Cover release-note boundaries after the move to `./dev release`, preserving new change notes even in the previous release second.
+
+- Add a [manual durability runbook](../scripts/durability-e2e/README.md) for AF Scenarios and Ants,
+  with a sanitized baseline for matched comparison of witnessed recovery and policy outcomes.
+
+- Honor the manual `nobuild` label on pull requests with no source, pipeline, build input or test
+  changes. Hosted CI reports builds, tests, smoke and performance work as skipped and still checks
+  the AF pin and PR report. A PR changing only `.af/af.lock` qualifies.
+  [ADR-2026-11-20](../docs/adr/2026-11-20-honor-the-manual-nobuild-pr-label.md)
+
+- Refuse release planning and resume early when GitHub CLI cannot read required checks as JSON,
+  with a bounded local probe and an upgrade diagnostic before authorization or release effects.
+
+- Run a [manual durability load cohort](../scripts/durability-e2e/README.md#bounded-load-on-existing-af-workers)
+  on existing AF workers and compare pinned trials with observed concurrency and native fault evidence.
+
+- CI-health Phase 1 findings now retain every deterministic diagnosis and its first matching
+  report-only remedy, with exact occurrence identities, within the existing request and Scenario
+  bounds. Only the first unresolved occurrence reserves a diagnosis Task. Notifications use
+  `af.ci-health-notification/3`; versions 1 and 2 fail closed.
+
+- Classify all CI health occurrences before selecting the bounded diagnosis Task, so pinned
+  transient and infrastructure signatures leave the reservation available for unresolved failures.
+- Bound production CI health capture against its complete serialized adapter response before
+  committing state. Escaped or Unicode evidence that exceeds the bound yields an incomplete
+  snapshot with a named omission, retained findings and release alerts.
+
+- Keep Scenario help within 100 columns and verify every shipped CI-health and watchdog schema
+  against the JSON help catalog.
+
+- Integrate inactive CI Health Phase 1 with current native Scenario scheduling, retention,
+  publication and Task contracts. Preserve exact failed-head diagnosis, typed refusals and
+  report-only remedies. Scenario definitions/bundles use version 11, pins/runs/list 12, Store 18,
+  Ant definitions 12, pin/tick 13, state/list 14 and inspection 9; earlier shapes fail closed.
+
+- Preserve exact CI health snapshots across repeated observations of several failing attempts
+  with one signature. Journal metadata version 2 atomically records the latest capture; changed
+  evidence still refuses the Scenario Wait before recurrence updates. Version 1 state is refused
+  on upgrade ([ADR-0145](../docs/adr/0145-read-only-what-this-release-writes-and-version-every-changed-shape.md)).
+- Select the lexical first failing test from the combined bounded annotations and available job
+  log, retaining annotation fallback when logs are unavailable.
+
+- Correct the hermetic CI health diagnosis fixture to reserve the mandatory Provider admission
+  and one diagnosis Attempt: 5,096 tokens and two Attempts, with matching Scenario token caps.
+  Keep the evidence contracts, refusal checks and report-only Phase 1 authority unchanged.
+
+- Admit complete CI-health observations through the existing 100-failure and 64-KiB bounds:
+  reserve 20,000 tokens for diagnosis and 24,096 for the two-Attempt Task, including mandatory
+  Provider admission. Keep native context limits and refuse plans one token or Attempt short;
+  test exact maximum-size snapshot delivery and diagnosis acceptance with a fake Provider.
+
+- Keep CI health findings, diagnosis, remedy and outcome requests within the adapter bound for
+  large repository scopes by binding repository identity once in the native subject. Durable
+  notifications retain exact repository identity; notification version 4 rejects versions 1–3.
+
+- Add the hermetic CI health Phase 1 evidence contracts, restricted native diagnosis field
+  projections, report-only maintenance Scenario and independent bounded watchdog with durable
+  notification deduplication. No live Ant, GitHub mutation, rerun, publication or quarantine
+  authority is enabled. See the [operator guide](../docs/ci-health-maintenance.md).
+
+- Retain completed CI failures with absent, null or invalid completion timing and mark their
+  observations incomplete, including when no green sibling exposes the missing evidence.
+  Production normalization and the service fold independently record bounded omissions, so
+  direct service input and replay cannot authorize diagnosis or a remedy beyond alert-only.
+  Explicit timing in complete synthetic fixtures preserves their snapshot identities; current
+  schemas, completion watermarks, retention and owner approval rules are unchanged.
+
+- Repair the hermetic CI health diagnosis Worker's snapshot input contract and fit its rendered
+  context within the existing token reservation. Preserve exact evidence refusal, first-remedy
+  precedence and notification-before-Watch checks, and distinguish setup failures in native tests.
+
+- CI health refused-diagnosis reporting now retains native Attempt IDs instead of requiring
+  artifact digests, allowing deterministic unknown findings, alert-only remedy and outcome
+  notifications to complete while preserving the refused Task receipt and skipping Watch.
+- Native diagnosis settlement records now use `af/scenario-ci-diagnosis@2`; version 1 fails closed.
+
+- Complete large-scope CI health diagnosis, remedy and outcome notifications within the existing
+  64 KiB adapter request bound. Versioned notification evidence retains the full native settlement
+  while carrying the exact repository once in the request subject; journal inputs stay exact.
+
+- Preserve release failures across reruns and unfinished sibling checks and workflows. Green
+  closure is per signature and uses exact attempt completion timestamps, never run-ID or API
+  order; older or ambiguous successes cannot erase any unresolved failure or recurrence.
+  Unfinished checks and runs become bounded omissions while independently completed failures
+  and release alerts are retained. Version
+  signature state to `af.ci-signature-state/2` with exact completion evidence, and reduce
+  duplicated native refusal lifecycles in favor of table-driven validator coverage.
+
+- Create custom Task integration fixtures under the harness's private test HOME so sandboxed
+  CI health tests do not depend on permission to write to the ambient temporary directory.
+
+- CI health production observations bind the Scenario’s exact snapshot before diagnosis or
+  notifications, including changed job evidence at unchanged main. Owner-only daily selector
+  documents let one pinned adapter observe successive windows, nightly receipts and release PRs.
+- Bounded GitHub job-log downloads follow one scoped signed HTTPS location without forwarding
+  credentials. Explicit failing-test identities take precedence over generic error lines.
+
+- CI health remedy precedence now binds a diagnosis to the selected failure's head, so a pinned
+  transient or infrastructure failure on a distinct release head reports the release alert.
+- Phase 1 CI health gains an explicitly selected, bounded GET-only GitHub and nightly-receipt
+  reader and self-contained adapter staging. Reviewed independent watchdog service/timer
+  definitions remain inactive; no live activation, rerun or publication authority is installed.
+
+- Keep native CI diagnosis, alert-only remedy and outcome requests within the existing 64 KiB
+  adapter bound, including near-maximum repository names and maximum refusal diagnostics. Version 2
+  notification evidence retains exact settlement, receipt, output and diagnostic references with
+  explicit omissions; notification version 5 references previously delivered findings details and
+  preserves the full repository and provenance in durable reports. Earlier shapes fail closed.
+
+- CI health Scenarios now record refused diagnosis output as a separate deterministic unknown,
+  retaining the original Task receipt, exact source identities and bounded refusal evidence.
+  Findings, alert-only remedy and outcome are notified without a remedy effect or Watch.
+- Scenario definitions and their enclosing documents now use version 6 and the journal uses
+  version 7; earlier shapes fail closed. Machine policy and adapter protocol are unchanged.
+
+- Keep release-head CI diagnosis requests within the existing Worker token reservation by
+  compacting the pinned instructions. Selection, diagnosis and evidence still bind the exact
+  failed head; main-head and foreign evidence remain refused.
+
+- CI health diagnoses and their evidence bind to the selected failed job's exact head, including
+  release PR heads that differ from main. Captured Task Selection Requirements use that revision;
+  main is refused for a different release occurrence.
+- CI health findings immediately report every observed failure with its identity, platform,
+  conclusion, head, evidence references and release-blocking status. Explicit release alerts are
+  sent before diagnosis even when that failure is unselected or diagnosis capacity is exhausted.
+  Notifications use version 2 and bounded batches; version 1 fails closed under
+  [ADR-0145](../docs/adr/0145-read-only-what-this-release-writes-and-version-every-changed-shape.md).
+
+- Resolve the CI-health Scenario lifecycle regression's fixtures through `AF_WORKSPACE_ROOT`
+  so reused test binaries read the current sandbox's exact fixture bytes.
+
+- Keep overdue watchdog alerts observable inside a finite pinned timezone horizon while refusing
+  actual due dates that need unpinned rules.
+- Retain allowlisted diagnosis output for accepted fresh Task outcomes and project it by the exact
+  accepted receipt after Task collection, preserving refusal and artifact identity checks.
+
+- Keep CI Health unknown timing within its exact live workflow/job/platform/head scope, and
+  preserve the latest actual known failure completion when an earlier unknown occurrence recovers.
+  Older green jobs retain unresolved release blockers; unknown timing on another head no longer
+  prevents valid closure. Capture time never becomes completion evidence. Signature state uses
+  `af.ci-signature-state/5`; earlier versions are refused without migration under
+  [ADR-0145](../docs/adr/0145-read-only-what-this-release-writes-and-version-every-changed-shape.md).
+
+- Keep CI health test snapshots writable when copied from a read-only Task check source, while
+  preserving the captured bytes and sealed source permissions.
+
+- Fix CI-health diagnosis after a preceding deterministic classification by fitting the complete
+  two-occurrence context within the existing Worker reservation, preserving exact evidence,
+  native reply constraints and Task accounting.
+
+- Correct the CI health lifecycle test to count both resumed merge observations while retaining
+  its checks that Watch reuses one durable Wait intent without repeating diagnosis or notifications.
+
+- Strengthen the CI-health lifecycle regression to check final Watch notification ordering,
+  unchanged diagnosis and remedy progress, and reuse of the durable Wait intent. Clarify that
+  each resumed merge observation consumes the existing Scenario dispatch allowance.
+
+- Resolve native scheduler and watchdog occurrences within pinned timezone intervals so an unused
+  historical offset at or beyond the horizon cannot block a due alert. Keep the exclusive horizon,
+  earliest fold occurrence and snap-forward handling of proven gaps; refuse occurrences missing
+  pinned rules. Shared pinned-date fixtures keep native due times and watchdog resolution in
+  agreement.
+
+- Align issue workflow test catalogs, model expectations and size-S guidance with the selected
+  fixture profile.
+- Audit exact installed Codex model and effort pairs against the recorded catalog for the
+  selected profile.
+
+- `af task show --checks` reports `elapsed timing unavailable` for local checks with execution
+  evidence and no recorded duration, including recorded runs whose accounts have no steps or
+  whose accounts are absent or refused.
+
+- Ship private Project backlog processing and report-only daily CI health maintenance together.
+  Scenario adapter requests keep backlog settlement and dispatch restricted to the builtin host.
+
+- Daily backlog assessment can use policy-approved private report facts and verified local items.
+  The audit carries excess intake and capped publications into later occurrences, and duplicate
+  outcomes retain the exact matched item and revision.
+
+- Add a [read-only GitHub open issue index](docs/issue-triage-runner.md#read-only-open-issue-index)
+  for Project backlog collection and duplicate verification, with a private, bounded JSON result.
+
+- Prepare portable local report Scenarios with pinned packages and named inputs, including issue
+  triage. Each receiver uses its own Task Store, Provider bindings and exact Scenario approval.
+  The command catalog marks preparation as a token-free Task Store write.
+  Preparation rejects local package and slot bindings before inspecting any referenced package.
+  [ADR-2026-11-19](../docs/adr/2026-11-19-prepare-portable-scenario-artifacts.md)
+
+- Prepare a portable private backlog assessment from an exact Project batch reference and run
+  it through native Report checks and independent verification. The assessment refers only to
+  frozen members and policy-permitted evidence IDs.
+  [ADR](../docs/adr/2026-11-20-prepare-private-daily-backlog-assessments.md)
+
+- AF-managed development now directs defects and gaps to durable private Project backlog
+  Reports. Shell-capable Task Workers start without ambient GitHub CLI configuration or Git
+  credential helpers. The backlog runbook covers offline receipt recovery, separate publisher
+  credentials and an offline daily Ant demonstration with GitHub issue reconciliation.
+
+- Admit and inspect restartable Project backlog batches with `af backlog batch`. Daily
+  occurrences reuse the Ant calendar and budget rules. The private audit records a frozen
+  authority cutoff, dispositions, deferred work and local publication reservations.
+  [ADR](../docs/adr/2026-11-20-freeze-project-backlog-at-authority-cutoff.md)
+
+Daily Project backlog batches fit the Report citation and encoded Task input budgets, and
+deferred members get a turn under sustained intake. A truncated tracked-item view holds new
+publication proposals. Policy changes between batches record a reverification outcome for
+pending deliveries.
+[Decision](../docs/adr/2026-11-20-bound-backlog-assessment-and-repin-between-batches.md)
+
+- Publish independently verified Project backlog items to a configured Markdown document or
+  Jira project. Preserve surrounding Markdown prose and recover uncertain writes through
+  read-only reconciliation. Markdown publication preserves nanosecond timestamp checks on
+  Linux and macOS.
+  [Publication decision](../docs/adr/2026-11-21-bind-markdown-and-jira-backlog-destinations.md)
+
+- Ship the receiver's standalone Python GitHub Issues adapter for daily backlog Scenarios.
+  Recover an interrupted create through the same Project/item marker and reconcile later verified
+  revisions against the mapped issue while preserving human edits and closure.
+
+- Append later independently verified Markdown revisions under the same Project backlog item
+  identity. Preserve surrounding prose and keep delivery pending when the file conflicts with the
+  journal or does not contain the exact revision after an uncertain write. Recover a lost
+  receipt at the attempt cap, reconcile an operator-restored revision, and rotate full Markdown
+  volumes while retaining their receipted history.
+- Write the closed `review.kernel/RunEvent@4` envelope for native backlog and existing events.
+  SQLite validates the envelope on open and replay. The `@3` envelope is retired. Finish or discard earlier-release state before upgrading.
+
+- The portable daily Project backlog Scenario can use a private, pinned GitHub open issue
+  observation. Independently verified exact matches settle as already tracked without a
+  publication intent. [Decision](../docs/adr/2026-11-20-bind-private-provider-observations-to-backlog-assessment.md)
+
+- Let the daily Project backlog Scenario coordinate a pinned GitHub Issues adapter. The receiver
+  records write intents before dispatch, reconciles uncertain creates by exact issue identity, and
+  preserves human edits and closure across verified revisions. The native verified view stays local.
+
+- Recurring GitHub backlog enrollment can opt in to a receiver-local Issues-read observer.
+  Each frozen batch retains its own checked observation before assessment. Failed reads leave
+  work private for retry, and independently verified matches to existing issues settle without
+  publication. [Operator setup](../docs/project-backlog.md#opt-in-to-recurring-github-issue-indexing)
+- The GitHub observer refuses inconsistent page walks even when an issue closure leaves the
+  page count unchanged. Enrolled Projects can pause to admit a manual batch and finish it with
+  its own Scenario and index pin after enrollment resumes.
+  [Manual mode](../docs/project-backlog.md#optional-manual-mode)
+
+- Recurring Project backlog enrollment can follow a confirmed reviewed Git ref. Each daily batch
+  freezes its exact source and enrollment alongside membership, so preparation and verification
+  recover on the same snapshot across later checkout advances. Use the writing release to settle
+  older backlog enrollments and journals before upgrading to the new formats.
+
+- Enroll a receiving Project once with `af ant backlog` to process successive private daily
+  batches through the normal AF scheduler. Each batch gets its own frozen membership,
+  independently verified assessment and delivery receipts.
+  Use `af help ant backlog` to discover the commands and add `--json` to inspect their effects.
+  [Recurring schedule decision](../docs/adr/2026-11-21-enroll-recurring-project-backlog-processing.md)
+
+The portable daily backlog Scenario settles independently verified assessments in the
+receiving Project Store and dispatches eligible revisions to a bounded synthetic local sink.
+Local delivery intents resume idempotently. Backlog intake and batch arguments now include
+command-line help.
+
+- Recover GitHub and Jira backlog publication receipts after attempt 16. Resuming the original
+  Scenario can confirm the existing ticket within its remaining time and dispatch limits,
+  preserving human edits and closure.
+
+- Capture observed facts and bounded text evidence offline with `af backlog record`. Workspaces
+  share a private Project inbox, and verified items have a separate read surface. Transfer
+  pending Reports to an enrolled Project authority through signed files and recover lost
+  acknowledgments by retrying. Private Report inspection includes recorded dispositions.
+  [ADR](../docs/adr/2026-11-20-store-project-backlog-reports-privately.md)
+
+- Fixed opening an initialized event Store during a concurrent write. Wake polling can observe
+  committed state while a recorder holds the writer lock. Store opens validate the required
+  tables, indexes and wake triggers even when the database declares the current version.
+
+- Preserve a strict reply payload unchanged when optional-null cleanup reaches its depth limit.
+
+- RC cuts and stable promotions confirm branch ownership using Git's durable new-branch
+  result. Recovery can continue after a lost controller acknowledgement when that result
+  and the remote head match the sealed run. An up-to-date push reports a branch collision.
+
+- Start the next patch line with `make release` after a stable release, then use `NEW=1` for
+  another RC. Set `VERSION=X.Y.Z` explicitly to promote its matching published and pinned RC
+  through a separate validated, signed release.
+
 ## [0.15.1] - 2026-11-18
 
 ### Authority compatibility
