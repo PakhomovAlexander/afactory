@@ -1,12 +1,13 @@
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{self, ErrorKind};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use nix::fcntl::{FcntlArg, fcntl};
 use nix::libc;
 
 use super::{EventStore, StoreError};
+use crate::local_fs::{PRIVATE_DIR_MODE, private_file_options};
 
 // The bundled SQLite Unix VFS uses these POSIX byte ranges for its shared database lock
 // and the WAL write, checkpoint and recovery locks, respectively.
@@ -16,8 +17,9 @@ const WAL_WRITE_LOCK: libc::off_t = 120;
 const WAL_MUTATION_LOCKS: libc::off_t = 3;
 
 impl EventStore {
-    /// Read a native local Store from a private SQLite snapshot. The original files are
-    /// opened only for reading, even when SQLite must rebuild the WAL index on the copy.
+    /// Read a native local Store from a private SQLite snapshot. The snapshot directory and
+    /// copies are created with owner-only access. SQLite rebuilds any WAL index on the copy,
+    /// and the original files are opened only for reading.
     ///
     /// Use from a dedicated observation process with no other handles to the source
     /// database or its sidecars. POSIX locks are process-owned: closing another handle
@@ -26,6 +28,7 @@ impl EventStore {
         let result = (|| {
             let directory = tempfile::Builder::new()
                 .prefix("af-observation-")
+                .permissions(fs::Permissions::from_mode(PRIVATE_DIR_MODE))
                 .tempdir()?;
             let database = directory.path().join("events.sqlite");
             let has_wal = copy_snapshot(path, &database)?;
@@ -65,9 +68,11 @@ fn copy_snapshot(path: &Path, destination: &Path) -> io::Result<bool> {
         require_same_file(&shm_path, &file.metadata()?)?;
     }
 
-    io::copy(&mut database, &mut File::create(destination)?)?;
+    let mut copy_options = private_file_options();
+    copy_options.write(true).create_new(true);
+    io::copy(&mut database, &mut copy_options.open(destination)?)?;
     if let Some(wal) = &mut wal {
-        io::copy(wal, &mut File::create(sidecar(destination, "-wal"))?)?;
+        io::copy(wal, &mut copy_options.open(sidecar(destination, "-wal"))?)?;
         require_same_file(&wal_path, &wal.metadata()?)?;
     } else {
         require_absent(&wal_path)?;
@@ -138,4 +143,99 @@ fn sidecar(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
     name.push(suffix);
     name.into()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::process::Command;
+
+    use serde_json::json;
+
+    use super::super::{EventType, NewEvent};
+    use super::*;
+    use crate::Cas;
+
+    #[test]
+    fn observation_snapshot_is_private_under_permissive_umasks() {
+        const SOURCE: &str = "AF_TEST_OBSERVATION_SOURCE";
+        const TEST: &str = "store::observation_snapshot::tests::observation_snapshot_is_private_under_permissive_umasks";
+        if let Some(source) = std::env::var_os(SOURCE) {
+            let source = PathBuf::from(source);
+            let source_files = [
+                source.clone(),
+                sidecar(&source, "-wal"),
+                sidecar(&source, "-shm"),
+            ];
+            let source_state = || {
+                source_files
+                    .each_ref()
+                    .map(|path| (fs::metadata(path).unwrap().mode(), fs::read(path).unwrap()))
+            };
+            let before = source_state();
+            let reader = EventStore::open_observation_snapshot(&source).unwrap();
+            assert_eq!(reader.replay("run").unwrap().len(), 1);
+            let database = reader.database_path().unwrap();
+            let directory = database.parent().unwrap();
+            let modes = [
+                directory.to_path_buf(),
+                database.clone(),
+                sidecar(&database, "-wal"),
+            ]
+            .map(|path| format!("{:04o}", fs::metadata(path).unwrap().mode() & 0o777));
+            assert_eq!(
+                modes,
+                ["0700", "0600", "0600"],
+                "directory, database and WAL modes"
+            );
+            assert!(
+                source_state() == before,
+                "observation changed source bytes or permissions"
+            );
+            return;
+        }
+
+        let root = tempfile::Builder::new()
+            .permissions(fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .unwrap();
+        let source = root.path().join("events.sqlite");
+        let mut writer = EventStore::open(&source).unwrap();
+        writer
+            .conn
+            .execute_batch("PRAGMA wal_autocheckpoint=0; PRAGMA wal_checkpoint(TRUNCATE);")
+            .unwrap();
+        let cas = Cas::open(root.path().join("cas")).unwrap();
+        writer
+            .append(
+                "run",
+                &cas,
+                NewEvent::new(EventType::SourceCapturedV1, json!({"i": 1})),
+            )
+            .unwrap();
+        assert!(fs::metadata(sidecar(&source, "-wal")).unwrap().len() > 0);
+
+        // The writer stays open in this process and each reader inherits its own umask.
+        for mask in ["000", "022"] {
+            let output = Command::new("/bin/sh")
+                .args([
+                    "-c",
+                    "umask \"$1\" && exec \"$2\" --exact \"$3\"",
+                    "sh",
+                    mask,
+                ])
+                .arg(std::env::current_exe().unwrap())
+                .arg(TEST)
+                .env(SOURCE, &source)
+                .env("TMPDIR", root.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "umask {mask}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"));
+        }
+    }
 }

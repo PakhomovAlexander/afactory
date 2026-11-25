@@ -7,3 +7,5 @@
   Apple's audit-session setup.
 - Read Project origins with read-only Store permissions after clean shutdown and while
   committed Task events remain in the WAL, without creating sidecars in the Stores.
+- Keep fleet observation snapshots private to the origin reader, including the copied
+  database and WAL, even under a permissive umask.

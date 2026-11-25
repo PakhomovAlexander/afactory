@@ -65,8 +65,10 @@ are selected by the server. An example with placeholders follows.
 The SSH account needs read access to the Project's registered Workspace and Task Store,
 including existing SQLite WAL and shared-memory files when present. The reader takes a private
 snapshot under SQLite's local file locks and replays committed frames from that snapshot. The
-reader creates no sidecars in either Store and needs temporary space for the copied database
-and WAL files. An active write, checkpoint, or inaccessible snapshot can make the origin
+snapshot directory and the database and WAL copies are created with owner-only permissions.
+SQLite can rebuild its shared-memory index inside that directory. The reader leaves source
+Store files and permissions untouched and needs temporary space for the snapshot.
+An active write, checkpoint, or inaccessible snapshot can make the origin
 temporarily unavailable. Running the command on the origin also shows the precise Project and
 Store identities to put in the descriptor. For a principal separately authorized to take native
 plan Decisions, add
@@ -101,6 +103,8 @@ The [fleet integration tests](../crates/af/tests/it/fleet.rs) exercise the six p
 local OpenSSH endpoints, disposable keys, the management wire formats and a native Task whose
 waiting transition is still in the WAL. They also cover clean shutdown, read-only Store files
 and directories, concurrent writes, and a fresh offline standalone Task workflow.
+The [Store snapshot regression](../crates/af-store/src/store/observation_snapshot.rs) checks
+permissions on the live snapshot under umasks `000` and `022` while replaying committed WAL frames.
 
 Run the Fleet tests from an ordinary macOS user shell with `cargo test --locked -p af --test it
 fleet::`. The native SSH test hands accepted loopback sockets to Apple's inetd-mode `sshd` so it
