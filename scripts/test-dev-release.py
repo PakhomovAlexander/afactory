@@ -470,6 +470,7 @@ def run_with_push_fault():
     from unittest import mock
 
     mode, state_path, *args = sys.argv[1:]
+    state_path = Path(state_path)
     sys.argv = ['dev', *args]
     sys.dont_write_bytecode = True
     main = runpy.run_path('scripts/dev-release.py')['main']
@@ -478,12 +479,29 @@ def run_with_push_fault():
         monotonic=lambda: clock, time=time.time, strftime=time.strftime, gmtime=time.gmtime)
     real_run = subprocess.run
     branch_reads = 0
+    first_lookup = mode in ('first-lookup', 'first-lookup-interrupt')
+
+    def push_foreign(state, ref):
+        assert 'branch' not in state['receipts']
+        real_run([os.environ['REAL_GIT'], '--git-dir',
+                  str(state_path.parent / 'repository.git'), 'push',
+                  state['plan']['remote'], state['candidate'] + ':' + ref],
+                 check=True, capture_output=True)
 
     def invoke(argv, **kwargs):
         nonlocal clock, branch_reads
+        if first_lookup and branch_reads and argv[:4] == ['gh', 'pr', 'list', '--head']:
+            # execute() has consumed the first branch lookup and is about to look up the PR.
+            state = json.loads(state_path.read_text())
+            assert branch_reads == 1 and argv[4] == state['plan']['branch']
+            assert state['receipts']['validation']['status'] == 'complete'
+            state_path.with_name('first-lookup.json').write_text(json.dumps(state))
+            push_foreign(state, 'refs/heads/' + state['plan']['branch'])
+            if mode == 'first-lookup-interrupt':
+                raise KeyboardInterrupt()
         push = argv[0] == 'git' and 'push' in argv
         if push and mode == 'interrupt':
-            state = json.loads(Path(state_path).read_text())
+            state = json.loads(state_path.read_text())
             assert state['receipts']['branch']['status'] == 'intent'
             raise KeyboardInterrupt()
         result = real_run(argv, **kwargs)
@@ -495,20 +513,19 @@ def run_with_push_fault():
                 assert clock == 7200 and result.returncode == 0
                 clock = main.__globals__['DRIVER_DEADLINE']
                 raise subprocess.TimeoutExpired(argv, kwargs['timeout'])
-        if (mode == 'compete' and argv[0] == 'git' and 'ls-remote' in argv
-                and argv[-1].startswith('refs/heads/release/v') and Path(state_path).exists()):
-            state = json.loads(Path(state_path).read_text())
+        if ((first_lookup or mode == 'compete') and argv[0] == 'git' and 'ls-remote' in argv
+                and argv[-1].startswith('refs/heads/release/v') and state_path.exists()):
+            state = json.loads(state_path.read_text())
             if state['receipts'].get('validation', {}).get('status') == 'complete':
+                assert argv[-1] == 'refs/heads/' + state['plan']['branch']
                 branch_reads += 1
-                if branch_reads == 2:
+                if branch_reads == 1 and first_lookup:
+                    assert result.returncode == 0 and not result.stdout
+                if branch_reads == 2 and mode == 'compete':
                     # The final lookup really observed absence. The competitor
                     # acts before the controller receives that result or saves intent.
                     assert result.returncode == 0 and not result.stdout
-                    assert 'branch' not in state['receipts']
-                    real_run([os.environ['REAL_GIT'], '--git-dir',
-                              str(Path(state_path).parent / 'repository.git'), 'push',
-                              state['plan']['remote'], state['candidate'] + ':' + argv[-1]],
-                             check=True, capture_output=True)
+                    push_foreign(state, argv[-1])
         return result
 
     with mock.patch.object(subprocess, 'run', side_effect=invoke):
@@ -2469,23 +2486,21 @@ class ReleaseCLI(unittest.TestCase):
                 self.remote = self.base / ('remote-' + str(interrupted) + '.git')
                 self.git('clone', '--bare', '--no-local', self.source, self.remote)
                 publish_fixture_db(self.db, {'remote': str(self.remote), 'source': str(self.source)})
-                self.data(barrier_stage='validation', checks='fail')
-                process = self.start_driver()
-                state = self.await_stage(process, 'validation')
-                generation = self.data()['control_generation']
-                self.push_foreign_candidate(state)
+                self.data(checks='fail')
+                mode = 'first-lookup-interrupt' if interrupted else 'first-lookup'
+                result = self.cli('rc', ok=False, drive=True, push_fault=mode)
+                err = result.stderr
                 if interrupted:
-                    process.send_signal(signal.SIGINT)
-                self.release_barrier(process, 'validation', generation)
-                _, err = process.communicate(timeout=10)
-                if interrupted:
-                    self.assertEqual(process.returncode, 130, err)
+                    self.assertEqual(result.returncode, 130, err)
                     state = self.state_value()
                     self.assertEqual(state['receipts']['branch']['status'], 'waiting')
                     self.assertNotIn('commit', state['receipts']['branch'])
                     err = self.cli('resume', ok=False).stderr
                 else:
-                    self.assertEqual(process.returncode, 1, err)
+                    self.assertEqual(result.returncode, 1, err)
+                    snapshot = self.state / 'first-lookup.json'
+                    self.assertTrue(snapshot.is_file(), err)
+                    state = json.loads(snapshot.read_text())
                 self.assert_unowned_branch_refused(err, state)
 
     def push_foreign_candidate(self, state):
