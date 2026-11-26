@@ -31,7 +31,8 @@ def restore(tag, source):
     bundles = observation.pages(lambda endpoint: json.loads(read(endpoint)),
                                 'actions/artifacts?name=' + name, 'artifacts')
     bundles = [a for a in bundles if a['name'] == name]
-    releases = observation.releases(lambda endpoint: read(endpoint, include=True))
+    releases = observation.releases(lambda endpoint: read(endpoint, include=True),
+                                    retry_delays=observation.PUBLICATION_RETRY_DELAYS)
     if not bundles:
         # Even an empty draft reserves the original signed identity.
         if any(r['tag_name'] == tag for r in releases):

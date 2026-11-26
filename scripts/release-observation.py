@@ -1,11 +1,13 @@
 """Bounded, complete release and Actions metadata observations; never secret values."""
 import json
 import re
+import time
 from urllib.parse import parse_qs, urlsplit
 
 
 PAGE_SIZE = 100
 MAX_PAGES = 10
+PUBLICATION_RETRY_DELAYS = (1, 2)
 
 
 def pages(api, endpoint, key, identity='id'):
@@ -34,12 +36,15 @@ def pages(api, endpoint, key, identity='id'):
     raise ValueError('observation_budget: API collection exceeds 1000 entries')
 
 
-def releases(read):
+def releases(read, *, retry_delays=()):
     """Require two matching, complete traversals; this is not an atomic snapshot."""
-    first = _release_traversal(read)
-    if _release_traversal(read) != first:
-        raise ValueError('incomplete_observation: release collection changed; retry observation')
-    return first[0]
+    for delay in (0, *retry_delays):
+        if delay:
+            time.sleep(delay)
+        first = _release_traversal(read)
+        if _release_traversal(read) == first:
+            return first[0]
+    raise ValueError('incomplete_observation: release collection changed; retry observation')
 
 
 def _release_traversal(read):
