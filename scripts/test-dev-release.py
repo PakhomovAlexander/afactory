@@ -1935,7 +1935,7 @@ class ReleaseCLI(unittest.TestCase):
                                                '--json', 'name,bucket,link', '--help'])
 
     def test_plan_uses_canonical_repository_and_preserves_nested_queries(self):
-        result = self.cli('plan')
+        result = self.cli('plan', '--profile', 'full')
         self.assertIn('authoritative main/tag fetch complete', result.stderr)
         state = json.loads(result.stdout)
         self.assertEqual(state['plan']['source'], self.initial)
