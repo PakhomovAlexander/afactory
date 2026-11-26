@@ -61,7 +61,7 @@ fn validate_optimization_delivery_payload(
             .ok_or_else(|| conflict("Light optimization delivery has no economics decision"))?;
         let envelope = cas
             .get_artifact(result_id)
-            .map_err(|error| StoreError::Artifact(error.to_string()))?;
+            .map_err(|error| artifact_read_error(result_id, error))?;
         let economics: OptimizationResultV1 = serde_json::from_value(envelope.payload)?;
         economics.validate().map_err(conflict)?;
         if !matches!(
@@ -83,7 +83,7 @@ fn validate_optimization_delivery_payload(
     for id in &result.evidence {
         let artifact = cas
             .get_artifact(id)
-            .map_err(|error| StoreError::Artifact(error.to_string()))?;
+            .map_err(|error| artifact_read_error(id, error))?;
         if artifact.artifact_type != OPTIMIZATION_VERIFICATION_V1 {
             continue;
         }
@@ -129,7 +129,7 @@ fn validate_optimization_delivery_payload(
         comparison.validate().map_err(conflict)?;
         let comparison_envelope = cas
             .get_artifact(&verification.comparison_id)
-            .map_err(|error| StoreError::Artifact(error.to_string()))?;
+            .map_err(|error| artifact_read_error(&verification.comparison_id, error))?;
         if !matches!(
             &comparison_envelope.producer,
             af_contracts::Producer::KernelOperation { run_id, operation_id, .. }
@@ -178,7 +178,7 @@ fn validate_optimization_delivery_payload(
         }
         let evaluation_envelope = cas
             .get_artifact(&verification.evaluation_id)
-            .map_err(|error| StoreError::Artifact(error.to_string()))?;
+            .map_err(|error| artifact_read_error(&verification.evaluation_id, error))?;
         if evaluation_envelope.artifact_type != OPTIMIZATION_EVALUATION_V1
             || !matches!(
                 &evaluation_envelope.producer,
@@ -208,7 +208,7 @@ fn validate_optimization_delivery_payload(
             }
             let input = cas
                 .get_artifact(id)
-                .map_err(|e| StoreError::Artifact(e.to_string()))?;
+                .map_err(|error| artifact_read_error(id, error))?;
             if input.artifact_type == "af/SourceTree@1"
                 && input
                     .payload
@@ -363,7 +363,7 @@ pub fn validate_optimization_delivery(
     }
     let evaluation = cas
         .get_artifact(&verification.evaluation_id)
-        .map_err(|error| StoreError::Artifact(error.to_string()))?;
+        .map_err(|error| artifact_read_error(&verification.evaluation_id, error))?;
     let (evaluation_node, evaluation_attempt) = match &evaluation.producer {
         af_contracts::Producer::Attempt {
             node_id,
@@ -501,11 +501,11 @@ impl TaskProjection {
         // names both (ADR-0211); a proof always names this Task and its result.
         let envelope = cas
             .get_artifact(id)
-            .map_err(|error| StoreError::Artifact(error.to_string()))?;
+            .map_err(|error| artifact_read_error(id, error))?;
         for reference in &envelope.input_artifacts {
             let Some(referenced) = cas
                 .get_optional_artifact(reference)
-                .map_err(|error| StoreError::Artifact(error.to_string()))?
+                .map_err(|error| artifact_read_error(reference, error))?
                 .filter(|referenced| referenced.artifact_type == TASK_DELIVERY_PROOF_V1)
             else {
                 continue;

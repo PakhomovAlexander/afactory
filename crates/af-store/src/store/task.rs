@@ -18,7 +18,7 @@ use serde::de::DeserializeOwned;
 use serde_json::json;
 
 use super::{EventStore, NewEvent, StoreError, u64_column};
-use crate::{Cas, content_id, validate_envelope};
+use crate::{Cas, CasError, content_id, validate_envelope};
 
 #[cfg(test)]
 mod test_clock;
@@ -176,14 +176,13 @@ impl TaskProjection {
         self.epoch
     }
 
-    /// The wall the Task has once it runs: its revision's deadline less the time it was opened.
-    /// The revision records an absolute deadline from planning; the clock starts at the first
-    /// plan admission, so a Task that waited between plan and run keeps its whole wall.
+    /// The wall the Task has once it runs. Scenario plan capture uses the durable step start
+    /// so an opening retried at a later time compiles the same plan and keeps its Task wall.
     pub fn wall_ms(&self) -> u64 {
         self.revision
             .limits
             .deadline_unix_ms
-            .saturating_sub(self.opened_unix_ms)
+            .saturating_sub(self.plan_clock_origin_unix_ms)
     }
 
     /// When the Task's wall clock started: its first plan admission. `None` before it ran.
@@ -191,32 +190,20 @@ impl TaskProjection {
         self.clock_started_unix_ms
     }
 
-    /// The Task's deadline: its revision's, moved by the time the Task waited between being
-    /// opened and its first plan admission. Before that admission, the deadline it would have
-    /// if its clock started at `now`; every rule that bounds execution by the deadline reads it
-    /// here, never from the revision alone.
+    /// The physical execution deadline is the first native admission plus the captured wall.
+    /// Before admission, this gives the deadline the Task would have if admitted at `now`.
     pub fn deadline_at(&self, now: u64) -> u64 {
-        let started = self.clock_started_unix_ms.unwrap_or(now);
-        self.revision
-            .limits
-            .deadline_unix_ms
-            .saturating_add(started.saturating_sub(self.opened_unix_ms))
+        self.clock_started_unix_ms
+            .unwrap_or(now)
+            .saturating_add(self.wall_ms())
     }
 
     /// The deadline once the clock started; before it, the revision's own.
     pub fn deadline_unix_ms(&self) -> u64 {
-        self.revision
-            .limits
-            .deadline_unix_ms
-            .saturating_add(self.clock_shift_ms())
-    }
-
-    /// How far the clock moved the Task's recorded deadlines: the time between its genesis and
-    /// its first admission; 0 before that admission. A plan's deadline is its revision's, so it
-    /// moves by the same amount.
-    pub fn clock_shift_ms(&self) -> u64 {
         self.clock_started_unix_ms
-            .map_or(0, |started| started.saturating_sub(self.opened_unix_ms))
+            .map_or(self.revision.limits.deadline_unix_ms, |started| {
+                self.deadline_at(started)
+            })
     }
 
     /// The revision's limits with the deadline [`Self::deadline_unix_ms`] states.
@@ -391,6 +378,7 @@ pub struct TaskProjection {
     pub revision_id: String,
     pub revision: TaskRevisionV1,
     pub plan_id: Option<String>,
+    pub prepared_plan_id: Option<String>,
     pub phase: TaskPhaseV1,
     pub admitted: bool,
     pub next_sequence: u64,
@@ -433,7 +421,7 @@ pub struct TaskProjection {
     /// Every `af task run --retry-gate` that reopened the Task at its failed gates, in log order.
     pub gate_retries: Vec<task::gate_retry::TaskGateRetriedV1>,
     /// Policy time of the Task's genesis (`Opened`).
-    opened_unix_ms: u64,
+    plan_clock_origin_unix_ms: u64,
     /// Policy time of the Task's first plan admission, when its wall clock started; never reset
     /// by a refresh, a re-admission or a resume.
     clock_started_unix_ms: Option<u64>,
@@ -480,7 +468,7 @@ fn valid_exact_optimization_result_refinement(
     }
     let artifact = cas
         .get_artifact(&actual_port.artifact_ids[0])
-        .map_err(|error| StoreError::Artifact(error.to_string()))?;
+        .map_err(|error| artifact_read_error(&actual_port.artifact_ids[0], error))?;
     let value: OptimizationResultV1 = serde_json::from_value(artifact.payload)?;
     value.validate().map_err(conflict)?;
     Ok(artifact.artifact_type == OPTIMIZATION_RESULT_V1
@@ -561,6 +549,16 @@ impl WritePermit {
     }
 }
 
+fn artifact_read_error(id: &str, error: CasError) -> StoreError {
+    match error {
+        CasError::Io(source) => StoreError::ArtifactIo {
+            artifact_id: id.into(),
+            source,
+        },
+        error => StoreError::Artifact(error.to_string()),
+    }
+}
+
 fn envelope_shared(
     cas: &Cas,
     id: &str,
@@ -568,7 +566,7 @@ fn envelope_shared(
 ) -> Result<std::sync::Arc<ArtifactEnvelope>, StoreError> {
     let envelope = cas
         .get_artifact_shared(id)
-        .map_err(|e| StoreError::Artifact(e.to_string()))?;
+        .map_err(|error| artifact_read_error(id, error))?;
     if envelope.artifact_id != id || envelope.artifact_type != expected {
         return Err(conflict(format!("Expected exact {expected} artifact {id}")));
     }
@@ -592,14 +590,22 @@ fn revision(cas: &Cas, id: &str) -> Result<TaskRevisionV1, StoreError> {
 }
 
 fn plan(cas: &Cas, id: &str, state: &TaskProjection) -> Result<ExecutionPlan, StoreError> {
+    plan_for_revision(cas, id, &state.revision_id, &state.revision)
+}
+
+fn plan_for_revision(
+    cas: &Cas,
+    id: &str,
+    revision_id: &str,
+    revision: &TaskRevisionV1,
+) -> Result<ExecutionPlan, StoreError> {
     let plan: ExecutionPlan = payload(cas, id, task::EXECUTION_PLAN_V4)?;
     plan.validate().map_err(conflict)?;
-    if plan.task_revision_id != state.revision_id
-        || plan.authority != state.revision.authority
-        || plan.limits != state.revision.limits
-        || plan.inputs != state.revision.inputs
-        || (plan.preparation.is_none()
-            && !plan.acceptance.keys().eq(state.revision.acceptance.keys()))
+    if plan.task_revision_id != revision_id
+        || plan.authority != revision.authority
+        || plan.limits != revision.limits
+        || plan.inputs != revision.inputs
+        || (plan.preparation.is_none() && !plan.acceptance.keys().eq(revision.acceptance.keys()))
     {
         return Err(conflict(
             "Plan does not bind the exact Task revision, inputs, authority and limits",
@@ -687,6 +693,61 @@ fn decision_references(
     Ok(())
 }
 
+fn plan_references(
+    cas: &Cas,
+    plan_id: &str,
+    value: ExecutionPlan,
+    refs: &mut BTreeSet<String>,
+) -> Result<(), StoreError> {
+    refs.extend([
+        plan_id.to_owned(),
+        value.task_revision_id,
+        value.engine_id,
+        value.pipeline_id,
+        value.compiled_graph_id,
+        value.authority.policy_id,
+    ]);
+    for dep in value.dependencies.values() {
+        let dep_envelope = match cas.get_artifact_shared(&dep.artifact_id) {
+            Ok(envelope) => envelope,
+            Err(_) => {
+                // Preserve the original errors for raw content-addressed JSON,
+                // including malformed or oversized envelopes.
+                let raw = cas
+                    .get_json(&dep.artifact_id)
+                    .map_err(|error| artifact_read_error(&dep.artifact_id, error))?;
+                let envelope: ArtifactEnvelope = serde_json::from_value(raw)?;
+                validate_envelope(&envelope).map_err(conflict)?;
+                std::sync::Arc::new(envelope)
+            }
+        };
+        if dep_envelope.artifact_id != dep.artifact_id
+            || dep_envelope.content_id != dep.content_digest
+        {
+            return Err(conflict("Plan dependency content disagrees with its lock"));
+        }
+        refs.insert(dep.artifact_id.clone());
+        refs.extend(dep_envelope.input_artifacts.iter().cloned());
+    }
+    for binding in value.bindings.values() {
+        refs.extend([
+            binding.package_artifact_id.clone(),
+            binding.invocation_policy_id.clone(),
+        ]);
+    }
+    for origin in value.generated_origins {
+        refs.extend([
+            origin.pipeline_id,
+            origin.proposal_id,
+            origin.bootstrap_plan_id,
+        ]);
+    }
+    for input in value.inputs.values() {
+        validate_bound_input_refs(cas, input, refs)?;
+    }
+    Ok(())
+}
+
 fn references(
     cas: &Cas,
     change: &TaskChangeV1,
@@ -755,7 +816,7 @@ fn references(
             value.validate().map_err(conflict)?;
             let envelope = cas
                 .get_artifact(record_id)
-                .map_err(|error| StoreError::Artifact(error.to_string()))?;
+                .map_err(|error| artifact_read_error(record_id, error))?;
             refs.insert(record_id.clone());
             refs.extend(value.references().into_iter().map(str::to_owned));
             refs.extend(envelope.input_artifacts);
@@ -786,7 +847,7 @@ fn references(
             refs.insert(observation_id.clone());
             let envelope = cas
                 .get_artifact(observation_id)
-                .map_err(|error| StoreError::Artifact(error.to_string()))?;
+                .map_err(|error| artifact_read_error(observation_id, error))?;
             refs.extend(envelope.input_artifacts);
             refs.extend(
                 [
@@ -807,8 +868,21 @@ fn references(
         TaskChangeV1::RunReported { report_id } => {
             refs.extend(report::references(cas, report_id)?);
         }
-        TaskChangeV1::Opened { revision_id, .. } => {
+        TaskChangeV1::Opened {
+            revision_id,
+            prepared_plan,
+            ..
+        } => {
             revision_references(cas, revision_id, &mut refs)?;
+            if let Some(prepared) = prepared_plan {
+                let revision = revision(cas, revision_id)?;
+                if prepared.planned_unix_ms >= revision.limits.deadline_unix_ms {
+                    return Err(conflict("Prepared Task plan has no wall time"));
+                }
+                let id = &prepared.plan_id;
+                let value = plan_for_revision(cas, id, revision_id, &revision)?;
+                plan_references(cas, id, value, &mut refs)?;
+            }
         }
         TaskChangeV1::PlanProposed { plan_id } | TaskChangeV1::PlanAdmitted { plan_id } => {
             let value = plan(
@@ -816,52 +890,7 @@ fn references(
                 plan_id,
                 state.ok_or_else(|| conflict("Plan precedes Task"))?,
             )?;
-            refs.extend([
-                plan_id.clone(),
-                value.task_revision_id,
-                value.engine_id,
-                value.pipeline_id,
-                value.compiled_graph_id,
-                value.authority.policy_id,
-            ]);
-            for dep in value.dependencies.values() {
-                let dep_envelope = match cas.get_artifact_shared(&dep.artifact_id) {
-                    Ok(envelope) => envelope,
-                    Err(_) => {
-                        // Preserve the original errors for raw content-addressed JSON,
-                        // including malformed or oversized envelopes.
-                        let raw = cas
-                            .get_json(&dep.artifact_id)
-                            .map_err(|e| StoreError::Artifact(e.to_string()))?;
-                        let envelope: ArtifactEnvelope = serde_json::from_value(raw)?;
-                        validate_envelope(&envelope).map_err(conflict)?;
-                        std::sync::Arc::new(envelope)
-                    }
-                };
-                if dep_envelope.artifact_id != dep.artifact_id
-                    || dep_envelope.content_id != dep.content_digest
-                {
-                    return Err(conflict("Plan dependency content disagrees with its lock"));
-                }
-                refs.insert(dep.artifact_id.clone());
-                refs.extend(dep_envelope.input_artifacts.iter().cloned());
-            }
-            for binding in value.bindings.values() {
-                refs.extend([
-                    binding.package_artifact_id.clone(),
-                    binding.invocation_policy_id.clone(),
-                ]);
-            }
-            for origin in value.generated_origins {
-                refs.extend([
-                    origin.pipeline_id,
-                    origin.proposal_id,
-                    origin.bootstrap_plan_id,
-                ]);
-            }
-            for input in value.inputs.values() {
-                validate_bound_input_refs(cas, input, &mut refs)?;
-            }
+            plan_references(cas, plan_id, value, &mut refs)?;
         }
         TaskChangeV1::PlanDecided { decision_id, .. } => {
             decision_references(cas, decision_id, &mut refs)?;
@@ -1083,6 +1112,9 @@ impl TaskProjection {
                     plan_id,
                     waiting,
                 } => {
+                    if self.prepared_plan_id.is_some() {
+                        return Err(conflict("Cannot refresh a Task with a prepared opening"));
+                    }
                     self.apply_source_refreshed(
                         cas,
                         revision_id,
@@ -1165,7 +1197,15 @@ impl TaskProjection {
                     if self.admitted || self.execution.is_some() {
                         return Err(conflict("Cannot replace an executing Task plan"));
                     }
+                    if self
+                        .prepared_plan_id
+                        .as_ref()
+                        .is_some_and(|id| id != plan_id)
+                    {
+                        return Err(conflict("Plan proposal differs from the prepared opening"));
+                    }
                     let plan = plan(cas, plan_id, self)?;
+                    self.prepared_plan_id = None;
                     self.phase = if plan.requires_developer_approval() {
                         TaskPhaseV1::Waiting {
                             reason: TaskWaitingReasonV1::NeedsPlanReview,
@@ -1436,7 +1476,13 @@ impl TaskProjection {
 
     fn check_approval(&self, cas: &Cas, time: u64) -> Result<(), StoreError> {
         self.check_plan_decision(cas, time)?;
-        if time >= self.deadline_at(time) {
+        let deadline = self.deadline_at(time);
+        if deadline > af_contracts::json::SAFE_INTEGER_MAX as u64 {
+            return Err(conflict(
+                "Task execution deadline exceeds the supported range",
+            ));
+        }
+        if time >= deadline {
             return Err(conflict("Task plan deadline expired"));
         }
         Ok(())
@@ -1493,7 +1539,7 @@ fn fold_task_event(
         for id in retry.artifact_refs() {
             if verified.insert(id.clone()) {
                 cas.verify(&id)
-                    .map_err(|e| StoreError::Artifact(e.to_string()))?;
+                    .map_err(|error| artifact_read_error(&id, error))?;
             }
         }
         state
@@ -1510,7 +1556,7 @@ fn fold_task_event(
             .apply_provider_event(event, &value)?;
         return Ok(());
     }
-    if !matches!(event.event_type, EventType::TaskTransitionV6) {
+    if !matches!(event.event_type, EventType::TaskTransitionV7) {
         return Err(conflict("Task log contains a foreign event"));
     }
     let transition = read_task_transition(event)?;
@@ -1523,7 +1569,7 @@ fn fold_task_event(
     for id in &expected {
         if verified.insert(id.clone()) {
             cas.verify(id)
-                .map_err(|e| StoreError::Artifact(e.to_string()))?;
+                .map_err(|error| artifact_read_error(id, error))?;
         }
     }
     if let Some(state) = state {
@@ -1531,6 +1577,7 @@ fn fold_task_event(
     } else if let TaskChangeV1::Opened {
         revision_id,
         lease_until_unix_ms,
+        prepared_plan,
     } = &transition.change
     {
         let revision = revision(cas, revision_id)?;
@@ -1547,6 +1594,7 @@ fn fold_task_event(
             revision_id: revision_id.clone(),
             revision,
             plan_id: None,
+            prepared_plan_id: prepared_plan.as_ref().map(|plan| plan.plan_id.clone()),
             phase: TaskPhaseV1::Submitted {},
             admitted: false,
             next_sequence: 1,
@@ -1571,7 +1619,9 @@ fn fold_task_event(
             storage_sweeps: Vec::new(),
             execution_epochs: BTreeSet::new(),
             gate_retries: Vec::new(),
-            opened_unix_ms: transition.now_unix_ms,
+            plan_clock_origin_unix_ms: prepared_plan
+                .as_ref()
+                .map_or(transition.now_unix_ms, |plan| plan.planned_unix_ms),
             clock_started_unix_ms: None,
             provider_events: Vec::new(),
         });
@@ -1601,7 +1651,7 @@ impl EventStore {
         let mut statement = self.conn.prepare(
             "SELECT run_id, event_id, sequence, type, occurred_at, node_id, attempt_id,
                     causation_id, correlation_id, artifact_refs, payload
-             FROM events WHERE type = 'TaskTransition@6'
+             FROM events WHERE type = 'TaskTransition@7'
                AND json_extract(payload, '$.change.kind') = 'execution_recorded'
              ORDER BY run_id, sequence",
         )?;
@@ -1708,7 +1758,11 @@ impl EventStore {
             // A revision the sweep removed between the tombstone check and this read belongs
             // to a Task collected meanwhile: skipped here, listed from its tombstone.
             let task = match revision(cas, &revision_id) {
-                Err(StoreError::Artifact(_)) if self.run_tombstone(&run_id)?.is_some() => continue,
+                Err(StoreError::Artifact(_) | StoreError::ArtifactIo { .. })
+                    if self.run_tombstone(&run_id)?.is_some() =>
+                {
+                    continue;
+                }
                 other => other?,
             };
             if task_run_id(&task.task_id)? != run_id {
@@ -1755,13 +1809,15 @@ impl EventStore {
             // A sweep may have removed this Task's artifacts between the tombstone check and
             // the reads: a Task collected meanwhile is reported as collected, never as corrupt
             // (ADR-0135). Any other missing artifact stays the error it is.
-            Err(StoreError::Artifact(reason)) => match self.task_tombstone(task_id)? {
-                Some(collected) => Err(StoreError::Collected {
-                    task_id: collected.task_id,
-                    collected_unix_ms: collected.collected_unix_ms,
-                }),
-                None => Err(StoreError::Artifact(reason)),
-            },
+            Err(error @ (StoreError::Artifact(_) | StoreError::ArtifactIo { .. })) => {
+                match self.task_tombstone(task_id)? {
+                    Some(collected) => Err(StoreError::Collected {
+                        task_id: collected.task_id,
+                        collected_unix_ms: collected.collected_unix_ms,
+                    }),
+                    None => Err(error),
+                }
+            }
             other => other,
         }
     }
@@ -1803,7 +1859,7 @@ impl EventStore {
                 if self.task_tombstone(&task.task_id)?.is_some() {
                     return Ok(false);
                 }
-                return Err(StoreError::Artifact(error.to_string()));
+                return Err(artifact_read_error(id, error));
             }
         }
         verify_display()?;
@@ -1906,7 +1962,7 @@ impl EventStore {
             if revision(cas, &state.revision_id)? != state.revision {
                 return Err(conflict("Cached Task revision changed identity"));
             }
-            if let Some(id) = &state.plan_id {
+            if let Some(id) = state.plan_id.as_ref().or(state.prepared_plan_id.as_ref()) {
                 plan(cas, id, state)?;
                 active_refs.extend(references(
                     cas,
@@ -1976,7 +2032,7 @@ impl EventStore {
             active_refs.extend(state.observed_artifacts.iter().cloned());
             for id in active_refs {
                 cas.verify(&id)
-                    .map_err(|e| StoreError::Artifact(e.to_string()))?;
+                    .map_err(|error| artifact_read_error(&id, error))?;
                 verified.insert(id);
             }
         }
@@ -2200,6 +2256,17 @@ impl EventStore {
         writer: &str,
         lease_ms: u64,
     ) -> Result<TaskLease, StoreError> {
+        self.open_task_with_prepared_plan(cas, revision_id, None, writer, lease_ms)
+    }
+
+    pub fn open_task_with_prepared_plan(
+        &mut self,
+        cas: &Cas,
+        revision_id: &str,
+        prepared_plan: Option<task::event::PreparedPlan>,
+        writer: &str,
+        lease_ms: u64,
+    ) -> Result<TaskLease, StoreError> {
         let revision = revision(cas, revision_id)?;
         let time = now()?;
         let until = time
@@ -2214,6 +2281,7 @@ impl EventStore {
                 now_unix_ms: time,
                 change: TaskChangeV1::Opened {
                     revision_id: revision_id.into(),
+                    prepared_plan,
                     lease_until_unix_ms: until,
                 },
             },

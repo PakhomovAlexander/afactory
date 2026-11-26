@@ -2084,7 +2084,7 @@ pub(super) fn assert_current_plan_schemas(
         assert!(!validator.is_valid(&old));
         if file.starts_with("compiled") {
             for reference in [
-                "urn:af:schema:task-inspection:21#/properties/graph",
+                "urn:af:schema:task-inspection:22#/properties/graph",
                 "urn:af:schema:task-plan-inspection:7#/properties/graph",
             ] {
                 let enclosing = schema_registry::validator(reference);
@@ -2713,7 +2713,7 @@ fn assert_forged_success_refused(
     let last = events
         .iter()
         .rev()
-        .find(|e| e.event_type == af_contracts::EventType::TaskTransitionV6)
+        .find(|e| e.event_type == af_contracts::EventType::TaskTransitionV7)
         .unwrap();
     let transition = af_contracts::task::event::TaskTransitionV1 {
         writer: last.payload["writer"].as_str().unwrap().into(),
@@ -2740,7 +2740,7 @@ fn assert_forged_success_refused(
         references.extend(port.snapshot_id.iter().cloned());
     }
     let connection = rusqlite::Connection::open(directory.join("events.sqlite")).unwrap();
-    connection.execute("INSERT INTO events (envelope, run_id,sequence,event_id,type,occurred_at,artifact_refs,payload) VALUES ('review.kernel/RunEvent@4', ?1,?2,?3,'TaskTransition@6',?4,?5,?6)", rusqlite::params![run, i64::try_from(sequence).unwrap(), event_id, last.occurred_at, serde_json::to_string(&references).unwrap(), serde_json::to_string(&transition).unwrap()]).unwrap();
+    connection.execute("INSERT INTO events (envelope, run_id,sequence,event_id,type,occurred_at,artifact_refs,payload) VALUES ('review.kernel/RunEvent@5', ?1,?2,?3,'TaskTransition@7',?4,?5,?6)", rusqlite::params![run, i64::try_from(sequence).unwrap(), event_id, last.occurred_at, serde_json::to_string(&references).unwrap(), serde_json::to_string(&transition).unwrap()]).unwrap();
     drop(connection);
     let error = EventStore::open_read_only(directory.join("events.sqlite"))
         .unwrap()

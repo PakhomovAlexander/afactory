@@ -1,7 +1,7 @@
 //! `af task run ID --retry-gate`: reopen a finished Task whose last round ended at a failed
 //! gate, so its check node runs again, in a new check Attempt of the same round, on the same
 //! sealed candidate (`TaskGateRetried@1`, its own event of the Task's log beside
-//! `TaskTransition@6`).
+//! `TaskTransition@7`).
 //!
 //! The retry grants nothing a plan did not. It needs the Task's current lease, the plan's
 //! current approval and deadline, and a budget that still holds a new Attempt of the check

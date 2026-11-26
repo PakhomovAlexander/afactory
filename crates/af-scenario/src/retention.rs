@@ -436,11 +436,12 @@ fn response_bytes(dispatch: &Dispatch) -> Result<u64> {
         _ => inputs.saturating_add(2 * 1024 * 1024),
     })
 }
-pub fn prepare_run(
+pub(crate) fn prepare_run(
     host: &dyn crate::Host,
     world: &mut World,
     id: &str,
     now: u64,
+    cancellation_guard: &mut Option<Box<dyn Send>>,
 ) -> Result<Option<Dispatch>> {
     let before = world.runs.get(id).ok_or("Scenario Run not found")?.clone();
     require(now >= before.updated_unix_ms, "Run clock moved backwards")?;
@@ -449,7 +450,12 @@ pub fn prepare_run(
         .get(id)
         .ok_or("Run capacity lease missing")?;
     let run = world.runs.get_mut(id).unwrap();
-    let dispatch = match run.prepare(host, now) {
+    let task = run.reconcile_task_cancellation(host, now, cancellation_guard)?;
+    if task.cancelled() {
+        // An existing Task's response lease already covers settlement.
+        return Ok(None);
+    }
+    let dispatch = match run.prepare_observed(host, now, task) {
         Ok(d) => d,
         Err(why) => {
             run.fail(why);
@@ -1396,7 +1402,7 @@ mod tests {
             .unwrap();
         let target = store
             .update(|w| {
-                let d = prepare_run(&TestHost::default(), w, "goal", START)?.unwrap();
+                let d = prepare_run(&TestHost::default(), w, "goal", START, &mut None)?.unwrap();
                 let Kind::FreshTask { template, .. } = &d.definition.operation else {
                     panic!("not fresh")
                 };
@@ -1528,10 +1534,12 @@ mod tests {
             .unwrap();
         let intent = store
             .update(|w| {
-                Ok(prepare_run(&TestHost::default(), w, "planning", START)?
-                    .unwrap()
-                    .intent
-                    .id)
+                Ok(
+                    prepare_run(&TestHost::default(), w, "planning", START, &mut None)?
+                        .unwrap()
+                        .intent
+                        .id,
+                )
             })
             .unwrap();
         assert!(store.read().unwrap().run_capacity["planning"] > 9 * 1024 * 1024);

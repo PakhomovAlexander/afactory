@@ -160,6 +160,17 @@ class LoadSuite(unittest.TestCase):
 
     def test_witnessed_replay_failure_and_premature_worker_exit_are_distinct(self):
         self.case_json("cas-fault.json", {"errno": errno.ENOSPC})
+        self.assertIsNone(witness("artifact-enospc", self.root))
+        diagnostic = "cas io: No space left on device (os error 28)"
+        intent_id, execution_id = "sha256:" + "a" * 64, "sha256:" + "b" * 64
+        self.case_json("at-full.json", {"status": "failed", "failure": diagnostic,
+            "execution_id": execution_id, "frames": {"root": {"steps": [
+                {"step": "second", "status": "failed", "intents": [{"id": intent_id}],
+                 "deadline_unix_ms": 2000}]}}})
+        self.case_json("cas-fault.json", {"errno": errno.ENOSPC, "pressure_errno": errno.ENOSPC,
+            "native_diagnostic": diagnostic, "step": "root/second", "intent_id": intent_id,
+            "execution_id": execution_id, "deadline_unix_ms": 2000,
+            "task_id": "scenario-" + "a" * 64})
         self.case_json("artifact-summary.json", {"scenario": "failed", "evidence": {
             "same_scenario_recovers": False, "prior_task_unchanged": True}})
         failure = judge("artifact-enospc", self.root, 1, False, "native case failed")

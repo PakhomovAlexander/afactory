@@ -564,7 +564,7 @@ def golden_entry(doc, instance, contract_id, cache):
             return _entry(instance, contract_id, blob, blob,
                           persistence_logical_bytes("cas_write_read"), None,
                           "the reference object read back; count is logical bytes written+read")
-        semantic = {"appended": PERSISTENCE_EVENTS, "event_types": ["TaskTransition@6"],
+        semantic = {"appended": PERSISTENCE_EVENTS, "event_types": ["TaskTransition@7"],
                     "prefix_events": PERSISTENCE_PREFIX_EVENTS}
         return _entry(instance, contract_id, None, _digest_of(semantic), PERSISTENCE_EVENTS,
                       semantic, "explicit facts of the appended and read-back production lease renewals (clock-eligible cadence)")
@@ -649,7 +649,7 @@ def golden_document(doc):
         elif fixture["kind"] == "event_log":
             fixtures[fixture_id] = {
                 "kind": "event_log", "events": fixture["events"], "prefix_events": 3,
-                "relevant_events": "TaskTransition@6 opened, plan proposed, plan admitted, "
+                "relevant_events": "TaskTransition@7 opened, plan proposed, plan admitted, "
                                    "9997 production 60000 ms lease renewals; clock eligibility in setup"}
         else:
             raise ContractError("fixtures.%s: no reference for kind %s"

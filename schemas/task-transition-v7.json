@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:task-transition:6",
-  "title": "TaskTransition@6 payload",
+  "$id": "urn:af:schema:task-transition:7",
+  "title": "TaskTransition@7 payload",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -39,6 +39,22 @@
           "properties": {
             "kind": {
               "const": "opened"
+            },
+            "prepared_plan": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["plan_id", "planned_unix_ms"],
+              "properties": {
+                "plan_id": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "planned_unix_ms": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                }
+              }
             },
             "revision_id": {
               "type": "string",

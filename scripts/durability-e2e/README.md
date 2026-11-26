@@ -282,12 +282,25 @@ python3 "$suite/native_child_cancel.py" "$af_bin" "$PWD"
   and the repaired candidate's exact check and evaluation receipts.
 - Admission holds one Ant's active slot with a pending check, witnesses `skipped_busy` and verifies
   the next eligible occurrence starts a distinct Task and check. The pause survives restart.
-- Artifact pressure uses a 4 MiB mount for the fixture Task CAS. It witnesses a failed CAS temporary
-  write, checks all previous objects and observes progress after ordinary scheduler restart.
+- Artifact pressure uses a private 4 MiB Linux mount for the Task CAS and requires both the
+  pressure writer's ENOSPC and AF's CAS error on the second Task's prepared intent. It exports
+  the prior object digests, the original and reopened wait, and the final Scenario and Task
+  records. The original scheduler is killed while full. After capacity returns, an ordinary
+  scheduler restart must complete precisely one Task under the original intent and deadline.
+  A binary that witnesses ENOSPC and leaves the Scenario failed yields a failure verdict.
+  Use `--file-checks` when loopback sockets are unavailable. The private trial scratch volume
+  must meet AF's normal sandbox disk floor.
 - Writer loss verifies and kills the fixture command Worker's exact AF Writer ancestor. The
   scheduler recovers through the production lease. The trace records any attempted orphan reply.
 - Child cancellation retains the exact process-scoped cancel receipt and requires replay to
   honor it as a child-level stop.
+
+A local Linux replay on 2026-11-23 used the file-backed Checks fixture because the sandbox
+refused loopback sockets. Both binaries encountered errno 28 during the second Task's CAS
+preparation and preserved the first Task and all 164 prior CAS objects. The predecessor stayed
+failed after restart. The candidate retained the prepared intent and deadline and completed one
+Task after restart. The trial exports the raw CAS digest lists and native JSON receipts for both
+outcomes. This replay covers the recovery behavior on one host.
 
 Use `--clean` with the two-VM driver for the undisturbed broker control.
 
@@ -325,3 +338,18 @@ This exits 3 and writes the capabilities and unsupported report. The live probe 
 adapter contract without inspecting a binary, so it reports the build as `unprobed`.
 The [retained unsupported result](baselines/2026-11-20/worker-failover.json) records the historical
 build digest.
+
+### Fresh Task journal exhaustion
+
+Use `python3 scripts/durability-e2e/native_task_journal_fault.py AF SOURCE open` and
+repeat with `proposal`. Use a debug build of `af` for the observation barriers.
+Set `AF_DURABILITY_SCRATCH` to a private scratch directory. The Linux trial puts only the
+native Task journal and its SQLite sidecars on a private 4 MiB tmpfs. It fills that volume
+at the named boundary and records the actual ENOSPC and the kernel's typed capacity
+diagnostic. The Scenario Store and CAS stay on the scratch filesystem.
+
+The trial retries while the journal is full, then restores space and loses the driver's
+response after the plan proposal commits. A final resume must bind the original plan,
+settle the original intent within its original deadline, and record exactly one Task
+execution with zero model spend. The evidence directory contains the native history,
+Scenario observations, pressure witness and earlier accepted Task receipt.

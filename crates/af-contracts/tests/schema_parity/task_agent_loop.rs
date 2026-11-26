@@ -1,6 +1,6 @@
 //! The agent loop's documents and records (ADR-0211, ADR-0248, ADR-0250): `af/task-findings@3`,
 //! `af/task-materialized@1`, `af/task-diff@1`, `af/task-status@3`, `af/task-detached@4`,
-//! `af/task-cancelled@3`, the lines of `af task events` (`af/task-event@3`), the `runs/` records
+//! `af/task-cancelled@3`, the lines of `af task events` (`af/task-event@4`), the `runs/` records
 //! `af/task-run-process@1` and `af/task-cancel-request@1`, and the `af/TaskDeliveryProof@1` a
 //! verification Task's delivery references. A typed value the Rust validator accepts satisfies
 //! its schema, both reject the same broken shapes, and another version fails closed.
@@ -555,11 +555,11 @@ fn detached_cancelled_and_the_delivery_proof_are_closed() {
 #[test]
 fn event_stream_lines_are_closed() {
     let settled = TaskEventV1::Event(TaskEventEntryV1 {
-        schema: TASK_EVENT_V3.into(),
+        schema: TASK_EVENT_V4.into(),
         task_id: "pagination-cli".into(),
         sequence: 12,
         event_id: "0123456789abcdef0123456789".into(),
-        event_type: "TaskTransition@6".into(),
+        event_type: "TaskTransition@7".into(),
         at_unix_ms: 1_700_000_000_000,
         change: TaskEventChangeV1::ExecutionRecorded,
         detail: Some("settled".into()),
@@ -569,7 +569,7 @@ fn event_stream_lines_are_closed() {
         charged_tokens: Some(41_200u128.into()),
     });
     both(
-        "task-event-v3.json",
+        "task-event-v4.json",
         &settled,
         TaskEventV1::validate,
         vec![
@@ -606,11 +606,11 @@ fn event_stream_lines_are_closed() {
         ],
     );
     let lease = TaskEventV1::Event(TaskEventEntryV1 {
-        schema: TASK_EVENT_V3.into(),
+        schema: TASK_EVENT_V4.into(),
         task_id: "pagination-cli".into(),
         sequence: 0,
         event_id: "fedcba9876543210fedcba9876".into(),
-        event_type: "TaskTransition@6".into(),
+        event_type: "TaskTransition@7".into(),
         at_unix_ms: 1_700_000_000_000,
         change: TaskEventChangeV1::LeaseTaken,
         detail: None,
@@ -620,7 +620,7 @@ fn event_stream_lines_are_closed() {
         charged_tokens: None,
     });
     both(
-        "task-event-v3.json",
+        "task-event-v4.json",
         &lease,
         TaskEventV1::validate,
         vec![
@@ -635,7 +635,7 @@ fn event_stream_lines_are_closed() {
         ],
     );
     let terminal = TaskEventV1::Terminal(TaskEventTerminalV1 {
-        schema: TASK_EVENT_V3.into(),
+        schema: TASK_EVENT_V4.into(),
         task_id: "pagination-cli".into(),
         last_sequence: 57,
         state: TaskStateV1::ended(
@@ -647,7 +647,7 @@ fn event_stream_lines_are_closed() {
         exit_code: 4,
     });
     both(
-        "task-event-v3.json",
+        "task-event-v4.json",
         &terminal,
         TaskEventV1::validate,
         vec![
@@ -675,7 +675,7 @@ fn event_stream_lines_are_closed() {
         ],
     );
     let failed_terminal = TaskEventV1::Terminal(TaskEventTerminalV1 {
-        schema: TASK_EVENT_V3.into(),
+        schema: TASK_EVENT_V4.into(),
         task_id: "pagination-cli".into(),
         last_sequence: 57,
         state: TaskStateV1::ended(
@@ -687,7 +687,7 @@ fn event_stream_lines_are_closed() {
         exit_code: 8,
     });
     both(
-        "task-event-v3.json",
+        "task-event-v4.json",
         &failed_terminal,
         TaskEventV1::validate,
         vec![(
@@ -696,14 +696,14 @@ fn event_stream_lines_are_closed() {
         )],
     );
     let verified_terminal = TaskEventV1::Terminal(TaskEventTerminalV1 {
-        schema: TASK_EVENT_V3.into(),
+        schema: TASK_EVENT_V4.into(),
         task_id: "pagination-cli".into(),
         last_sequence: 0,
         state: verified().with_next("af task deliver pagination-cli"),
         exit_code: 0,
     });
     both(
-        "task-event-v3.json",
+        "task-event-v4.json",
         &verified_terminal,
         TaskEventV1::validate,
         vec![(

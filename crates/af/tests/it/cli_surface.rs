@@ -296,10 +296,10 @@ fn task_states_topic_and_the_state_flags_describe_the_commands() {
     let json = out(&af(&["help", "json"]));
     for needle in [
         "af/task-findings@3",
-        "af/task-inspection@21",
+        "af/task-inspection@22",
         "af/task-report@4",
         "af/findings-sarif@1",
-        "af/task-inspection@21",
+        "af/task-inspection@22",
         "af/task-checks@4",
         "af/task-list@5",
         "af/task-list-entry@5",
@@ -1608,7 +1608,7 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
             &[
                 "--after <N>",
                 "--timeout <S>",
-                "af/task-event@3",
+                "af/task-event@4",
                 "gap-free from 0",
                 "exactly once, last",
                 "--after N prints only the events after sequence N",

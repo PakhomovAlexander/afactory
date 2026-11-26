@@ -1,7 +1,7 @@
 //! Closed native Task journal codecs.
 use super::*;
 pub fn read_task_transition(event: &RunEvent) -> Result<TaskTransitionV1, StoreError> {
-    if event.event_type != EventType::TaskTransitionV6 {
+    if event.event_type != EventType::TaskTransitionV7 {
         return Err(conflict("Expected a typed Task transition"));
     }
     let value: TaskTransitionV1 = serde_json::from_value(event.payload.clone())?;
@@ -36,7 +36,7 @@ pub fn is_beside_transitions(event: &RunEvent) -> bool {
 /// Whether `event` of a Task log is a transition, not one of the log's other event kinds (an
 /// execution marker, a gate retry or a Provider event).
 pub fn is_transition(event: &RunEvent) -> bool {
-    event.event_type == EventType::TaskTransitionV6
+    event.event_type == EventType::TaskTransitionV7
 }
 /// Whether `event` of a Task log is what an Attempt did about its Provider (ADR-0208).
 pub fn is_provider_event(event: &RunEvent) -> bool {
@@ -72,5 +72,5 @@ pub(super) fn encode_transition(
     value: &TaskTransitionV1,
 ) -> Result<(EventType, serde_json::Value), StoreError> {
     value.validate().map_err(conflict)?;
-    Ok((EventType::TaskTransitionV6, serde_json::to_value(value)?))
+    Ok((EventType::TaskTransitionV7, serde_json::to_value(value)?))
 }

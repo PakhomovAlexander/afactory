@@ -70,7 +70,7 @@ pub(crate) fn validate_document(
     }
     Ok(())
 }
-fn capture(template: &Template) -> Result<(String, String, TaskKindProfile), String> {
+fn capture(template: &Template) -> Result<(String, String, TaskKindProfile), TemplatePlanError> {
     if crate::resolve_filesystem_path(&template.repo)? != template.repo
         || crate::resolve_filesystem_path(&template.state)? != template.state
     {
@@ -81,8 +81,7 @@ fn capture(template: &Template) -> Result<(String, String, TaskKindProfile), Str
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     // Only explicit native pinning establishes the source/authority association. A machine
     // policy grant for a recomputed template digest cannot manufacture that association.
-    let store =
-        EventStore::open_read_only(state.join("events.sqlite")).map_err(|e| e.to_string())?;
+    let store = EventStore::open_read_only(state.join("events.sqlite")).map_err(journal_error)?;
     validate_pin(&store, &cas, template)?;
     let home = tempfile::tempdir().map_err(|e| e.to_string())?;
     let repo = Repo::open(&template.repo, home.path());
@@ -114,7 +113,7 @@ pub(crate) fn preflight_implementation(
     expected: &BTreeMap<String, af_scenario::implementation::ModelBinding>,
 ) -> Result<(), String> {
     template.validate(&crate::scenario::host::AfHost)?;
-    let (repository, content, _) = capture(template)?;
+    let (repository, content, _) = capture(template).map_err(plan_diagnostic)?;
     if repository != template.repository_id || content != template.source_content_digest {
         return Err("Startup template source differs from native capture".into());
     }
@@ -189,19 +188,21 @@ pub(crate) fn preflight_implementation(
     let mut document = template.document.clone();
     document["task_id"] =
         format!("startup-{}", template.id()?.trim_start_matches("sha256:")).into();
-    plan(template, document, false, &BTreeMap::new())?;
+    plan(template, document, clock()?, false, &BTreeMap::new()).map_err(plan_diagnostic)?;
     Ok(())
 }
 
-fn validate_pin(store: &EventStore, cas: &Cas, template: &Template) -> Result<(), String> {
+fn validate_pin(
+    store: &EventStore,
+    cas: &Cas,
+    template: &Template,
+) -> Result<(), TemplatePlanError> {
     let run = format!(
         "scenario-template-{}",
         template.id()?.trim_start_matches("sha256:")
     );
-    let artifact = store
-        .scenario_template_pin(&run)
-        .map_err(|e| e.to_string())?;
-    verify_pin_artifact(cas, template, &artifact)
+    let artifact = store.scenario_template_pin(&run).map_err(journal_error)?;
+    verify_pin_artifact(cas, template, &artifact).map_err(Into::into)
 }
 
 fn verify_pin_artifact(cas: &Cas, template: &Template, artifact: &str) -> Result<(), String> {
@@ -477,13 +478,168 @@ pub(crate) fn experiment_source_matches(
     }
     Err("Experiment source provenance exceeds its bound".into())
 }
+pub(super) fn plan_diagnostic(error: TemplatePlanError) -> String {
+    match error {
+        TemplatePlanError::StorageCapacity(diagnostic) | TemplatePlanError::Refused(diagnostic) => {
+            diagnostic
+        }
+    }
+}
+
+pub(super) fn journal_error(error: af_store::StoreError) -> TemplatePlanError {
+    if error.is_journal_capacity() {
+        TemplatePlanError::StorageCapacity(format!(
+            "Native Task event journal capacity exhausted: {error}"
+        ))
+    } else {
+        TemplatePlanError::Refused(error.to_string())
+    }
+}
+
+fn prepare<T>(
+    template: &Template,
+    operation: impl FnOnce() -> Result<T, TemplatePlanError>,
+) -> Result<T, TemplatePlanError> {
+    af_store::cas::observe_write_capacity(&template.state.join("cas"), operation).map_err(
+        |(error, capacity)| match (error, capacity) {
+            (TemplatePlanError::Refused(diagnostic), Some(capacity)) => TemplatePlanError::StorageCapacity(format!(
+                "Task artifact Store capacity exhausted writing {} ({}). Native preparation reported {diagnostic}",
+                capacity.path.display(),
+                capacity.diagnostic
+            )),
+            (error, _) => error,
+        },
+    )
+}
+
+pub(super) fn propose_prepared_plan(
+    cas: &Cas,
+    store: &mut EventStore,
+    lease: &TaskLease,
+    plan_id: &str,
+    trusted: &dyn af_store::store::task::TaskAuthority,
+) -> Result<(), TemplatePlanError> {
+    let proposed = store.propose_task_plan(cas, lease, plan_id, trusted);
+    if proposed
+        .as_ref()
+        .is_err_and(|error| error.is_journal_capacity())
+    {
+        // A failed commit can be uncertain. Let a newer writer inspect the journal after this
+        // lease expires instead of trying to append another transition under pressure.
+        return proposed.map(|_| ()).map_err(journal_error);
+    }
+    let released = store.release_task_lease(cas, lease);
+    proposed.and(released).map_err(journal_error)?;
+    #[cfg(debug_assertions)]
+    runs::observation_barrier("scenario-task-proposed")?;
+    Ok(())
+}
+
+/// The planner flushed the complete plan before opening this revision. Verify that exact
+/// compilation against the Store without publishing any replacement artifacts.
+pub(super) fn recover_opening(
+    cas: &Cas,
+    store: &mut EventStore,
+    opened: &TaskProjection,
+    verification: Option<FileVerification>,
+) -> Result<(), TemplatePlanError> {
+    let check_opening = |current: &TaskProjection| -> Result<(), TemplatePlanError> {
+        if current.revision_id != opened.revision_id
+            || current.prepared_plan_id != opened.prepared_plan_id
+            || current.plan_id.is_some()
+            || !matches!(current.phase, TaskPhaseV1::Submitted {})
+            || state::started(current)
+            || current.revision.revision != 1
+        {
+            return Err(
+                "Interrupted Scenario Task opening changed or is no longer unplanned".into(),
+            );
+        }
+        Ok(())
+    };
+    check_opening(opened)?;
+    let verified = cas.verifying_existing();
+    let revision = &opened.revision;
+    let revision_id = &opened.revision_id;
+    let policy = &revision.authority.policy_id;
+    let authority: RunAuthority =
+        serde_json::from_value(verified.get_json(policy).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    let root = &revision
+        .pipeline
+        .as_ref()
+        .ok_or("Fresh Task has no pinned Pipeline")?
+        .name;
+    let mut compiler = restore_compiler(&verified, policy, &authority)?;
+    let profile = selected_profile(&compiler, &authority, &revision.kind, verification)?;
+    let _adapters = bind_models(&verified, &mut compiler, &authority, revision_id, root)?;
+    let (mut plan, graph) = compiler.compile(&verified, revision_id, root)?;
+    if profile == TaskKindProfile::OptimizationCandidate {
+        (compiler, plan, _) = install_candidate_experiment(
+            &verified,
+            compiler,
+            &authority,
+            revision,
+            revision_id,
+            &graph,
+            &plan,
+        )?;
+    }
+    let plan_id = capture_execution_plan(&verified, revision_id, &plan)?;
+    if opened.prepared_plan_id.as_deref() != Some(&plan_id) {
+        return Err("Recompiled plan differs from the prepared Scenario Task opening".into());
+    }
+    let already_proposed = |current: &TaskProjection| {
+        current.revision_id == opened.revision_id && current.plan_id.as_deref() == Some(&plan_id)
+    };
+    let developer = developer::host(cas, &authority, None);
+    let trusted = developer::DecisionAuthority {
+        compiler: &compiler,
+        developer: developer.as_ref(),
+    };
+    let writer = format!("cli-{}", writer_pid());
+    let Some(lease) = recovery::take_lease_checked_with(
+        cas,
+        store,
+        &revision.task_id,
+        &writer,
+        already_proposed,
+        |_, current| check_opening(current),
+        journal_error,
+    )?
+    else {
+        return Ok(());
+    };
+    let current = store
+        .task_projection(cas, &revision.task_id)
+        .map_err(journal_error)?
+        .ok_or("Interrupted Scenario Task disappeared")?;
+    // A writer could have committed between our pre-lease observation and the lease acquisition.
+    let needs_proposal = if already_proposed(&current) {
+        Ok(false)
+    } else {
+        check_opening(&current).map(|()| true)
+    };
+    match needs_proposal {
+        Ok(true) => propose_prepared_plan(cas, store, &lease, &plan_id, &trusted),
+        checked => {
+            let released = store
+                .release_task_lease(cas, &lease)
+                .map(|_| ())
+                .map_err(journal_error);
+            checked.and(released)
+        }
+    }
+}
+
 pub(crate) fn plan(
     template: &Template,
     document: serde_json::Value,
+    started_unix_ms: u64,
     performance: bool,
     predecessors: &BTreeMap<String, (TaskReceipt, String)>,
-) -> Result<TaskTarget, String> {
-    let (repository, content, profile) = capture(template)?;
+) -> Result<TaskTarget, TemplatePlanError> {
+    let (repository, content, profile) = prepare(template, || capture(template))?;
     if (repository, content)
         != (
             template.repository_id.clone(),
@@ -515,15 +671,18 @@ pub(crate) fn plan(
             fit: false,
             replace: false,
         };
-        let code = start_kind_bytes_with_authority(
-            options,
-            serde_json::to_vec(&document).map_err(|e| e.to_string())?,
-            None,
-            Presentation::Silent,
-            Some(&template.authority_id),
-        )?;
+        let bytes = serde_json::to_vec(&document).map_err(|e| e.to_string())?;
+        let code = prepare(template, || {
+            start_kind_bytes_with_authority(
+                options,
+                bytes,
+                None,
+                Presentation::Silent,
+                Some((&template.authority_id, started_unix_ms)),
+            )
+        })?;
         if code != 0 {
-            return Err(format!("Native template planning refused with exit {code}"));
+            return Err(format!("Native template planning refused with exit {code}").into());
         }
     }
     let opened = open_task(&id, &template.repo, Some(&template.state))?;

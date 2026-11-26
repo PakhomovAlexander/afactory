@@ -380,6 +380,9 @@ fn actual_task_child_decisions_actions_waits_and_restart_recovery_keep_final_evi
     assert_eq!(uncertain["status"], "waiting");
     assert_eq!(uncertain["waiting"]["kind"], "reconcile");
     let intent = uncertain["waiting"]["intent_id"].clone();
+    let publish = &uncertain["frames"]["root"]["steps"][4];
+    assert_eq!(publish["status"], "waiting");
+    assert_eq!(publish["intents"][0]["phase"], "uncertain");
     // Definition edits have no authority over a recorded Run, including its child closure.
     std::fs::write(&f.bundle, b"not the pinned definition anymore").unwrap();
     let merged_wait = cli(&f.repo, &f.state, &["scenario", "resume", "issue-fix"]);
@@ -387,6 +390,10 @@ fn actual_task_child_decisions_actions_waits_and_restart_recovery_keep_final_evi
     assert_eq!(
         merged_wait["frames"]["root"]["steps"][4]["intents"][0]["id"],
         intent
+    );
+    assert_eq!(
+        merged_wait["frames"]["root"]["steps"][4]["intents"][0]["input_digest"],
+        publish["intents"][0]["input_digest"]
     );
     assert_eq!(
         std::fs::read_to_string(f.machine.join("effects"))
@@ -475,6 +482,7 @@ fn cleanup_preserves_modified_content_and_unowned_destinations() {
             "action"
         )
     ]);
+    main["steps"][2]["max_attempts"] = json!(2);
     write(&f.bundle, &bundle);
     let waiting = f.start("modified");
     assert_eq!(waiting["status"], "waiting");
@@ -483,6 +491,25 @@ fn cleanup_preserves_modified_content_and_unowned_destinations() {
     let failed = cli(&f.repo, &f.state, &["scenario", "resume", "modified"]);
     assert_eq!(failed["status"], "failed");
     assert!(failed["failure"].as_str().unwrap().contains("preserved"));
+    let steps = &failed["frames"]["root"]["steps"];
+    assert_eq!(steps[0], waiting["frames"]["root"]["steps"][0]);
+    assert_eq!(steps[1]["status"], "succeeded");
+    assert_eq!(steps[2]["status"], "failed");
+    assert_eq!(steps[2]["diagnostic"], failed["failure"]);
+    assert_eq!(steps[2]["outputs"], json!({}));
+    let attempts = steps[2]["intents"].as_array().unwrap();
+    assert_eq!(attempts.len(), 2);
+    for attempt in attempts {
+        assert_eq!(attempt["phase"], "failed");
+        assert_eq!(attempt["evidence"], json!([failed["failure"]]));
+    }
+    assert_ne!(attempts[0]["id"], attempts[1]["id"]);
+    assert_eq!(attempts[0]["input_digest"], attempts[1]["input_digest"]);
+    valid("scenario-run-v12.json", &failed);
+    assert_eq!(
+        cli(&f.repo, &f.state, &["scenario", "resume", "modified"]),
+        failed
+    );
     assert_eq!(
         std::fs::read(f.owned.join("note")).unwrap(),
         b"user's unexpected changes"
@@ -490,6 +517,11 @@ fn cleanup_preserves_modified_content_and_unowned_destinations() {
     // The next Run cannot adopt or overwrite that unowned destination.
     let refused = f.start("unowned");
     assert_eq!(refused["status"], "failed");
+    assert_eq!(refused["frames"]["root"]["steps"][0]["status"], "failed");
+    assert_eq!(
+        refused["frames"]["root"]["steps"].as_array().unwrap().len(),
+        1
+    );
     assert_eq!(
         std::fs::read(f.owned.join("note")).unwrap(),
         b"user's unexpected changes"
@@ -740,8 +772,46 @@ fn ant_cli_ticks_once_concurrently_and_pause_retains_a_waiting_run() {
     valid("ant-inspection-v9.json", &paused);
 }
 
-#[test]
-fn cancellation_requests_active_task_stop_and_retains_task_attempt_receipts() {
+struct TaskScenarioDriver(Option<std::process::Child>);
+impl Drop for TaskScenarioDriver {
+    fn drop(&mut self) {
+        if let Some(child) = &mut self.0 {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+fn stop_task_scenario(driver: &mut TaskScenarioDriver) {
+    use nix::sys::{
+        signal::{Signal, kill},
+        wait::{WaitPidFlag, WaitStatus, waitpid},
+    };
+    use nix::unistd::Pid;
+
+    let pid = Pid::from_raw(driver.0.as_ref().unwrap().id().try_into().unwrap());
+    kill(pid, Signal::SIGSTOP).unwrap();
+    assert_eq!(
+        waitpid(pid, Some(WaitPidFlag::WUNTRACED)).unwrap(),
+        WaitStatus::Stopped(pid, Signal::SIGSTOP)
+    );
+}
+
+fn wait_at_task_barrier(root: &Path, point: &str) -> PathBuf {
+    use std::time::{Duration, Instant};
+
+    let path = root.join(point);
+    let start = Instant::now();
+    while !path.join("ready").exists() {
+        assert!(start.elapsed() < Duration::from_secs(30), "{point}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    path.join("proceed")
+}
+
+fn start_blocked_task_scenario(
+    barriers: &[&str],
+) -> (Fixture, PathBuf, TaskScenarioDriver, nix::unistd::Pid) {
     use std::io::{BufRead, BufReader};
     let f = Fixture::bare();
     std::fs::remove_dir(&f.repo).unwrap();
@@ -758,7 +828,8 @@ fn cancellation_requests_active_task_stop_and_retains_task_attempt_receipts() {
         .join(".af/task-packages/fixture/implementer/worker.py");
     let original = std::fs::read_to_string(&worker).unwrap();
     let rendezvous = format!(
-        "import os\nwith open({}, 'w') as signal:\n signal.write(str(os.getpid())+'\\n')\n signal.flush()\nwith open({}, 'r') as hold:\n hold.read(1)\n",
+        "import os\nfrom pathlib import Path\nif not Path({}).exists():\n with open({}, 'w') as signal:\n  signal.write(str(os.getpid())+'\\n')\n  signal.flush()\n with open({}, 'r') as hold:\n  hold.read(1)\n",
+        serde_json::to_string(&f.machine.join("continue")).unwrap(),
         serde_json::to_string(&ready).unwrap(),
         serde_json::to_string(&hold).unwrap()
     );
@@ -769,13 +840,26 @@ fn cancellation_requests_active_task_stop_and_retains_task_attempt_receipts() {
         &task_state,
         &["task", "plan", "--file", "ticket.json"],
     );
+    start_pinned_task_scenario(&f, &task_state, "pagination-cli", &plan);
+    let driver = spawn_task_scenario_resume(&f, barriers);
+    // A FIFO rendezvous proves the Worker is dispatched; there is no sleep or timing assertion.
+    let mut pid = String::new();
+    BufReader::new(std::fs::File::open(&ready).unwrap())
+        .read_line(&mut pid)
+        .unwrap();
+    let pid = pid.trim().parse::<i32>().unwrap();
+    assert!(pid > 0);
+    (f, task_state, driver, nix::unistd::Pid::from_raw(pid))
+}
+
+fn start_pinned_task_scenario(f: &Fixture, task_state: &Path, task_id: &str, plan: &Value) {
     let mut policy: Value = serde_json::from_slice(&std::fs::read(&f.policy).unwrap()).unwrap();
     policy["task_plans"] = json!([plan["plan_id"]]);
     write(&f.policy, &policy);
     let mut bundle: Value = serde_json::from_slice(&std::fs::read(&f.bundle).unwrap()).unwrap();
     let task = step(
         "task",
-        json!({"kind":"task","target":{"repo":f.repo,"state":task_state,"task_id":"pagination-cli","plan_id":plan["plan_id"],"revision_id":plan["revision_id"],"max_tokens":1000}}),
+        json!({"kind":"task","target":{"repo":f.repo,"state":task_state,"task_id":task_id,"plan_id":plan["plan_id"],"revision_id":plan["revision_id"],"max_tokens":1000}}),
         json!({}),
         "task",
     );
@@ -812,31 +896,379 @@ fn cancellation_requests_active_task_stop_and_retains_task_attempt_receipts() {
             pin["revision"].as_str().unwrap(),
         ],
     );
-    struct Driver(Option<std::process::Child>);
-    impl Drop for Driver {
-        fn drop(&mut self) {
-            if let Some(child) = &mut self.0 {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-        }
+}
+
+fn spawn_task_scenario_resume(f: &Fixture, barriers: &[&str]) -> TaskScenarioDriver {
+    let barrier_root = f.machine.join("barriers");
+    for barrier in barriers {
+        std::fs::create_dir_all(barrier_root.join(barrier)).unwrap();
     }
-    let mut driver = Driver(Some(
+    TaskScenarioDriver(Some(
         crate::common::af()
             .current_dir(&f.repo)
             .args(["scenario", "resume", "active", "--json", "--state"])
             .arg(&f.state)
+            .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barrier_root)
+            .env(
+                "AF_TEST_TASK_LEASE_MS",
+                if barriers.is_empty() { "6000" } else { "60000" },
+            )
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
             .unwrap(),
-    ));
-    // A FIFO rendezvous proves the Worker is dispatched; there is no sleep or timing assertion.
-    let mut pid = String::new();
-    BufReader::new(std::fs::File::open(&ready).unwrap())
-        .read_line(&mut pid)
+    ))
+}
+
+fn prepare_pinned_child_scenario(task_id: &str) -> (Fixture, PathBuf, Value) {
+    let f = Fixture::bare();
+    std::fs::remove_dir(&f.repo).unwrap();
+    let task_root = f._root.path().join("task-fixture");
+    std::fs::create_dir(&task_root).unwrap();
+    let (repo, task_state) = crate::task_cli::fixture_named(&task_root, "pagination");
+    std::fs::rename(repo, &f.repo).unwrap();
+    let plan = cli(
+        &f.repo,
+        &task_state,
+        &["task", "plan", "--file", "ticket.json"],
+    );
+    cli(&f.repo, &task_state, &["task", "show", "pagination-cli"]);
+    start_pinned_task_scenario(&f, &task_state, task_id, &plan);
+    (f, task_state, plan)
+}
+
+fn assert_unsettled_child(before: &Value, after: &Value) {
+    for field in ["execution_id", "dispatches", "task_charges", "pin"] {
+        assert_eq!(before[field], after[field], "{field}");
+    }
+    let step = &after["frames"]["root"]["steps"][0];
+    assert_eq!(step["outputs"], json!({}));
+    let [intent] = step["intents"].as_array().unwrap().as_slice() else {
+        panic!("expected the original Task intent");
+    };
+    assert_eq!(
+        intent["id"],
+        before["frames"]["root"]["steps"][0]["intents"][0]["id"]
+    );
+}
+
+#[test]
+fn missing_child_task_settles_initial_admission_error() {
+    let (f, task_state, _) = prepare_pinned_child_scenario("missing-cli");
+    let run = cli(&f.repo, &f.state, &["scenario", "resume", "active"]);
+    assert_eq!(run["status"], "failed", "{run}");
+    assert_eq!(run["dispatches"], 1);
+    let step = &run["frames"]["root"]["steps"][0];
+    assert_eq!(step["outputs"], json!({}));
+    assert_eq!(step["intents"][0]["phase"], "failed");
+    assert_eq!(step["intents"][0]["evidence"], json!([run["failure"]]));
+    assert!(
+        run["failure"]
+            .as_str()
+            .unwrap()
+            .contains("Task missing-cli not found")
+    );
+    assert!(!task_state.join("runs").exists());
+    assert_eq!(
+        cli(&f.repo, &f.state, &["scenario", "resume", "active"]),
+        run
+    );
+}
+
+#[test]
+fn missing_child_task_prepared_intent_reaches_recovery_boundaries() {
+    for fault in [
+        ChildReadFault::MissingTask,
+        ChildReadFault::UnavailableStore,
+    ] {
+        check_prepared_child_recovery_boundaries(fault);
+    }
+}
+
+#[test]
+fn unreadable_child_task_plan_reaches_recovery_boundaries() {
+    // A privileged process can bypass mode bits.
+    if !nix::unistd::geteuid().is_root() {
+        check_prepared_child_recovery_boundaries(ChildReadFault::UnreadablePlan);
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum ChildReadFault {
+    MissingTask,
+    UnavailableStore,
+    UnreadablePlan,
+}
+
+fn check_prepared_child_recovery_boundaries(fault: ChildReadFault) {
+    use af_scenario::driver::MAX_RESUMES;
+
+    let point = "scenario-before-task-admission-1";
+    let plan_unreadable = fault == ChildReadFault::UnreadablePlan;
+    let store_unavailable = fault == ChildReadFault::UnavailableStore;
+    let task_id = if plan_unreadable {
+        "pagination-cli"
+    } else {
+        "missing-cli"
+    };
+    for boundary in ["resume", "deadline", "reservation", "cancel"] {
+        let (f, task_state, plan) = prepare_pinned_child_scenario(task_id);
+        let task_before =
+            plan_unreadable.then(|| cli(&f.repo, &task_state, &["task", "show", task_id]));
+        let original = spawn_task_scenario_resume(&f, &[point]);
+        wait_at_task_barrier(&f.machine.join("barriers"), point);
+        let before = cli(&f.repo, &f.state, &["scenario", "show", "active"]);
+        assert_eq!(
+            before["frames"]["root"]["steps"][0]["intents"][0]["phase"],
+            "prepared"
+        );
+        drop(original);
+        let elsewhere = task_state.with_extension("unavailable");
+        if store_unavailable {
+            std::fs::rename(&task_state, &elsewhere).unwrap();
+        }
+        let plan_id = plan["plan_id"].as_str().unwrap();
+        let hex = plan_id.strip_prefix("sha256:").unwrap();
+        let plan_path = task_state
+            .join("cas/objects")
+            .join(&hex[..2])
+            .join(&hex[2..]);
+        let permissions = plan_unreadable.then(|| {
+            let permissions = std::fs::metadata(&plan_path).unwrap().permissions();
+            std::fs::set_permissions(&plan_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+            assert_eq!(
+                std::fs::File::open(&plan_path).unwrap_err().kind(),
+                std::io::ErrorKind::PermissionDenied
+            );
+            let db =
+                af_store::EventStore::open_read_only(task_state.join("events.sqlite")).unwrap();
+            assert!(
+                !db.replay(&af_store::store::task::task_run_id(task_id).unwrap())
+                    .unwrap()
+                    .is_empty()
+            );
+            permissions
+        });
+        let step_deadline = before["frames"]["root"]["steps"][0]["deadline_unix_ms"]
+            .as_u64()
+            .unwrap()
+            .to_string();
+        let result = match boundary {
+            "resume" => cli(&f.repo, &f.state, &["scenario", "resume", "active"]),
+            "deadline" => cli(
+                &f.repo,
+                &f.state,
+                &["scenario", "resume", "active", "--now", &step_deadline],
+            ),
+            "reservation" => {
+                set_driver_reservations_at_cap(&f);
+                let cursor = cli(&f.repo, &f.state, &["scenario", "driver-status", "active"]);
+                let now = af_scenario::runtime::now().unwrap();
+                assert!(cursor["next_unix_ms"].as_u64().unwrap() <= now);
+                assert!(now < step_deadline.parse::<u64>().unwrap());
+                let result = cli(
+                    &f.repo,
+                    &f.state,
+                    &["scenario", "drive", "active", "--once"],
+                );
+                assert_eq!(
+                    cli(&f.repo, &f.state, &["scenario", "driver-status", "active"])["resumes"],
+                    MAX_RESUMES
+                );
+                result
+            }
+            "cancel" => cli(
+                &f.repo,
+                &f.state,
+                &[
+                    "scenario",
+                    "cancel",
+                    "active",
+                    "--reason",
+                    "operator stopped Scenario",
+                ],
+            ),
+            _ => unreachable!(),
+        };
+        assert_unsettled_child(&before, &result);
+        let step = &result["frames"]["root"]["steps"][0];
+        let diagnostic = step["diagnostic"].as_str().unwrap();
+        assert!(
+            diagnostic.contains(if store_unavailable || plan_unreadable {
+                "cancellation observation unavailable"
+            } else {
+                "Task missing-cli not found"
+            }),
+            "{result}"
+        );
+        assert!(
+            step["intents"][0]["evidence"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(diagnostic))
+        );
+        if plan_unreadable {
+            assert!(diagnostic.contains(plan_id), "{diagnostic}");
+            assert!(diagnostic.contains("Permission denied"), "{diagnostic}");
+            assert!(!task_state.join("runs").exists());
+        }
+        match boundary {
+            "resume" if plan_unreadable => {
+                assert_eq!(result["status"], "waiting", "{result}");
+                assert_eq!(step["intents"][0]["phase"], "uncertain");
+                let still_waiting = cli(&f.repo, &f.state, &["scenario", "resume", "active"]);
+                assert_unsettled_child(&result, &still_waiting);
+                assert_eq!(still_waiting["status"], "waiting");
+                std::fs::set_permissions(&plan_path, permissions.unwrap()).unwrap();
+
+                // Missing or corrupt required bytes are integrity refusals. Neither
+                // can replace the journaled permission diagnostic or admit execution.
+                let intact = plan_path.with_extension("intact");
+                std::fs::rename(&plan_path, &intact).unwrap();
+                for (corrupt, expected) in [
+                    (false, "cas object not found"),
+                    (true, "cas object does not match its digest"),
+                ] {
+                    if corrupt {
+                        std::fs::write(&plan_path, b"tampered plan").unwrap();
+                    }
+                    let refused = output(&f.repo, &f.state, &["scenario", "resume", "active"]);
+                    let diagnostic = String::from_utf8_lossy(&refused.stderr);
+                    assert!(!refused.status.success(), "{refused:?}");
+                    assert!(
+                        diagnostic.contains(expected) && diagnostic.contains(plan_id),
+                        "{diagnostic}"
+                    );
+                    assert_eq!(
+                        cli(&f.repo, &f.state, &["scenario", "show", "active"]),
+                        still_waiting
+                    );
+                }
+                assert!(!task_state.join("runs").exists());
+                std::fs::rename(intact, &plan_path).unwrap();
+                let resumed = cli(&f.repo, &f.state, &["scenario", "resume", "active"]);
+                assert_eq!(resumed["status"], "succeeded", "{resumed}");
+                assert_eq!(resumed["execution_id"], before["execution_id"]);
+                assert_eq!(
+                    resumed["frames"]["root"]["steps"][0]["intents"][0]["id"],
+                    step["intents"][0]["id"]
+                );
+                let task = cli(&f.repo, &task_state, &["task", "show", task_id]);
+                assert_eq!(task["state"]["outcome"], "verified");
+                assert_eq!(task["revision_id"], plan["revision_id"]);
+                assert_eq!(task["plan_id"], plan["plan_id"]);
+                continue;
+            }
+            "resume" if store_unavailable => {
+                assert_eq!(result["status"], "waiting", "{result}");
+                std::fs::rename(&elsewhere, &task_state).unwrap();
+                let resumed = cli(&f.repo, &f.state, &["scenario", "resume", "active"]);
+                assert_unsettled_child(&before, &resumed);
+                assert_eq!(resumed["status"], "failed", "{resumed}");
+                assert!(resumed["failure"].as_str().unwrap().contains("not found"));
+            }
+            "resume" => {
+                assert_eq!(result["status"], "failed", "{result}");
+                assert_eq!(result["failure"], diagnostic);
+            }
+            "deadline" => {
+                assert_eq!(result["status"], "failed", "{result}");
+                assert!(
+                    result["failure"]
+                        .as_str()
+                        .unwrap()
+                        .contains("deadline reached")
+                );
+            }
+            "reservation" => {
+                assert_eq!(result["status"], "failed", "{result}");
+                assert_eq!(
+                    result["failure"],
+                    "Scenario driver exhausted its immutable 512 resume reservations"
+                );
+            }
+            "cancel" => {
+                assert_eq!(result["status"], "cancelled", "{result}");
+                let stop = &result["cancellation"]["child_requests"]["root/task"];
+                assert_eq!(stop["state"], "unconfirmed");
+                assert!(stop["run"].is_null());
+            }
+            _ => unreachable!(),
+        }
+        assert!(!task_state.join("runs").exists());
+        assert!(!elsewhere.join("runs").exists());
+        if let Some(permissions) = permissions {
+            std::fs::set_permissions(&plan_path, permissions).unwrap();
+            let settled_at = result["updated_unix_ms"].as_u64().unwrap().to_string();
+            assert_eq!(
+                cli(
+                    &f.repo,
+                    &f.state,
+                    &["scenario", "resume", "active", "--now", &settled_at],
+                ),
+                result
+            );
+            assert!(!task_state.join("runs").exists());
+            let task = cli(&f.repo, &task_state, &["task", "show", task_id]);
+            let task_before = task_before.unwrap();
+            for field in ["state", "history", "attempts", "chargeable_tokens"] {
+                assert_eq!(task[field], task_before[field], "{field}");
+            }
+        }
+    }
+}
+
+#[test]
+fn unavailable_child_task_store_blocks_a_result_read_before_settlement() {
+    let point = "scenario-before-task-settlement-1";
+    let (f, task_state, mut driver, _) = start_blocked_task_scenario(&[point]);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(f.machine.join("hold"))
+        .unwrap()
+        .write_all(b"x")
         .unwrap();
-    assert!(pid.trim().parse::<u32>().unwrap() > 0);
+    let settle = wait_at_task_barrier(&f.machine.join("barriers"), point);
+    let before = cli(&f.repo, &f.state, &["scenario", "show", "active"]);
+    let finished = cli(&f.repo, &task_state, &["task", "show", "pagination-cli"]);
+    assert_eq!(finished["state"]["outcome"], "verified");
+    let elsewhere = task_state.with_extension("unavailable");
+    std::fs::rename(&task_state, &elsewhere).unwrap();
+    std::fs::write(settle, []).unwrap();
+    let waiting = value(driver.0.take().unwrap().wait_with_output().unwrap(), 0);
+    assert_eq!(waiting["status"], "waiting", "{waiting}");
+    assert_eq!(waiting["dispatches"], before["dispatches"]);
+    let step = &waiting["frames"]["root"]["steps"][0];
+    assert_eq!(step["outputs"], json!({}));
+    assert_eq!(step["intents"][0]["phase"], "uncertain");
+    assert!(
+        step["diagnostic"]
+            .as_str()
+            .unwrap()
+            .contains("cancellation observation unavailable")
+    );
+    let charge = waiting["task_charges"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap();
+    assert_eq!(charge["charged"], 0);
+    assert_eq!(charge["unknown_usage"], true);
+    let still_waiting = cli(&f.repo, &f.state, &["scenario", "resume", "active"]);
+    assert_unsettled_child(&waiting, &still_waiting);
+    assert_eq!(still_waiting["status"], "waiting");
+    std::fs::rename(elsewhere, &task_state).unwrap();
+    let resumed = cli(&f.repo, &f.state, &["scenario", "resume", "active"]);
+    assert_eq!(resumed["status"], "succeeded", "{resumed}");
+    let after = cli(&f.repo, &task_state, &["task", "show", "pagination-cli"]);
+    assert_eq!(after["history"], finished["history"]);
+    assert_eq!(after["attempts"], finished["attempts"]);
+}
+
+#[test]
+fn cancellation_requests_active_task_stop_and_retains_task_attempt_receipts() {
+    let (f, task_state, mut driver, _) = start_blocked_task_scenario(&[]);
     let key = format!(
         "sha256-{}-cancel.lock",
         af_contracts::hex::encode(&Sha256::digest(b"active"))
@@ -888,6 +1320,352 @@ fn cancellation_requests_active_task_stop_and_retains_task_attempt_receipts() {
     assert_eq!(
         cli(&f.repo, &task_state, &["task", "show", "pagination-cli"])["attempts"],
         task["attempts"]
+    );
+}
+
+#[test]
+fn child_task_cancellation_replay_rejects_even_a_later_manual_task_result() {
+    for manual_resume_first in [false, true] {
+        let (f, task_state, mut driver, _) = start_blocked_task_scenario(&[]);
+        stop_task_scenario(&mut driver);
+        let before = cli(&f.repo, &f.state, &["scenario", "show", "active"]);
+        let cancelled = cli(&f.repo, &task_state, &["task", "cancel", "pagination-cli"]);
+        assert_eq!(cancelled["state"]["outcome"], "cancelled");
+        assert_eq!(
+            cli(&f.repo, &f.state, &["scenario", "show", "active"]),
+            before
+        );
+        drop(driver);
+
+        std::fs::write(f.machine.join("continue"), []).unwrap();
+        if manual_resume_first {
+            let manual = cli(&f.repo, &task_state, &["task", "run", "pagination-cli"]);
+            assert_eq!(manual["state"]["outcome"], "verified", "{manual}");
+        }
+        let task = cli(&f.repo, &task_state, &["task", "show", "pagination-cli"]);
+        let run_records = || std::fs::read_dir(task_state.join("runs")).unwrap().count();
+        let records_before_replay = run_records();
+        let settled = cli(&f.repo, &f.state, &["scenario", "resume", "active"]);
+        assert_eq!(settled["status"], "failed", "{settled}");
+        assert_eq!(settled["execution_id"], before["execution_id"]);
+        assert_eq!(settled["dispatches"], before["dispatches"]);
+        assert_eq!(run_records(), records_before_replay);
+        let step = &settled["frames"]["root"]["steps"][0];
+        assert_eq!(step["status"], "failed");
+        assert_eq!(step["outputs"], json!({}));
+        let [intent] = step["intents"].as_array().unwrap().as_slice() else {
+            panic!("expected the original Task intent");
+        };
+        assert_eq!(
+            intent["id"],
+            before["frames"]["root"]["steps"][0]["intents"][0]["id"]
+        );
+        let evidence = intent["evidence"][0].as_str().unwrap();
+        assert!(evidence.contains(cancelled["request"]["writer"].as_str().unwrap()));
+        assert!(evidence.contains(&format!("run {},", cancelled["request"]["run"])));
+        assert_eq!(
+            task["history"],
+            cli(&f.repo, &task_state, &["task", "show", "pagination-cli"])["history"]
+        );
+        assert_eq!(
+            cli(&f.repo, &f.state, &["scenario", "resume", "active"]),
+            settled
+        );
+        assert!(!f.owned.join("note").exists());
+    }
+}
+
+#[test]
+fn child_task_cancellation_between_result_read_and_settlement_wins() {
+    use std::time::{Duration, Instant};
+
+    let (f, task_state, mut original, _) = start_blocked_task_scenario(&[
+        "task-before-lease-release-1",
+        "scenario-before-task-settlement-1",
+        "cancel-published-1",
+    ]);
+    let barriers = f.machine.join("barriers");
+    let wait_at = |point| wait_at_task_barrier(&barriers, point);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(f.machine.join("hold"))
+        .unwrap()
+        .write_all(b"x")
+        .unwrap();
+    let release_task = wait_at("task-before-lease-release-1");
+    let mut first = original.0.take().unwrap();
+    first.kill().unwrap();
+    first.wait().unwrap();
+    let before = cli(&f.repo, &f.state, &["scenario", "show", "active"]);
+    let finished = cli(&f.repo, &task_state, &["task", "show", "pagination-cli"]);
+    assert_eq!(finished["state"]["outcome"], "verified", "{finished}");
+
+    let mut replacement = TaskScenarioDriver(Some(
+        crate::common::af()
+            .current_dir(&f.repo)
+            .args(["scenario", "resume", "active", "--json", "--state"])
+            .arg(&f.state)
+            .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barriers)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    ));
+    let settle = wait_at("scenario-before-task-settlement-1");
+    let mut cancel = TaskScenarioDriver(Some(
+        crate::common::af()
+            .current_dir(&f.repo)
+            .args(["task", "cancel", "pagination-cli", "--json", "--state"])
+            .arg(&task_state)
+            .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barriers)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    ));
+    let publish = wait_at("cancel-published-1");
+    std::fs::write(release_task, []).unwrap();
+    let tasks = af_store::EventStore::open_read_only(task_state.join("events.sqlite")).unwrap();
+    let cas = af_store::Cas::open_existing(task_state.join("cas")).unwrap();
+    let start = Instant::now();
+    while tasks
+        .task_projection(&cas, "pagination-cli")
+        .unwrap()
+        .unwrap()
+        .lease_held_at(af_scenario::runtime::now().unwrap())
+    {
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "Task lease release"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    std::fs::write(publish, []).unwrap();
+    let cancelled = value(cancel.0.take().unwrap().wait_with_output().unwrap(), 0);
+    let stopped = cli(&f.repo, &task_state, &["task", "show", "pagination-cli"]);
+    std::fs::write(settle, []).unwrap();
+    let settled = value(replacement.0.take().unwrap().wait_with_output().unwrap(), 0);
+    assert_eq!(settled["status"], "failed", "{settled}");
+    assert_eq!(settled["execution_id"], before["execution_id"]);
+    let step = &settled["frames"]["root"]["steps"][0];
+    assert_eq!(step["status"], "failed");
+    assert_eq!(step["outputs"], json!({}));
+    let [intent] = step["intents"].as_array().unwrap().as_slice() else {
+        panic!("expected the original Task intent");
+    };
+    assert_eq!(
+        intent["id"],
+        before["frames"]["root"]["steps"][0]["intents"][0]["id"]
+    );
+    assert_eq!(intent["phase"], "failed");
+    let evidence = intent["evidence"][0].as_str().unwrap();
+    let request = &cancelled["request"];
+    assert!(evidence.contains(request["writer"].as_str().unwrap()));
+    assert!(evidence.contains(&format!("run {},", request["run"])));
+    assert!(evidence.contains(&format!("epoch {})", request["epoch"])));
+    let after = cli(&f.repo, &task_state, &["task", "show", "pagination-cli"]);
+    assert_eq!(after["history"], stopped["history"]);
+    assert_eq!(after["execution_records"], finished["execution_records"]);
+    assert!(!f.owned.join("note").exists());
+    assert_eq!(
+        cli(&f.repo, &f.state, &["scenario", "resume", "active"]),
+        settled
+    );
+}
+
+fn assert_child_cancel_settlement(before: &Value, settled: &Value, request: &Value) {
+    assert_eq!(settled["status"], "failed", "{settled}");
+    for field in ["execution_id", "dispatches", "pin", "fresh_tasks"] {
+        assert_eq!(settled[field], before[field], "{field}");
+    }
+    let step = &settled["frames"]["root"]["steps"][0];
+    assert_eq!(step["status"], "failed");
+    assert_eq!(step["outputs"], json!({}));
+    let [intent] = step["intents"].as_array().unwrap().as_slice() else {
+        panic!("expected the original Task intent");
+    };
+    assert_eq!(
+        intent["id"],
+        before["frames"]["root"]["steps"][0]["intents"][0]["id"]
+    );
+    assert_eq!(intent["phase"], "failed");
+    let evidence = settled["failure"].as_str().unwrap();
+    assert_eq!(step["diagnostic"], evidence);
+    assert_eq!(intent["evidence"], json!([evidence]));
+    let target = &before["pin"]["bundle"]["definitions"]["main"]["steps"][0]["operation"]["target"];
+    for field in ["task_id", "plan_id", "revision_id"] {
+        assert!(evidence.contains(target[field].as_str().unwrap()));
+    }
+    assert!(evidence.contains(request["writer"].as_str().unwrap()));
+    assert!(evidence.contains(&format!("run {},", request["run"])));
+    assert!(evidence.contains(&format!("epoch {})", request["epoch"])));
+    let charges = settled["task_charges"].as_object().unwrap();
+    assert_eq!(charges.len(), 1);
+    let charge = charges.values().next().unwrap();
+    assert_eq!(charge["charged"], 0);
+    assert_eq!(charge["unknown_usage"], false);
+}
+
+#[test]
+fn child_task_cancellation_after_initial_read_wins_on_expired_ordinary_resume() {
+    let point = "scenario-after-task-cancellation-read-1";
+    let fenced_point = "scenario-task-cancellation-fenced-1";
+    let (f, task_state, mut original, _) = start_blocked_task_scenario(&[point, fenced_point]);
+    stop_task_scenario(&mut original);
+    let before = cli(&f.repo, &f.state, &["scenario", "show", "active"]);
+    let deadline = before["frames"]["root"]["steps"][0]["deadline_unix_ms"]
+        .as_u64()
+        .unwrap();
+    let barriers = f.machine.join("barriers");
+    let mut replacement = TaskScenarioDriver(Some(
+        crate::common::af()
+            .current_dir(&f.repo)
+            .args(["scenario", "resume", "active", "--json", "--now"])
+            .arg(deadline.to_string())
+            .arg("--state")
+            .arg(&f.state)
+            .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barriers)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    ));
+    let proceed = wait_at_task_barrier(&barriers, point);
+    // The replacement has read the Task with no cancellation, but has yet to prepare the
+    // expired step. Publish the real cancel request before letting it resume that intent.
+    let cancelled = cli(&f.repo, &task_state, &["task", "cancel", "pagination-cli"]);
+    let stopped = cli(&f.repo, &task_state, &["task", "show", "pagination-cli"]);
+    assert_eq!(stopped["state"]["outcome"], "cancelled");
+    drop(original);
+    std::fs::write(proceed, []).unwrap();
+    let proceed = wait_at_task_barrier(&barriers, fenced_point);
+    let directory = std::fs::File::open(&task_state).unwrap();
+    assert_eq!(
+        fs2::FileExt::try_lock_exclusive(&directory)
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    std::fs::write(proceed, []).unwrap();
+    let settled = value(replacement.0.take().unwrap().wait_with_output().unwrap(), 0);
+    assert_eq!(settled["updated_unix_ms"], deadline);
+    assert_child_cancel_settlement(&before, &settled, &cancelled["request"]);
+    assert_eq!(
+        cli(&f.repo, &task_state, &["task", "show", "pagination-cli"])["history"],
+        stopped["history"]
+    );
+    assert!(!f.owned.join("note").exists());
+}
+
+fn set_driver_reservations_at_cap(f: &Fixture) {
+    // Seed the retained cursor at the cap without waiting through 512 poll intervals.
+    let db = rusqlite::Connection::open(f.state.join("runs/scenarios.sqlite")).unwrap();
+    let document: String = db
+        .query_row("SELECT document FROM journal WHERE id=1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let mut world: af_scenario::store::World = serde_json::from_str(&document).unwrap();
+    world.drivers.get_mut("active").unwrap().resumes = af_scenario::driver::MAX_RESUMES;
+    let document = serde_json::to_string(&world).unwrap();
+    db.execute(
+        "UPDATE journal SET document=?1,digest=?2 WHERE id=1",
+        rusqlite::params![document, af_scenario::contract::digest(document.as_bytes())],
+    )
+    .unwrap();
+    drop(db);
+}
+
+#[test]
+fn child_task_cancellation_wins_at_driver_reservation_cap() {
+    let cap = af_scenario::driver::MAX_RESUMES;
+    for cancel in [true, false] {
+        let (f, task_state, mut original, _) = start_blocked_task_scenario(&[]);
+        stop_task_scenario(&mut original);
+        let before = cli(&f.repo, &f.state, &["scenario", "show", "active"]);
+        set_driver_reservations_at_cap(&f);
+
+        let cancelled =
+            cancel.then(|| cli(&f.repo, &task_state, &["task", "cancel", "pagination-cli"]));
+        let frontier = cli(&f.repo, &f.state, &["scenario", "driver-status", "active"]);
+        let now = af_scenario::runtime::now().unwrap();
+        assert!(frontier["next_unix_ms"].as_u64().unwrap() <= now);
+        assert!(
+            now < before["frames"]["root"]["steps"][0]["deadline_unix_ms"]
+                .as_u64()
+                .unwrap()
+        );
+        let task = cli(&f.repo, &task_state, &["task", "show", "pagination-cli"]);
+        let settled = cli(
+            &f.repo,
+            &f.state,
+            &["scenario", "drive", "active", "--once"],
+        );
+        assert_eq!(
+            cli(&f.repo, &f.state, &["scenario", "driver-status", "active"])["resumes"],
+            cap
+        );
+        assert_eq!(settled["dispatches"], before["dispatches"]);
+        if let Some(cancelled) = cancelled {
+            assert_child_cancel_settlement(&before, &settled, &cancelled["request"]);
+            let after = cli(&f.repo, &task_state, &["task", "show", "pagination-cli"]);
+            assert_eq!(after["history"], task["history"]);
+            assert_eq!(after["attempts"], task["attempts"]);
+        } else {
+            assert_eq!(settled["status"], "failed");
+            assert_eq!(
+                settled["failure"],
+                "Scenario driver exhausted its immutable 512 resume reservations"
+            );
+            assert_eq!(
+                settled["frames"]["root"]["steps"][0]["intents"],
+                before["frames"]["root"]["steps"][0]["intents"]
+            );
+            cli(&f.repo, &task_state, &["task", "cancel", "pagination-cli"]);
+        }
+        assert!(!f.owned.join("note").exists());
+    }
+}
+
+#[test]
+fn child_task_writer_loss_without_a_cancel_request_recovers_the_same_intent() {
+    use nix::sys::signal::{Signal, kill};
+    use nix::unistd::Pid;
+
+    let (f, task_state, mut driver, worker) = start_blocked_task_scenario(&[]);
+    let before = cli(&f.repo, &f.state, &["scenario", "show", "active"]);
+    let task = cli(&f.repo, &task_state, &["task", "status", "pagination-cli"]);
+    std::fs::write(f.machine.join("continue"), []).unwrap();
+    let pid = task["run"]["pid"].as_u64().unwrap().try_into().unwrap();
+    kill(Pid::from_raw(pid), Signal::SIGKILL).unwrap();
+    match kill(worker, Signal::SIGKILL) {
+        Ok(()) | Err(nix::errno::Errno::ESRCH) => {}
+        Err(error) => panic!("stop private fixture Worker: {error}"),
+    }
+    let waiting = value(driver.0.take().unwrap().wait_with_output().unwrap(), 0);
+    assert_eq!(waiting["status"], "waiting", "{waiting}");
+    let settled = cli(&f.repo, &f.state, &["scenario", "resume", "active"]);
+    assert_eq!(settled["status"], "succeeded", "{settled}");
+    assert_eq!(settled["execution_id"], before["execution_id"]);
+    let [intent] = settled["frames"]["root"]["steps"][0]["intents"]
+        .as_array()
+        .unwrap()
+        .as_slice()
+    else {
+        panic!("expected recovery of the original Task intent");
+    };
+    assert_eq!(
+        intent["id"],
+        before["frames"]["root"]["steps"][0]["intents"][0]["id"]
+    );
+    let task = cli(&f.repo, &task_state, &["task", "show", "pagination-cli"]);
+    assert_eq!(task["state"]["outcome"], "verified");
+    assert!(
+        task["execution_records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| { entry["record"]["result"]["kind"] == "abandoned" })
     );
 }
 
@@ -1908,9 +2686,7 @@ fn fresh_tasks_resume_once_bind_accepted_sources_capture_experiments_and_refuse_
     );
 }
 
-#[test]
-fn fresh_read_only_review_template_uses_native_acceptance_without_an_implementation_verification_field()
- {
+fn fresh_read_only_review_scenario() -> (Fixture, PathBuf) {
     let f = Fixture::bare();
     std::fs::remove_dir(&f.repo).unwrap();
     let task_root = f._root.path().join("read-only-fixture");
@@ -1970,6 +2746,13 @@ fn fresh_read_only_review_template_uses_native_acceptance_without_an_implementat
         )
     ]);
     write(&f.bundle, &bundle);
+    (f, task_state)
+}
+
+#[test]
+fn fresh_read_only_review_template_uses_native_acceptance_without_an_implementation_verification_field()
+ {
+    let (f, task_state) = fresh_read_only_review_scenario();
     let done = f.start("read-only");
     assert_eq!(done["status"], "succeeded", "{done}");
     let receipt = &done["frames"]["root"]["steps"][1]["outputs"]["result"]["value"];
@@ -2010,6 +2793,458 @@ fn fresh_read_only_review_template_uses_native_acceptance_without_an_implementat
         status.stdout.is_empty(),
         "{}",
         String::from_utf8_lossy(&status.stdout)
+    );
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn fresh_task_reuses_a_plan_proposed_while_replay_waits_for_the_opening_lease() {
+    replay_fresh_task_across_opening_handoff(false);
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn fresh_task_reuses_the_committed_plan_while_the_execution_lease_is_held() {
+    replay_fresh_task_across_opening_handoff(true);
+}
+
+#[cfg(debug_assertions)]
+fn replay_fresh_task_across_opening_handoff(writer_executes: bool) {
+    use af_contracts::task::event::TaskChangeV1;
+    use af_store::store::task::{journal::read_task_transition, task_run_id};
+
+    let (f, task_state) = fresh_read_only_review_scenario();
+    let pin = cli(
+        &f.repo,
+        &f.state,
+        &[
+            "scenario",
+            "validate",
+            "--file",
+            f.bundle.to_str().unwrap(),
+            "--authority",
+            f.policy.to_str().unwrap(),
+        ],
+    );
+    let writer_barriers = f.machine.join("writer");
+    let replay_barriers = f.machine.join("replay");
+    let opened_point = "scenario-task-opened-1";
+    let proposed_point = "scenario-task-proposed-1";
+    let execution_point = "task-before-execution-1";
+    let waiting_point = "task-waiting-for-lease-1";
+    let admission_point = "scenario-before-task-admission-1";
+    for (root, point) in [
+        (&writer_barriers, opened_point),
+        (&writer_barriers, proposed_point),
+        (&replay_barriers, waiting_point),
+        (&replay_barriers, admission_point),
+    ] {
+        std::fs::create_dir_all(root.join(point)).unwrap();
+    }
+    if writer_executes {
+        std::fs::create_dir_all(writer_barriers.join(execution_point)).unwrap();
+    }
+
+    let spawn = |args: &[&str], state: &Path, barriers: &Path| {
+        TaskScenarioDriver(Some(
+            crate::common::af()
+                .current_dir(&f.repo)
+                .args(args)
+                .args(["--json", "--state"])
+                .arg(state)
+                .env("AF_TEST_WAIT_OBSERVATION_BARRIER", barriers)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap(),
+        ))
+    };
+    let mut writer = spawn(
+        &[
+            "scenario",
+            "start",
+            "read-only",
+            "--file",
+            f.bundle.to_str().unwrap(),
+            "--authority",
+            f.policy.to_str().unwrap(),
+            "--inputs",
+            f.inputs.to_str().unwrap(),
+            "--confirm-pin",
+            pin["revision"].as_str().unwrap(),
+            "--execute",
+        ],
+        &f.state,
+        &writer_barriers,
+    );
+    let open = wait_at_task_barrier(&writer_barriers, opened_point);
+    let before = cli(&f.repo, &f.state, &["scenario", "show", "read-only"]);
+    let step = &before["frames"]["root"]["steps"][1];
+    let intent = &step["intents"][0];
+    assert_eq!(intent["phase"], "prepared");
+    let intent_id = intent["id"].as_str().unwrap();
+    let id = format!("scenario-{}", intent_id.trim_start_matches("sha256:"));
+    let run_id = task_run_id(&id).unwrap();
+    let cas = af_store::Cas::open_existing(task_state.join("cas")).unwrap();
+    let store = af_store::EventStore::open_read_only(task_state.join("events.sqlite")).unwrap();
+    let opened = store.task_projection(&cas, &id).unwrap().unwrap();
+    let plan_id = opened.prepared_plan_id.as_ref().unwrap();
+    assert!(opened.plan_id.is_none());
+
+    // Both drivers replay the same committed intent from separate Scenario journals.
+    // The opening barrier keeps the original journal idle while the copy is made.
+    let replay_state = f._root.path().join("replay-state");
+    crate::task_cli::copy_tree(&f.state, &replay_state);
+    assert_eq!(
+        cli(&f.repo, &replay_state, &["scenario", "show", "read-only"]),
+        before
+    );
+    let mut replay = spawn(
+        &["scenario", "resume", "read-only"],
+        &replay_state,
+        &replay_barriers,
+    );
+    let waiting = wait_at_task_barrier(&replay_barriers, waiting_point);
+    assert!(opened.lease_held_at(af_store::store::task::now().unwrap()));
+    assert_eq!(store.replay(&run_id).unwrap().len(), 1);
+
+    std::fs::write(open, []).unwrap();
+    let proposed = wait_at_task_barrier(&writer_barriers, proposed_point);
+    let committed = store.task_projection(&cas, &id).unwrap().unwrap();
+    assert_eq!(committed.revision_id, opened.revision_id);
+    assert_eq!(committed.plan_id.as_ref(), Some(plan_id));
+    assert!(committed.prepared_plan_id.is_none());
+    assert!(!committed.lease_held_at(af_store::store::task::now().unwrap()));
+    let writer_proceed = if writer_executes {
+        // Let the original driver hand the plan to its native Task child. Keep that child
+        // paused with its execution lease until replay has crossed the planning boundary.
+        std::fs::write(proposed, []).unwrap();
+        let proceed = wait_at_task_barrier(&writer_barriers, execution_point);
+        let running = store.task_projection(&cas, &id).unwrap().unwrap();
+        assert!(running.admitted);
+        assert!(running.lease_epoch() > opened.lease_epoch());
+        assert_ne!(running.lease_writer(), opened.lease_writer());
+        assert!(running.lease_held_at(af_store::store::task::now().unwrap()));
+        assert_eq!(running.revision_id, opened.revision_id);
+        assert_eq!(running.plan_id.as_ref(), Some(plan_id));
+        proceed
+    } else {
+        proposed
+    };
+    let task_prefix = store.replay(&run_id).unwrap();
+    std::fs::write(waiting, []).unwrap();
+
+    // On refusal the driver returns without reaching admission. Read its durable diagnostic.
+    let admission = replay_barriers.join(admission_point);
+    let started = std::time::Instant::now();
+    while !admission.join("ready").exists() {
+        if replay.0.as_mut().unwrap().try_wait().unwrap().is_some() {
+            let result = replay.0.take().unwrap().wait_with_output().unwrap();
+            panic!(
+                "replay exited before Task admission: stdout: {}\nstderr: {}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(30));
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(store.replay(&run_id).unwrap(), task_prefix);
+    let bound = cli(&f.repo, &replay_state, &["scenario", "show", "read-only"]);
+    let target = &bound["fresh_tasks"][intent_id];
+    assert_eq!(target["task_id"], id);
+    assert_eq!(target["revision_id"], opened.revision_id);
+    assert_eq!(target["plan_id"], *plan_id);
+
+    // Let the driver that owns the Task lease finish before the other driver checks the
+    // result. This keeps the regression focused on the planning handoff.
+    let original = if writer_executes {
+        std::fs::write(&writer_proceed, []).unwrap();
+        Some(value(
+            writer.0.take().unwrap().wait_with_output().unwrap(),
+            0,
+        ))
+    } else {
+        None
+    };
+    std::fs::write(admission.join("proceed"), []).unwrap();
+    let done = value(replay.0.take().unwrap().wait_with_output().unwrap(), 0);
+    assert_eq!(done["status"], "succeeded", "{done}");
+    assert_eq!(done["execution_id"], before["execution_id"]);
+    assert_eq!(done["dispatches"], before["dispatches"]);
+    let finished = &done["frames"]["root"]["steps"][1];
+    assert_eq!(finished["deadline_unix_ms"], step["deadline_unix_ms"]);
+    let [settled] = finished["intents"].as_array().unwrap().as_slice() else {
+        panic!("expected the original Task intent");
+    };
+    assert_eq!(settled["id"], intent["id"]);
+    assert_eq!(settled["input_digest"], intent["input_digest"]);
+    assert_eq!(settled["phase"], "done");
+    let receipt = &finished["outputs"]["result"]["value"];
+    assert_eq!(receipt["task_id"], id);
+    assert_eq!(receipt["revision_id"], opened.revision_id);
+    assert_eq!(receipt["plan_id"], *plan_id);
+    assert_eq!(receipt["result"]["acceptance"], "satisfied");
+
+    let original = original.unwrap_or_else(|| {
+        std::fs::write(writer_proceed, []).unwrap();
+        value(writer.0.take().unwrap().wait_with_output().unwrap(), 0)
+    });
+    assert_eq!(original["status"], "succeeded", "{original}");
+    assert_eq!(original["fresh_tasks"], done["fresh_tasks"]);
+    assert_eq!(original["task_charges"], done["task_charges"]);
+    let events = store.replay(&run_id).unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter_map(|event| read_task_transition(event).ok())
+            .filter(|transition| matches!(transition.change, TaskChangeV1::PlanProposed { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == af_contracts::EventType::TaskExecutionStartedV1)
+            .count(),
+        1
+    );
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn fresh_task_recovers_interrupted_opening_with_the_captured_plan() {
+    use af_contracts::task::event::TaskChangeV1;
+    use af_store::store::task::{journal::read_task_transition, task_run_id};
+
+    let (f, task_state) = fresh_read_only_review_scenario();
+    let pin = cli(
+        &f.repo,
+        &f.state,
+        &[
+            "scenario",
+            "validate",
+            "--file",
+            f.bundle.to_str().unwrap(),
+            "--authority",
+            f.policy.to_str().unwrap(),
+        ],
+    );
+    let barriers = f.machine.join("opening-barriers");
+    let point = "scenario-task-opened-1";
+    std::fs::create_dir_all(barriers.join(point)).unwrap();
+    let mut driver = TaskScenarioDriver(Some(
+        crate::common::af()
+            .current_dir(&f.repo)
+            .args([
+                "scenario",
+                "start",
+                "read-only",
+                "--file",
+                f.bundle.to_str().unwrap(),
+                "--authority",
+                f.policy.to_str().unwrap(),
+                "--inputs",
+                f.inputs.to_str().unwrap(),
+                "--confirm-pin",
+                pin["revision"].as_str().unwrap(),
+                "--execute",
+                "--json",
+                "--state",
+            ])
+            .arg(&f.state)
+            .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barriers)
+            .env("AF_TEST_TASK_LEASE_MS", "6000")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    ));
+    wait_at_task_barrier(&barriers, point);
+    let mut child = driver.0.take().unwrap();
+    child.kill().unwrap();
+    assert!(!child.wait().unwrap().success());
+    let before = cli(&f.repo, &f.state, &["scenario", "show", "read-only"]);
+    let step = &before["frames"]["root"]["steps"][1];
+    let intent = &step["intents"][0];
+    assert_eq!(intent["phase"], "prepared");
+    assert!(before["fresh_tasks"].as_object().unwrap().is_empty());
+
+    let id = format!(
+        "scenario-{}",
+        intent["id"].as_str().unwrap().trim_start_matches("sha256:")
+    );
+    let cas = af_store::Cas::open_existing(task_state.join("cas")).unwrap();
+    let store = af_store::EventStore::open_read_only(task_state.join("events.sqlite")).unwrap();
+    let opened = store.task_projection(&cas, &id).unwrap().unwrap();
+    assert!(opened.plan_id.is_none());
+    assert_eq!(opened.lease_epoch(), 1);
+    let plan_id = opened.prepared_plan_id.clone().unwrap();
+    let opening = store.replay(&task_run_id(&id).unwrap()).unwrap();
+    assert_eq!(opening.len(), 1);
+    assert!(opening[0].artifact_refs.contains(&plan_id));
+    let objects: std::collections::BTreeSet<_> = cas
+        .filed_objects()
+        .unwrap()
+        .into_iter()
+        .map(|object| object.digest)
+        .collect();
+    let mut closure = std::collections::BTreeSet::new();
+    let mut stack = opening[0].artifact_refs.clone();
+    while let Some(digest) = stack.pop() {
+        if closure.insert(digest.clone()) {
+            cas.verify(&digest).unwrap();
+            stack.extend(
+                cas.spelled_digests(&digest)
+                    .unwrap()
+                    .into_iter()
+                    .filter(|id| objects.contains(id)),
+            );
+        }
+    }
+    let graph_id = cas.get_artifact(&plan_id).unwrap().payload["compiled_graph_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(closure.contains(&graph_id));
+    drop(store);
+
+    let cutoff = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while opened.lease_held_at(af_store::store::task::now().unwrap()) {
+        assert!(
+            std::time::Instant::now() < cutoff,
+            "opening lease did not expire"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let orphan = cas
+        .put_json(&json!({"orphan":"unreachable before Scenario resume"}))
+        .unwrap();
+    let gc = cli(
+        &f.repo,
+        &task_state,
+        &["task", "gc", "--older-than", "0", "--keep", "1", "--apply"],
+    );
+    assert_eq!(gc["applied"]["swept"], true, "{gc}");
+    assert_eq!(gc["applied"]["tombstoned"], json!([]));
+    assert!(cas.verify(&orphan).is_err());
+    for id in closure {
+        cas.verify(&id)
+            .expect("collection removed a captured plan object");
+    }
+
+    // Observe the durable plan binding before any native Attempt can start.
+    let point = "scenario-before-task-admission-1";
+    std::fs::create_dir_all(barriers.join(point)).unwrap();
+    let mut resumed_driver = TaskScenarioDriver(Some(
+        crate::common::af()
+            .current_dir(&f.repo)
+            .args(["scenario", "resume", "read-only", "--json", "--state"])
+            .arg(&f.state)
+            .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barriers)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    ));
+    let proceed = wait_at_task_barrier(&barriers, point);
+    let after = cli(&f.repo, &f.state, &["scenario", "show", "read-only"]);
+    assert_eq!(after["execution_id"], before["execution_id"]);
+    assert_eq!(after["dispatches"], before["dispatches"]);
+    assert_eq!(after["task_charges"], before["task_charges"]);
+    let resumed = &after["frames"]["root"]["steps"][1];
+    assert_eq!(resumed["deadline_unix_ms"], step["deadline_unix_ms"]);
+    assert_eq!(resumed["intents"].as_array().unwrap().len(), 1);
+    assert_eq!(resumed["intents"][0]["id"], intent["id"]);
+    assert_eq!(
+        resumed["intents"][0]["input_digest"],
+        intent["input_digest"]
+    );
+    assert_eq!(resumed["intents"][0]["phase"], "prepared");
+    let targets = after["fresh_tasks"].as_object().unwrap();
+    assert_eq!(targets.len(), 1);
+    let target = &targets[intent["id"].as_str().unwrap()];
+    assert_eq!(target["task_id"], id);
+    assert_eq!(target["revision_id"], opened.revision_id);
+    assert_eq!(target["plan_id"], plan_id);
+    let store = af_store::EventStore::open_read_only(task_state.join("events.sqlite")).unwrap();
+    let task = store.task_projection(&cas, &id).unwrap().unwrap();
+    assert!(!task.admitted);
+    let transitions: Vec<_> = store
+        .replay(&task_run_id(&id).unwrap())
+        .unwrap()
+        .iter()
+        .filter_map(|event| read_task_transition(event).ok())
+        .collect();
+    assert_eq!(
+        transitions
+            .iter()
+            .filter(|t| matches!(t.change, TaskChangeV1::Opened { .. }))
+            .count(),
+        1
+    );
+    let proposals: Vec<_> = transitions
+        .iter()
+        .filter_map(|t| match &t.change {
+            TaskChangeV1::PlanProposed { plan_id } => Some((t.epoch, plan_id)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(proposals, [(2, &plan_id)]);
+    assert_eq!(
+        store.replay(&task_run_id(&id).unwrap()).unwrap()[0],
+        opening[0]
+    );
+    drop(store);
+
+    std::fs::write(proceed, []).unwrap();
+    let result = resumed_driver.0.take().unwrap().wait_with_output().unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let done = cli(&f.repo, &f.state, &["scenario", "show", "read-only"]);
+    assert_eq!(done["status"], "succeeded", "{done}");
+    assert_eq!(done["execution_id"], before["execution_id"]);
+    assert_eq!(done["dispatches"], before["dispatches"]);
+    assert_eq!(done["fresh_tasks"], after["fresh_tasks"]);
+    assert_eq!(
+        done["frames"]["root"]["steps"][0],
+        before["frames"]["root"]["steps"][0]
+    );
+    let finished = &done["frames"]["root"]["steps"][1];
+    assert_eq!(finished["deadline_unix_ms"], step["deadline_unix_ms"]);
+    assert_eq!(finished["intents"].as_array().unwrap().len(), 1);
+    assert_eq!(finished["intents"][0]["id"], intent["id"]);
+    assert_eq!(finished["intents"][0]["phase"], "done");
+    let receipt = &finished["outputs"]["result"]["value"];
+    assert_eq!(receipt["plan_id"], plan_id);
+    assert_eq!(receipt["revision_id"], opened.revision_id);
+    assert_eq!(receipt["result"]["acceptance"], "satisfied");
+    let store = af_store::EventStore::open_read_only(task_state.join("events.sqlite")).unwrap();
+    let events = store.replay(&task_run_id(&id).unwrap()).unwrap();
+    assert_eq!(events[0], opening[0]);
+    let admission = events
+        .iter()
+        .filter_map(|event| read_task_transition(event).ok())
+        .find(|transition| matches!(transition.change, TaskChangeV1::PlanAdmitted { .. }))
+        .unwrap();
+    let inspection = cli(&f.repo, &task_state, &["task", "show", &id]);
+    assert_eq!(
+        inspection["clock"],
+        json!({
+            "wall_ms": opened.wall_ms(),
+            "started_unix_ms": admission.now_unix_ms,
+            "deadline_unix_ms": admission.now_unix_ms + opened.wall_ms(),
+        })
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.event_type == af_contracts::EventType::TaskExecutionStartedV1)
+            .count(),
+        1
     );
 }
 
@@ -4110,7 +5345,7 @@ fn template_repin_refuses_conflicting_corrupt_and_duplicate_durable_records() {
         for sequence in &sequences {
             db.execute(
                 "INSERT INTO events (envelope, run_id,sequence,event_id,type,occurred_at,artifact_refs,payload)
-                 VALUES ('review.kernel/RunEvent@4', ?1,?2,?3,?4,'2026-11-13T00:00:00Z',?5,?6)",
+                 VALUES ('review.kernel/RunEvent@5', ?1,?2,?3,?4,'2026-11-13T00:00:00Z',?5,?6)",
                 rusqlite::params![run, sequence, format!("corrupt-{sequence}"), original.0, original.2, original.1],
             ).unwrap();
         }

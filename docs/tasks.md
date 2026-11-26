@@ -271,7 +271,7 @@ writer lease names: it finds the process by the lease's writer in the run record
 another host with its pid and host, records who asked in `runs/ID-N.cancel.json`, and signals that
 recorded pid only, which stops its Worker processes as Ctrl-C does. The Task is then
 `abandoned/cancelled/host_cancelled`, `af task show` names who cancelled it, and `af task run ID`
-resumes it. `af task events ID` follows the Task as JSON lines, one `af/task-event@3` document per
+resumes it. `af task events ID` follows the Task as JSON lines, one `af/task-event@4` document per
 event of its log with the Store's own gap-free `sequence`, and once the Task settles one terminal
 record with its state and exit code; `--after N` prints only the events after sequence N, so a
 follower that reconnects gets the rest, and the command takes no `--json`
@@ -400,10 +400,10 @@ process ran under, so it is what was left of the check's wall after preparation.
 did not start says `never started`. When a local check has execution evidence and no recorded
 duration, `af task show --checks` says `elapsed timing unavailable`.
 
-A Task's wall clock starts at its first `af task run`, not when it is planned: the preview says
-`deadline starts when you run`, the Store moves the recorded deadline by the time the Task waited
-for that run, so the confirmed plan is exactly the plan that runs, and the run prints the
-deadline in local time with the time left (`deadline 17:41:18 +03 (2 h 59 min from now)`);
+A Task's wall clock starts when the Store first admits its confirmed plan for execution. The
+preview says `deadline starts when you run`. The Store adds the captured wall duration to
+the native admission time and keeps that deadline on resume. The run prints the deadline in
+local time with the time left (`deadline 17:41:18 +03 (2 h 59 min from now)`).
 `af task show --json` carries it as `clock`. `af task plan` of a Task file whose content and bindings equal the planned Task's prints
 the existing plan; a changed file under a planned ID is refused, and `af task plan --replace`
 plans an unstarted Task again in place. A plan the Task's limits are too small for is refused
@@ -593,7 +593,7 @@ round the selected Pipeline must declare `findings` (the installed
 [`bugfix/default-codex`](#the-default-pipeline) and
 [`bugfix/light-codex`](#the-light-default-pipeline) do), or the
 plan is refused with the reason. `af task show NEW` prints `continues TASK round N`, `--json`
-carries `continues` (`af/task-inspection@21`), and `af task report` names it in NEW's row.
+carries `continues` (`af/task-inspection@22`), and `af task report` names it in NEW's row.
 
 ### An Attempt wall keeps the edits
 

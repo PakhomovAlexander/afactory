@@ -262,7 +262,7 @@ fn selected_native_rounds(
         for id in &port.artifact_ids {
             let artifact = cas
                 .get_artifact(id)
-                .map_err(|e| StoreError::Artifact(e.to_string()))?;
+                .map_err(|error| artifact_read_error(id, error))?;
             let af_contracts::Producer::KernelOperation {
                 run_id,
                 node_id: Some(node),
@@ -342,7 +342,7 @@ fn admitted_native_round(
         .ok_or_else(|| conflict("Review has no execution"))?;
     let artifact = cas
         .get_artifact(id)
-        .map_err(|e| StoreError::Artifact(e.to_string()))?;
+        .map_err(|error| artifact_read_error(id, error))?;
     let source = round
         .invocation
         .inputs

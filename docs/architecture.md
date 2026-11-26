@@ -172,7 +172,7 @@ provenance and experiment isolation; the existing live container probes own cont
 | `finding-set-v1.json` | one Subject-bound canonical Finding view at a ledger barrier |
 | `source-snapshot-v1.json` | content identity, never a branch; committed, synthetic-worktree or derived |
 | `patch-proposal-v1.json` | an atomic change set naming the exact claims it covers |
-| `run-event-v4.json` | the append-only stream envelope; `sequence` orders, never `occurred_at` |
+| `run-event-v5.json` | the append-only stream envelope; `sequence` orders, never `occurred_at` |
 | `check-result-v1.json` | one execution of one check, per attempt — `not_run` is its own status; a remote result names its evidence instead of a command |
 | `remote-check-evidence-v1.json` | every remote fact one Remote Check's decision used: refused, published or observed (ADR-0140) |
 | `reviewer-result-v2.json` | what one reviewer attempt returned: reports, demands, and one disposition per assigned prior Finding |
@@ -185,7 +185,7 @@ Three things are deliberately unrepresentable rather than merely discouraged: a 
 status field, a best-effort copy is not a `Capture` variant, and a patch proposal cannot name
 zero claims.
 
-[`RunEvent@4`](../schemas/run-event-v4.json) enumerates the closed current type vocabulary,
+[`RunEvent@5`](../schemas/run-event-v5.json) enumerates the closed current type vocabulary,
 including native Project backlog events. The Store validates the same event types and payloads
 when writing and replaying its decomposed rows. Native Review authority is admitted
 through checked Task publication; a generic Store append cannot manufacture a canonical Review
@@ -465,7 +465,7 @@ explicit node outputs, exact Worker bindings and captured policy. Compilation em
 `af.compiled-task/6` in `af/CompiledTask@4`. Native Review operations are ordinary primitive
 operators; `review_domain`, `review_integration_checks` and the optional Campaign phase graph
 are refused. The captured engine is `af.task-engine/4`; inspection is
-`af/task-inspection@21`, recorded-plan inspection `af/task-plan-inspection@7`, and Experimental
+`af/task-inspection@22`, recorded-plan inspection `af/task-plan-inspection@7`, and Experimental
 execution plans `af.experiment-execution-plan/3` in `af/ExperimentExecutionPlan@3`.
 These changed closed shapes have current writers, schemas and explicit retired-format refusal.
 Pipeline `/6`, TaskKind `/3` and unchanged referenced subshapes keep their existing identities.
@@ -501,8 +501,8 @@ forgetting spend. Retries use durable admitted feedback and retain their origina
 No Review-specific allowance, scheduler or Campaign-to-Task host remains. Native Review
 conclusions bind exact cumulative accounting and a checked Task log prefix.
 
-`TaskTransition@6` is the current closed transition family; `af/TaskRunReport@3` reports the
-whole graph and carries no Campaign phase selector. `af/task-event@3` streams those current
+`TaskTransition@7` is the current closed transition family; `af/TaskRunReport@3` reports the
+whole graph and carries no Campaign phase selector. `af/task-event@4` streams those current
 records. Canonical Ledger, Report, Finding and `review.kernel/*` identities remain shared.
 Read `af review inspect ID` for per-Attempt details and `af review report ID` for exact native
 Task accounting. Generic storage registration, accounting, retention, leases and removal safety
@@ -588,8 +588,8 @@ version and native `af catalog digest` pin refresh, without changing Worker auth
 
 Native Review's Store contains Task transitions and typed native Round outputs. The shared
 canonical Ledger is initialized from the Task Subject, with no Campaign manifest or bootstrap
-event. SQLite Stores bind their layout to `review.kernel/RunEvent@4` and stamp each event row
-with that envelope identity. Store opens check the current events table definition, including
+event. SQLite Stores use layout 5 and stamp each event row with the
+`review.kernel/RunEvent@5` envelope identity. Store opens check the current events table definition, including
 its event and per-run sequence identity constraints, through SQLite schema metadata. An earlier
 or malformed layout fails closed before schema or journal changes. Replay rejects rows with a
 different envelope identity. An initialized WAL Store can observe committed events while another

@@ -143,6 +143,7 @@ impl Response {
 pub enum Settlement {
     Done(BTreeMap<String, Datum>),
     TaskTerminal(Box<super::task_outcome::TaskOutcome>),
+    TaskCancelled(TaskCancellation),
     TaskDone {
         outputs: BTreeMap<String, Datum>,
         unknown_usage: bool,
@@ -164,6 +165,13 @@ pub enum Settlement {
         unknown_usage: bool,
     },
     Uncertain(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct TaskCancellation {
+    pub evidence: String,
+    pub charged_tokens: u64,
+    pub unknown_usage: bool,
 }
 fn call(
     adapter: &Adapter,
@@ -222,15 +230,24 @@ pub(crate) fn dispatch(
 ) -> Result<Settlement> {
     let policy = &run.pin.policy;
     match &dispatch.definition.operation {
-        Kind::Task { target } => host.run_task(target, dispatch.timeout_ms, cancellation),
-        Kind::CiDiagnosis { target } => {
-            host.run_ci_diagnosis(target, dispatch.timeout_ms, cancellation)
-        }
+        Kind::Task { target } => host.run_task(
+            target,
+            &dispatch.intent.id,
+            dispatch.timeout_ms,
+            cancellation,
+        ),
+        Kind::CiDiagnosis { target } => host.run_ci_diagnosis(
+            target,
+            &dispatch.intent.id,
+            dispatch.timeout_ms,
+            cancellation,
+        ),
         Kind::FreshTask { .. } => host.run_task(
             dispatch
                 .target
                 .as_ref()
                 .ok_or("Fresh Task has no committed native plan")?,
+            &dispatch.intent.id,
             dispatch.timeout_ms,
             cancellation,
         ),

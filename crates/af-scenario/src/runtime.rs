@@ -2,6 +2,7 @@
 //! is committed independently, so writer loss leaves an intent that resume must reconcile.
 use super::adapter::{self, Settlement};
 use super::contract::*;
+use super::host::{TaskCancellationObservation, TemplatePlanError};
 use super::state::*;
 use super::store::Store;
 use std::collections::BTreeMap;
@@ -59,8 +60,17 @@ pub(crate) fn resume_admitted(
     }
     loop {
         let at = execution_time()?;
-        let prepared = store
-            .update(|world| crate::retention::prepare_run(store.host.as_ref(), world, id, at))?;
+        let mut cancellation_guard = None;
+        let prepared = store.update(|world| {
+            crate::retention::prepare_run(
+                store.host.as_ref(),
+                world,
+                id,
+                at,
+                &mut cancellation_guard,
+            )
+        })?;
+        drop(cancellation_guard);
         let run = store
             .read()?
             .runs
@@ -102,8 +112,34 @@ pub(crate) fn resume_admitted(
                 match super::template::instantiate(store.host.as_ref(), &dispatch, goal.as_ref()) {
                     Ok(target) => target,
                     Err(why) => {
+                        let mut cancellation_guard = None;
                         store.update(|world| {
-                            world.runs.get_mut(id).ok_or("Run disappeared")?.fail(why);
+                            let run = world.runs.get_mut(id).ok_or("Run disappeared")?;
+                            let at = execution_time()?;
+                            if run.status.active()
+                                && !run
+                                    .reconcile_task_cancellation(
+                                        store.host.as_ref(),
+                                        at,
+                                        &mut cancellation_guard,
+                                    )?
+                                    .cancelled()
+                            {
+                                match why {
+                                    TemplatePlanError::StorageCapacity(diagnostic)
+                                        if dispatch.intent.phase == Phase::Prepared
+                                            && !run
+                                                .fresh_tasks
+                                                .contains_key(&dispatch.intent.id) =>
+                                    {
+                                        run.wait_for_template_capacity(&dispatch, diagnostic, at)?;
+                                    }
+                                    TemplatePlanError::StorageCapacity(diagnostic)
+                                    | TemplatePlanError::Refused(diagnostic) => {
+                                        run.fail(diagnostic)
+                                    }
+                                }
+                            }
                             Ok(())
                         })?;
                         return Ok(store.read()?.runs[id].clone());
@@ -134,6 +170,13 @@ pub(crate) fn resume_admitted(
                         .clone(),
                     execution_time()?,
                 );
+            }
+            // Materialization itself uses the original Scenario and step allowance.
+            dispatch.timeout_ms = dispatch
+                .timeout_ms
+                .saturating_sub(execution_time()?.saturating_sub(at));
+            if dispatch.timeout_ms == 0 {
+                continue;
             }
         }
         if let Some(scope) = &run.pin.policy.implementation_startup {
@@ -218,14 +261,18 @@ pub(crate) fn resume_admitted(
             other => Ok(other),
         });
         let settled_at = execution_time()?;
+        let mut cancellation_guard = None;
         let stop = store.update(|world| {
             let run = world.runs.get_mut(id).ok_or("Scenario Run disappeared")?;
+            let cancelled = run.status == Status::Cancelled;
+            if task_dispatch && !run.status.active() && !cancelled {
+                return Ok(true);
+            }
             require(
                 settled_at >= run.updated_unix_ms,
                 "Completion clock moved backwards",
             )?;
             run.updated_unix_ms = settled_at;
-            let cancelled = run.status == Status::Cancelled;
             let progress = run
                 .frames
                 .get_mut(&dispatch.frame)
@@ -239,6 +286,25 @@ pub(crate) fn resume_admitted(
                         .is_some_and(|i| i.id == dispatch.intent.id),
                 "Stale dispatch completion",
             )?;
+            // A response can have been read from a finished Task whose writer still held
+            // its lease. Reobserve under the publication fence and keep it through commit.
+            let target = match &dispatch.definition.operation {
+                Kind::Task { target } | Kind::CiDiagnosis { target } => Some(target),
+                _ => dispatch.target.as_ref(),
+            };
+            let observation = if let Some(target) = target {
+                let (observation, guard) = store
+                    .host
+                    .task_cancellation_for_settlement(target, &dispatch.intent.id)?;
+                cancellation_guard = guard;
+                observation
+            } else {
+                TaskCancellationObservation::Observed(None)
+            };
+            let result = match &observation {
+                TaskCancellationObservation::Observed(Some(stop)) => Ok(Settlement::TaskCancelled(stop.clone())),
+                _ => result,
+            };
             let exact_charge = match &result {
                 Ok(Settlement::TaskFailed {
                     charged_tokens,
@@ -268,11 +334,42 @@ pub(crate) fn resume_admitted(
                     .get_mut(&key)
                     .ok_or("Task was not reserved")?;
                 charge.charged = Some(actual);
-                charge.unknown_usage = unknown_usage;
+                charge.unknown_usage = unknown_usage
+                    || !matches!(observation, TaskCancellationObservation::Observed(_));
                 charge_breached =
                     actual > charge.maximum || run.tokens()? > u128::from(run.token_allowance());
             }
+            let result = if matches!(result, Ok(Settlement::TaskCancelled(_))) {
+                result
+            } else {
+                match observation {
+                    TaskCancellationObservation::Unavailable(diagnostic) => {
+                        if let Err(why) | Ok(Settlement::Uncertain(why)) = result {
+                            run.record_task_read_failure(&dispatch.frame, &why, true)?;
+                        }
+                        run.record_task_read_failure(&dispatch.frame, &diagnostic, true)?;
+                        if charge_breached && !cancelled {
+                            run.fail("Task exceeded its Scenario token reservation; exact charge retained".into());
+                        } else {
+                            run.wait_for_task_read(
+                                &dispatch.frame,
+                                target.ok_or("Unavailable Task target disappeared")?.task_id.clone(),
+                            );
+                        }
+                        return Ok(true);
+                    }
+                    TaskCancellationObservation::Missing(diagnostic) => {
+                        result.and(Err(diagnostic))
+                    }
+                    TaskCancellationObservation::Observed(_) => result,
+                }
+            };
             match result {
+                Ok(Settlement::TaskCancelled(stop)) => {
+                    let key = super::template::charge_key(&dispatch)?;
+                    run.settle_task_cancellation(&dispatch.frame, &key, stop)?;
+                    Ok(true)
+                }
                 Ok(Settlement::TaskTerminal(_)) => {
                     unreachable!("terminal outcomes normalized above")
                 }
@@ -380,6 +477,7 @@ pub(crate) fn resume_admitted(
                 }
             }
         })?;
+        drop(cancellation_guard);
         if stop {
             return Ok(store.read()?.runs[id].clone());
         }
@@ -387,11 +485,16 @@ pub(crate) fn resume_admitted(
 }
 pub fn cancel(store: &Store, id: &str, reason: String, at: u64) -> Result<Run> {
     text(&reason)?;
+    let mut cancellation_guard = None;
     let targets: BTreeMap<String,(TaskTarget,Option<u64>)> = store.update(|world| {
         let run = world.runs.get_mut(id).ok_or("Scenario Run not found")?;
         require(at >= run.updated_unix_ms,"Cancellation clock moved backwards")?;
         let repeating = run.status == Status::Cancelled;
         require(repeating || run.status.active(),"A terminal Run cannot be cancelled")?;
+        let task = run.reconcile_task_cancellation(store.host.as_ref(), at, &mut cancellation_guard)?;
+        if task.cancelled() {
+            return Ok(BTreeMap::new());
+        }
         let mut targets = BTreeMap::new();
         for (path,frame) in &run.frames {
             let def = &run.pin.bundle.definitions[&frame.scenario];
@@ -400,7 +503,13 @@ pub fn cancel(store: &Store, id: &str, reason: String, at: u64) -> Result<Run> {
                 let previous = run.cancellation.as_ref().and_then(|c| c.child_requests.get(&full));
                 let pending = previous.is_some_and(|r| r.state != CancellationState::Confirmed);
                 if let Some(target) = super::template::targets(run,p,step) && ((!repeating && !p.complete() && !p.intents.is_empty()) || pending) {
-                    let recorded = if repeating { previous.and_then(|p| p.run) } else { store.host.active_task_run(&target) };
+                    let recorded = if repeating {
+                        previous.and_then(|p| p.run)
+                    } else if matches!(&task, TaskReconciliation::Clear) {
+                        store.host.active_task_run(&target)
+                    } else {
+                        None
+                    };
                     targets.insert(full,(target.clone(),recorded));
                 }
             }
@@ -411,6 +520,7 @@ pub fn cancel(store: &Store, id: &str, reason: String, at: u64) -> Result<Run> {
         }
         Ok(targets)
     })?;
+    drop(cancellation_guard);
     if targets.is_empty() {
         return Ok(store.read()?.runs[id].clone());
     }
@@ -494,7 +604,9 @@ pub(crate) fn reconcile_native_charges(store: &Store, id: &str, at: u64) -> Resu
             continue;
         };
         let targets: Vec<_> = match &step.operation {
-            Kind::Task { target } | Kind::CiDiagnosis { target } => vec![target.clone()],
+            Kind::Task { target } | Kind::CiDiagnosis { target } => {
+                vec![(target, progress.intents.last())]
+            }
             Kind::FreshTask { template, .. } => progress
                 .intents
                 .iter()
@@ -502,14 +614,44 @@ pub(crate) fn reconcile_native_charges(store: &Store, id: &str, at: u64) -> Resu
                     let candidate =
                         hash(&(&template.state, super::template::task_id(&intent.id))).ok()?;
                     (candidate == *key)
-                        .then(|| run.fresh_tasks.get(&intent.id).cloned())
+                        .then(|| {
+                            run.fresh_tasks
+                                .get(&intent.id)
+                                .map(|target| (target, Some(intent)))
+                        })
                         .flatten()
                 })
                 .collect(),
             _ => Vec::new(),
         };
-        for target in targets {
-            if let Some((actual, unknown)) = store.host.task_charge(&target)?
+        for (target, intent) in targets {
+            // Read any terminal result first. A cancellation followed by a later manual
+            // completion must be visible to the intent-scoped observation below.
+            let terminal = store.host.task_charge(target);
+            let cancellation = match intent {
+                Some(intent) => store.host.task_cancellation(target, &intent.id)?,
+                None => TaskCancellationObservation::Observed(None),
+            };
+            let observed = match cancellation {
+                TaskCancellationObservation::Missing(_)
+                | TaskCancellationObservation::Unavailable(_) => continue,
+                // The driver settles the intent and its charge together.
+                TaskCancellationObservation::Observed(Some(_)) if run.status.active() => continue,
+                // A request published after a definitive settlement does not change it.
+                TaskCancellationObservation::Observed(Some(ref stop))
+                    if intent.is_some_and(|i| {
+                        i.phase == Phase::Done
+                            || (i.phase == Phase::Failed && !i.evidence.contains(&stop.evidence))
+                    }) =>
+                {
+                    continue;
+                }
+                TaskCancellationObservation::Observed(Some(stop)) => {
+                    Some((stop.charged_tokens, stop.unknown_usage))
+                }
+                TaskCancellationObservation::Observed(None) => terminal?,
+            };
+            if let Some((actual, unknown)) = observed
                 && (charge.charged != Some(actual) || charge.unknown_usage != unknown)
             {
                 settlements.insert(key.clone(), (actual, unknown));
@@ -519,8 +661,20 @@ pub(crate) fn reconcile_native_charges(store: &Store, id: &str, at: u64) -> Resu
     if settlements.is_empty() {
         return Ok(());
     }
+    let mut cancellation_guard = None;
+    let observed_run = run;
     store.update(|world| {
         let run = world.runs.get_mut(id).ok_or("Scenario Run disappeared")?;
+        // Charge observations made outside the transaction cannot replace a settlement
+        // that committed while they were being read.
+        if run != observed_run
+            || !matches!(
+                run.reconcile_task_cancellation(store.host.as_ref(), at, &mut cancellation_guard)?,
+                TaskReconciliation::Clear
+            )
+        {
+            return Ok(());
+        }
         let mut breached = false;
         for (key, (actual, unknown)) in settlements {
             let charge = run
@@ -537,7 +691,7 @@ pub(crate) fn reconcile_native_charges(store: &Store, id: &str, at: u64) -> Resu
         }
         run.updated_unix_ms = run.updated_unix_ms.max(at);
         if (breached || run.tokens()? > u128::from(run.token_allowance()))
-            && run.status != Status::Cancelled
+            && (run.status.active() || run.status == Status::Succeeded)
         {
             run.fail(
                 "Task exceeded its Scenario token reservation; exact recovered charge retained"
@@ -634,6 +788,409 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
+    fn fresh_task_capacity_wait_reopens_and_reuses_the_original_dispatch() {
+        let first = "Artifact Store write hit ENOSPC on first object";
+        let later = "Artifact Store write hit ENOSPC on another object";
+        for (last_failure, deadline) in [
+            (None, false),
+            (Some("Pinned authority changed"), false),
+            (None, true),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let (roadmap, pin) = crate::admission_tests::fixture();
+            let failures =
+                [first, later].map(|reason| TemplatePlanError::StorageCapacity(reason.into()));
+            let host = Arc::new(TestHost {
+                planned_tasks: Some(Default::default()),
+                template_failures: std::sync::Mutex::new(
+                    failures
+                        .into_iter()
+                        .chain(last_failure.map(|reason| TemplatePlanError::Refused(reason.into())))
+                        .map(Some)
+                        .collect(),
+                ),
+                ..TestHost::default()
+            });
+            let mut store = Store::isolated(root.path()).unwrap();
+            store.host = host.clone();
+            store
+                .update(|world| {
+                    world.roadmaps.insert(roadmap.id.clone(), roadmap);
+                    Ok(())
+                })
+                .unwrap();
+            store
+                .update(|world| {
+                    world.admit_run(Run::new(
+                        host.as_ref(),
+                        "capacity".into(),
+                        pin,
+                        BTreeMap::new(),
+                        limits(),
+                        START,
+                        None,
+                    )?)?;
+                    Ok(())
+                })
+                .unwrap();
+            let waiting = resume(&store, "capacity", Some(START)).unwrap();
+            let step = &waiting.frames["root"].steps[0];
+            let intent = &step.intents[0];
+            assert_eq!(waiting.status, Status::Waiting);
+            assert_eq!(step.status, Status::Waiting);
+            assert_eq!(intent.phase, Phase::Prepared);
+            assert_eq!(intent.evidence, [first]);
+            assert_eq!(
+                waiting.waiting,
+                Some(Waiting::Reconcile {
+                    step: format!("root/{}", step.step),
+                    intent_id: intent.id.clone(),
+                    diagnostic: first.into(),
+                })
+            );
+            assert!(waiting.fresh_tasks.is_empty());
+            assert_eq!(waiting.dispatches, 1);
+            assert_eq!(waiting.task_charges.values().next().unwrap().charged, None);
+            assert_eq!(
+                host.native_dispatches
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                0
+            );
+
+            drop(store);
+            let mut store = Store::isolated(root.path()).unwrap();
+            store.host = host.clone();
+            assert_eq!(store.read().unwrap().runs["capacity"], waiting);
+            crate::tests::valid("scenario-store-v18.json", &store.read().unwrap());
+            let repeated = resume(&store, "capacity", Some(START + 1)).unwrap();
+            assert_eq!(repeated.frames, waiting.frames);
+            assert_eq!(repeated.waiting, waiting.waiting);
+            assert_eq!(repeated.task_charges, waiting.task_charges);
+            assert_eq!(repeated.dispatches, waiting.dispatches);
+
+            let at = if deadline {
+                step.deadline_unix_ms
+            } else {
+                START + 2
+            };
+            let settled = resume(&store, "capacity", Some(at)).unwrap();
+            assert_eq!(settled.execution_id, waiting.execution_id);
+            let after = &settled.frames["root"].steps[0];
+            assert_eq!(after.deadline_unix_ms, step.deadline_unix_ms);
+            assert_eq!(after.intents.len(), 1);
+            assert_eq!(after.intents[0].id, intent.id);
+            assert_eq!(after.intents[0].input_digest, intent.input_digest);
+            assert_eq!(after.intents[0].evidence[0], first);
+            assert_eq!(settled.dispatches, waiting.dispatches);
+            let planned = host.planned_tasks.as_ref().unwrap().lock().unwrap();
+            if deadline || last_failure.is_some() {
+                assert_eq!(settled.status, Status::Failed);
+                assert!(
+                    settled
+                        .failure
+                        .as_deref()
+                        .unwrap()
+                        .contains(last_failure.unwrap_or("deadline reached"))
+                );
+                assert!(settled.fresh_tasks.is_empty());
+                assert!(planned.is_empty());
+                assert_eq!(
+                    host.native_dispatches
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                    0
+                );
+            } else {
+                assert_eq!(settled.status, Status::Succeeded);
+                assert_eq!(settled.fresh_tasks.len(), 1);
+                assert_eq!(
+                    settled.fresh_tasks[&intent.id].task_id,
+                    crate::template::task_id(&intent.id)
+                );
+                assert_eq!(
+                    planned.as_slice(),
+                    &[settled.fresh_tasks[&intent.id].clone()]
+                );
+                assert_eq!(
+                    host.native_dispatches
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                    1
+                );
+                assert_eq!(
+                    settled.task_charges.values().next().unwrap().charged,
+                    Some(17)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fresh_task_retry_reserves_dispatch_and_reports_its_own_capacity_failure() {
+        let previous = "First native Task failed";
+        let capacity = "Second Task artifact Store hit ENOSPC";
+        for max_dispatches in [1, 2] {
+            let root = tempfile::tempdir().unwrap();
+            let (_, original) = crate::admission_tests::fixture();
+            let mut bundle = original.bundle;
+            let frame = bundle.definitions.get_mut("main").unwrap();
+            frame.admission = None;
+            frame.steps[0].max_attempts = 2;
+            let host = Arc::new(TestHost {
+                planned_tasks: Some(Default::default()),
+                task_settlement: Some(Settlement::TaskFailed {
+                    diagnostic: previous.into(),
+                    charged_tokens: 17,
+                    unknown_usage: false,
+                }),
+                template_failures: std::sync::Mutex::new(
+                    [
+                        None,
+                        Some(TemplatePlanError::StorageCapacity(capacity.into())),
+                    ]
+                    .into(),
+                ),
+                ..TestHost::default()
+            });
+            let pin = Pin::new(host.as_ref(), bundle, original.policy).unwrap();
+            let mut store = Store::isolated(root.path()).unwrap();
+            store.host = host.clone();
+            store
+                .update(|world| {
+                    world.admit_run(Run::new(
+                        host.as_ref(),
+                        "retry".into(),
+                        pin,
+                        BTreeMap::new(),
+                        Limits {
+                            max_dispatches,
+                            ..limits()
+                        },
+                        START,
+                        None,
+                    )?)?;
+                    Ok(())
+                })
+                .unwrap();
+
+            let run = resume(&store, "retry", Some(START)).unwrap();
+            let step = &run.frames["root"].steps[0];
+            assert_eq!(run.dispatches, max_dispatches);
+            assert_eq!(run.frames["root"].dispatches, max_dispatches);
+            assert_eq!(run.fresh_tasks.len(), 1);
+            assert_eq!(run.task_charges.len(), max_dispatches as usize);
+            assert_eq!(
+                host.planned_tasks.as_ref().unwrap().lock().unwrap().len(),
+                1
+            );
+            assert_eq!(
+                host.native_dispatches
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                1
+            );
+            assert_eq!(step.intents[0].phase, Phase::Failed);
+            assert_eq!(step.intents[0].evidence, [previous]);
+            if max_dispatches == 1 {
+                assert_eq!(run.status, Status::Failed);
+                assert_eq!(
+                    run.failure.as_deref(),
+                    Some("Scenario dispatch allowance exhausted")
+                );
+                assert_eq!(step.intents.len(), 1);
+            } else {
+                assert_eq!(run.status, Status::Waiting);
+                assert_eq!(step.intents.len(), 2);
+                let retry = &step.intents[1];
+                assert_eq!(retry.phase, Phase::Prepared);
+                assert_eq!(retry.evidence, [capacity]);
+                assert_eq!(step.diagnostic.as_deref(), Some(capacity));
+                assert_eq!(
+                    run.waiting,
+                    Some(Waiting::Reconcile {
+                        step: format!("root/{}", step.step),
+                        intent_id: retry.id.clone(),
+                        diagnostic: capacity.into(),
+                    })
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn nonaccepted_native_task_settles_nested_steps_with_recorded_accounting() {
+        let (mut bundle, mut policy) = simple();
+        let target = TaskTarget {
+            repo: "/repo".into(),
+            state: "/task-state".into(),
+            task_id: "native".into(),
+            plan_id: digest(b"plan"),
+            revision_id: digest(b"revision"),
+            max_tokens: 100,
+        };
+        policy.task_plans.insert(target.plan_id.clone());
+        let root = bundle.definitions.get_mut("main").unwrap();
+        root.authority.task_plans.insert(target.plan_id.clone());
+        let mut child = root.clone();
+        child.steps[0].operation = Kind::Task {
+            target: target.clone(),
+        };
+        child.steps[0].inputs.clear();
+        child.steps[0].outputs = BTreeMap::from([("result".into(), Port::Task)]);
+        root.steps[0].operation = Kind::Scenario {
+            scenario: "child".into(),
+        };
+        root.steps[0].inputs.clear();
+        root.steps[0].outputs = child.outputs.clone();
+        bundle.definitions.insert("child".into(), child);
+
+        let host = TestHost::default();
+        let pin = Pin::new(&host, bundle, policy).unwrap();
+        for unknown_usage in [false, true] {
+            let outcome = serde_json::from_value(serde_json::json!({
+                "schema":"af/scenario-task-outcome@2",
+                "receipt":{"task_id":target.task_id,"plan_id":target.plan_id,
+                    "revision_id":target.revision_id,"result_id":digest(b"result"),"charged_tokens":17,
+                    "result":{"task_revision_id":target.revision_id,"execution":"incomplete",
+                        "acceptance":"unsatisfied","domain_conclusion":"gate_failed",
+                        "outputs":{},"evidence":[digest(b"check")],"missing_obligations":["goal"]}},
+                "outcome":"gate_failed","cause":"check_failed","unknown_usage":unknown_usage,
+                "candidate_snapshot_id":null,"checks_id":null,"repair":null
+            })).unwrap();
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("state");
+            let mut store = Store::isolated(&path).unwrap();
+            let host = Arc::new(TestHost {
+                task_settlement: Some(Settlement::TaskTerminal(Box::new(outcome))),
+                ..TestHost::default()
+            });
+            store.host = host.clone();
+            let run = Run::new(
+                host.as_ref(),
+                "failed".into(),
+                pin.clone(),
+                BTreeMap::new(),
+                limits(),
+                START,
+                None,
+            )
+            .unwrap();
+            store.update(|world| world.admit_run(run)).unwrap();
+            let failed = resume(&store, "failed", Some(START)).unwrap();
+            assert_eq!(failed.status, Status::Failed);
+            assert!(failed.waiting.is_none());
+            let parent = &failed.frames["root"].steps[0];
+            assert_eq!(parent.status, Status::Failed);
+            assert_eq!(parent.child.as_deref(), Some("root/review"));
+            assert!(parent.outputs.is_empty());
+            let task = &failed.frames["root/review"].steps[0];
+            assert_eq!(task.status, Status::Failed);
+            assert!(task.outputs.is_empty());
+            assert_eq!(task.diagnostic, failed.failure);
+            let [intent] = task.intents.as_slice() else {
+                panic!("expected one native intent")
+            };
+            assert_eq!(intent.phase, Phase::Failed);
+            assert_eq!(
+                intent.evidence,
+                ["Native Task ended: GateFailed (Some(CheckFailed))"]
+            );
+            let charge = failed.task_charges.values().next().unwrap();
+            assert_eq!(charge.charged, Some(17));
+            assert_eq!(charge.unknown_usage, unknown_usage);
+            assert_eq!(charge.reserved(), if unknown_usage { 83 } else { 0 });
+            assert_eq!(
+                host.native_dispatches
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                1
+            );
+            drop(store);
+            let reopened = Store::isolated(&path).unwrap();
+            assert_eq!(resume(&reopened, "failed", Some(START)).unwrap(), failed);
+        }
+    }
+
+    #[test]
+    fn cancelled_native_intent_replays_without_dispatch_and_retains_unknown_usage() {
+        let (mut bundle, mut policy) = simple();
+        let target = TaskTarget {
+            repo: "/repo".into(),
+            state: "/task-state".into(),
+            task_id: "native".into(),
+            plan_id: digest(b"plan"),
+            revision_id: digest(b"revision"),
+            max_tokens: 100,
+        };
+        policy.task_plans.insert(target.plan_id.clone());
+        let root = bundle.definitions.get_mut("main").unwrap();
+        root.authority.task_plans.insert(target.plan_id.clone());
+        root.steps[0].operation = Kind::Task { target };
+        root.steps[0].inputs.clear();
+        root.steps[0].outputs = BTreeMap::from([("result".into(), Port::Task)]);
+        root.steps[0].max_attempts = 2;
+        let host = TestHost::default();
+        let pin = Pin::new(&host, bundle, policy).unwrap();
+        let mut original = Run::new(
+            &host,
+            "cancel-replay".into(),
+            pin,
+            BTreeMap::new(),
+            limits(),
+            START,
+            None,
+        )
+        .unwrap();
+        let dispatch = original.prepare(&host, START).unwrap().unwrap();
+        let mut recovered: Run =
+            serde_json::from_slice(&serde_json::to_vec(&original).unwrap()).unwrap();
+        let evidence = "Operator cancelled Task native (run 1, epoch 2)";
+        let after_deadline = recovered.frames["root"].steps[0].deadline_unix_ms + 1;
+        let observation = |intent_id: String| TestHost {
+            startup_time: after_deadline.into(),
+            task_cancel: Some((
+                intent_id,
+                adapter::TaskCancellation {
+                    evidence: evidence.into(),
+                    charged_tokens: 17,
+                    unknown_usage: true,
+                },
+            )),
+            ..TestHost::default()
+        };
+        let unrelated = observation(digest(b"other-intent"));
+        assert!(
+            !recovered
+                .reconcile_task_cancellation(&unrelated, START + 1, &mut None)
+                .unwrap()
+                .cancelled()
+        );
+        assert_eq!(recovered, original);
+        let host = Arc::new(observation(dispatch.intent.id.clone()));
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = Store::isolated(&directory.path().join("state")).unwrap();
+        store.host = host.clone();
+        store.update(|world| world.admit_run(recovered)).unwrap();
+        let recovered = crate::driver::once(&store, "cancel-replay").unwrap();
+        assert_eq!(recovered.failure.as_deref(), Some(evidence));
+        assert_eq!(store.read().unwrap().drivers["cancel-replay"].resumes, 0);
+        recovered.validate(host.as_ref()).unwrap();
+        assert_eq!(recovered.status, Status::Failed);
+        assert_eq!(recovered.execution_id, original.execution_id);
+        assert_eq!(recovered.dispatches, original.dispatches);
+        let step = &recovered.frames["root"].steps[0];
+        assert_eq!(step.status, Status::Failed);
+        assert!(step.outputs.is_empty());
+        assert_eq!(step.intents.len(), 1);
+        assert_eq!(step.intents[0].id, dispatch.intent.id);
+        assert_eq!(step.intents[0].phase, Phase::Failed);
+        assert_eq!(step.intents[0].evidence, [evidence]);
+        let charge = recovered.task_charges.values().next().unwrap();
+        assert_eq!(charge.charged, Some(17));
+        assert_eq!(charge.reserved(), 83);
+        assert_eq!(
+            crate::driver::once(&store, "cancel-replay").unwrap(),
+            recovered
+        );
+    }
+
+    #[test]
     fn recovered_host_accounting_retains_unknown_reservations_exact_overruns_and_monotonicity() {
         let (mut bundle, mut policy) = simple();
         let target = TaskTarget {
@@ -650,12 +1207,13 @@ mod tests {
         root.steps[0].operation = Kind::Task { target };
         root.steps[0].inputs.clear();
         root.steps[0].outputs = BTreeMap::from([("result".into(), Port::Task)]);
+        root.steps[0].timeout_ms = 1;
         let host = TestHost {
-            charge: Some((65, true)),
+            task_settlement: Some(Settlement::Waiting("Native response lost".into())),
             ..TestHost::default()
         };
         let pin = Pin::new(&host, bundle, policy).unwrap();
-        let mut run = Run::new(
+        let run = Run::new(
             &host,
             "recovery".into(),
             pin,
@@ -665,8 +1223,6 @@ mod tests {
             None,
         )
         .unwrap();
-        run.prepare(&TestHost::default(), START).unwrap().unwrap();
-        run.fail("Native response lost".into());
         let directory = tempfile::tempdir().unwrap();
         let mut store = Store::isolated(&directory.path().join("state")).unwrap();
         store.host = Arc::new(host);
@@ -676,6 +1232,20 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+        let waiting = resume(&store, "recovery", Some(START)).unwrap();
+        assert_eq!(waiting.status, Status::Waiting);
+        let intent = &waiting.frames["root"].steps[0].intents[0];
+        assert_eq!(intent.phase, Phase::Uncertain);
+        let expired = resume(&store, "recovery", Some(START + 1)).unwrap();
+        assert_eq!(expired.status, Status::Failed);
+        assert_eq!(expired.frames["root"].steps[0].status, Status::Failed);
+        assert_eq!(expired.frames["root"].steps[0].intents, [intent.clone()]);
+        assert_eq!(expired.task_charges, waiting.task_charges);
+        assert_eq!(expired.dispatches, waiting.dispatches);
+        store.host = Arc::new(TestHost {
+            charge: Some((65, true)),
+            ..TestHost::default()
+        });
         reconcile_pending(&store, START + 1).unwrap();
         let run = store.read().unwrap().runs.remove("recovery").unwrap();
         // Unknown native usage retains the unmeasured 35 tokens beside the exact 65.

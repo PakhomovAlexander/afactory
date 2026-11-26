@@ -1193,7 +1193,7 @@ fn seeded_authority_keeps_the_original_task_and_takes_its_lease_after_capture() 
             .replay(&run)
             .unwrap()
             .into_iter()
-            .filter(|event| matches!(event.event_type, af_contracts::EventType::TaskTransitionV6))
+            .filter(|event| matches!(event.event_type, af_contracts::EventType::TaskTransitionV7))
             .collect();
         assert_eq!(events.len(), 7, "the reader only takes its own lease");
         assert_eq!(
@@ -1688,7 +1688,7 @@ fn a_production_lease_lapsing_at_the_state_persistence_boundary_fails_without_re
     assert_eq!(verdict["failure"]["kind"], "lease_expired", "{verdict}");
 }
 
-/// The `TaskTransition@6` payload of one recorded event, with its observation time.
+/// The `TaskTransition@7` payload of one recorded event, with its observation time.
 fn transition(event: &af_contracts::RunEvent) -> (u64, &Value) {
     let payload = &event.payload;
     (payload["now_unix_ms"].as_u64().unwrap(), &payload["change"])
@@ -1699,7 +1699,7 @@ fn transition(event: &af_contracts::RunEvent) -> (u64, &Value) {
 fn kinds(events: &[af_contracts::RunEvent]) -> Vec<String> {
     events
         .iter()
-        .filter(|event| matches!(event.event_type, af_contracts::EventType::TaskTransitionV6))
+        .filter(|event| matches!(event.event_type, af_contracts::EventType::TaskTransitionV7))
         .map(|event| transition(event).1["kind"].as_str().unwrap().to_string())
         .collect()
 }
@@ -1757,7 +1757,7 @@ fn each_authority_setup_write_owns_a_whole_lease_and_the_region_captures_outside
             .replay(&run)
             .unwrap()
             .into_iter()
-            .filter(|event| matches!(event.event_type, af_contracts::EventType::TaskTransitionV6))
+            .filter(|event| matches!(event.event_type, af_contracts::EventType::TaskTransitionV7))
             .collect();
         assert_eq!(
             &kinds(&events)[..7],
@@ -2042,7 +2042,7 @@ fn append_raw(scratch: &Path, kind: &str, payload: &str) {
     connection
         .execute(
             "INSERT INTO events (envelope, run_id, sequence, event_id, type, occurred_at, artifact_refs, \
-             payload) SELECT 'review.kernel/RunEvent@4', ?1, MAX(sequence) + 1, 'evt-damage', ?2, \
+             payload) SELECT 'review.kernel/RunEvent@5', ?1, MAX(sequence) + 1, 'evt-damage', ?2, \
              '2026-10-19T00:00:00Z', '[]', ?3 FROM events WHERE run_id = ?1",
             rusqlite::params![run, kind, payload],
         )
@@ -2068,7 +2068,7 @@ fn a_lease_state_the_store_cannot_read_is_never_classified_as_expiry() {
     assert_eq!(failure.kind, protocol::FailureKind::OperationFailed);
     assert_eq!(failure.detail, original);
     // A malformed transition at the stream tail: the Store cannot decode the lease state.
-    append_raw(&scratch, "TaskTransition@6", r#"{"malformed":true}"#);
+    append_raw(&scratch, "TaskTransition@7", r#"{"malformed":true}"#);
     let state = cases::lease_state(&fixture.store, &fixture.lease);
     assert!(
         matches!(state, cases::LeaseState::Unreadable(_)),
@@ -2124,7 +2124,7 @@ fn a_lease_fenced_by_another_writer_is_classified_as_expiry() {
     foreign["writer"] = json!("another-writer");
     append_raw(
         &scratch,
-        "TaskTransition@6",
+        "TaskTransition@7",
         &serde_json::to_string(&foreign).unwrap(),
     );
     let state = cases::lease_state(&fixture.store, &fixture.lease);

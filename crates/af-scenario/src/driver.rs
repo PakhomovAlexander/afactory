@@ -307,6 +307,7 @@ fn once_inner(store: &Store, id: &str) -> Result<Run> {
         // Recover the exact retained cancellation handoff, even after the driver stopped.
         return crate::runtime::resume_admitted(store, id, None, false);
     }
+    let mut cancellation_guard = None;
     let reserved = store.update(|world| {
         let run = world.runs.get_mut(id).ok_or("Scenario Run not found")?;
         let driver = world
@@ -315,6 +316,12 @@ fn once_inner(store: &Store, id: &str) -> Result<Run> {
             .ok_or("Scenario driver was not admitted at startup")?;
         let expired = deadline(run) <= at;
         if run.status.active() && expired {
+            if run
+                .reconcile_task_cancellation(store.host.as_ref(), at, &mut cancellation_guard)?
+                .cancelled()
+            {
+                return Ok(false);
+            }
             let diagnostic =
                 "Scenario driver reached immutable elapsed-time or startup expiry boundary"
                     .to_string();
@@ -323,11 +330,17 @@ fn once_inner(store: &Store, id: &str) -> Result<Run> {
             driver.blocker = Some(Blocker::Boundary { diagnostic });
         }
         let reserved = driver.reserve(run, at)?;
-        if driver.blocker == Some(Blocker::Exhausted) && run.status.active() {
+        if driver.blocker == Some(Blocker::Exhausted)
+            && run.status.active()
+            && !run
+                .reconcile_task_cancellation(store.host.as_ref(), at, &mut cancellation_guard)?
+                .cancelled()
+        {
             run.fail("Scenario driver exhausted its immutable 512 resume reservations".into());
         }
         Ok(reserved)
     })?;
+    drop(cancellation_guard);
     if reserved {
         let pin = store.read()?.runs[id].pin.clone();
         let preflight = crate::implementation::preflight(store.host.as_ref(), &pin);
@@ -358,9 +371,18 @@ fn once_inner(store: &Store, id: &str) -> Result<Run> {
         if let Err(why) = result {
             // Busy is a transient wait; the already consumed reservation stays consumed.
             if !runtime || !why.starts_with("Scenario Run is already executing:") {
+                let mut cancellation_guard = None;
                 store.update(|world| {
                     let run = world.runs.get_mut(id).ok_or("Scenario Run disappeared")?;
-                    if run.status.active() {
+                    if run.status.active()
+                        && !run
+                            .reconcile_task_cancellation(
+                                store.host.as_ref(),
+                                at,
+                                &mut cancellation_guard,
+                            )?
+                            .cancelled()
+                    {
                         run.fail(why.clone());
                         world
                             .drivers

@@ -37,11 +37,11 @@ def main():
                          'sha256_stdout': hashlib.sha256(result.stdout.encode()).hexdigest()})
         return value
 
-    shown = read(['show', args.task], 'af/task-inspection@21')
+    shown = read(['show', args.task], 'af/task-inspection@22')
     status = read(['status', args.task], 'af/task-status@3')
     observed = time.time_ns() // 1_000_000
     plan = read(['explain', args.task, '--plan', shown['plan_id']], 'af/task-plan-inspection@7')
-    after = read(['show', args.task], 'af/task-inspection@21')
+    after = read(['show', args.task], 'af/task-inspection@22')
     if (not plan['current_plan'] or plan['task_revision_id'] != shown['revision_id']
             or any(after[k] != shown[k] for k in ['revision_id', 'plan_id', 'state', 'chargeable_tokens'])
             or status['state'] != shown['state']

@@ -58,7 +58,7 @@ fn task_run_reports_and_pre_attempt_diagnostics_keep_closed_bounded_contracts() 
             .is_err()
     );
     let transition = json!({"writer":"host","epoch":1,"now_unix_ms":1,"change":{"kind":"run_reported","report_id":id}});
-    assert_valid("task-transition-v6.json", &transition);
+    assert_valid("task-transition-v7.json", &transition);
     serde_json::from_value::<af_contracts::task::event::TaskTransitionV1>(transition)
         .unwrap()
         .validate()

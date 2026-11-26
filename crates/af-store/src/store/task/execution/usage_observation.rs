@@ -51,7 +51,7 @@ pub(super) fn validate(
     for id in raw_artifact_ids {
         let Some(envelope) = cas
             .get_optional_artifact(id)
-            .map_err(|error| StoreError::Artifact(error.to_string()))?
+            .map_err(|error| artifact_read_error(id, error))?
         else {
             continue;
         };

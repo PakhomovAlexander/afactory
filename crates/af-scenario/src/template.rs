@@ -1,5 +1,6 @@
 //! Narrow fresh-Task authority: captured bytes and native Task planning, never a shell template.
 use super::contract::*;
+use super::host::TemplatePlanError;
 use super::state::Dispatch;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -78,7 +79,7 @@ pub fn instantiate(
     host: &dyn crate::Host,
     d: &Dispatch,
     goal: Option<&super::roadmap::Goal>,
-) -> Result<TaskTarget> {
+) -> std::result::Result<TaskTarget, TemplatePlanError> {
     let Kind::FreshTask { template, bindings } = &d.definition.operation else {
         return Err("Not a fresh Task".into());
     };
@@ -218,7 +219,13 @@ pub fn instantiate(
             serde_json::to_value(observation).map_err(|e| e.to_string())?,
         );
     }
-    host.plan_template(template, document, goal.is_some(), &predecessors)
+    host.plan_template(
+        template,
+        document,
+        d.step_started_unix_ms,
+        goal.is_some(),
+        &predecessors,
+    )
 }
 
 pub fn targets(

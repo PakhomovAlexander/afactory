@@ -23,6 +23,13 @@ pub enum TaskChangeV1 {
     },
     Opened {
         revision_id: String,
+        /// A captured plan retained at opening, before the writer proposes it.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "super::present_option"
+        )]
+        prepared_plan: Option<PreparedPlan>,
         lease_until_unix_ms: u64,
     },
     LeaseTaken {
@@ -110,6 +117,14 @@ pub enum TaskChangeV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct PreparedPlan {
+    pub plan_id: String,
+    /// Durable Scenario step start used to capture the plan's deadline.
+    pub planned_unix_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TaskTransitionV1 {
     pub writer: String,
     pub epoch: u64,
@@ -140,9 +155,21 @@ impl TaskTransitionV1 {
             ),
             TaskChangeV1::Opened {
                 lease_until_unix_ms,
+                prepared_plan,
                 ..
+            } => {
+                require(
+                    safe_number(*lease_until_unix_ms) && *lease_until_unix_ms > self.now_unix_ms,
+                    "Task opening needs a valid lease",
+                )?;
+                require(
+                    prepared_plan.as_ref().is_none_or(|plan| {
+                        plan.planned_unix_ms > 0 && safe_number(plan.planned_unix_ms)
+                    }),
+                    "Task opening needs a bounded preparation time",
+                )
             }
-            | TaskChangeV1::LeaseTaken {
+            TaskChangeV1::LeaseTaken {
                 lease_until_unix_ms,
             }
             | TaskChangeV1::LeaseRenewed {
@@ -200,7 +227,15 @@ impl TaskTransitionV1 {
                 revision_id,
                 plan_id,
             } => vec![bootstrap_plan_id, proposal_id, revision_id, plan_id],
-            TaskChangeV1::Opened { revision_id, .. } => vec![revision_id],
+            TaskChangeV1::Opened {
+                revision_id,
+                prepared_plan,
+                ..
+            } => {
+                let mut refs = vec![revision_id.as_str()];
+                refs.extend(prepared_plan.as_ref().map(|plan| plan.plan_id.as_str()));
+                refs
+            }
             TaskChangeV1::PlanProposed { plan_id } | TaskChangeV1::PlanAdmitted { plan_id } => {
                 vec![plan_id]
             }

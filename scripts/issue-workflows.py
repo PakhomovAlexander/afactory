@@ -58,7 +58,7 @@ def invoke(af, repo, state, *args):
     if len(result.stdout) > LIMIT:
         raise ValueError('native inspection exceeds 4 MiB')
     value = json.loads(result.stdout)
-    if result.returncode and (args[0] not in ('explain', 'list') or value.get('schema') not in ('af/task-inspection@21', 'af/task-list@5')):
+    if result.returncode and (args[0] not in ('explain', 'list') or value.get('schema') not in ('af/task-inspection@22', 'af/task-list@5')):
         raise ValueError('native command refused; inspect its recorded Task diagnostics')
     return value
 
@@ -332,7 +332,7 @@ def validate_native_projection(value, state):
 
     This is evidence validation only; native exact-plan approval still owns execution.
     """
-    if value.get('schema') != 'af/task-inspection@21':
+    if value.get('schema') != 'af/task-inspection@22':
         raise ValueError('unsupported native inspection')
     plan = recorded(state, value['plan_id'], 'af/ExecutionPlan@4')
     if canonical(plan) != canonical(value['plan']):
@@ -458,7 +458,7 @@ def reconcile(af, repo, state, manifest):
     values, revisions = {}, {}
     for task in all_tasks:
         value = invoke(af, repo, state, 'explain', task)
-        if value.get('schema') != 'af/task-inspection@21' or value['task_id'] != task:
+        if value.get('schema') != 'af/task-inspection@22' or value['task_id'] != task:
             raise ValueError('native Task identity differs')
         revision = recorded(state, value['revision_id'], 'af/TaskRevision@1')
         if revision['task_id'] != task or revision['inputs'] != value['plan']['inputs']:

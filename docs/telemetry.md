@@ -226,7 +226,7 @@ A run is one kernel run id within one Store: `af.store_id` is the SHA-256 of the
 directory's canonical path, and two Stores holding the same Task are two runs. Each process that
 worked on the run is an execution, numbered by `af.execution.ordinal`. Every lease that begins
 kernel execution commits one execution marker to the Task's log, its own event kind
-`TaskExecutionStarted@1` beside `TaskTransition@6` (`af/TaskExecutionStarted@1`, naming the
+`TaskExecutionStarted@1` beside `TaskTransition@7` (`af/TaskExecutionStarted@1`, naming the
 lease's writer and epoch,
 [`schemas/task-execution-started-v1.json`](../schemas/task-execution-started-v1.json); the
 Store refuses it on a finished Task), before its `af.run` span opens, at every level `off` included — the Store never learns the level — and

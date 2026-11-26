@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:task-event:3",
-  "title": "Task event af/task-event@3",
+  "$id": "urn:af:schema:task-event:4",
+  "title": "Task event af/task-event@4",
   "$comment": "One line of `af task events ID` (ADR-0250): one event of the Task's log as the Store recorded it, with the Store's own gap-free sequence, or the one terminal record that ends the stream once the Task settled, carrying its state (outcome and next_action) and the exit code. `af task events ID --after N` prints only the events after sequence N. Read-only.",
   "type": "object",
   "required": [
@@ -17,7 +17,7 @@
       ]
     },
     "schema": {
-      "const": "af/task-event@3"
+      "const": "af/task-event@4"
     },
     "task_id": {
       "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
@@ -73,7 +73,7 @@
           "const": "event"
         },
         "schema": {
-          "const": "af/task-event@3"
+          "const": "af/task-event@4"
         },
         "task_id": {
           "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
@@ -87,7 +87,7 @@
         },
         "event_type": {
           "enum": [
-            "TaskTransition@6",
+            "TaskTransition@7",
             "TaskExecutionStarted@1",
             "TaskGateRetried@1",
             "TaskProviderEvent@1"
@@ -227,7 +227,7 @@
           "else": {
             "properties": {
               "event_type": {
-                "const": "TaskTransition@6"
+                "const": "TaskTransition@7"
               }
             }
           }
@@ -334,7 +334,7 @@
           "const": "terminal"
         },
         "schema": {
-          "const": "af/task-event@3"
+          "const": "af/task-event@4"
         },
         "task_id": {
           "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
