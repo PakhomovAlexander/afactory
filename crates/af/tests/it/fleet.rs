@@ -260,12 +260,8 @@ fn require_snapshot_budget_refusal(output: Output, database: &Path) {
     );
 }
 
-#[test]
-fn origin_reserves_destination_allocation_before_copying_small_sqlite_pages() {
-    let machine = Machine::new();
-    let (project, database) = planned_origin(&machine);
-    let unit = destination_allocation_unit(&machine);
-    let connection = rusqlite::Connection::open(&database).unwrap();
+fn use_small_sqlite_pages(database: &Path, unit: u64) {
+    let connection = rusqlite::Connection::open(database).unwrap();
     connection
         .execute_batch(
             "PRAGMA journal_mode=DELETE; PRAGMA page_size=1024; VACUUM;
@@ -276,13 +272,19 @@ fn origin_reserves_destination_allocation_before_copying_small_sqlite_pages() {
         .pragma_query_value(None, "page_size", |row| row.get(0))
         .unwrap();
     assert_eq!(page_size, 1024);
-    if fs::metadata(&database).unwrap().len() % unit == 0 {
+    if fs::metadata(database).unwrap().len() % unit == 0 {
         connection
             .execute_batch("CREATE TABLE fixture_extra_page (value INTEGER);")
             .unwrap();
     }
-    drop(connection);
+}
 
+#[test]
+fn origin_reserves_destination_allocation_before_copying_small_sqlite_pages() {
+    let machine = Machine::new();
+    let (project, database) = planned_origin(&machine);
+    let unit = destination_allocation_unit(&machine);
+    use_small_sqlite_pages(&database, unit);
     let logical = fs::metadata(&database).unwrap().len();
     let (allocated, task_copy) = origin_copy_sizes(&machine, &project, &database);
     let used = origin_inventory_bytes(&project, &database);
@@ -343,6 +345,62 @@ fn origin_reserves_destination_allocation_before_copying_small_sqlite_pages() {
         require_snapshot_budget_refusal(refused_by_floor, &database);
     }
     require_snapshot_budget_refusal(refused_by_max, &database);
+    assert_eq!(fs::read_dir(snapshots).unwrap().count(), 0);
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn origin_reserves_larger_clusters_before_copying() {
+    let machine = Machine::new();
+    let (project, database) = planned_origin(&machine);
+    let fragment = destination_allocation_unit(&machine);
+    let cluster = 65_536;
+    use_small_sqlite_pages(&database, fragment);
+    let logical = fs::metadata(&database).unwrap().len();
+    let (allocated, workspace_allocated) = origin_copy_sizes(&machine, &project, &database);
+    let workspace_logical = fs::metadata(origin_workspace_state(&project).join("events.sqlite"))
+        .unwrap()
+        .len();
+    let inventory = origin_inventory_bytes(&project, &database);
+    let project_reservation = logical.next_multiple_of(cluster);
+    let workspace_reservation = workspace_logical.next_multiple_of(cluster);
+    let sufficient = project_reservation + workspace_reservation;
+    let boundary = allocated + (project_reservation - allocated) / 2;
+    assert!(fragment < cluster && allocated < boundary && boundary < project_reservation);
+    eprintln!(
+        "Project logical={logical} allocated={allocated} Workspace logical={workspace_logical} \
+         allocated={workspace_allocated} inventory={inventory} fragment={fragment} cluster={cluster} \
+         Project reservation={project_reservation} Workspace reservation={workspace_reservation} \
+         boundary={boundary} sufficient={sufficient}"
+    );
+    let command = |max: u64, free: u64, floor: u64| {
+        let mut reader = machine.origin_reader(&project);
+        reader
+            .env("AF_TEST_OBSERVATION_ALLOCATION_UNIT", cluster.to_string())
+            .env("AF_TEST_FREE_BYTES", free.to_string())
+            .env("AF_STORAGE__MAX_BYTES", format!("{max}B"))
+            .env("AF_STORAGE__MIN_FREE_BYTES", format!("{floor}B"));
+        reader.output().unwrap()
+    };
+    let free = sufficient + cluster;
+    let by_max = command(inventory + boundary, free, 0);
+    let by_floor = command(u64::MAX, free, free - boundary);
+    let control = command(inventory + sufficient, free, cluster);
+    for (case, output) in [
+        ("max", &by_max),
+        ("floor", &by_floor),
+        ("control", &control),
+    ] {
+        eprintln!(
+            "{case} status={} stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    require_snapshot_budget_refusal(by_max, &database);
+    require_snapshot_budget_refusal(by_floor, &database);
+    assert_eq!(as_json(control)["origin"]["tasks"], json!([]));
+    let snapshots = af_sandbox::stale::observation_root(&machine.path("tmp"));
     assert_eq!(fs::read_dir(snapshots).unwrap().count(), 0);
 }
 

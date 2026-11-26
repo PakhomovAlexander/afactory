@@ -3606,7 +3606,7 @@ pub(crate) fn judge_floor(volumes: &[Volume], floor: u64) -> Result<(), String> 
 
 /// Remaining machine budget and free bytes above the floor, under the observation copy lock.
 pub(crate) fn observation_allowance(
-    root: &Path,
+    destination: &Path,
     runtimes: &[PathBuf],
     policy: &StoragePolicy,
     origin_state_home: &Path,
@@ -3672,7 +3672,7 @@ pub(crate) fn observation_allowance(
             .then_some(*bytes)
         })
         .fold(0, u64::saturating_add);
-    let free = measure_volume(root).free?;
+    let free = measure_volume(destination).free?;
     Ok(policy
         .max_bytes
         .saturating_sub(used)

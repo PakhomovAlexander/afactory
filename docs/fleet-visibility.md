@@ -115,7 +115,13 @@ observation is unavailable until a successful read refreshes it.
 An origin reader replays private SQLite copies under the sandbox runtime root
 (`[storage] sandbox_root` or the system temporary directory). It checks the storage limit and
 free-space floor on the destination volume before copying. The reservation rounds the database,
-any copied WAL and its rebuilt SQLite index separately to the destination allocation unit.
+any copied WAL and its rebuilt SQLite index separately using a bound on the destination
+allocation unit. On Linux ext filesystems the reader uses the allocation of its fresh private
+snapshot directory when that directory occupies a data block. Ordinary tmpfs reads use the
+page size when the reported huge-page policies bound allocation to the file's length. On macOS
+the reader uses the APFS allocation block. A destination without a known bound makes the
+origin unavailable. The [allocation evidence](implementation-evidence/fleet-observation-allocation.md)
+records the public reader and filesystem fixtures.
 Readers under the same OS account serialize admission and copying through a private registry
 in the account's state directory,
 including when they use different sandbox roots or temporary directories. The lock is released

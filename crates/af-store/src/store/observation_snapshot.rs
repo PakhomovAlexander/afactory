@@ -5,10 +5,11 @@ use std::path::{Path, PathBuf};
 
 use nix::fcntl::{FcntlArg, fcntl};
 use nix::libc;
-use nix::sys::statvfs::statvfs;
 
 use super::{EventStore, StoreError};
 use crate::local_fs::{PRIVATE_DIR_MODE, private_file_options};
+
+mod allocation;
 
 // The bundled SQLite Unix VFS uses these POSIX byte ranges for its shared database lock
 // and the WAL write, checkpoint and recovery locks, respectively.
@@ -20,7 +21,8 @@ const WAL_MUTATION_LOCKS: libc::off_t = 3;
 impl EventStore {
     /// Read a native local Store from a private SQLite snapshot. The snapshot directory and
     /// copies are created with owner-only access. SQLite rebuilds any WAL index on the copy,
-    /// and the original files are opened only for reading.
+    /// and the original files are opened only for reading. Measure the copy allowance
+    /// after creating its private directory, which may itself allocate a disk cluster.
     ///
     /// Use from a dedicated observation process with no other handles to the source
     /// database or its sidecars. POSIX locks are process-owned: closing another handle
@@ -28,20 +30,19 @@ impl EventStore {
     pub fn open_observation_snapshot(
         path: &Path,
         runtime: &Path,
-        max_bytes: u64,
+        allowance: impl FnOnce(&Path) -> Result<u64, StoreError>,
     ) -> Result<Self, StoreError> {
-        let result = (|| {
-            let directory = tempfile::Builder::new()
-                .prefix("snapshot-")
-                .permissions(fs::Permissions::from_mode(PRIVATE_DIR_MODE))
-                .tempdir_in(runtime)?;
-            let database = directory.path().join("events.sqlite");
-            let has_wal = copy_snapshot(path, &database, max_bytes)?;
-            Ok::<_, io::Error>((directory, database, has_wal))
-        })();
-        let (directory, database, has_wal) = result.map_err(|error| {
+        let conflict = |error: io::Error| {
             StoreError::Conflict(format!("cannot observe {}: {error}", path.display()))
-        })?;
+        };
+        let directory = tempfile::Builder::new()
+            .prefix("snapshot-")
+            .permissions(fs::Permissions::from_mode(PRIVATE_DIR_MODE))
+            .tempdir_in(runtime)
+            .map_err(conflict)?;
+        let max_bytes = allowance(directory.path())?;
+        let database = directory.path().join("events.sqlite");
+        let has_wal = copy_snapshot(path, &database, max_bytes).map_err(conflict)?;
         let mut store = if has_wal {
             Self::open_read_only(database)?
         } else {
@@ -77,19 +78,13 @@ fn copy_snapshot(path: &Path, destination: &Path, max_bytes: u64) -> io::Result<
         .as_ref()
         .map(|file| file.metadata().map(|meta| meta.len()))
         .transpose()?;
-    let volume = statvfs(
-        destination
-            .parent()
-            .expect("snapshot has a private directory"),
-    )?;
-    #[allow(clippy::useless_conversion)]
-    let unit = u64::from(volume.fragment_size());
-    if unit == 0 {
-        return Err(io::Error::other(
-            "cannot measure the observation snapshot allocation unit",
-        ));
-    }
-    if snapshot_allocation(original.len(), wal_bytes, unit).is_none_or(|bytes| bytes > max_bytes) {
+    let directory = destination
+        .parent()
+        .expect("snapshot has a private directory");
+    let allocation = allocation::for_destination(directory)?;
+    if snapshot_allocation(original.len(), wal_bytes, allocation)
+        .is_none_or(|bytes| bytes > max_bytes)
+    {
         return Err(io::Error::other(
             "observation snapshot exceeds the available storage budget",
         ));
@@ -124,16 +119,20 @@ fn copy_snapshot(path: &Path, destination: &Path, max_bytes: u64) -> io::Result<
     Ok(wal.is_some())
 }
 
-fn snapshot_allocation(database: u64, wal: Option<u64>, unit: u64) -> Option<u64> {
-    let database = database.checked_next_multiple_of(unit)?;
+fn snapshot_allocation(
+    database: u64,
+    wal: Option<u64>,
+    allocation: allocation::Allocation,
+) -> Option<u64> {
+    let database = allocation.file_bytes(database)?;
     let Some(wal) = wal else {
         return Some(database);
     };
     // WAL index entries are smaller than their corresponding WAL frames. Allow one WAL
     // length plus a region for SQLite to rebuild the index. Each file rounds independently.
-    let index = wal.checked_add(32_768)?.checked_next_multiple_of(unit)?;
+    let index = allocation.file_bytes(wal.checked_add(32_768)?)?;
     database
-        .checked_add(wal.checked_next_multiple_of(unit)?)?
+        .checked_add(allocation.file_bytes(wal)?)?
         .checked_add(index)
 }
 
@@ -216,12 +215,45 @@ mod tests {
     #[test]
     fn observation_snapshot_reserves_each_file_and_refuses_overflow() {
         let unit = 4096;
-        assert_eq!(snapshot_allocation(1025, None, unit), Some(unit));
-        assert_eq!(snapshot_allocation(1025, Some(0), unit), Some(9 * unit));
-        assert_eq!(snapshot_allocation(1025, Some(1025), unit), Some(11 * unit));
-        assert_eq!(snapshot_allocation(u64::MAX, None, unit), None);
-        assert_eq!(snapshot_allocation(0, Some(u64::MAX), unit), None);
-        assert_eq!(snapshot_allocation(u64::MAX - 4095, Some(1), unit), None);
+        let allocation = allocation::Allocation::new(unit);
+        assert_eq!(snapshot_allocation(1025, None, allocation), Some(unit));
+        assert_eq!(
+            snapshot_allocation(1025, Some(0), allocation),
+            Some(9 * unit)
+        );
+        assert_eq!(
+            snapshot_allocation(1025, Some(1025), allocation),
+            Some(11 * unit)
+        );
+        assert_eq!(snapshot_allocation(u64::MAX, None, allocation), None);
+        assert_eq!(snapshot_allocation(0, Some(u64::MAX), allocation), None);
+        assert_eq!(
+            snapshot_allocation(u64::MAX - 4095, Some(1), allocation),
+            None
+        );
+    }
+
+    #[test]
+    fn observation_snapshot_rounds_db_wal_and_index_to_separate_clusters() {
+        let cluster = 65_536;
+        let allocation = allocation::Allocation::new(cluster);
+        assert_eq!(snapshot_allocation(1024, None, allocation), Some(cluster));
+        assert_eq!(
+            snapshot_allocation(1024, Some(0), allocation),
+            Some(2 * cluster)
+        );
+        assert_eq!(
+            snapshot_allocation(1024, Some(1024), allocation),
+            Some(3 * cluster)
+        );
+        assert_eq!(
+            snapshot_allocation(1024, Some(32_769), allocation),
+            Some(4 * cluster)
+        );
+        assert_eq!(
+            snapshot_allocation(u64::MAX - cluster + 1, Some(1), allocation),
+            None
+        );
     }
 
     #[test]
@@ -242,8 +274,10 @@ mod tests {
             };
             let before = source_state();
             let reader =
-                EventStore::open_observation_snapshot(&source, source.parent().unwrap(), u64::MAX)
-                    .unwrap();
+                EventStore::open_observation_snapshot(&source, source.parent().unwrap(), |_| {
+                    Ok(u64::MAX)
+                })
+                .unwrap();
             assert_eq!(reader.replay("run").unwrap().len(), 1);
             let database = reader.database_path().unwrap();
             let directory = database.parent().unwrap();

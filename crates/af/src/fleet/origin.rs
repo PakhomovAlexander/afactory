@@ -114,7 +114,6 @@ pub(super) fn serve(args: ReaderArgs) -> Result<i32, String> {
 struct ObservationRuntime<'a> {
     policy: crate::config::StoragePolicy,
     admission: PathBuf,
-    root: PathBuf,
     origin_state_home: &'a Path,
     directory: tempfile::TempDir,
 }
@@ -149,7 +148,6 @@ impl<'a> ObservationRuntime<'a> {
         Ok(Self {
             policy,
             admission,
-            root,
             origin_state_home,
             directory,
         })
@@ -161,14 +159,15 @@ impl<'a> ObservationRuntime<'a> {
         let invalid = |error: io::Error| StoreError::Conflict(error.to_string());
         let _copy = admission_lock(&self.admission).map_err(invalid)?;
         let runtimes = retained_roots(&self.admission).map_err(invalid)?;
-        let max_bytes = crate::storage::observation_allowance(
-            &self.root,
-            &runtimes,
-            &self.policy,
-            self.origin_state_home,
-        )
-        .map_err(StoreError::Conflict)?;
-        EventStore::open_observation_snapshot(path, self.directory.path(), max_bytes)
+        EventStore::open_observation_snapshot(path, self.directory.path(), |destination| {
+            crate::storage::observation_allowance(
+                destination,
+                &runtimes,
+                &self.policy,
+                self.origin_state_home,
+            )
+            .map_err(StoreError::Conflict)
+        })
     }
 }
 
