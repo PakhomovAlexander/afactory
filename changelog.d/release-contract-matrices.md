@@ -1,0 +1,1 @@
+- Run each release contract mutation matrix once as a standalone test using sealed source.

@@ -1373,6 +1373,13 @@ def cleanup_fixture_driver(process, db):
 
 
 class ReleaseCLI(unittest.TestCase):
+    # Keep each matrix visible to the runner while preparing its Git fixture from sealed input.
+    SEALED_SOURCE_TESTS = {
+        'test_read_only_source_keeps_contract_mutations_in_owned_fixture',
+        'test_current_contracts_and_captured_authority_are_required',
+        'test_declared_schema_identity_is_required_with_rebound_capabilities',
+    }
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -1395,34 +1402,10 @@ class ReleaseCLI(unittest.TestCase):
                     'GIT_CONFIG_KEY_0': 'maintenance.autoDetach', 'GIT_CONFIG_VALUE_0': 'false',
                     'GIT_CONFIG_KEY_1': 'gc.autoDetach', 'GIT_CONFIG_VALUE_1': 'false',
                     'HOME': str(self.base / 'home'), 'TMPDIR': str(self.base / 'tmp')}
-        for name in ('dev', 'scripts/dev-release.py', 'scripts/release-contract.py',
-                     'scripts/release-contract.json', 'scripts/release-policy.json',
-                     'scripts/release-observation.py', 'scripts/af-pin.py', '.af/af.lock', '.github/workflows/release.yml',
-                     'scripts/changelog-notes.py', 'crates/af/keys/release.pub',
-                     'CHANGELOG.md', 'rust-toolchain.toml', '.github/workflows/ci.yml',
-                     '.github/workflows/validate.yml', 'scripts/test-classes.py',
-                     '.config/test-classes.json'):
-            target = self.source / name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(ROOT / name, target)
-        for name in ('schemas', 'scripts/performance/perflab'):
-            # Copy bytes, not the sealed source's read-only file modes: these
-            # disposable fixture schemas are intentionally mutated below.
-            shutil.copytree(ROOT / name, self.source / name, copy_function=shutil.copyfile)
-        shutil.copyfile(ROOT / 'scripts/telemetry-overhead.py', self.source / 'scripts/telemetry-overhead.py')
-        for fixture in (ROOT / 'fixtures').glob('telemetry-bench'):
-            shutil.copytree(fixture, self.source / 'fixtures' / fixture.name)
-        # copytree preserves directory modes even with copyfile. Only this
-        # disposable copy may be made writable/searchable for fixture mutations.
-        for directory in (self.source, *self.source.rglob('*')):
-            if directory.is_dir():
-                directory.chmod(directory.stat().st_mode | stat.S_IRWXU)
-        policy = json.loads((ROOT / 'scripts/release-policy.json').read_text())
-        for name in policy['required_features']:
-            path = self.source / name
-            if not path.exists():
-                path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(ROOT / name, path)
+        self.fixture_root = ROOT
+        if self._testMethodName in self.SEALED_SOURCE_TESTS:
+            self.fixture_root = self.seal_fixture_source()
+        policy = self.copy_fixture_source(self.fixture_root, self.source)
         (self.source / 'changelog.d').mkdir()
         (self.source / 'changelog.d/README.md').write_text('Fragment instructions.\n')
         (self.source / 'changelog.d/note.md').write_text('- A reviewed feature.\n')
@@ -1451,6 +1434,58 @@ class ReleaseCLI(unittest.TestCase):
         self.commit('initial')
         self.git('clone', '--bare', '--no-local', self.source, self.remote)
         self.initial = self.git('-C', self.source, 'rev-parse', 'HEAD')
+
+    @staticmethod
+    def copy_fixture_source(root, source):
+        for name in ('dev', 'scripts/dev-release.py', 'scripts/release-contract.py',
+                     'scripts/release-contract.json', 'scripts/release-policy.json',
+                     'scripts/release-observation.py', 'scripts/af-pin.py', '.af/af.lock', '.github/workflows/release.yml',
+                     'scripts/changelog-notes.py', 'crates/af/keys/release.pub',
+                     'CHANGELOG.md', 'rust-toolchain.toml', '.github/workflows/ci.yml',
+                     '.github/workflows/validate.yml', 'scripts/test-classes.py',
+                     '.config/test-classes.json'):
+            target = source / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(root / name, target)
+        for name in ('schemas', 'scripts/performance/perflab'):
+            # Copy bytes, not the sealed source's read-only file modes: these
+            # disposable fixture schemas are intentionally mutated below.
+            shutil.copytree(root / name, source / name, copy_function=shutil.copyfile)
+        shutil.copyfile(root / 'scripts/telemetry-overhead.py', source / 'scripts/telemetry-overhead.py')
+        for fixture in (root / 'fixtures').glob('telemetry-bench'):
+            shutil.copytree(fixture, source / 'fixtures' / fixture.name)
+        # copytree preserves directory modes even with copyfile. Only this
+        # disposable copy may be made writable/searchable for fixture mutations.
+        for directory in (source, *source.rglob('*')):
+            if directory.is_dir():
+                directory.chmod(directory.stat().st_mode | stat.S_IRWXU)
+        policy = json.loads((root / 'scripts/release-policy.json').read_text())
+        for name in policy['required_features']:
+            path = source / name
+            if not path.exists():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(root / name, path)
+        return policy
+
+    def seal_fixture_source(self):
+        sealed = self.base / 'sealed'
+        self.copy_fixture_source(ROOT, sealed)
+        originals = {}
+        for path in (sealed, *sealed.rglob('*')):
+            mode = path.stat().st_mode
+            self.addCleanup(path.chmod, mode)
+            path.chmod(mode & ~0o222)
+            originals[path] = (path.read_bytes() if path.is_file() else None,
+                               path.stat().st_mode)
+        self.addCleanup(self.assert_sealed_source_unchanged, sealed, originals)
+        return sealed
+
+    def assert_sealed_source_unchanged(self, sealed, originals):
+        self.assertEqual({sealed, *sealed.rglob('*')}, set(originals))
+        for path, (content, mode) in originals.items():
+            if content is not None:
+                self.assertEqual(path.read_bytes(), content, str(path))
+            self.assertEqual(path.stat().st_mode, mode, str(path))
 
     def git(self, *args):
         return subprocess.check_output([GIT, *map(str, args)], text=True, stderr=subprocess.DEVNULL, env=self.env).strip()
@@ -1948,6 +1983,9 @@ class ReleaseCLI(unittest.TestCase):
         self.assertEqual(data.get('effects', []), [])
 
     def test_plan_dirty_caller_and_read_only_status(self):
+        self.assert_dirty_caller_and_read_only_status()
+
+    def assert_dirty_caller_and_read_only_status(self):
         (self.source / 'Cargo.toml').write_text('dirty caller cannot supply bytes')
         result = self.cli('plan')
         state = json.loads(result.stdout)
@@ -2622,35 +2660,11 @@ class ReleaseCLI(unittest.TestCase):
         self.assertIn('authority_source_mismatch', self.cli('plan', ok=False).stderr)
 
     def test_read_only_source_keeps_contract_mutations_in_owned_fixture(self):
-        sealed = self.base / 'sealed'
-        shutil.copytree(self.source, sealed, ignore=shutil.ignore_patterns('.git'))
-        originals = {}
-        for path in (sealed, *sealed.rglob('*')):
-            mode = path.stat().st_mode
-            if path.is_dir():
-                self.addCleanup(path.chmod, mode)
-            path.chmod(mode & ~0o222)
-            originals[path] = (path.read_bytes() if path.is_file() else None,
-                               path.stat().st_mode)
-        # Run the real setup and admission/mutation paths with read-only inputs.
-        # Only the nested test's fresh temporary fixture may receive writes.
-        result = unittest.TestResult()
-        with mock.patch.object(sys.modules[__name__], 'ROOT', sealed):
-            unittest.TestSuite([
-                ReleaseCLI('test_plan_dirty_caller_and_read_only_status'),
-                ReleaseCLI('test_current_contracts_and_captured_authority_are_required'),
-                ReleaseCLI('test_declared_schema_identity_is_required_with_rebound_capabilities'),
-            ]).run(result)
-        self.assertEqual(result.testsRun, 3)
-        self.assertTrue(result.wasSuccessful(), result.errors + result.failures)
-        self.assertEqual({sealed, *sealed.rglob('*')}, set(originals))
-        for path, (content, mode) in originals.items():
-            if content is not None:
-                self.assertEqual(path.read_bytes(), content, str(path))
-            self.assertEqual(path.stat().st_mode, mode, str(path))
+        # The dirty caller is the writable Git copy built from the sealed fixture source.
+        self.assert_dirty_caller_and_read_only_status()
 
     def test_current_contracts_and_captured_authority_are_required(self):
-        policy = json.loads((ROOT / 'scripts/release-policy.json').read_text())
+        policy = json.loads((self.fixture_root / 'scripts/release-policy.json').read_text())
         # Exercise fetched-source admission, not just the policy's token list. Each
         # mutation is committed to the disposable remote and restored before the next.
         for name, tokens in policy['required_features'].items():
@@ -2702,10 +2716,10 @@ class ReleaseCLI(unittest.TestCase):
 
     def test_declared_schema_identity_is_required_with_rebound_capabilities(self):
         import importlib.util
-        spec = importlib.util.spec_from_file_location('release_contract', ROOT / 'scripts/release-contract.py')
+        spec = importlib.util.spec_from_file_location('release_contract', self.fixture_root / 'scripts/release-contract.py')
         contract = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(contract)
-        policy = json.loads((ROOT / 'scripts/release-policy.json').read_text())
+        policy = json.loads((self.fixture_root / 'scripts/release-policy.json').read_text())
         declaration_path = self.source / 'scripts/release-contract.json'
         original_declaration = declaration_path.read_bytes()
         for name, tokens in policy['required_features'].items():

@@ -250,7 +250,21 @@ python3 -I scripts/test-release-resolve.py
 
 Tests use disposable local Git remotes and a fake GitHub transport; they never mutate live GitHub,
 read secrets, run paid models or install a release. They run in the normal fast gate's always-on
-release checks. The architecture decision is
+release checks. The feature and schema mutation matrices each run as a standalone test. Each
+builds its writable Git fixture from a read-only source copy and checks that copy's inventory,
+contents and modes during cleanup. The dirty-caller check runs with both writable and sealed input.
+
+Run the four related identities in one serial invocation from each checkout to compare wall time:
+
+```sh
+time python3 -I scripts/test-dev-release.py -v \
+  ReleaseCLI.test_plan_dirty_caller_and_read_only_status \
+  ReleaseCLI.test_read_only_source_keeps_contract_mutations_in_owned_fixture \
+  ReleaseCLI.test_current_contracts_and_captured_authority_are_required \
+  ReleaseCLI.test_declared_schema_identity_is_required_with_rebound_capabilities
+```
+
+The architecture decision is
 [ADR-2026-11-12-own-release-cuts-in-a-repository-dev-cli](adr/2026-11-12-own-release-cuts-in-a-repository-dev-cli.md).
 
 ## Exact PR validation and expected base prerequisite
