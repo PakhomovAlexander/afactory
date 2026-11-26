@@ -29,9 +29,10 @@ file and, into --issues DIR, one issue body per flaky and always-failing entry; 
 nothing changes. It never runs gh.
 """
 import argparse
-from contextlib import closing
+from contextlib import closing, contextmanager, ExitStack
 import datetime as dt
 import errno
+import fcntl
 import importlib.util
 import json
 import os
@@ -42,6 +43,7 @@ import select
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -824,7 +826,184 @@ def render_apply(actions, runs, issues, wrote):
     return '\n'.join(lines) + '\n'
 
 
-def run_apply(args):
+@contextmanager
+def open_directory(path):
+    directory = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        yield directory
+    finally:
+        os.close(directory)
+
+
+class RetryApply(Exception):
+    def __init__(self, directory):
+        self.directory = directory
+
+
+def lock_issue_directory(path, catalog, locks):
+    try:
+        directory = locks.enter_context(open_directory(path))
+        identity = os.fstat(directory)
+        catalog_identity = catalog.parent.stat()
+        catalog_key = (catalog_identity.st_dev, catalog_identity.st_ino)
+        issue_key = (identity.st_dev, identity.st_ino)
+        if issue_key != catalog_key:
+            # Only wait while holding both directories in inode order. If the
+            # order is reversed and the issue directory is busy, release the
+            # catalog lock before waiting, then read the catalog again.
+            operation = fcntl.LOCK_EX
+            if issue_key < catalog_key:
+                operation |= fcntl.LOCK_NB
+            fcntl.flock(directory, operation)
+        if not os.path.samestat(identity, path.stat()):
+            raise RetryApply(path)
+        return identity
+    except (BlockingIOError, FileNotFoundError) as error:
+        raise RetryApply(path) from error
+
+
+def remove_issue_directory(path, original):
+    try:
+        if os.path.samestat(path.lstat(), original):
+            path.rmdir()
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        if error.errno not in (errno.ENOTEMPTY, errno.EEXIST):
+            raise
+
+
+def make_issue_directory(path, rollback):
+    if not path.is_dir():
+        make_issue_directory(path.parent, rollback)
+        try:
+            path.mkdir()
+        except FileExistsError:
+            if not path.is_dir():
+                raise
+        else:
+            rollback.callback(remove_issue_directory, path, path.lstat())
+
+
+def rollback_body(source, target, retained_staging):
+    original = source.stat()
+    captured = source.with_suffix('.rollback')
+    try:
+        if not os.path.samestat(target.lstat(), original):
+            return
+        # An independent writer can replace the entry after lstat. Move the actual
+        # entry into private staging before deciding whether it can be discarded.
+        os.rename(target, captured)
+    except FileNotFoundError:
+        return
+
+    try:
+        if not os.path.samestat(captured.lstat(), original):
+            os.link(captured, target, follow_symlinks=False)
+    except OSError as error:
+        # A new claim can win the now-vacant name. Keep both writers' entries.
+        retained_staging.add(captured.parent)
+        print(f'test-quarantine: could not restore {target}: {error}; '
+              f'entry retained at {captured}', file=sys.stderr)
+    else:
+        captured.unlink()
+
+
+def publish_outputs(path, value, issues=(), *, replace_catalog=True, issue_identity=None):
+    """Stage all bytes before publishing and keep the catalog replacement last."""
+    committed = False
+    retained_staging = set()
+    bodies = []
+
+    def stage(parent, cleanup):
+        work = Path(tempfile.mkdtemp(prefix='.quarantine-', dir=parent.resolve()))
+
+        def clean():
+            try:
+                if work in retained_staging:
+                    for source, _ in bodies:
+                        source.unlink(missing_ok=True)
+                else:
+                    shutil.rmtree(work)
+            except OSError as error:
+                if not committed:
+                    raise
+                print(f'test-quarantine: publication succeeded; could not clean staging '
+                      f'{work}: {error}', file=sys.stderr)
+
+        cleanup.callback(clean)
+        return work
+
+    with ExitStack() as staging, ExitStack() as published:
+        if issues:
+            parent = issues[0][0].parent
+            try:
+                work = stage(parent, staging)
+                # Staging prevents another apply from removing this directory as empty.
+                # A writer that removed it before staging may have left our lock stale.
+                if not os.path.samestat(parent.stat(), issue_identity):
+                    raise RetryApply(parent)
+            except FileNotFoundError as error:
+                raise RetryApply(parent) from error
+            for index, (target, body) in enumerate(issues):
+                source = work / str(index)
+                source.write_text(body)
+                bodies.append((source, target))
+        if replace_catalog:
+            catalog = stage(path.parent, staging) / path.name
+            tc.write(catalog, value)
+            catalog.chmod(stat.S_IMODE(path.stat().st_mode))
+
+        for source, target in bodies:
+            os.link(source, target)
+            published.callback(rollback_body, source, target, retained_staging)
+        if replace_catalog:
+            os.replace(catalog, path)
+        published.pop_all()
+        committed = True
+
+
+def refuse_existing_issues(targets):
+    for target in targets:
+        if target.exists() or target.is_symlink():
+            raise ValueError(f'apply: {target} exists; fix: name a new --issues directory')
+
+
+def write_apply(args, path, cat, today, current, tests, actions):
+    issued = [action for action in actions if 'issue' in action]
+    if issued and not args.issues:
+        raise ValueError('apply: the report files issues; fix: name the directory for their '
+                         'bodies with --issues DIR')
+    targets = [Path(args.issues) / action['issue'] for action in issued]
+    parent = targets[0].parent if targets else None
+    existing = parent is not None and parent.is_dir()
+    issue_identity = None
+    with ExitStack() as locks, ExitStack() as directories:
+        if existing:
+            issue_identity = lock_issue_directory(parent, path, locks)
+            refuse_existing_issues(targets)
+
+        # Every guard runs before anything is written, partition's inventory guard included.
+        value = {'schema': current['schema'], 'tests': tests}
+        tc.quarantine(cat, today, value)
+        inventory = tc.read(args.inventory) if args.inventory else default_inventory()
+        tc.partition(inventory, cat, current['tests'])
+        tc.partition(inventory, cat, tests)
+
+        if parent is not None and not existing:
+            try:
+                make_issue_directory(parent, directories)
+            except FileNotFoundError as error:
+                raise RetryApply(parent) from error
+            issue_identity = lock_issue_directory(parent, path, locks)
+            refuse_existing_issues(targets)
+        publish_outputs(path, value, [(target, action['body'])
+                                      for target, action in zip(targets, issued)],
+                        replace_catalog=tests != current['tests'], issue_identity=issue_identity)
+        directories.pop_all()
+
+
+def run_apply(args, path):
     report, reported = read_report(args.report)
     today = parse_today(args.today)
     if reported > today:
@@ -834,32 +1013,34 @@ def run_apply(args):
         raise ValueError(f'apply: report date {reported} is older than {tc.QUARANTINE_DAYS} days '
                          f'(today is {today}); fix: confirm the current entries again')
     cat = tc.catalog()
-    path = Path(args.quarantine)
     current = tc.read(path)
     tc.quarantine(cat, today, current, allow_expired=True)
     tests, actions = applied(report, current, reported, args.evidence_platform)
     if args.write:
-        issued = [action for action in actions if 'issue' in action]
-        if issued and not args.issues:
-            raise ValueError('apply: the report files issues; fix: name the directory for their '
-                             'bodies with --issues DIR')
-        targets = [Path(args.issues) / action['issue'] for action in issued]
-        present = [target for target in targets if target.exists()]
-        if present:
-            raise ValueError(f'apply: {present[0]} exists; fix: name a new --issues directory')
-        # Every guard runs before anything is written, partition's inventory guard included.
-        value = {'schema': current['schema'], 'tests': tests}
-        tc.quarantine(cat, today, value)
-        inventory = tc.read(args.inventory) if args.inventory else default_inventory()
-        tc.partition(inventory, cat, current['tests'])
-        tc.partition(inventory, cat, tests)
-        for action, target in zip(issued, targets):
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with target.open('x') as stream:
-                stream.write(action['body'])
-        if tests != current['tests']:
-            tc.write(path, value)
+        write_apply(args, path, cat, today, current, tests, actions)
     sys.stdout.write(render_apply(actions, report['runs'], args.issues, args.write))
+    return 0
+
+
+def run_scan(args, path):
+    today = parse_today(args.today)
+    cat = tc.catalog()
+    current = tc.read(path)
+    tc.quarantine(cat, today, current)
+    rows = read_lists(args.list, args.state, args.af)
+    inventory = tc.read(args.inventory) if args.inventory else default_inventory()
+    facts = scan(rows, inventory, current, today, cat)
+    wrote = False
+    if args.write:
+        # Every guard runs, partition's inventory guard included, even with nothing to add.
+        value = written(current, facts, inventory, today, cat)
+        if facts['proposed']:
+            publish_outputs(path, value)
+            wrote = True
+    if args.json:
+        print(json.dumps({**facts, 'written': wrote}, indent=2, sort_keys=True))
+    else:
+        sys.stdout.write(render(facts, wrote))
     return 0
 
 
@@ -910,30 +1091,26 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.command == 'confirm':
         return run_confirm(args)
-    if args.command == 'apply':
-        return run_apply(args)
-    if not args.list and not args.state:
+    if args.command == 'scan' and not args.list and not args.state:
         parser.error('scan needs at least one --list FILE or --state DIR')
-    today = parse_today(args.today)
-    cat = tc.catalog()
     path = Path(args.quarantine)
-    current = tc.read(path)
-    tc.quarantine(cat, today, current)
-    rows = read_lists(args.list, args.state, args.af)
-    inventory = tc.read(args.inventory) if args.inventory else default_inventory()
-    facts = scan(rows, inventory, current, today, cat)
-    wrote = False
-    if args.write:
-        # Every guard runs, partition's inventory guard included, even with nothing to add.
-        value = written(current, facts, inventory, today, cat)
-        if facts['proposed']:
-            tc.write(path, value)
-            wrote = True
-    if args.json:
-        print(json.dumps({**facts, 'written': wrote}, indent=2, sort_keys=True))
-    else:
-        sys.stdout.write(render(facts, wrote))
-    return 0
+    run_command = run_apply if args.command == 'apply' else run_scan
+    if not args.write:
+        return run_command(args, path)
+    # The catalog directory inode survives replacement and needs no lock file.
+    path = path.resolve()
+    while True:
+        try:
+            with open_directory(path.parent) as directory:
+                fcntl.flock(directory, fcntl.LOCK_EX)
+                return run_command(args, path)
+        except RetryApply as retry:
+            try:
+                with open_directory(retry.directory) as directory:
+                    fcntl.flock(directory, fcntl.LOCK_EX)
+            except FileNotFoundError:
+                # The failed writer may have removed its newly created directory.
+                pass
 
 
 if __name__ == '__main__':
