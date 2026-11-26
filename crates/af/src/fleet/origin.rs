@@ -54,7 +54,7 @@ pub(super) fn serve(args: ReaderArgs) -> Result<i32, String> {
     {
         return Err("Invalid Project reader configuration".into());
     }
-    let runtime = ObservationRuntime::create()?;
+    let runtime = ObservationRuntime::create(&args.state_home)?;
     let project = ProjectStore::open_origin_snapshot(&args.state_home, &args.project, |path| {
         runtime.snapshot(path)
     })?;
@@ -107,14 +107,15 @@ pub(super) fn serve(args: ReaderArgs) -> Result<i32, String> {
     Ok(0)
 }
 
-struct ObservationRuntime {
+struct ObservationRuntime<'a> {
     policy: crate::config::StoragePolicy,
     root: PathBuf,
+    origin_state_home: &'a Path,
     directory: tempfile::TempDir,
 }
 
-impl ObservationRuntime {
-    fn create() -> Result<Self, String> {
+impl<'a> ObservationRuntime<'a> {
+    fn create(origin_state_home: &'a Path) -> Result<Self, String> {
         use std::os::unix::fs::MetadataExt as _;
 
         let policy = crate::storage::policy()?;
@@ -134,6 +135,7 @@ impl ObservationRuntime {
         Ok(Self {
             policy,
             root,
+            origin_state_home,
             directory,
         })
     }
@@ -146,15 +148,9 @@ impl ObservationRuntime {
         let _copy = Flock::lock(directory, FlockArg::LockExclusive)
             .map_err(|(_, error)| invalid(error.into()))?;
         af_sandbox::stale::sweep_stale_observations_in(&self.root);
-        let retained = loop {
-            match af_sandbox::storage::allocated_bytes(&self.root) {
-                // A live reader may finish and remove a directory during the walk.
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                result => break result.map_err(invalid)?,
-            }
-        };
-        let max_bytes = crate::storage::observation_allowance(&self.root, &self.policy, retained)
-            .map_err(StoreError::Conflict)?;
+        let max_bytes =
+            crate::storage::observation_allowance(&self.root, &self.policy, self.origin_state_home)
+                .map_err(StoreError::Conflict)?;
         EventStore::open_observation_snapshot(path, self.directory.path(), max_bytes)
     }
 }

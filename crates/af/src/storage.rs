@@ -739,7 +739,9 @@ fn has_store(path: &Path) -> bool {
 
 /// How finely a Task Store is taken stock of.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Detail {
+pub(crate) enum Detail<'a> {
+    /// Measure allocated storage without opening SQLite or replaying Store data.
+    Admission { origin_state_home: &'a Path },
     /// Each Task Store as one entry of its allocated bytes: cheap, enough to know whether af
     /// is over its budget.
     Stores,
@@ -749,9 +751,10 @@ pub(crate) enum Detail {
 }
 
 /// Take stock of every entry: the default roots and the registered Stores. Reads only.
-pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
+pub(crate) fn inventory(roots: &Roots, detail: Detail<'_>) -> Inventory {
     let mut inventory = Inventory::default();
-    warm_keys(roots, &mut inventory);
+    let admission = matches!(detail, Detail::Admission { .. });
+    warm_keys(roots, &mut inventory, admission);
     fleet_cache_inventory(roots, &mut inventory);
     for path in listed(&mut inventory, &roots.workspaces) {
         if path
@@ -768,13 +771,7 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
             (last, in_use)
         });
     }
-    let registered = registry::read(&roots.registry).unwrap_or_else(|error| {
-        inventory.problems.push(Problem {
-            path: roots.registry.clone(),
-            reason: format!("the Store registry cannot be read: {error}"),
-        });
-        Vec::new()
-    });
+    let mut registered = inventory_registrations(&mut inventory, &roots.registry);
     inventory.gone_registrations = registered
         .iter()
         .filter(|entry| !holds_store(entry))
@@ -792,6 +789,20 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
         tasks.insert(path.clone());
     }
     let mut projects: BTreeSet<PathBuf> = BTreeSet::new();
+    if let Detail::Admission { origin_state_home } = detail {
+        let state = &roots.telemetry.state_root;
+        projects.extend(listed(&mut inventory, &state.join("project")));
+        let origin_state = config::canonical_root(origin_state_home).join("af");
+        if origin_state != *state {
+            // A forced reader can be given a separate Project state home by its operator.
+            projects.extend(listed(&mut inventory, &origin_state.join("project")));
+            tasks.extend(listed(&mut inventory, &origin_state.join("task/local")));
+            registered.extend(inventory_registrations(
+                &mut inventory,
+                &origin_state.join("stores.toml"),
+            ));
+        }
+    }
     for entry in &registered {
         match entry.kind {
             StoreKind::Task => {
@@ -806,55 +817,62 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
             }
         }
     }
-    inventory.delivered = delivered(roots, &projects);
-    // The Surveys of at most so many Project Stores are read, in path order (the Store
-    // discovery ceiling); every Project Store is measured all the same.
-    let discovery = crate::project::survey::collect::Discovery::current();
-    for (index, path) in projects
-        .into_iter()
-        .filter(|path| has_store(path))
-        .enumerate()
-    {
-        project_store(
-            &mut inventory,
-            roots,
-            &path,
-            index < discovery.stores,
-            discovery,
-        );
-    }
-    for path in campaigns.into_iter().filter(|path| has_store(path)) {
-        match written_by_another_release(&path, "af review campaigns") {
-            Ok(Some(reason)) => {
-                unreadable(&mut inventory, roots, &path, reason, "af review campaigns")
-            }
-            // A Store with a live writer lease is never on the sweep's list: judged here, before
-            // the plan, and checked again, in full, before a removal.
-            Ok(None) => measure_into(&mut inventory, roots, Kind::Campaign, &path, |path| {
-                (newest_store_write(path), campaign_in_use(path))
-            }),
-            Err(reason) => inventory.problems.push(Problem { path, reason }),
+    if admission {
+        measure_admission_stores(&mut inventory, roots, projects, tasks, campaigns);
+        // The install catalog ignores unreadable directories when enumerating versions.
+        listed(&mut inventory, &roots.installs.versions);
+    } else {
+        inventory.delivered = delivered(roots, &projects);
+        // The Surveys of at most so many Project Stores are read, in path order (the Store
+        // discovery ceiling); every Project Store is measured all the same.
+        let discovery = crate::project::survey::collect::Discovery::current();
+        for (index, path) in projects
+            .into_iter()
+            .filter(|path| has_store(path))
+            .enumerate()
+        {
+            project_store(
+                &mut inventory,
+                roots,
+                &path,
+                index < discovery.stores,
+                discovery,
+            );
         }
-    }
-    for path in tasks.into_iter().filter(|path| has_store(path)) {
-        match written_by_another_release(&path, &task_list_command(&path)) {
-            Ok(Some(reason)) => {
-                let command = task_list_command(&path);
-                unreadable(&mut inventory, roots, &path, reason, &command);
+        for path in campaigns.into_iter().filter(|path| has_store(path)) {
+            match written_by_another_release(&path, "af review campaigns") {
+                Ok(Some(reason)) => {
+                    unreadable(&mut inventory, roots, &path, reason, "af review campaigns")
+                }
+                // A Store with a live writer lease is never on the sweep's list: judged here, before
+                // the plan, and checked again, in full, before a removal.
+                Ok(None) => measure_into(&mut inventory, roots, Kind::Campaign, &path, |path| {
+                    (newest_store_write(path), campaign_in_use(path))
+                }),
+                Err(reason) => inventory.problems.push(Problem { path, reason }),
             }
-            Ok(None) if detail == Detail::Tasks => task_store(&mut inventory, roots, &path),
-            Ok(None) => {
-                measure_into(&mut inventory, roots, Kind::TaskStore, &path, |path| {
-                    (
-                        newest_store_write(path),
-                        Some(
-                            "the Store is kept; its finished Tasks are collected one by one".into(),
-                        ),
-                    )
-                });
-                record_store(&mut inventory, roots, path);
+        }
+        for path in tasks.into_iter().filter(|path| has_store(path)) {
+            match written_by_another_release(&path, &task_list_command(&path)) {
+                Ok(Some(reason)) => {
+                    let command = task_list_command(&path);
+                    unreadable(&mut inventory, roots, &path, reason, &command);
+                }
+                Ok(None) if detail == Detail::Tasks => task_store(&mut inventory, roots, &path),
+                Ok(None) => {
+                    measure_into(&mut inventory, roots, Kind::TaskStore, &path, |path| {
+                        (
+                            newest_store_write(path),
+                            Some(
+                                "the Store is kept; its finished Tasks are collected one by one"
+                                    .into(),
+                            ),
+                        )
+                    });
+                    record_store(&mut inventory, roots, path);
+                }
+                Err(reason) => inventory.problems.push(Problem { path, reason }),
             }
-            Err(reason) => inventory.problems.push(Problem { path, reason }),
         }
     }
     match crate::self_management::installed_for_storage(&roots.installs) {
@@ -878,6 +896,65 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
     telemetry_inventory(roots, &mut inventory);
     abandoned_claims(roots, &registered, &mut inventory);
     inventory
+}
+
+fn inventory_registrations(inventory: &mut Inventory, path: &Path) -> Vec<registry::Registered> {
+    registry::read(path).unwrap_or_else(|error| {
+        inventory.problems.push(Problem {
+            path: path.to_path_buf(),
+            reason: format!("the Store registry cannot be read: {error}"),
+        });
+        Vec::new()
+    })
+}
+
+/// Measure whole Project Stores, including their nested Workspace Stores. Registered
+/// Stores can also appear under a default root or under another Store already measured.
+fn measure_admission_stores(
+    inventory: &mut Inventory,
+    roots: &Roots,
+    projects: BTreeSet<PathBuf>,
+    tasks: BTreeSet<PathBuf>,
+    campaigns: BTreeSet<PathBuf>,
+) {
+    let mut measured = BTreeSet::new();
+    let mut stores = BTreeMap::new();
+    for (paths, kind) in [
+        (projects, Kind::ProjectStore),
+        (tasks, Kind::TaskStore),
+        (campaigns, Kind::Campaign),
+    ] {
+        for path in paths {
+            match std::fs::symlink_metadata(path.join("events.sqlite")) {
+                Ok(metadata) if metadata.is_file() => {
+                    stores.entry(config::canonical_root(&path)).or_insert(kind);
+                }
+                Ok(_) => inventory.problems.push(Problem {
+                    path,
+                    reason: "the Store database is not a regular file".into(),
+                }),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => inventory.problems.push(Problem {
+                    path,
+                    reason: format!("the Store database cannot be inspected: {error}"),
+                }),
+            }
+        }
+    }
+    for (path, kind) in stores {
+        if path
+            .ancestors()
+            .skip(1)
+            .any(|parent| measured.contains(parent))
+        {
+            continue;
+        }
+        measure_into(inventory, roots, kind, &path, |_| (0, None));
+        // External Task and review Stores count only AF-owned paths.
+        if kind == Kind::ProjectStore || !roots.outside_af_state(&path) {
+            measured.insert(path);
+        }
+    }
 }
 
 /// The delivered Tasks of every Project Store: the registered ones and every one under the
@@ -1184,11 +1261,11 @@ fn unreadable(
     }
 }
 
-fn warm_keys(roots: &Roots, inventory: &mut Inventory) {
+fn warm_keys(roots: &Roots, inventory: &mut Inventory, admission: bool) {
     let now = now_unix_ms();
     for project in listed(inventory, &roots.warm) {
         let first = inventory.entries.len();
-        project_warm_keys(roots, inventory, &project);
+        project_warm_keys(roots, inventory, &project, admission);
         keep_newest_warm_key(&mut inventory.entries[first..], now);
     }
 }
@@ -1212,7 +1289,7 @@ fn keep_newest_warm_key(keys: &mut [Entry], now: u64) {
     }
 }
 
-fn project_warm_keys(roots: &Roots, inventory: &mut Inventory, project: &Path) {
+fn project_warm_keys(roots: &Roots, inventory: &mut Inventory, project: &Path, admission: bool) {
     let Some(project_name) = project.file_name().and_then(|name| name.to_str()) else {
         return;
     };
@@ -1231,7 +1308,9 @@ fn project_warm_keys(roots: &Roots, inventory: &mut Inventory, project: &Path) {
             .or_else(|| modified_ms(&key))
             .unwrap_or(0);
         let in_use = lock_held(&lock).then(|| "a check holds its warm.lock".to_string());
-        let recorded = af_sandbox::recorded_key_size(&roots.warm, project_name, toolchain);
+        let recorded = (!admission)
+            .then(|| af_sandbox::recorded_key_size(&roots.warm, project_name, toolchain))
+            .flatten();
         let bytes = match recorded {
             Some(bytes) => Ok(bytes),
             None => af_sandbox::storage::allocated_bytes(&key),
@@ -3488,16 +3567,59 @@ pub(crate) fn judge_floor(volumes: &[Volume], floor: u64) -> Result<(), String> 
     Ok(())
 }
 
-/// The smaller of the remaining observation budget and free bytes above the floor.
+/// Remaining machine budget and free bytes above the floor, under the observation copy lock.
 pub(crate) fn observation_allowance(
     root: &Path,
     policy: &StoragePolicy,
-    retained: u64,
+    origin_state_home: &Path,
 ) -> Result<u64, String> {
+    let roots = Roots::current()?;
+    let stock = inventory(&roots, Detail::Admission { origin_state_home });
+    if let Some(problem) = stock.problems.first() {
+        return Err(format!(
+            "cannot determine the observation storage budget: {}: {}",
+            problem.path.display(),
+            problem.reason
+        ));
+    }
+    if let Some(claim) = stock
+        .counted_claims()
+        .find(|claim| claim.unmeasurable.is_some() || claim.too_deep)
+    {
+        return Err(format!(
+            "cannot determine the observation storage budget: cannot measure {}",
+            claim.path.display()
+        ));
+    }
+    let runtime = config::canonical_root(root);
+    let already_counted = stock.entries.iter().any(|entry| {
+        runtime.starts_with(config::canonical_root(&entry.path))
+            && match entry.kind {
+                Kind::TaskStore | Kind::Campaign => !roots.outside_af_state(&entry.path),
+                Kind::ProjectStore
+                | Kind::FleetCache
+                | Kind::WarmKey
+                | Kind::Workspace
+                | Kind::Version => true,
+                _ => false,
+            }
+    });
+    let retained = if already_counted {
+        0
+    } else {
+        loop {
+            match af_sandbox::storage::allocated_bytes(root) {
+                // A reader can close its snapshot while inventory walks the runtime.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                result => break result.map_err(|error| error.to_string())?,
+            }
+        }
+    };
+    let used = stock.total().saturating_add(retained);
     let free = measure_volume(root).free?;
     Ok(policy
         .max_bytes
-        .saturating_sub(retained)
+        .saturating_sub(used)
         .min(free.saturating_sub(policy.min_free_bytes)))
 }
 

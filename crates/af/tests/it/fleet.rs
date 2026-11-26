@@ -16,7 +16,7 @@ struct Machine {
 impl Machine {
     fn new() -> Self {
         let root = tempfile::tempdir().unwrap();
-        for name in ["config", "state", "home", "bin", "tmp"] {
+        for name in ["config", "state", "home", "bin", "tmp", "cache", "data"] {
             fs::create_dir(root.path().join(name)).unwrap();
         }
         Self { root }
@@ -38,10 +38,32 @@ impl Machine {
             .env("HOME", self.path("home"))
             .env("XDG_CONFIG_HOME", self.path("config"))
             .env("XDG_STATE_HOME", self.path("state"))
+            .env("XDG_CACHE_HOME", self.path("cache"))
+            .env("XDG_DATA_HOME", self.path("data"))
             .env("TMPDIR", self.path("tmp"))
             .env("PATH", path)
             .args(args);
         command
+    }
+
+    fn origin_reader(&self, project: &Value) -> Command {
+        self.af(&[
+            "cluster",
+            "origin-read",
+            "--scope",
+            "fleet-fixture",
+            "--origin",
+            "project",
+            "--project",
+            project["project_id"].as_str().unwrap(),
+            "--workspace",
+            project["workspaces"][0]["label"].as_str().unwrap(),
+            "--principal",
+            "owner",
+            "--allow-plan-decisions",
+            "--state-home",
+            path(&self.path("state")),
+        ])
     }
 
     fn json(&self, args: &[&str]) -> Value {
@@ -171,6 +193,110 @@ fn fresh_install_and_offline_standalone() {
 }
 
 #[test]
+fn origin_snapshots_share_the_machine_storage_budget() {
+    const MIB: u64 = 1024 * 1024;
+    let machine = Machine::new();
+    let (repo, _, _) = crate::task_planning::setup(machine.root.path(), false, false);
+    as_json(
+        machine
+            .af(&["task", "plan", "--file", "ticket.json", "--json"])
+            .current_dir(&repo)
+            .output()
+            .unwrap(),
+    );
+    let project = project_for(&machine, &repo);
+    let project_directory = af_project::store_directory(
+        &machine.path("state"),
+        project["project_id"].as_str().unwrap(),
+    );
+    let database = project_directory.join("events.sqlite");
+    // Make the Project copy large enough to distinguish one live reader from two, with
+    // slack for allocation rounding and for the much smaller Workspace Task snapshot.
+    rusqlite::Connection::open(&database)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE fixture_padding (bytes BLOB);
+             INSERT INTO fixture_padding VALUES (zeroblob(3145728));
+             PRAGMA wal_checkpoint(TRUNCATE);",
+        )
+        .unwrap();
+
+    let snapshots = af_sandbox::stale::observation_root(&machine.path("tmp"));
+    let baseline = af_sandbox::storage::allocated_bytes(&machine.path("state/af")).unwrap();
+    let limit = format!("{}B", baseline + 4 * MIB);
+    let command = || {
+        let mut reader = machine.origin_reader(&project);
+        reader
+            .env("AF_STORAGE__MAX_BYTES", &limit)
+            .env("AF_STORAGE__MIN_FREE_BYTES", "0B");
+        reader
+    };
+    assert_eq!(
+        as_json(command().output().unwrap())["origin"]["tasks"],
+        json!([])
+    );
+
+    let unrelated = machine.path("state/af/fleet-cache/unrelated");
+    fs::create_dir_all(&unrelated).unwrap();
+    fs::write(unrelated.join("retained"), vec![1_u8; (3 * MIB) as usize]).unwrap();
+    assert!(af_sandbox::storage::free_bytes(&snapshots).unwrap() > 16 * MIB);
+    let refused = command().output().unwrap();
+    assert!(refused.stdout.is_empty());
+    require_failure(
+        refused,
+        "observation snapshot exceeds the available storage budget",
+    );
+    assert_eq!(fs::read_dir(&snapshots).unwrap().count(), 0);
+    fs::remove_dir_all(unrelated).unwrap();
+
+    require_failure(
+        command()
+            .env("AF_STORAGE__MIN_FREE_BYTES", format!("{}B", u64::MAX))
+            .output()
+            .unwrap(),
+        "observation snapshot exceeds the available storage budget",
+    );
+    assert_eq!(fs::read_dir(&snapshots).unwrap().count(), 0);
+
+    let registry = machine.path("state/af/stores.toml");
+    let registered = fs::read(&registry).unwrap();
+    fs::write(&registry, "invalid store registry").unwrap();
+    require_failure(
+        command().output().unwrap(),
+        "cannot determine the observation storage budget",
+    );
+    assert_eq!(fs::read_dir(&snapshots).unwrap().count(), 0);
+    fs::write(registry, registered).unwrap();
+
+    #[cfg(debug_assertions)]
+    {
+        let marker = machine.path("budget-snapshot-ready");
+        let mut first = command()
+            .env("AF_TEST_FLEET_SNAPSHOT_PAUSE", &marker)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !marker.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let competing = command().output().unwrap();
+        first.kill().unwrap();
+        first.wait().unwrap();
+        assert!(marker.exists(), "first observation never held a snapshot");
+        require_failure(
+            competing,
+            "observation snapshot exceeds the available storage budget",
+        );
+        assert_eq!(
+            as_json(command().output().unwrap())["origin"]["tasks"],
+            json!([])
+        );
+        assert_eq!(fs::read_dir(snapshots).unwrap().count(), 0);
+    }
+}
+
+#[test]
 fn native_origin_observes_clean_and_live_stores_without_writing_sidecars() {
     let machine = Machine::new();
     let (repo, _, _) = crate::task_planning::setup(machine.root.path(), false, false);
@@ -185,25 +311,7 @@ fn native_origin_observes_clean_and_live_stores_without_writing_sidecars() {
     let workspace = &project["workspaces"][0];
     let state = Path::new(workspace["state"].as_str().unwrap());
     let database = state.join("events.sqlite");
-    let command = || {
-        machine.af(&[
-            "cluster",
-            "origin-read",
-            "--scope",
-            "fleet-fixture",
-            "--origin",
-            "project",
-            "--project",
-            project["project_id"].as_str().unwrap(),
-            "--workspace",
-            workspace["label"].as_str().unwrap(),
-            "--principal",
-            "owner",
-            "--allow-plan-decisions",
-            "--state-home",
-            path(&machine.path("state")),
-        ])
-    };
+    let command = || machine.origin_reader(&project);
     let reader = || command().output().unwrap();
     let anchor = pin_planned_database(&database);
     let planned_database = sqlite_bytes(&database);
