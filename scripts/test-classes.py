@@ -24,8 +24,11 @@ FAST = list(CLASSES[:3])
 QUARANTINED = 'quarantine'
 QUARANTINE_LIMIT = 20
 QUARANTINE_DAYS = 14
-SCHEMA = 'af.test-plan/2'
-BINDING = 'af.release-tests/2'
+SCHEMA = 'af.test-plan/3'
+BINDING = 'af.release-tests/3'
+RECEIPT = 'af.test-class-receipt/3'
+TAGGED_CONTEXT = {'release': 'tagged_release', 'release_pr': 'tagged_release_pr'}
+CONTEXTS = ('pr', 'gate', 'release_pr', 'local', 'release', *TAGGED_CONTEXT.values())
 PERF_VARIANTS = (
     ('trace', 'af-contracts/perf-trace,af-contracts/perf-calibration',
      'binary_id(=af-contracts) & test(perf_)'),
@@ -182,7 +185,7 @@ def schema_documents():
                'ignored': mapping({'enum': ['live-container', 'namespace-child',
                                            'manual-measurement', 'subprocess-helper']})})
     plan = obj({'schema': {'const': SCHEMA}, 'profile': {'enum': ['full', 'fast', 'custom']},
-                'context': {'enum': ['pr', 'gate', 'release_pr', 'local', 'release']}, 'sha': nullable, 'version': nullable,
+                'context': {'enum': list(CONTEXTS)}, 'sha': nullable, 'version': nullable,
                 'labels': names, 'selected': {'type': 'array', 'items': kind,
                                              'minItems': 1, 'uniqueItems': True},
                 'catalog_sha256': {'type': 'string', 'pattern': '^[a-f0-9]{64}$'},
@@ -192,7 +195,7 @@ def schema_documents():
                    'source_pr': {'anyOf': [{'type': 'null'}, obj({'repository': text,
                        'number': {'type': 'integer', 'minimum': 1}, 'merge_commit_sha': text,
                        'base': text, 'head': text, 'merged_at': text})]}, 'plan': plan})
-    receipt = obj({'schema': {'const': 'af.test-class-receipt/2'}, 'plan': plan,
+    receipt = obj({'schema': {'const': RECEIPT}, 'plan': plan,
                    'platform': text, 'class': kind, 'status': {'const': 'success'}})
     day = {'type': 'string', 'pattern': r'^\d{4}-\d{2}-\d{2}$'}
     held = obj({'state': {'enum': ['quarantined', 'flaky']}, 'since': day, 'expires': day,
@@ -220,9 +223,9 @@ def schema_documents():
                                'additionalProperties': result}})
     return {f'{name}-v{version}.json': {'$schema': 'https://json-schema.org/draft/2020-12/schema',
                                       '$id': f'urn:af:schema:{name}:{version}', **document}
-            for name, version, document in [('test-class-catalog', 1, cat), ('test-class-plan', 2, plan),
-                                            ('release-test-binding', 2, binding),
-                                            ('test-class-receipt', 2, receipt),
+            for name, version, document in [('test-class-catalog', 1, cat), ('test-class-plan', 3, plan),
+                                            ('release-test-binding', 3, binding),
+                                            ('test-class-receipt', 3, receipt),
                                             ('test-quarantine', 1, quarantined),
                                             ('test-quarantine-confirm', 1, confirmed)]}
 
@@ -239,7 +242,7 @@ def schema_parity(rewrite=False):
 
 def resolve(labels=(), context='local', sha=None, version=None):
     """Positive labels replace defaults; negatives subtract. Contradictions never win."""
-    if context not in ('pr', 'gate', 'release_pr', 'local', 'release'):
+    if context not in CONTEXTS:
         raise ValueError('unknown selection context')
     if not isinstance(labels, (list, tuple)) or not all(isinstance(x, str) for x in labels):
         raise ValueError('labels must be strings')
@@ -260,21 +263,31 @@ def resolve(labels=(), context='local', sha=None, version=None):
         raise ValueError('contradictory release profiles')
     if full and (negative or (positive and positive != set(CLASSES))):
         raise ValueError('release:full refuses exclusions or a partial allowlist')
-    defaults = FAST if context in ('pr', 'gate', 'release_pr') else list(CLASSES)
+    defaults = FAST if context in ('pr', 'gate', 'release_pr', 'tagged_release_pr') else list(CLASSES)
     if fast:
         defaults = FAST
-    if full:
-        selected, profile = list(CLASSES), 'full'
-    else:
-        selected = [c for c in CLASSES if c in (positive or set(defaults)) - negative]
-        profile = 'full' if selected == list(CLASSES) else 'fast' if selected == FAST else 'custom'
+    selection = set(CLASSES) if full else (positive or set(defaults)) - negative
+    e2e_reason = None
+    if context in TAGGED_CONTEXT.values():
+        match = re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?', version or '')
+        if not match:
+            raise ValueError('tagged release requires a stable or RC version')
+        if match[1]:
+            selection.discard('e2e')
+            e2e_reason = 'release candidate tag excludes e2e and its Linux container probes'
+        else:
+            selection.add('e2e')
+            e2e_reason = 'stable release tag requires e2e on Linux and macOS and Linux container probes'
+    selected = [c for c in CLASSES if c in selection]
+    profile = 'full' if selected == list(CLASSES) else 'fast' if selected == FAST else 'custom'
     if not selected:
         raise ValueError('empty test selection')
     return {'schema': SCHEMA, 'profile': profile, 'context': context, 'sha': sha,
             'version': version, 'labels': labels, 'selected': selected,
             'catalog_sha256': hashlib.sha256(CATALOG.read_bytes()).hexdigest(),
             'classes': {c: {'selected': c in selected,
-                            'reason': 'release:full' if full else
+                            'reason': e2e_reason if c == 'e2e' and e2e_reason else
+                            'release:full' if full else
                             'explicit exclusion' if c in negative else
                             'explicit allowlist' if positive and c in positive else
                             'outside explicit allowlist' if positive else
@@ -315,7 +328,7 @@ def check_release_pr(event):
 def release_plan(annotation, sha, version):
     # A lightweight/manual tag or unrelated annotation carries no fast authority.
     if 'af.release-tests/' not in annotation:
-        return resolve([], 'release', sha, version)
+        return resolve([], TAGGED_CONTEXT['release'], sha, version)
     try:
         binding = json.loads(annotation.strip())
     except json.JSONDecodeError as error:
@@ -331,7 +344,7 @@ def release_plan(annotation, sha, version):
         raise ValueError('release plan binding mismatch')
     if binding['source_pr'] is None and plan != resolve([], 'release', sha, version):
         raise ValueError('release labels require exact merged PR provenance')
-    return plan
+    return resolve(plan['labels'], TAGGED_CONTEXT[context], sha, version)
 
 
 def validate_source_pr(source, sha, version):
@@ -509,7 +522,7 @@ def receipts(plan, directory, platforms):
     for path in Path(directory).rglob('receipt.json'):
         value = read(path)
         key = value['platform'], value['class']
-        if set(value) != {'schema', 'plan', 'platform', 'class', 'status'} or value['schema'] != 'af.test-class-receipt/2':
+        if set(value) != {'schema', 'plan', 'platform', 'class', 'status'} or value['schema'] != RECEIPT:
             raise ValueError('unknown receipt shape')
         if key not in expected or key in observed or value['plan'] != plan or value['status'] != 'success':
             raise ValueError(f'invalid/duplicate class receipt: {path}')
@@ -853,7 +866,7 @@ def run_class(plan, kind, out, threads, build_scope='class'):
                 stream.write(summary(result))
     if failure:
         raise failure
-    write(out / 'receipt.json', {'schema': 'af.test-class-receipt/2', 'plan': plan,
+    write(out / 'receipt.json', {'schema': RECEIPT, 'plan': plan,
                                  'platform': os.getenv('RUNNER_OS', sys.platform),
                                  'class': kind, 'status': 'success'})
 
@@ -928,7 +941,8 @@ def main():
             labels, context, args.sha, version)
         if args.event:
             check_release_pr(read(args.event))
-        if args.bound and (value['context'] not in ('release', 'release_pr') or value['sha'] != args.sha):
+        if args.bound and (value['context'] not in (*TAGGED_CONTEXT, *TAGGED_CONTEXT.values())
+                           or value['sha'] != args.sha):
             raise ValueError('bound release plan does not name this commit')
         if args.bound and args.version is not None and value['version'] != args.version:
             raise ValueError('bound release plan does not name this version')

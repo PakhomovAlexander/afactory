@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 
 SCRIPT = Path(__file__).with_name('resolve-release.sh').resolve()
@@ -72,6 +73,8 @@ print(json.dumps(pages[page - 1] if page <= len(pages) else []))
     def resolve(self, ref_type='branch', ref_name='main', shim=None, labels=None, pages=None):
         output = self.root / 'output'
         output.write_text('')
+        summary = self.root / 'summary'
+        summary.write_text('')
         self.api.write_text(json.dumps(pages if pages is not None else
                                        [[self.pr(labels)]] if labels is not None else [[]]))
         # Never inherit hosted runner identity, credentials or output paths. Always supply a
@@ -80,7 +83,7 @@ print(json.dumps(pages[page - 1] if page <= len(pages) else []))
                if not key.startswith(('GITHUB_', 'GH_', 'AF_'))}
         env.update(GITHUB_SHA=self.git('rev-parse', 'HEAD'), GH_REPO='fixture/repo',
                    GITHUB_REF_TYPE=ref_type, GITHUB_REF_NAME=ref_name,
-                   GITHUB_OUTPUT=str(output), FAKE_API=str(self.api),
+                   GITHUB_OUTPUT=str(output), GITHUB_STEP_SUMMARY=str(summary), FAKE_API=str(self.api),
                    FAKE_API_LOG=str(self.api_log), PATH=str(self.bin) + os.pathsep + env['PATH'])
         if shim:
             wrapper = self.bin / 'git'
@@ -199,17 +202,66 @@ fi''')
         plan = json.loads(values['test_plan'])
         self.assertEqual(plan['selected'], ['functional', 'e2e', 'uix'])
         self.assertEqual(plan['sha'], self.release)
+        self.assertIn('stable release tag requires e2e on Linux and macOS', plan['classes']['e2e']['reason'])
+        self.assert_tagged_plan_evidence(plan)
         for ref_type in ('branch', 'tag'):
             result, values = self.resolve(ref_type, 'v1.0.1' if ref_type == 'tag' else 'main',
                                           labels=['release:full'])
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(values['test_plan']), plan)
+            self.assert_tagged_plan_evidence(plan)
+
+    def assert_tagged_plan_evidence(self, plan):
+        self.assertEqual(json.loads((self.repo / 'target/release-tests/plan.json').read_text()), plan)
+        row = plan['classes']['e2e']
+        reason = f"e2e: {row['state']} ({row['reason']})"
+        self.assertIn(reason, (self.root / 'summary').read_text())
+        release_workflow = (SCRIPT.parent.parent / '.github/workflows/release.yml').read_text()
+        notes_script = release_workflow.split("python3 - <<'PYNOTES'\n", 1)[1].split('PYNOTES', 1)[0]
+        notes = self.root / 'notes.md'
+        notes.write_text('')
+        subprocess.run([sys.executable, '-c', textwrap.dedent(notes_script)], check=True,
+                       cwd=self.root, env=dict(os.environ, TEST_PLAN=json.dumps(plan),
+                                               EVIDENCE_URL='https://example.invalid/run'))
+        self.assertIn(reason, notes.read_text())
+
+    def test_rc_fast_main_creation_and_pushed_tag_omit_e2e_and_probes(self):
+        version = '1.0.1-rc.1'
+        tag = 'v' + version
+        self.git('reset', '--hard', self.base)
+        self.commit(version)
+        result, values = self.resolve(pages=[[self.pr(['release:fast'], head={'ref': 'release/' + tag})]])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(values['tag'], tag)
+        self.assertEqual(values['prerelease'], 'true')
+        plan = json.loads(values['test_plan'])
+        self.assertEqual(plan['selected'], ['functional', 'uix'])
+        self.assertEqual(plan['sha'], self.git('rev-parse', 'HEAD'))
+        self.assertEqual(plan['version'], version)
+        self.assertIn('release candidate tag excludes e2e and its Linux container probes',
+                      plan['classes']['e2e']['reason'])
+        self.assert_tagged_plan_evidence(plan)
+        calls = self.api_log.read_text()
+        self.git('tag', '-d', tag)
+        result, pushed = self.resolve('tag', tag, pages='error')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(pushed, values)
+        self.assertEqual(self.api_log.read_text(), calls)
+        self.assert_tagged_plan_evidence(plan)
+
+    def test_ordinary_main_at_rc_version_keeps_full_selection(self):
+        self.commit('1.0.2-rc.1')
+        self.commit('1.0.2-rc.1')
+        result, values = self.resolve(pages='error')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(values['tag'], '')
+        self.assertEqual(json.loads(values['test_plan'])['selected'], ['functional', 'e2e', 'uix', 'perf'])
 
     def test_unlabeled_merged_release_pr_keeps_fast_selection_after_tagging(self):
         result, values = self.resolve(labels=[])
         self.assertEqual(result.returncode, 0, result.stderr)
         plan = json.loads(values['test_plan'])
-        self.assertEqual(plan['context'], 'release_pr')
+        self.assertEqual(plan['context'], 'tagged_release_pr')
         self.assertEqual(plan['profile'], 'fast')
         calls = self.api_log.read_text()
         for ref_type in ('branch', 'tag'):
@@ -223,7 +275,7 @@ fi''')
         result, values = self.resolve(labels=['release:full'])
         self.assertEqual(result.returncode, 0, result.stderr)
         plan = json.loads(values['test_plan'])
-        self.assertEqual(plan['context'], 'release_pr')
+        self.assertEqual(plan['context'], 'tagged_release_pr')
         self.assertEqual(plan['selected'], ['functional', 'e2e', 'uix', 'perf'])
         calls = self.api_log.read_text()
         for ref_type in ('branch', 'tag'):
@@ -238,8 +290,8 @@ fi''')
         self.assertEqual(result.returncode, 0, result.stderr)
         tag = 'refs/tags/v1.0.1'
         binding = json.loads(self.git('for-each-ref', '--format=%(contents)', tag))
-        binding['schema'] = 'af.release-tests/1'
-        binding['plan']['schema'] = 'af.test-plan/1'
+        binding['schema'] = 'af.release-tests/2'
+        binding['plan']['schema'] = 'af.test-plan/2'
         self.git('push', 'origin', ':' + tag)
         self.git('tag', '-d', 'v1.0.1')
         self.git('tag', '-a', 'v1.0.1', '-m', json.dumps(binding))
@@ -291,7 +343,7 @@ fi''')
                          ['functional', 'e2e', 'uix', 'perf'])
         self.assertFalse(self.api_log.exists())
         self.git('tag', '-d', 'v1.0.1')
-        stale = {'schema': 'af.release-tests/2', 'sha': self.base, 'version': '1.0.0',
+        stale = {'schema': 'af.release-tests/3', 'sha': self.base, 'version': '1.0.0',
                  'source_pr': None, 'plan': {}}
         self.git('tag', '-a', 'v1.0.1', '-m', json.dumps(stale))
         self.git('remote', 'set-url', 'origin', str(self.root / 'empty.git'))
