@@ -9,6 +9,8 @@ import json
 import os
 from pathlib import Path
 import re
+import select
+import shlex
 import shutil
 import stat
 import subprocess
@@ -586,23 +588,345 @@ class Confirm(QuarantineFiles):
         self.assertEqual(self.runs('load'), [])
 
 
+APPLY_INSTRUMENT = """
+import fcntl
+import os
+from pathlib import Path
+import runpy
+import shutil
+import sys
+
+mode, sys.argv = sys.argv[1], sys.argv[2:]
+link, rename, replace = os.link, os.rename, os.replace
+lstat = Path.lstat
+flock, rmtree = fcntl.flock, shutil.rmtree
+first_target = None
+committed_staging = None
+reported_lock = False
+
+def publish_body(source, target, **kwargs):
+    global first_target
+    if kwargs:
+        if mode == 'reclaim-during-restore':
+            with Path(target).open('x') as claim:
+                claim.write('new claim during restore')
+        return link(source, target, **kwargs)
+    if first_target is None:
+        first_target = Path(target)
+    else:
+        if mode == 'replaced-issue':
+            first_target.unlink()
+            first_target.write_text('another writer owns this')
+        if mode == 'link-failure':
+            raise OSError('injected second issue failure')
+        if mode == 'late-claim':
+            Path(target).write_text('another writer owns this')
+    return link(source, target)
+
+def publish_catalog(source, target):
+    global committed_staging
+    if mode in ('stop-and-fail', 'stop-and-commit'):
+        print('at catalog replacement', flush=True)
+        assert sys.stdin.readline() == 'continue\\n'
+    if mode in ('replace-failure', 'replaced-issue', 'stop-and-fail', 'stop-at-rollback',
+                'reclaim-during-restore'):
+        raise OSError('injected catalog replacement failure')
+    replace(source, target)
+    committed_staging = Path(source).parent
+
+def inspect(path):
+    identity = lstat(path)
+    if path == first_target and committed_staging is None:
+        if mode == 'stop-at-rollback':
+            print('during rollback', flush=True)
+            assert sys.stdin.readline() == 'continue\\n'
+        if mode == 'reclaim-during-restore':
+            rename(path.parent / 'independent.md', path)
+    return identity
+
+def move(source, target, **kwargs):
+    if mode == 'replaced-issue' and Path(source) == first_target:
+        raise AssertionError('rollback moved another writer’s public body')
+    return rename(source, target, **kwargs)
+
+def clean(path, *args, **kwargs):
+    if mode == 'cleanup-failure' and Path(path) == committed_staging:
+        raise OSError('injected cleanup failure after catalog replacement')
+    return rmtree(path, *args, **kwargs)
+
+def acquire(fd, operation):
+    global reported_lock
+    if mode in ('probe', 'probe-issues') and not reported_lock:
+        try:
+            flock(fd, operation | fcntl.LOCK_NB)
+        except BlockingIOError:
+            reported_lock = True
+            print('waiting for catalog' if mode == 'probe' else 'waiting for issues', flush=True)
+            if operation & fcntl.LOCK_NB:
+                raise
+        else:
+            return
+    return flock(fd, operation)
+
+os.link, os.rename, os.replace, Path.lstat = publish_body, move, publish_catalog, inspect
+fcntl.flock, shutil.rmtree = acquire, clean
+runpy.run_path(sys.argv[0], run_name='__main__')
+"""
+
+
 class Apply(QuarantineFiles):
     def setUp(self):
         super().setUp()
         self.issues = self.dir / 'issues'
 
-    def apply(self, value, *extra, write=True, issues=True, today=TODAY, env=None):
-        path = self.dir / 'report.json'
+    def apply_command(self, value, *extra, write=True, issues=True, today=TODAY, instrument=None):
+        path = self.dir / f'{instrument or "report"}.json'
         path.write_text(json.dumps(value))
-        command = [sys.executable, '-I', str(SCRIPT), 'apply', str(path), '--inventory',
-                   str(self.inventory), '--quarantine', str(self.file), *extra]
+        command = [sys.executable, '-I']
+        if instrument:
+            command += ['-c', APPLY_INSTRUMENT, instrument]
+        command += [str(SCRIPT), 'apply', str(path), '--inventory',
+                    str(self.inventory), '--quarantine', str(self.file), *extra]
         command += ['--today', today] if today else []
         command += ['--write'] if write else []
         command += ['--issues', str(self.issues)] if issues else []
-        return subprocess.run(command, capture_output=True, text=True, env=self.environment(**(env or {})))
+        return command
+
+    def apply(self, value, *extra, env=None, **kwargs):
+        return subprocess.run(self.apply_command(value, *extra, **kwargs), capture_output=True,
+                              text=True, env=self.environment(**(env or {})))
 
     def entries(self):
         return tc.read(self.file)['tests']
+
+    def test_issue_and_catalog_publication_failures_roll_back_and_allow_retry(self):
+        value = report({MANY[0]: [2, 4], HEAVY: list(range(1, 51)), CAPTURE: []})
+        # Re-serializing the original catalog would lose these exact bytes.
+        before = self.file.read_bytes().replace(b'\n', b'\r\n')
+        self.file.write_bytes(before)
+        for mode, error, claimed in (
+                ('link-failure', 'injected second issue failure', None),
+                ('replace-failure', 'injected catalog replacement failure', None),
+                ('late-claim', 'File exists', 'p0-af-it-task_heavy-loaded.md'),
+                ('replaced-issue', 'injected catalog replacement failure',
+                 'flaky-af-graph-many-case_00.md')):
+            with self.subTest(mode=mode):
+                self.issues = self.dir / mode
+                self.issues.mkdir()
+                sentinel = self.issues / 'unrelated.md'
+                sentinel.write_text('keep this')
+                files = set(self.dir.rglob('*'))
+                result = self.apply(value, instrument=mode)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertEqual(result.stdout, '')
+                self.assertIn(error, result.stderr)
+                self.assertEqual(self.file.read_bytes(), before)
+                self.assertEqual(sentinel.read_text(), 'keep this')
+                if claimed:
+                    foreign = self.issues / claimed
+                    self.assertEqual(foreign.read_text(), 'another writer owns this')
+                    foreign.unlink()
+                self.assertEqual(set(self.dir.rglob('*')), files | {self.dir / f'{mode}.json'})
+                retry = self.apply(value)
+                self.assertEqual(retry.returncode, 0, retry.stderr)
+                self.assertEqual(set(self.entries()), {MANY[0]})
+                self.assertEqual({p.name for p in self.issues.iterdir()}, {
+                    'unrelated.md', 'flaky-af-graph-many-case_00.md', 'p0-af-it-task_heavy-loaded.md'})
+                self.file.write_bytes(before)
+
+    def test_failed_apply_removes_new_empty_issue_directories(self):
+        self.issues = self.dir / 'new' / 'nested'
+        before = self.file.read_bytes()
+        files = set(self.dir.rglob('*'))
+        result = self.apply(report({MANY[0]: [2], HEAVY: [3]}), instrument='replace-failure')
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('injected catalog replacement failure', result.stderr)
+        self.assertEqual(self.file.read_bytes(), before)
+        self.assertEqual(set(self.dir.rglob('*')), files | {self.dir / 'replace-failure.json'})
+
+    def test_issue_directory_can_also_hold_the_catalog(self):
+        self.issues = self.file.parent / 'new' / '..'
+        value = report({MANY[0]: [2], HEAVY: list(range(1, 51))})
+        result = subprocess.run(self.apply_command(value), capture_output=True, text=True,
+                                env=self.environment(), timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.issues / 'flaky-af-graph-many-case_00.md').is_file())
+        self.assertTrue((self.issues / 'p0-af-it-task_heavy-loaded.md').is_file())
+
+    def test_rollback_retains_replacement_if_public_name_is_claimed_during_restore(self):
+        self.issues.mkdir()
+        independent = self.issues / 'independent.md'
+        independent.write_bytes(b'independent replacement\r\n')
+        identity = independent.stat()
+        before = self.file.read_bytes()
+        result = self.apply(report({MANY[0]: [2], HEAVY: [3]}),
+                            instrument='reclaim-during-restore')
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertEqual(result.stdout, '')
+        self.assertIn('injected catalog replacement failure', result.stderr)
+        captured, = self.issues.glob('.quarantine-*/*.rollback')
+        self.assertIn(f'entry retained at {captured}', result.stderr)
+        self.assertTrue(os.path.samestat(captured.stat(), identity))
+        self.assertEqual(captured.read_bytes(), b'independent replacement\r\n')
+        target = self.issues / 'flaky-af-graph-many-case_00.md'
+        self.assertEqual(target.read_text(), 'new claim during restore')
+        self.assertEqual(set(self.issues.iterdir()), {target, captured.parent})
+        self.assertEqual(set(captured.parent.iterdir()), {captured})
+        self.assertEqual(self.file.read_bytes(), before)
+
+    def test_shared_issue_directory_keeps_successful_writers_public_bodies(self):
+        before = self.file.read_bytes()
+        actual = self.dir / 'actual'
+        nested = actual / 'nested'
+        nested.mkdir(parents=True)
+        alias = self.dir / 'alias'
+        alias.symlink_to(nested, target_is_directory=True)
+        self.issues = actual / 'issues'
+
+        def separate_catalog(name):
+            path = self.dir / name / self.file.name
+            path.parent.mkdir()
+            path.write_bytes(before)
+            return str(path)
+
+        def published_bodies(output, value):
+            _, actions = tq.applied(value, json.loads(before), dt.date.fromisoformat(TODAY),
+                                    'macos')
+            expected = {self.issues / action['issue']: action['body'].encode()
+                        for action in actions if 'issue' in action}
+            commands = [shlex.split(line) for line in output.splitlines()
+                        if line.startswith('  gh issue create ')]
+            paths = [Path(command[command.index('--body-file') + 1]) for command in commands]
+            self.assertEqual(len(paths), len(expected))
+            self.assertEqual({path: path.read_bytes() for path in paths}, expected)
+            return expected
+
+        settled = report({MANY[0]: list(range(1, 51)), CAPTURE: [2, 4]})
+        first = self.apply(settled, '--quarantine', separate_catalog('first'))
+        self.assertEqual(first.returncode, 0, first.stderr)
+        first_bodies = published_bodies(first.stdout, settled)
+
+        # Use a different spelling of the same issue directory for the failing writer.
+        self.issues = alias / '..' / 'issues'
+        failing = self.apply_command(report({MANY[0]: [2], HEAVY: list(range(1, 51))}),
+                                     instrument='stop-at-rollback')
+        self.issues = actual / 'issues'
+        replacement = self.issues / 'flaky-af-graph-many-case_00.md'
+        final = report({CAPTURE: list(range(1, 51)), HEAVY: list(range(1, 51))})
+        waiting = self.apply_command(final, '--quarantine', separate_catalog('last'),
+                                     instrument='probe-issues')
+
+        def reached(child, message):
+            self.assertTrue(select.select([child.stdout], [], [], 15)[0], message)
+            line = child.stdout.readline()
+            self.assertEqual(line, message + '\n', None if line else child.stderr.read())
+
+        with subprocess.Popen(failing, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True, env=self.environment()) as a:
+            try:
+                reached(a, 'during rollback')
+                # The writer has already read the failed apply's inode at this exact name.
+                independent = self.issues / 'independent.md'
+                independent.write_bytes(b'another writer owns this\r\n')
+                replacement_identity = independent.stat()
+                independent.replace(replacement)
+                with subprocess.Popen(waiting, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                      text=True, env=self.environment()) as b:
+                    try:
+                        reached(b, 'waiting for issues')
+                        failed_output, failed_error = a.communicate('continue\n', timeout=15)
+                        final_output, final_error = b.communicate(timeout=15)
+                    finally:
+                        if b.poll() is None:
+                            b.kill()
+            finally:
+                if a.poll() is None:
+                    a.kill()
+
+        self.assertEqual(a.returncode, 1, failed_error)
+        self.assertEqual(failed_output, '')
+        self.assertIn('injected catalog replacement failure', failed_error)
+        self.assertEqual(self.file.read_bytes(), before)
+        self.assertEqual(b.returncode, 0, final_error)
+        final_bodies = published_bodies(final_output, final)
+        self.assertEqual(published_bodies(first.stdout, settled), first_bodies)
+        self.assertTrue(os.path.samestat(replacement.stat(), replacement_identity))
+        self.assertEqual(replacement.read_bytes(), b'another writer owns this\r\n')
+        self.assertEqual(set(self.issues.iterdir()), set(first_bodies) | set(final_bodies)
+                         | {replacement})
+
+    def test_committed_apply_prints_issue_commands_when_staging_cleanup_fails(self):
+        value = report({MANY[0]: [2], HEAVY: list(range(1, 51))})
+        result = self.apply(value, instrument='cleanup-failure')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('publication succeeded', result.stderr)
+        self.assertIn('injected cleanup failure after catalog replacement', result.stderr)
+        commands = [line for line in result.stdout.splitlines() if 'gh issue create' in line]
+        self.assertEqual(commands, [
+            f"  gh issue create --title 'flaky: {MANY[0]}' --label flaky "
+            f"--body-file '{self.issues / 'flaky-af-graph-many-case_00.md'}'",
+            f"  gh issue create --title 'P0: {HEAVY} fails in every run' --label P0 "
+            f"--body-file '{self.issues / 'p0-af-it-task_heavy-loaded.md'}'",
+        ])
+        self.assertEqual({p.name for p in self.issues.iterdir()}, {
+            'flaky-af-graph-many-case_00.md', 'p0-af-it-task_heavy-loaded.md'})
+        self.assertEqual(self.entries()[MANY[0]]['state'], 'flaky')
+        self.assertNotIn(HEAVY, self.entries())
+
+    def test_catalog_only_publication_failure_preserves_bytes_and_allows_retry(self):
+        value = report({CAPTURE: []})
+        before = self.file.read_bytes()
+        files = set(self.dir.iterdir())
+        result = self.apply(value, issues=False, instrument='replace-failure')
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('injected catalog replacement failure', result.stderr)
+        self.assertEqual(self.file.read_bytes(), before)
+        self.assertEqual(set(self.dir.iterdir()), files | {self.dir / 'replace-failure.json'})
+        result = self.apply(value, issues=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(CAPTURE, self.entries())
+        self.assertFalse(self.issues.exists())
+
+    def test_concurrent_applies_serialize_through_commit_and_rollback(self):
+        initial = self.file.read_bytes()
+        for mode in ('stop-and-fail', 'stop-and-commit'):
+            with self.subTest(mode=mode):
+                self.file.write_bytes(initial)
+                self.issues = self.dir / mode
+                value = report({MANY[0]: [2], HEAVY: list(range(1, 51))})
+                first = self.apply_command(value, instrument=mode)
+                # After a rollback the waiter can claim the same issue names. After a commit
+                # its catalog-only change must preserve the first writer's changes.
+                failing = mode == 'stop-and-fail'
+                second = self.apply_command(value if failing else report({CAPTURE: []}),
+                                            issues=failing, instrument='probe')
+                with subprocess.Popen(first, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                      stderr=subprocess.PIPE, text=True, env=self.environment()) as a:
+                    try:
+                        self.assertTrue(select.select([a.stdout], [], [], 15)[0])
+                        self.assertEqual(a.stdout.readline(), 'at catalog replacement\n')
+                        self.assertEqual(self.file.read_bytes(), initial)
+                        files = {'flaky-af-graph-many-case_00.md', 'p0-af-it-task_heavy-loaded.md'}
+                        self.assertEqual({p.name for p in self.issues.glob('*.md')}, files)
+                        with subprocess.Popen(second, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                              text=True, env=self.environment()) as b:
+                            try:
+                                self.assertTrue(select.select([b.stdout], [], [], 15)[0])
+                                self.assertEqual(b.stdout.readline(), 'waiting for catalog\n')
+                                _, first_error = a.communicate('continue\n', timeout=15)
+                                _, second_error = b.communicate(timeout=15)
+                            finally:
+                                if b.poll() is None:
+                                    b.kill()
+                    finally:
+                        if a.poll() is None:
+                            a.kill()
+                self.assertEqual(a.returncode, int(failing), first_error)
+                self.assertEqual(b.returncode, 0, second_error)
+                self.assertEqual({p.name for p in self.issues.iterdir()}, files)
+                self.assertEqual(self.entries()[MANY[0]]['state'], 'flaky')
+                self.assertNotIn(HEAVY, self.entries())
+                self.assertEqual(CAPTURE in self.entries(), failing)
 
     def test_expired_entries_renew_on_fresh_flaky_evidence_or_leave_on_same_platform_clean(self):
         self.expired()

@@ -315,8 +315,26 @@ Each issue body holds the failing output, the failing runs out of N, the commit,
 the evidence Tasks. `apply` refuses, and writes nothing, a report from a later day than today, a
 report naming an identity the file no longer holds, a body that already exists under `--issues`,
 and a result any quarantine guard refuses, as `scan --write` does. Without `--write` it changes
-nothing. It never runs `gh`: with `--write` it prints one `gh issue create` line per body. File
-each one:
+nothing.
+
+Apply stages the validated outputs on their destination filesystems, creates issue bodies
+exclusively, then atomically replaces the catalog if it changed. If publishing a body or
+replacing the catalog fails, the original catalog stays intact. Rollback moves each potentially
+owned body into private staging and verifies the inode there before discarding it. If an
+independent writer replaced the body during rollback, apply restores that entry at its public
+name with an exclusive hard link. Applies that share an issue directory serialize publication
+and rollback even when they use different catalogs. A concurrent apply or scan on the same
+catalog waits for publication or rollback to finish before reading it.
+
+The filesystem operations available on Linux and macOS cannot atomically unlink a name only
+if it still refers to a specific inode. The public name can be briefly vacant during rollback.
+If an independent writer claims it again before restoration, or the captured entry cannot be
+hard-linked, apply leaves the public name as it is and reports the private staging path where
+it retained the captured entry for recovery. It still removes its own staged issue bodies.
+
+On success, apply prints one `gh issue create` line per body. A staging cleanup error after
+publication appears as a warning on stderr and apply still succeeds. File each issue with the
+printed command:
 
 ```sh
 gh issue create --title 'flaky: <identity>' --label flaky \
