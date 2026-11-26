@@ -158,8 +158,26 @@ pub struct Dispatch {
     pub inputs: BTreeMap<String, Datum>,
     pub intent: Intent,
     pub timeout_ms: u64,
+    pub step_started_unix_ms: u64,
     pub target: Option<TaskTarget>,
 }
+pub(crate) enum TaskReconciliation {
+    Clear,
+    Cancelled,
+    Blocked {
+        frame: String,
+        task_id: String,
+        diagnostic: String,
+        missing: bool,
+    },
+}
+
+impl TaskReconciliation {
+    pub(crate) fn cancelled(&self) -> bool {
+        matches!(self, Self::Cancelled)
+    }
+}
+
 impl Run {
     pub fn new(
         host: &dyn crate::Host,
@@ -796,11 +814,204 @@ impl Run {
         }
     }
     pub fn fail(&mut self, why: String) {
+        // Step status describes Scenario progress. Intent phases and Task reservations
+        // independently retain what is known about effects and spend.
+        for frame in self.frames.values_mut() {
+            if let Some(step) = frame.steps.last_mut().filter(|step| step.status.active()) {
+                step.status = Status::Failed;
+            }
+        }
         self.status = Status::Failed;
         self.failure = Some(why);
         self.waiting = None;
     }
+
+    /// Reconcile the active native intent while holding the Scenario transaction, then
+    /// keep the Task Store fence through commit. Task cancellation releases that fence
+    /// before signalling or waiting for the writer.
+    pub(crate) fn reconcile_task_cancellation(
+        &mut self,
+        host: &dyn crate::Host,
+        now: u64,
+        cancellation_guard: &mut Option<Box<dyn Send>>,
+    ) -> Result<TaskReconciliation> {
+        use crate::host::TaskCancellationObservation;
+        if !self.status.active() {
+            return Ok(TaskReconciliation::Clear);
+        }
+        for (path, frame) in &self.frames {
+            let Some(progress) = frame.steps.last().filter(|p| p.status.active()) else {
+                continue;
+            };
+            let Some(intent) = progress
+                .intents
+                .last()
+                .filter(|i| matches!(i.phase, Phase::Prepared | Phase::Uncertain))
+            else {
+                continue;
+            };
+            let step = &self.pin.bundle.definitions[&frame.scenario].steps[frame.steps.len() - 1];
+            let Some(target) = super::template::targets(self, progress, step) else {
+                continue;
+            };
+            // Steps run serially, including nested Scenarios. Only the active leaf
+            // can hold a native Task intent.
+            let (observation, guard) =
+                host.task_cancellation_for_settlement(&target, &intent.id)?;
+            *cancellation_guard = guard;
+            let missing = matches!(&observation, TaskCancellationObservation::Missing(_));
+            match observation {
+                TaskCancellationObservation::Observed(Some(stop)) => {
+                    let key = match step.operation {
+                        Kind::FreshTask { .. } => hash(&(&target.state, &target.task_id))?,
+                        _ => hash(&(&target.state, &target.task_id, &target.revision_id))?,
+                    };
+                    let path = path.clone();
+                    self.updated_unix_ms = self.updated_unix_ms.max(now);
+                    self.settle_task_cancellation(&path, &key, stop)?;
+                    return Ok(TaskReconciliation::Cancelled);
+                }
+                TaskCancellationObservation::Observed(None) => break,
+                TaskCancellationObservation::Missing(diagnostic)
+                | TaskCancellationObservation::Unavailable(diagnostic) => {
+                    let frame = path.clone();
+                    self.record_task_read_failure(&frame, &diagnostic, !missing)?;
+                    return Ok(TaskReconciliation::Blocked {
+                        frame,
+                        task_id: target.task_id,
+                        diagnostic,
+                        missing,
+                    });
+                }
+            }
+        }
+        Ok(TaskReconciliation::Clear)
+    }
+
+    pub(crate) fn wait_for_template_capacity(
+        &mut self,
+        dispatch: &Dispatch,
+        diagnostic: String,
+        at: u64,
+    ) -> Result<()> {
+        require(
+            at >= self.updated_unix_ms,
+            "Preparation clock moved backwards",
+        )?;
+        let progress = self
+            .frames
+            .get_mut(&dispatch.frame)
+            .and_then(|f| f.steps.last_mut())
+            .filter(|p| p.step == dispatch.step)
+            .ok_or("Fresh Task step disappeared")?;
+        let intent = progress
+            .intents
+            .last_mut()
+            .filter(|i| i.id == dispatch.intent.id && i.phase == Phase::Prepared)
+            .ok_or("Fresh Task lost its prepared intent")?;
+        // Keep the first native failure even if another retry hits a different CAS object.
+        let diagnostic = intent.evidence.first().cloned().unwrap_or(diagnostic);
+        text(&diagnostic)?;
+        if intent.evidence.is_empty() {
+            intent.evidence.push(diagnostic.clone());
+        }
+        progress.diagnostic = Some(diagnostic.clone());
+        progress.status = Status::Waiting;
+        self.updated_unix_ms = at;
+        self.status = Status::Waiting;
+        self.waiting = Some(Waiting::Reconcile {
+            step: format!("{}/{}", dispatch.frame, dispatch.step),
+            intent_id: intent.id.clone(),
+            diagnostic,
+        });
+        Ok(())
+    }
+
+    pub(crate) fn record_task_read_failure(
+        &mut self,
+        frame: &str,
+        diagnostic: &str,
+        uncertain: bool,
+    ) -> Result<()> {
+        text(diagnostic)?;
+        let progress = self
+            .frames
+            .get_mut(frame)
+            .and_then(|f| f.steps.last_mut())
+            .ok_or("Unreadable Task step disappeared")?;
+        let intent = progress
+            .intents
+            .last_mut()
+            .ok_or("Unreadable Task intent disappeared")?;
+        if !intent.evidence.iter().any(|e| e == diagnostic) {
+            intent.evidence.push(diagnostic.into());
+        }
+        if uncertain {
+            intent.phase = Phase::Uncertain;
+        }
+        progress.diagnostic = Some(diagnostic.into());
+        Ok(())
+    }
+
+    pub(crate) fn wait_for_task_read(&mut self, frame: &str, task_id: String) {
+        let progress = self
+            .frames
+            .get_mut(frame)
+            .unwrap()
+            .steps
+            .last_mut()
+            .unwrap();
+        progress.status = Status::Waiting;
+        if self.status.active() {
+            self.status = Status::Waiting;
+            self.waiting = Some(Waiting::Task {
+                step: format!("{frame}/{}", progress.step),
+                task_id,
+            });
+        }
+    }
+
+    pub(crate) fn settle_task_cancellation(
+        &mut self,
+        path: &str,
+        charge_key: &str,
+        stop: super::adapter::TaskCancellation,
+    ) -> Result<()> {
+        text(&stop.evidence)?;
+        let charge = self
+            .task_charges
+            .get_mut(charge_key)
+            .ok_or("Cancelled native Task has no reservation")?;
+        charge.charged = Some(charge.charged.unwrap_or(0).max(stop.charged_tokens));
+        charge.unknown_usage = stop.unknown_usage;
+        let progress = self
+            .frames
+            .get_mut(path)
+            .and_then(|frame| frame.steps.last_mut())
+            .ok_or("Cancelled Task step disappeared")?;
+        let intent = progress
+            .intents
+            .last_mut()
+            .ok_or("Cancelled intent disappeared")?;
+        intent.phase = Phase::Failed;
+        intent.evidence.push(stop.evidence.clone());
+        progress.diagnostic = Some(stop.evidence.clone());
+        if self.status.active() {
+            self.fail(stop.evidence);
+        }
+        Ok(())
+    }
+
     pub fn prepare(&mut self, host: &dyn crate::Host, now: u64) -> Result<Option<Dispatch>> {
+        self.prepare_observed(host, now, TaskReconciliation::Clear)
+    }
+
+    pub(crate) fn prepare_observed(
+        &mut self,
+        host: &dyn crate::Host,
+        now: u64,
+        task: TaskReconciliation,
+    ) -> Result<Option<Dispatch>> {
         if !self.status.active() {
             return Ok(None);
         }
@@ -812,13 +1023,14 @@ impl Run {
         }
         self.status = Status::Running;
         self.waiting = None;
-        self.prepare_frame(host, "root", now)
+        self.prepare_frame(host, "root", now, &task)
     }
     fn prepare_frame(
         &mut self,
         host: &dyn crate::Host,
         path: &str,
         now: u64,
+        task: &TaskReconciliation,
     ) -> Result<Option<Dispatch>> {
         let frame = self.frames[path].clone();
         let def = self.pin.bundle.definitions[&frame.scenario].clone();
@@ -898,6 +1110,26 @@ impl Run {
             }
             return Ok(None);
         }
+        if let TaskReconciliation::Blocked {
+            frame,
+            task_id,
+            diagnostic,
+            missing,
+        } = task
+            && frame == path
+        {
+            if *missing {
+                self.frames.get_mut(path).unwrap().steps[i]
+                    .intents
+                    .last_mut()
+                    .unwrap()
+                    .phase = Phase::Failed;
+                self.fail(diagnostic.clone());
+            } else {
+                self.wait_for_task_read(path, task_id.clone());
+            }
+            return Ok(None);
+        }
         let inputs: BTreeMap<_, _> = step
             .inputs
             .iter()
@@ -964,7 +1196,7 @@ impl Run {
                     self.complete(host, path, &step.id, outputs)?;
                     return Ok(None);
                 }
-                return self.prepare_frame(host, &full, now);
+                return self.prepare_frame(host, &full, now, task);
             }
             Kind::Action {
                 requires_decision,
@@ -1016,10 +1248,24 @@ impl Run {
         }
         let input_digest = hash(&(&step, &inputs))?;
         let mut intents = progress.intents;
-        if intents
+        let previous = intents.last();
+        // An unbound prepared FreshTask already reserved its dispatch, even when the
+        // scheduler stopped before it could record any preparation evidence.
+        let retrying_preparation = matches!(step.operation, Kind::FreshTask { .. })
+            && previous.is_some_and(|intent| {
+                intent.phase == Phase::Prepared && !self.fresh_tasks.contains_key(&intent.id)
+            });
+        let polling_scoped_wait = self.pin.policy.implementation_startup.is_some()
+            && matches!(step.operation, Kind::Wait { .. })
+            && previous.is_some_and(|intent| intent.phase == Phase::Uncertain);
+        let spends_dispatch = !retrying_preparation && !polling_scoped_wait;
+        if spends_dispatch {
+            self.check_dispatch(&full)?;
+        }
+        let new_intent = intents
             .last()
-            .is_none_or(|intent| intent.phase == Phase::Failed)
-        {
+            .is_none_or(|intent| intent.phase == Phase::Failed);
+        if new_intent {
             require(
                 intents.len() < usize::from(step.max_attempts),
                 "Step exhausted its bounded retries",
@@ -1049,17 +1295,16 @@ impl Run {
             intent.input_digest == input_digest,
             "Intent inputs changed across recovery",
         )?;
-        // Re-observing the same scoped Wait is an idle poll, not a new dispatch.
-        // Resume reservations and wall/step deadlines still bound it.
-        if !(self.pin.policy.implementation_startup.is_some()
-            && matches!(step.operation, Kind::Wait { .. })
-            && intent.phase == Phase::Uncertain)
-        {
-            self.reserve_dispatch(&full)?;
+        if spends_dispatch {
+            self.record_dispatch(&full);
         }
         let p = &mut self.frames.get_mut(path).unwrap().steps[i];
         p.intents = intents;
         p.status = Status::Running;
+        if new_intent && matches!(step.operation, Kind::FreshTask { .. }) {
+            p.diagnostic = None;
+        }
+        let step_started_unix_ms = p.started_unix_ms;
         let mut deadline = self.created_unix_ms + self.limits.max_wall_ms;
         for (frame_path, frame) in &self.frames {
             if full.starts_with(&format!("{frame_path}/")) {
@@ -1081,10 +1326,16 @@ impl Run {
             inputs,
             intent,
             timeout_ms: deadline - now,
+            step_started_unix_ms,
             target: None,
         }))
     }
     fn reserve_dispatch(&mut self, path: &str) -> Result<()> {
+        self.check_dispatch(path)?;
+        self.record_dispatch(path);
+        Ok(())
+    }
+    fn check_dispatch(&self, path: &str) -> Result<()> {
         require(
             self.dispatches < self.limits.max_dispatches,
             "Scenario dispatch allowance exhausted",
@@ -1100,13 +1351,15 @@ impl Run {
                 )?;
             }
         }
+        Ok(())
+    }
+    fn record_dispatch(&mut self, path: &str) {
         self.dispatches += 1;
         for (frame_path, frame) in &mut self.frames {
             if path.starts_with(&format!("{frame_path}/")) {
                 frame.dispatches += 1;
             }
         }
-        Ok(())
     }
     fn reserve_task(&mut self, path: &str, target: &TaskTarget) -> Result<()> {
         let key = hash(&(target.state.clone(), &target.task_id, &target.revision_id))?;

@@ -41,6 +41,7 @@ thread_local! {
     /// files smaller than this buffer, so zeroing a new 64 KiB array per object can exceed the
     /// actual content traffic by several times.
     static READ_TRACES: RefCell<Vec<ReadTrace>> = const { RefCell::new(Vec::new()) };
+    static WRITE_SCOPES: RefCell<Vec<WriteScope>> = const { RefCell::new(Vec::new()) };
     static VERIFY_SCRATCH: RefCell<Vec<u8>> = RefCell::new(vec![0_u8; STREAM_BUFFER_BYTES]);
 }
 
@@ -55,6 +56,74 @@ impl Drop for ReadTraceGuard {
     fn drop(&mut self) {
         READ_TRACES.with(|traces| {
             traces.borrow_mut().pop();
+        });
+    }
+}
+
+/// A native CAS write returned ENOSPC.
+#[derive(Debug)]
+pub struct WriteCapacity {
+    pub path: PathBuf,
+    pub diagnostic: String,
+}
+
+struct WriteScope {
+    root: PathBuf,
+    capacity: Option<WriteCapacity>,
+}
+
+struct WriteScopeGuard;
+
+impl Drop for WriteScopeGuard {
+    fn drop(&mut self) {
+        WRITE_SCOPES.with(|scopes| scopes.borrow_mut().pop());
+    }
+}
+
+/// Observe publication failures for one CAS during synchronous native preparation. Some
+/// planning layers retain diagnostics as strings (including per-Pipeline selection refusals).
+/// Record the original syscall result beside those diagnostics and discard it on success.
+pub fn observe_write_capacity<T, E>(
+    root: &Path,
+    prepare: impl FnOnce() -> Result<T, E>,
+) -> Result<T, (E, Option<WriteCapacity>)> {
+    WRITE_SCOPES.with(|scopes| {
+        scopes.borrow_mut().push(WriteScope {
+            root: root.into(),
+            capacity: None,
+        });
+    });
+    let guard = WriteScopeGuard;
+    let result = prepare().map_err(|error| {
+        let capacity = WRITE_SCOPES.with(|scopes| {
+            scopes
+                .borrow_mut()
+                .last_mut()
+                .expect("CAS write scope")
+                .capacity
+                .take()
+        });
+        (error, capacity)
+    });
+    drop(guard);
+    result
+}
+
+fn observe_capacity(root: &Path, path: &Path, error: &std::io::Error) {
+    // Tempfile publication attaches the failed path and preserves ErrorKind, even
+    // when the outer io::Error no longer exposes the original raw errno.
+    if error.kind() == std::io::ErrorKind::StorageFull {
+        WRITE_SCOPES.with(|scopes| {
+            for scope in scopes
+                .borrow_mut()
+                .iter_mut()
+                .filter(|scope| scope.root == root)
+            {
+                scope.capacity.get_or_insert_with(|| WriteCapacity {
+                    path: path.into(),
+                    diagnostic: error.to_string(),
+                });
+            }
         });
     }
 }
@@ -271,6 +340,7 @@ impl OpenedCasObject {
         let mut copying = CopyingReader {
             source: &mut self.file,
             destination: writer,
+            capacity: None,
         };
         let (content_id, size) = with_verify_scratch(|buffer| {
             canonical::blob_content_id_reader_with_buffer(&mut copying, buffer)
@@ -333,7 +403,9 @@ impl Cas {
         let root = root.as_ref().to_path_buf();
         // The CAS holds whole source snapshots, prompts and results: private, whatever the
         // umask (crate::local_fs).
-        crate::local_fs::create_private_dir_all(&root.join("objects"))?;
+        crate::local_fs::create_private_dir_all(&root.join("objects")).inspect_err(|error| {
+            observe_capacity(&root, &root, error);
+        })?;
         Ok(Self::at_root(root))
     }
 
@@ -392,7 +464,7 @@ impl Cas {
             with_verify_scratch(|buffer| verify_exact_bytes(&final_path, &digest, bytes, buffer))?;
             return Ok(digest);
         }
-        if final_path.exists() {
+        if final_path.try_exists()? {
             // Durability is cacheable, integrity is not: an external mutation after a prior
             // publication must still be detected before idempotent put accepts this object.
             with_verify_scratch(|buffer| verify_exact_bytes(&final_path, &digest, bytes, buffer))?;
@@ -417,7 +489,13 @@ impl Cas {
         match self.publish_object(dir, &final_path, bytes) {
             Ok(()) => {}
             Err(_) if self.published_intact(&final_path, &digest, bytes) => {}
-            Err(_) => self.publish_object(dir, &final_path, bytes)?,
+            Err(_) => self
+                .publish_object(dir, &final_path, bytes)
+                .inspect_err(|error| {
+                    if let CasError::Io(error) = error {
+                        observe_capacity(&self.root, &final_path, error);
+                    }
+                })?,
         }
         // Durability is deferred, not skipped: the object is pending until `flush`, and no
         // event may reference it before then.
@@ -470,18 +548,20 @@ impl Cas {
 
         let (digest, size) = canonical::blob_content_id_reader_with_buffer(&mut *reader, buffer)?;
         let final_path = self.path_for(&digest);
-        if final_path.exists() {
+        if final_path.try_exists()? {
             return self.accept_existing_streamed_object(digest, size, final_path, buffer);
         }
 
         let shard = final_path.parent().expect("object path has a parent");
-        crate::local_fs::create_private_dir_all(shard)?;
+        crate::local_fs::create_private_dir_all(shard).map_err(|e| self.write_error(shard, e))?;
         reader.rewind()?;
-        let mut temporary = tempfile::NamedTempFile::new_in(shard)?;
+        let mut temporary =
+            tempfile::NamedTempFile::new_in(shard).map_err(|e| self.write_error(shard, e))?;
         let (published_digest, published_size) = {
             let mut copying = CopyingReader {
                 source: reader,
                 destination: temporary.as_file_mut(),
+                capacity: Some((&self.root, shard)),
             };
             canonical::blob_content_id_reader_with_buffer(&mut copying, buffer)?
         };
@@ -508,11 +588,11 @@ impl Cas {
             return Err(CasError::InvalidDigest(expected_digest.to_string()));
         }
         let expected_path = self.path_for(expected_digest);
-        if expected_path.exists() {
+        if expected_path.try_exists()? {
             let (actual_digest, actual_size) =
                 canonical::blob_content_id_reader_with_buffer(&mut *reader, buffer)?;
             let actual_path = self.path_for(&actual_digest);
-            if actual_path.exists() {
+            if actual_path.try_exists()? {
                 return self.accept_existing_streamed_object(
                     actual_digest,
                     actual_size,
@@ -525,12 +605,15 @@ impl Cas {
         }
 
         let expected_shard = expected_path.parent().expect("object path has a parent");
-        crate::local_fs::create_private_dir_all(expected_shard)?;
-        let mut temporary = tempfile::NamedTempFile::new_in(expected_shard)?;
+        crate::local_fs::create_private_dir_all(expected_shard)
+            .map_err(|e| self.write_error(expected_shard, e))?;
+        let mut temporary = tempfile::NamedTempFile::new_in(expected_shard)
+            .map_err(|e| self.write_error(expected_shard, e))?;
         let (actual_digest, actual_size) = {
             let mut copying = CopyingReader {
                 source: reader,
                 destination: temporary.as_file_mut(),
+                capacity: Some((&self.root, expected_shard)),
             };
             canonical::blob_content_id_reader_with_buffer(&mut copying, buffer)?
         };
@@ -545,9 +628,8 @@ impl Cas {
         buffer: &mut [u8],
     ) -> Result<(String, u64), CasError> {
         let final_path = self.path_for(&digest);
-        crate::local_fs::create_private_dir_all(
-            final_path.parent().expect("object path has a parent"),
-        )?;
+        let dir = final_path.parent().expect("object path has a parent");
+        crate::local_fs::create_private_dir_all(dir).map_err(|e| self.write_error(dir, e))?;
         // The move happens only while the object is absent: one another writer published
         // (before this call or racing it) keeps its directory entry, verified, never replaced.
         match temporary.persist_noclobber(&final_path) {
@@ -555,10 +637,15 @@ impl Cas {
             Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
                 return self.accept_existing_streamed_object(digest, size, final_path, buffer);
             }
-            Err(error) => return Err(CasError::Io(error.error)),
+            Err(error) => return Err(self.write_error(&final_path, error.error)),
         }
         self.pending.lock().expect("cas pending").insert(final_path);
         Ok((digest, size))
+    }
+
+    fn write_error(&self, path: &Path, error: std::io::Error) -> CasError {
+        observe_capacity(&self.root, path, &error);
+        CasError::Io(error)
     }
 
     fn accept_existing_streamed_object(
@@ -612,8 +699,13 @@ impl Cas {
             .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
         dirs.insert(root_parent.to_path_buf());
-        sync_concurrently(pending.iter().map(PathBuf::as_path), fsync)?;
-        sync_concurrently(dirs.iter().map(PathBuf::as_path), fsync)?;
+        let sync = |error: &CasError| {
+            if let CasError::Io(error) = error {
+                observe_capacity(&self.root, &self.root, error);
+            }
+        };
+        sync_concurrently(pending.iter().map(PathBuf::as_path), fsync).inspect_err(sync)?;
+        sync_concurrently(dirs.iter().map(PathBuf::as_path), fsync).inspect_err(sync)?;
         self.durable
             .lock()
             .expect("cas durable")
@@ -1319,12 +1411,19 @@ fn artifact_envelope_too_large(size: u64) -> CasError {
 struct CopyingReader<'a, R, W> {
     source: &'a mut R,
     destination: &'a mut W,
+    capacity: Option<(&'a Path, &'a Path)>,
 }
 
 impl<R: Read, W: Write> Read for CopyingReader<'_, R, W> {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
         let read = self.source.read(buffer)?;
-        self.destination.write_all(&buffer[..read])?;
+        self.destination
+            .write_all(&buffer[..read])
+            .inspect_err(|error| {
+                if let Some((root, path)) = self.capacity {
+                    observe_capacity(root, path, error);
+                }
+            })?;
         Ok(read)
     }
 }
@@ -1380,6 +1479,39 @@ fn sync_concurrently<'p>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn write_capacity_observation_is_scoped_and_preserves_wrapped_diagnostics() {
+        let root = Path::new("/task/cas");
+        let failed_path = root.join("objects/ab");
+        let full = std::io::Error::from(nix::errno::Errno::ENOSPC);
+        let denied = std::io::Error::from(nix::errno::Errno::EACCES);
+        let (_, other_failure) = observe_write_capacity(root, || {
+            observe_capacity(Path::new("/other/cas"), &failed_path, &full);
+            observe_capacity(root, &failed_path, &denied);
+            Err::<(), _>("refused")
+        })
+        .unwrap_err();
+        assert!(other_failure.is_none());
+
+        let wrapped = std::io::Error::new(full.kind(), "native ENOSPC with temporary path");
+        let (diagnostic, capacity) = observe_write_capacity(root, || {
+            observe_capacity(root, &failed_path, &wrapped);
+            observe_capacity(root, &root.join("objects/cd"), &full);
+            Err::<(), _>("native planning failed")
+        })
+        .unwrap_err();
+        let capacity = capacity.unwrap();
+        assert_eq!(diagnostic, "native planning failed");
+        assert_eq!(capacity.path, failed_path);
+        assert_eq!(capacity.diagnostic, wrapped.to_string());
+        assert!(
+            observe_write_capacity(root, || Err::<(), _>("later refusal"))
+                .unwrap_err()
+                .1
+                .is_none()
+        );
+    }
 
     fn cached_probe(cas: &Cas, value: Value) -> String {
         cas.put_artifact(

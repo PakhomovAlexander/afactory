@@ -179,7 +179,7 @@ mod tests {
         conn.execute_batch(
             "INSERT INTO events (envelope, run_id, sequence, event_id, type, occurred_at, artifact_refs,
                                  payload)
-             VALUES ('review.kernel/RunEvent@4', 'other', 0, 'event', 'TaskTransition@9', '1970-01-01T00:00:00Z', '[]', '{}');",
+             VALUES ('review.kernel/RunEvent@5', 'other', 0, 'event', 'TaskTransition@9', '1970-01-01T00:00:00Z', '[]', '{}');",
         )
         .unwrap();
     }

@@ -182,11 +182,34 @@ Uncertain work keeps its reservation. A reported overrun is retained and stops f
 A child cannot enlarge a parent's allowance. Retries are finite:
 only a definitive failure can create another intent, and all prior intents remain inspectable.
 A lost external response requires reconciliation of the same intent, never a blind retry.
+When a failure ends the Run, the Store records its started, unfinished steps as failed in
+the same update, including any enclosing child Scenario invocations. Completed steps keep
+their receipts. Open intents keep their phase and evidence, and unresolved Task usage keeps
+its reservation for reconciliation.
 Cancellation records its reason and typed child stop requests, bound to the exact Task run.
 Resume or repeated cancel recovers a lost handoff without starting work or signalling a later
 manual run of that Task. Confirmed requests do not signal again. Receipts and uncertain
 intents remain; a completed side effect is never described as rolled back. Cancelling a Run and
 pausing its Ant are separate operations.
+
+An operator's `af task cancel` of a Scenario child also ends the bound Scenario intent
+without acceptance when the request is durable before Scenario settlement. Recovery matches
+the intent's pinned Task plan and revision to the recorded run and writer epoch before dispatch,
+including when the coordinator returns after the step deadline or the driver exhausts its resume
+reservations. Task cancellation recording and the Scenario's settlement transaction are
+serialized. The Scenario retains the stop evidence and known
+charges and keeps unresolved usage reserved. An ordinary lost writer remains recoverable.
+An operator can still resume the Task directly under its existing authority. Later Task
+results cannot settle the cancelled intent, and subsequent distinct Ant occurrences can run
+under their own authority and budget.
+
+A readable Store with no matching Task or bound writer settles a pinned child's missing-Task
+admission error. If the Store is unavailable or a required Task artifact cannot be read because
+of a permission error, the Scenario records the diagnostic and retains the original intent and its
+unresolved reservation. It waits to read the same binding again before dispatching or accepting a
+result. An elapsed deadline, exhausted driver reservations or operator Scenario cancellation can
+still end the Run without accepting output. A missing or corrupt required artifact, or an identity
+mismatch, still refuses settlement.
 
 ## Machine policy and bounded adapters
 
@@ -648,6 +671,25 @@ catalog, pipeline, Provider bindings and source identities. Changed or missing n
 fails closed. Editing an authoring file cannot change an already pinned template. A definitive
 failure may use a fresh Task under the step's finite next attempt, with every earlier charge kept.
 Existing exact-plan `task` steps remain supported in the current Scenario shape.
+
+If the Task artifact Store or native Task journal runs out of space while preparing a fresh
+Task, the Run waits in `reconcile` with the prepared intent and its storage diagnostic. The
+next authorized poll or resume reuses that intent, Task ID, token reservation and deadline.
+Planning uses the recorded logical step start so retrying a failed opening can produce the same
+plan identity, including for a scheduled occurrence ahead of the host clock. Task journal events
+and writer leases use the native clock. The first native plan admission starts the captured Task
+wall duration, and later recovery keeps that absolute execution deadline. The Scenario intent
+retains its own deadline. The opening references the captured plan and its required objects so
+they remain reachable during Task Store collection. If only the opening committed, resume
+verifies the exact plan bytes and proposes that plan under a newer lease on the same
+revision. If the proposal also committed, resume validates and reuses it. This includes a
+replay waiting for the opening writer to release its lease, even if the original driver already
+holds a newer execution lease by the time replay sees the proposal. The replay takes no lease
+for planning in that case. Approval and admission follow the ordinary Task path.
+
+Polling the prepared intent consumes no further dispatch or Task Attempt. A new intent after
+native Task failure needs its own dispatch reservation and records its own preparation diagnostic.
+A permission error reading a bound Task follows the existing Task-read wait.
 
 ## Claiming complete roadmap goals
 

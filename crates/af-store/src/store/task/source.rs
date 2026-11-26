@@ -202,7 +202,7 @@ fn validate_revision(
     let text = |name: &str| -> Result<String, StoreError> {
         let bytes = cas
             .get_bounded(&new_capture.fields[name].text_id, 131072)
-            .map_err(|e| StoreError::Artifact(e.to_string()))?;
+            .map_err(|error| artifact_read_error(&new_capture.fields[name].text_id, error))?;
         String::from_utf8(bytes).map_err(|_| conflict("Captured issue text is not UTF-8"))
     };
     let issue = IssueInputV1 {

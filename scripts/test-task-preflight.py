@@ -43,9 +43,10 @@ class Preflight(unittest.TestCase):
         self.assertEqual(value["lineage"]["candidate_replay"], "not_verified")
         self.assertEqual(before, self.inspection)
         retired = copy.deepcopy(self.inspection)
-        retired["schema"] = "af/task-inspection@18"
-        with self.assertRaisesRegex(ValueError, r"expected af task explain --json \(@21\)"):
-            MODULE.report(retired, self.checklist, self.now)
+        for version in (18, 21):
+            retired["schema"] = f"af/task-inspection@{version}"
+            with self.assertRaisesRegex(ValueError, r"expected af task explain --json \(@22\)"):
+                MODULE.report(retired, self.checklist, self.now)
 
     def test_retired_campaign_plan_is_refused_without_a_reader(self):
         with self.assertRaisesRegex(ValueError, "af task diff"):

@@ -211,7 +211,7 @@ fn unreadable_store(layout: &Layout, name: &str, old: Duration) -> PathBuf {
     connection
         .execute(
             "INSERT INTO events (envelope, run_id, sequence, event_id, type, occurred_at, artifact_refs, \
-             payload) VALUES ('review.kernel/RunEvent@4', 'task-x', 0, 'e-1', 'TaskFromTheFuture@9', '2026-01-01T00:00:00Z', \
+             payload) VALUES ('review.kernel/RunEvent@5', 'task-x', 0, 'e-1', 'TaskFromTheFuture@9', '2026-01-01T00:00:00Z', \
              '[]', '{}')",
             [],
         )
@@ -2330,7 +2330,7 @@ fn a_project_store_another_release_wrote_survives_a_sweep_under_pressure() {
     connection
         .execute(
             "INSERT INTO events (envelope, run_id, sequence, event_id, type, occurred_at, artifact_refs, \
-             payload) VALUES ('review.kernel/RunEvent@4', 'project', 0, 'e-1', 'ProjectFromTheFuture@9', \
+             payload) VALUES ('review.kernel/RunEvent@5', 'project', 0, 'e-1', 'ProjectFromTheFuture@9', \
              '2026-01-01T00:00:00Z', '[]', '{}')",
             [],
         )

@@ -1,4 +1,4 @@
-//! `RunEvent@4` — the append-only source of truth.
+//! `RunEvent@5` — the append-only source of truth.
 
 use serde::{Deserialize, Serialize};
 
@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 /// arbitrary strings cannot enter a new log through the typed API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum EventType {
-    #[serde(rename = "TaskTransition@6")]
-    TaskTransitionV6,
+    #[serde(rename = "TaskTransition@7")]
+    TaskTransitionV7,
     #[serde(rename = "TaskExecutionStarted@1")]
     TaskExecutionStartedV1,
     #[serde(rename = "TaskGateRetried@1")]
@@ -77,7 +77,7 @@ pub enum EventType {
 
 impl EventType {
     pub const ALL: [Self; 32] = [
-        Self::TaskTransitionV6,
+        Self::TaskTransitionV7,
         Self::TaskExecutionStartedV1,
         Self::TaskGateRetriedV1,
         Self::TaskProviderEventV1,
@@ -113,7 +113,7 @@ impl EventType {
 
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::TaskTransitionV6 => "TaskTransition@6",
+            Self::TaskTransitionV7 => "TaskTransition@7",
             Self::TaskExecutionStartedV1 => "TaskExecutionStarted@1",
             Self::TaskGateRetriedV1 => "TaskGateRetried@1",
             Self::TaskProviderEventV1 => "TaskProviderEvent@1",
@@ -150,7 +150,7 @@ impl EventType {
 
     pub const fn typed(self) -> (&'static str, u32) {
         match self {
-            Self::TaskTransitionV6 => ("TaskTransition", 6),
+            Self::TaskTransitionV7 => ("TaskTransition", 7),
             Self::TaskExecutionStartedV1 => ("TaskExecutionStarted", 1),
             Self::TaskGateRetriedV1 => ("TaskGateRetried", 1),
             Self::TaskProviderEventV1 => ("TaskProviderEvent", 1),
@@ -228,7 +228,7 @@ impl std::str::FromStr for EventType {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
-            "TaskTransition@6" => Ok(Self::TaskTransitionV6),
+            "TaskTransition@7" => Ok(Self::TaskTransitionV7),
             "TaskExecutionStarted@1" => Ok(Self::TaskExecutionStartedV1),
             "TaskGateRetried@1" => Ok(Self::TaskGateRetriedV1),
             "TaskProviderEvent@1" => Ok(Self::TaskProviderEventV1),
@@ -274,7 +274,7 @@ impl std::str::FromStr for EventType {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(
     tag = "schema",
-    rename = "review.kernel/RunEvent@4",
+    rename = "review.kernel/RunEvent@5",
     deny_unknown_fields
 )]
 pub struct RunEvent {
@@ -327,7 +327,7 @@ impl<'de> Deserialize<'de> for RunEvent {
         #[derive(Deserialize)]
         #[serde(tag = "schema")]
         enum Wire {
-            #[serde(rename = "review.kernel/RunEvent@4")]
+            #[serde(rename = "review.kernel/RunEvent@5")]
             Current(#[serde(with = "RunEventFields")] RunEvent),
         }
         match Wire::deserialize(deserializer)? {
@@ -338,7 +338,7 @@ impl<'de> Deserialize<'de> for RunEvent {
 
 impl RunEvent {
     /// The closed envelope identity written in JSON and in the event Store.
-    pub const SCHEMA: &'static str = "review.kernel/RunEvent@4";
+    pub const SCHEMA: &'static str = "review.kernel/RunEvent@5";
 
     /// Split `Type@N` into its name and version.
     pub fn typed(&self) -> (&'static str, u32) {
@@ -383,7 +383,7 @@ pub fn validate_event_payload(
     payload: &serde_json::Value,
 ) -> Result<(), String> {
     match event_type {
-        EventType::TaskTransitionV6 => {
+        EventType::TaskTransitionV7 => {
             serde_json::from_value::<crate::task::event::TaskTransitionV1>(payload.clone())
                 .map_err(|e| e.to_string())?
                 .validate()

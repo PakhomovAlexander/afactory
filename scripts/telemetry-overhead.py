@@ -400,7 +400,7 @@ def admit_fixture(af, fixture, repo, environment=None, task=None):
                              + done.stdout.decode('utf-8', errors='replace')[-4000:])
         try:
             document = json.loads(done.stdout)
-            if (document['schema'] != 'af/task-inspection@21'
+            if (document['schema'] != 'af/task-inspection@22'
                     or type(document['attempts']) is not int or document['attempts'] != 0
                     or document['phase'] != {'kind': 'ready'}
                     or document['task_id'] != expected_task

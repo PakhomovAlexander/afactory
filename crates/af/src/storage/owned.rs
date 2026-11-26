@@ -92,13 +92,36 @@ impl Holdings {
     }
 }
 
+pub(crate) enum AdmissionError {
+    Unavailable(String),
+    Refused(String),
+}
+
+impl From<AdmissionError> for String {
+    fn from(error: AdmissionError) -> Self {
+        match error {
+            AdmissionError::Unavailable(why) | AdmissionError::Refused(why) => why,
+        }
+    }
+}
+
 /// `None` when nothing is at `path`.
-fn holdings(path: &Path) -> Result<Option<Holdings>, String> {
+fn holdings(path: &Path) -> Result<Option<Holdings>, AdmissionError> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_dir() => {}
-        Ok(_) => return Err(format!("{} is not a directory", path.display())),
+        Ok(_) => {
+            return Err(AdmissionError::Refused(format!(
+                "{} is not a directory",
+                path.display()
+            )));
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("inspecting {}: {error}", path.display())),
+        Err(error) => {
+            return Err(AdmissionError::Unavailable(format!(
+                "inspecting {}: {error}",
+                path.display()
+            )));
+        }
     }
     let mut names: Vec<OsString> = std::fs::read_dir(path)
         .and_then(|entries| {
@@ -106,16 +129,23 @@ fn holdings(path: &Path) -> Result<Option<Holdings>, String> {
                 .map(|entry| entry.map(|entry| entry.file_name()))
                 .collect()
         })
-        .map_err(|error| format!("listing {}: {error}", path.display()))?;
+        .map_err(|error| {
+            AdmissionError::Unavailable(format!("listing {}: {error}", path.display()))
+        })?;
     names.sort();
-    let directory = af_sandbox::open_anchor(path)
-        .map_err(|error| format!("opening {}: {error}", path.display()))?;
+    let directory = af_sandbox::open_anchor(path).map_err(|error| {
+        AdmissionError::Unavailable(format!("opening {}: {error}", path.display()))
+    })?;
     Ok(Some(Holdings { directory, names }))
 }
 
 /// Refuse an explicit state directory af must not adopt: one that holds anything but af's own
 /// entries. An absent or empty directory, or an af Store, is admitted. Writes nothing.
 pub(crate) fn admit(state: &Path) -> Result<(), String> {
+    check_admission(state).map_err(Into::into)
+}
+
+pub(crate) fn check_admission(state: &Path) -> Result<(), AdmissionError> {
     let Some(holdings) = holdings(state)? else {
         return Ok(());
     };
@@ -123,7 +153,7 @@ pub(crate) fn admit(state: &Path) -> Result<(), String> {
     let Some(first) = foreign.first() else {
         return Ok(());
     };
-    Err(format!(
+    Err(AdmissionError::Refused(format!(
         "state directory {} holds what is not af's ({} entr{}, such as {:?}); an explicit state \
          directory must be absent, empty or an af Store, because it becomes af-owned and af may \
          remove it; choose a new or empty directory",
@@ -131,7 +161,7 @@ pub(crate) fn admit(state: &Path) -> Result<(), String> {
         foreign.len(),
         if foreign.len() == 1 { "y" } else { "ies" },
         first.to_string_lossy()
-    ))
+    )))
 }
 
 /// Create the Store directory `state` for writing: admitted first when it was named explicitly,

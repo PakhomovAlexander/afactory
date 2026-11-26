@@ -212,7 +212,7 @@ pub(super) fn last(cas: &Cas, store: &EventStore, task: &TaskProjection) -> Opti
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use af_contracts::task::runtime::{TaskCacheObservationV1, TaskRuntimeSpanV1};
 
@@ -337,7 +337,7 @@ mod tests {
         assert_eq!(last.as_ref().unwrap().cache, Some("cold"));
     }
 
-    fn task_with_identity(
+    pub(in crate::task_commands) fn task_with_identity(
         cas: &Cas,
         store: &mut EventStore,
         label: &str,

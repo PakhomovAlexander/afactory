@@ -1,7 +1,9 @@
 //! Concrete AF Task and machine Store adapters for the Scenario domain.
+use crate::task_commands::{OpenedTask, TaskReadError, open_task_at, task_state_path};
 use af_scenario::Host;
-use af_scenario::adapter::Settlement;
+use af_scenario::adapter::{Settlement, TaskCancellation};
 use af_scenario::contract::*;
+use af_scenario::host::{FencedTaskCancellation, TaskCancellationObservation, TemplatePlanError};
 use af_scenario::performance::{ProofRequest, Scope};
 use af_scenario::template::Template;
 use std::collections::BTreeMap;
@@ -10,6 +12,127 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 pub(crate) struct AfHost;
+
+fn task_binding(target: &TaskTarget, intent_id: &str) -> Result<String> {
+    hash(&(
+        intent_id,
+        &target.task_id,
+        &target.plan_id,
+        &target.revision_id,
+    ))
+}
+
+fn pinned_task(task: &af_store::store::task::TaskProjection, target: &TaskTarget) -> bool {
+    task.revision_id == target.revision_id
+        && task.plan_id.as_ref() == Some(&target.plan_id)
+        && task.revision.limits.tokens <= target.max_tokens
+}
+
+fn task_cancellation(
+    opened: &OpenedTask,
+    target: &TaskTarget,
+    binding: &str,
+) -> std::result::Result<Option<TaskCancellation>, TaskReadError> {
+    let current = &opened.task;
+    let Some((request, historical)) = crate::task_commands::runs::scenario_cancelled_lease(
+        &opened.state,
+        &opened.store,
+        &opened.cas,
+        current,
+        binding,
+    )?
+    else {
+        return Ok(None);
+    };
+    let stopped = historical.as_ref().unwrap_or(current);
+    if !pinned_task(stopped, target) {
+        return Ok(None);
+    }
+    let recent: BTreeMap<_, _> = current
+        .execution
+        .iter()
+        .flat_map(|e| e.attempt_accounting())
+        .map(|a| (a.attempt_id.clone(), a))
+        .collect();
+    let mut charged = stopped
+        .execution
+        .as_ref()
+        .map_or(0, |e| e.budget.committed_tokens());
+    let mut unknown_usage = historical.is_none()
+        && current.lease_held_at(af_scenario::runtime::now().map_err(TaskReadError::Refused)?);
+    // Later accounting can resolve these Attempts by ID, even after a manual resume.
+    for attempt in stopped
+        .execution
+        .iter()
+        .flat_map(|e| e.attempt_accounting())
+    {
+        let latest = recent.get(&attempt.attempt_id).unwrap_or(&attempt);
+        charged += latest.charged_tokens.saturating_sub(attempt.charged_tokens);
+        unknown_usage |=
+            latest.unknown_usage.is_some() || (latest.started && latest.settled_unix_ms.is_none());
+    }
+    Ok(Some(TaskCancellation {
+        evidence: format!(
+            "Operator cancelled Task {} (plan {}, revision {}, run {}, writer {}, epoch {})",
+            target.task_id,
+            target.plan_id,
+            target.revision_id,
+            request.run,
+            request.writer,
+            request.epoch
+        ),
+        charged_tokens: u64::try_from(charged)
+            .map_err(|_| TaskReadError::Refused("Native charge overflow".into()))?,
+        unknown_usage,
+    }))
+}
+
+fn checked_task(
+    target: &TaskTarget,
+    state: PathBuf,
+    binding: &str,
+) -> std::result::Result<(OpenedTask, Option<TaskCancellation>), TaskReadError> {
+    let opened = match open_task_at(&target.task_id, state.clone()) {
+        Err(TaskReadError::Missing(why))
+            if crate::task_commands::runs::scenario_has_recorded_writer(
+                &state,
+                &target.task_id,
+                binding,
+            )? =>
+        {
+            return Err(TaskReadError::Unavailable(format!(
+                "{why}; the bound writer has a recorder but no readable Task log"
+            )));
+        }
+        result => result?,
+    };
+    let stop = task_cancellation(&opened, target, binding)?;
+    if stop.is_none() && !pinned_task(&opened.task, target) {
+        return Err(TaskReadError::Refused(
+            "Pinned Task revision, plan or budget changed".into(),
+        ));
+    }
+    Ok((opened, stop))
+}
+
+fn observe_task(
+    result: std::result::Result<(OpenedTask, Option<TaskCancellation>), TaskReadError>,
+) -> Result<TaskCancellationObservation> {
+    match result {
+        Ok((_, stop)) => Ok(TaskCancellationObservation::Observed(stop)),
+        Err(TaskReadError::Missing(why)) => Ok(TaskCancellationObservation::Missing(why)),
+        Err(TaskReadError::Unavailable(why)) => Ok(TaskCancellationObservation::Unavailable(why)),
+        Err(TaskReadError::Refused(why)) => Err(why),
+    }
+}
+
+fn unavailable_task(target: &TaskTarget, why: String) -> String {
+    format!(
+        "Task {} cancellation observation unavailable: {why}",
+        target.task_id
+    )
+}
+
 impl Host for AfHost {
     fn preflight_implementation_template(
         &self,
@@ -96,24 +219,30 @@ impl Host for AfHost {
     fn run_task(
         &self,
         target: &TaskTarget,
+        intent_id: &str,
         timeout_ms: u64,
         cancellation: &AtomicBool,
     ) -> Result<Settlement> {
-        fn checked(target: &TaskTarget) -> Result<crate::task_commands::OpenedTask> {
-            let task = crate::task_commands::open_task(
-                &target.task_id,
-                &target.repo,
-                Some(&target.state),
-            )?;
-            require(
-                task.task.revision_id == target.revision_id
-                    && task.task.plan_id.as_deref() == Some(&target.plan_id)
-                    && task.task.revision.limits.tokens <= target.max_tokens,
-                "Pinned Task revision, plan or budget changed",
-            )?;
-            Ok(task)
+        #[cfg(debug_assertions)]
+        crate::task_commands::runs::observation_barrier("scenario-before-task-admission")?;
+        let binding = task_binding(target, intent_id)?;
+        let checked = || {
+            let (_, state) = task_state_path(&target.repo, Some(&target.state))?;
+            checked_task(target, state, &binding)
+        };
+        let refused = |error| match error {
+            TaskReadError::Unavailable(why) => {
+                Ok(Settlement::Uncertain(unavailable_task(target, why)))
+            }
+            error => Err(error.into_diagnostic()),
+        };
+        let (task, stop) = match checked() {
+            Ok(bound) => bound,
+            Err(error) => return refused(error),
+        };
+        if let Some(stop) = stop {
+            return Ok(Settlement::TaskCancelled(stop));
         }
-        let task = checked(target)?;
         if !matches!(
             task.task.phase,
             af_contracts::task::TaskPhaseV1::Finished { .. }
@@ -134,7 +263,8 @@ impl Host for AfHost {
                 ])
                 .arg(&target.repo)
                 .arg("--state")
-                .arg(&target.state);
+                .arg(&target.state)
+                .env(crate::task_commands::runs::SCENARIO_BINDING_ENV, &binding);
             let capture = af_process::run_supervised_captured_bounded(
                 &mut command,
                 None,
@@ -147,7 +277,13 @@ impl Host for AfHost {
             // A lost child is resumed under the same Task revision and its own recovery rules.
             let _ = capture;
         }
-        let task = checked(target)?;
+        let (task, stop) = match checked() {
+            Ok(bound) => bound,
+            Err(error) => return refused(error),
+        };
+        if let Some(stop) = stop {
+            return Ok(Settlement::TaskCancelled(stop));
+        }
         let (result, view) = task.view()?;
         let Some(result) = result else {
             return Ok(Settlement::Waiting(format!(
@@ -174,13 +310,14 @@ impl Host for AfHost {
             charged_tokens,
             result,
         };
-        Ok(Settlement::TaskTerminal(Box::new(
-            crate::task_commands::scenario_template::terminal_outcome(
-                &task,
-                receipt,
-                unknown_usage,
-            )?,
-        )))
+        let outcome = crate::task_commands::scenario_template::terminal_outcome(
+            &task,
+            receipt,
+            unknown_usage,
+        )?;
+        #[cfg(debug_assertions)]
+        crate::task_commands::runs::observation_barrier("scenario-before-task-settlement")?;
+        Ok(Settlement::TaskTerminal(Box::new(outcome)))
     }
 
     fn check_run_dispatch(&self, state: &Path, run: &af_scenario::state::Run) -> Result<()> {
@@ -205,13 +342,14 @@ impl Host for AfHost {
     fn run_ci_diagnosis(
         &self,
         target: &TaskTarget,
+        intent_id: &str,
         timeout_ms: u64,
         cancellation: &AtomicBool,
     ) -> Result<Settlement> {
         use af_scenario::ci_diagnosis::{Provenance, Record, Refusal, SCHEMA, unknown};
         // Native Task admission, recovery, cancellation and accounting are unchanged. Only a
         // durable answered/refused diagnosis is converted into a reporting observation.
-        let settlement = self.run_task(target, timeout_ms, cancellation)?;
+        let settlement = self.run_task(target, intent_id, timeout_ms, cancellation)?;
         let (charged_tokens, unknown_usage, accepted) = match &settlement {
             Settlement::TaskTerminal(outcome) => {
                 outcome.validate()?;
@@ -448,6 +586,60 @@ impl Host for AfHost {
         }
         Ok(None)
     }
+    fn task_cancellation(
+        &self,
+        target: &TaskTarget,
+        intent_id: &str,
+    ) -> Result<TaskCancellationObservation> {
+        let binding = task_binding(target, intent_id)?;
+        let observation = observe_task(
+            task_state_path(&target.repo, Some(&target.state))
+                .and_then(|(_, state)| checked_task(target, state, &binding)),
+        )?;
+        #[cfg(debug_assertions)]
+        if matches!(&observation, TaskCancellationObservation::Observed(_)) {
+            crate::task_commands::runs::observation_barrier(
+                "scenario-after-task-cancellation-read",
+            )?;
+        }
+        Ok(observation)
+    }
+    fn task_cancellation_for_settlement(
+        &self,
+        target: &TaskTarget,
+        intent_id: &str,
+    ) -> Result<FencedTaskCancellation> {
+        let unavailable = |why| {
+            Ok((
+                TaskCancellationObservation::Unavailable(unavailable_task(target, why)),
+                None,
+            ))
+        };
+        let (_, state) = match task_state_path(&target.repo, Some(&target.state)) {
+            Ok(paths) => paths,
+            Err(TaskReadError::Unavailable(why)) => return unavailable(why),
+            Err(error) => return Err(error.into_diagnostic()),
+        };
+        let hold = match crate::storage::hold_running(&state) {
+            Ok(hold) => hold,
+            Err(why) => return unavailable(why),
+        };
+        let guard = match crate::task_commands::runs::lock_cancellation(&state) {
+            Ok(guard) => guard,
+            Err(why) => return unavailable(why),
+        };
+        let binding = task_binding(target, intent_id)?;
+        let observation = observe_task(checked_task(target, state, &binding))?;
+        #[cfg(debug_assertions)]
+        crate::task_commands::runs::observation_barrier("scenario-task-cancellation-fenced")?;
+        let observation = match observation {
+            TaskCancellationObservation::Unavailable(why) => {
+                TaskCancellationObservation::Unavailable(unavailable_task(target, why))
+            }
+            observed => observed,
+        };
+        Ok((observation, Some(Box::new((guard, hold)))))
+    }
     fn cancel_task_run(&self, target: &TaskTarget, expected: u64) -> Result<()> {
         crate::task_commands::runs::cancel_recorded_run(
             &target.task_id,
@@ -496,10 +688,17 @@ impl Host for AfHost {
         &self,
         template: &Template,
         document: serde_json::Value,
+        started_unix_ms: u64,
         performance: bool,
         predecessors: &BTreeMap<String, (TaskReceipt, String)>,
-    ) -> Result<TaskTarget> {
-        crate::task_commands::scenario_template::plan(template, document, performance, predecessors)
+    ) -> std::result::Result<TaskTarget, TemplatePlanError> {
+        crate::task_commands::scenario_template::plan(
+            template,
+            document,
+            started_unix_ms,
+            performance,
+            predecessors,
+        )
     }
     fn validate_implementation_proof(
         &self,

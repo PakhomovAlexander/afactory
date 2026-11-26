@@ -1,6 +1,6 @@
 //! One closed Task execution record encoding; there is no permissive fallback.
 
-use super::super::conflict;
+use super::super::{artifact_read_error, conflict};
 use crate::{Cas, StoreError};
 use af_contracts::{ArtifactEnvelope, task::execution::*};
 use serde::Deserialize as _;
@@ -16,7 +16,7 @@ pub fn read_execution_record(
 ) -> Result<DecodedTaskExecutionRecord, StoreError> {
     let envelope = cas
         .get_artifact(id)
-        .map_err(|error| StoreError::Artifact(error.to_string()))?;
+        .map_err(|error| artifact_read_error(id, error))?;
     if envelope.artifact_type != TASK_EXECUTION_RECORD_V5 {
         return Err(conflict("Expected a typed Task execution record"));
     }

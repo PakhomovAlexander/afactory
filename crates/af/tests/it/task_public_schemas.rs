@@ -124,7 +124,7 @@ fn task_file_and_catalog_schemas_match_real_fixtures_and_cli_refusals() {
         planned["selection"]["assessment"]["decision"]["kind"],
         "selected"
     );
-    valid(&validator("task-inspection-v21.json"), &planned);
+    valid(&validator("task-inspection-v22.json"), &planned);
     let cases = [
         ("/schema", json!("af.task-file/2")),
         ("/task_id", json!("bad/task")),
@@ -232,7 +232,7 @@ fn compiled_task_schema_matches_real_graph_and_closed_rust_variants() {
         cli(&repo, &state, &["task", "plan", "--file", "ticket.json"]),
         0,
     );
-    valid(&validator("task-inspection-v21.json"), &inspection);
+    valid(&validator("task-inspection-v22.json"), &inspection);
     let schema = validator("compiled-task-v6.json");
     let graph = &inspection["graph"];
     valid(&schema, graph);
@@ -289,17 +289,175 @@ fn compiled_task_schema_matches_real_graph_and_closed_rust_variants() {
 }
 
 #[test]
+fn prepared_task_opening_uses_current_output_contracts() {
+    use af_contracts::RunEvent;
+    use af_contracts::task::agent_loop::TaskEventV1;
+    use af_contracts::task::event::PreparedPlan;
+    use af_store::store::task::{now, task_run_id};
+
+    let directory = tempfile::tempdir().unwrap();
+    let (repo, planned_state) = task_cli::fixture_named(directory.path(), "pagination");
+    let planned = json_output(
+        cli(
+            &repo,
+            &planned_state,
+            &["task", "plan", "--file", "ticket.json"],
+        ),
+        0,
+    );
+    let id = planned["task_id"].as_str().unwrap();
+    let revision_id = planned["revision_id"].as_str().unwrap();
+    let plan_id = planned["plan_id"].as_str().unwrap();
+    let planned_unix_ms = planned["history"][0]["transition"]["now_unix_ms"]
+        .as_u64()
+        .unwrap();
+
+    // Reuse the exact captured plan and its CAS in a separate journal whose only
+    // transition is the prepared opening that the Scenario lease path records.
+    let state = directory.path().join("prepared-state");
+    task_cli::copy_tree(&planned_state.join("cas"), &state.join("cas"));
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
+    let path = state.join("events.sqlite");
+    let mut writer = af_store::EventStore::open(&path).unwrap();
+    writer
+        .open_task_with_prepared_plan(
+            &cas,
+            revision_id,
+            Some(PreparedPlan {
+                plan_id: plan_id.into(),
+                planned_unix_ms,
+            }),
+            "prepared-opening",
+            60_000,
+        )
+        .unwrap();
+    drop(writer);
+
+    let shown = json_output(cli(&repo, &state, &["task", "show", id]), 0);
+    let streamed = crate::common::af()
+        .current_dir(&repo)
+        .args(["task", "events", id, "--timeout", "1", "--state"])
+        .arg(&state)
+        .output()
+        .unwrap();
+    assert_eq!(
+        streamed.status.code(),
+        Some(124),
+        "{}",
+        String::from_utf8_lossy(&streamed.stderr)
+    );
+    let line: Value = serde_json::from_slice(&streamed.stdout).unwrap();
+
+    let conn =
+        rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap();
+    let layout: u32 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    let run = task_run_id(id).unwrap();
+    let row_schema: String = conn
+        .query_row(
+            "SELECT envelope FROM events WHERE run_id = ?1 AND sequence = 0",
+            [&run],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let store = af_store::EventStore::open_read_only(&path).unwrap();
+    let events = store.replay(&run).unwrap();
+    let [opening] = events.as_slice() else {
+        panic!("expected only the prepared opening, got {events:?}");
+    };
+    let envelope = serde_json::to_value(opening).unwrap();
+    assert_eq!(
+        (
+            shown["schema"].as_str(),
+            line["schema"].as_str(),
+            envelope["schema"].as_str(),
+            row_schema.as_str(),
+            layout,
+        ),
+        (
+            Some("af/task-inspection@22"),
+            Some("af/task-event@4"),
+            Some("review.kernel/RunEvent@5"),
+            "review.kernel/RunEvent@5",
+            5,
+        )
+    );
+    assert_eq!(shown["task_id"], id);
+    assert_eq!(shown["plan_id"], Value::Null);
+    assert_eq!(
+        shown["history"],
+        json!([{"sequence": 0, "transition": opening.payload}])
+    );
+    assert_eq!(line["task_id"], id);
+    assert_eq!(line["record"], "event");
+    assert_eq!(line["sequence"], opening.sequence);
+    assert_eq!(line["event_id"], opening.event_id);
+    assert_eq!(envelope["type"], "TaskTransition@7");
+    assert_eq!(line["event_type"], envelope["type"]);
+    assert_eq!(line["change"], "opened");
+    assert_eq!(line["at_unix_ms"], opening.payload["now_unix_ms"]);
+
+    let projected = store.task_projection(&cas, id).unwrap().unwrap();
+    assert!(projected.lease_held_at(now().unwrap()));
+    assert_eq!(projected.prepared_plan_id.as_deref(), Some(plan_id));
+    assert_eq!(
+        opening.payload["change"]["prepared_plan"],
+        json!({"plan_id": plan_id, "planned_unix_ms": planned_unix_ms})
+    );
+    assert!(opening.artifact_refs.iter().any(|id| id == plan_id));
+    assert_eq!(
+        af_store::EventStore::open_read_only(&path)
+            .unwrap()
+            .replay(&run)
+            .unwrap(),
+        events
+    );
+
+    for (file, mut document, old) in [
+        ("task-inspection-v22.json", shown, "af/task-inspection@21"),
+        ("task-event-v4.json", line, "af/task-event@3"),
+        ("run-event-v5.json", envelope, "review.kernel/RunEvent@4"),
+    ] {
+        let schema = crate::schemas::validator(file);
+        crate::schemas::valid(&schema, &document);
+        document["schema"] = json!(old);
+        assert!(!schema.is_valid(&document), "{old}");
+        match file {
+            "task-event-v4.json" => assert!(
+                serde_json::from_value::<TaskEventV1>(document)
+                    .unwrap()
+                    .validate()
+                    .is_err()
+            ),
+            "run-event-v5.json" => assert!(serde_json::from_value::<RunEvent>(document).is_err()),
+            _ => {
+                let result = crate::common::af()
+                    .args(["schema", "show", old])
+                    .output()
+                    .unwrap();
+                assert_eq!(result.status.code(), Some(1));
+                assert!(
+                    String::from_utf8_lossy(&result.stderr).contains("only af/task-inspection@22")
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn inspection_and_list_schemas_preserve_actual_output_and_exact_record_types() {
     let directory = tempfile::tempdir().unwrap();
     let (repo, state) = task_cli::fixture_named(directory.path(), "pagination");
-    let inspection_schema = validator("task-inspection-v21.json");
+    let inspection_schema = validator("task-inspection-v22.json");
     let list_schema = validator("task-list-entry-v5.json");
     let planned = json_output(
         cli(&repo, &state, &["task", "plan", "--file", "ticket.json"]),
         0,
     );
     valid(&inspection_schema, &planned);
-    assert_eq!(planned["schema"], "af/task-inspection@21");
+    assert_eq!(planned["schema"], "af/task-inspection@22");
     for old in ["af/task-inspection@17", "af/task-inspection@18"] {
         let mut retired = planned.clone();
         retired["schema"] = json!(old);
@@ -348,7 +506,7 @@ fn inspection_and_list_schemas_preserve_actual_output_and_exact_record_types() {
         0,
     );
     valid(&inspection_schema, &finished);
-    assert_eq!(finished["schema"], "af/task-inspection@21");
+    assert_eq!(finished["schema"], "af/task-inspection@22");
     assert!(
         !finished["runtime_observations"]
             .as_array()
@@ -484,6 +642,7 @@ fn inspection_and_list_schemas_preserve_actual_output_and_exact_record_types() {
     assert_eq!(delivered["delivery"], receipt);
     valid(&inspection_schema, &delivered);
     let listed = json_output(cli(&repo, &state, &["task", "list"]), 0);
+    assert_eq!(listed["tasks"][0]["delivery"], receipt);
     valid(&list_schema, &listed["tasks"][0]);
 
     // Pending delivery is also public inspection output. Use the actual preparation receipt

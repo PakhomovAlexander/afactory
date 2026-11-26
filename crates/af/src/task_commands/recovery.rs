@@ -62,18 +62,56 @@ pub(crate) fn take_lease(
     id: &str,
     writer: &str,
 ) -> Result<TaskLease, String> {
+    take_lease_checked(cas, store, id, writer, |_, _| Ok(()))
+}
+
+pub(super) fn take_lease_checked(
+    cas: &Cas,
+    store: &mut EventStore,
+    id: &str,
+    writer: &str,
+    check: impl Fn(&EventStore, &TaskProjection) -> Result<(), String>,
+) -> Result<TaskLease, String> {
+    take_lease_checked_with(
+        cas,
+        store,
+        id,
+        writer,
+        |_| false,
+        check,
+        |error| error.to_string(),
+    )?
+    .ok_or_else(|| "Task lease was not acquired".into())
+}
+
+/// Acknowledge exact durable work even while another writer holds the lease. Otherwise,
+/// wait for the lease to become free and check whether acquiring it is still authorized.
+pub(super) fn take_lease_checked_with<E: From<String> + From<&'static str>>(
+    cas: &Cas,
+    store: &mut EventStore,
+    id: &str,
+    writer: &str,
+    already_done: impl Fn(&TaskProjection) -> bool,
+    check: impl Fn(&EventStore, &TaskProjection) -> Result<(), E>,
+    store_error: impl Fn(af_store::StoreError) -> E,
+) -> Result<Option<TaskLease>, E> {
     let lease_ms = lease_ms();
     let mut seen: Option<(String, u64, u64)> = None;
     loop {
         let state = store
             .task_projection(cas, id)
-            .map_err(|e| e.to_string())?
+            .map_err(&store_error)?
             .ok_or("Unknown Task")?;
         let now = super::clock()?;
+        if already_done(&state) {
+            return Ok(None);
+        }
         if !state.lease_held_at(now) {
+            check(store, &state)?;
             return store
                 .take_task_lease(cas, id, writer, lease_ms)
-                .map_err(|e| e.to_string());
+                .map(Some)
+                .map_err(&store_error);
         }
         let (holder, epoch) = (state.lease_writer(), state.lease_epoch());
         let until = state.lease_until_unix_ms();
@@ -88,6 +126,8 @@ pub(crate) fn take_lease(
                     until.saturating_sub(now).div_ceil(1_000)
                 );
                 seen = Some((holder.to_owned(), epoch, until));
+                #[cfg(debug_assertions)]
+                super::runs::observation_barrier("task-waiting-for-lease")?;
             }
             Some((seen_holder, seen_epoch, seen_until))
                 if seen_holder != holder || *seen_epoch != epoch || until > *seen_until =>
@@ -99,7 +139,8 @@ pub(crate) fn take_lease(
                     clock_of(until),
                     id = preview::text(id),
                     holder = preview::text(holder),
-                ));
+                )
+                .into());
             }
             Some(_) => {}
         }

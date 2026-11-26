@@ -154,9 +154,10 @@ impl TaskAttemptAccounting {
             return Ok(false);
         }
         if native {
+            let usage_id = self.usage_id.as_ref().expect("checked usage identity");
             let usage = cas
-                .get_artifact(self.usage_id.as_ref().expect("checked usage identity"))
-                .map_err(|e| StoreError::Artifact(e.to_string()))?;
+                .get_artifact(usage_id)
+                .map_err(|error| artifact_read_error(usage_id, error))?;
             // A reservation-floor charge with absent native counters is not a bill.
             if ["input_tokens", "output_tokens"].iter().any(|name| {
                 usage
@@ -170,7 +171,7 @@ impl TaskAttemptAccounting {
         for id in &self.raw_artifact_ids {
             let Some(artifact) = cas
                 .get_optional_artifact(id)
-                .map_err(|e| StoreError::Artifact(e.to_string()))?
+                .map_err(|error| artifact_read_error(id, error))?
             else {
                 continue;
             };
@@ -1501,7 +1502,7 @@ fn recorded_wall_end(
     use af_contracts::task::attempt_wall::{TASK_ATTEMPT_WALL_END_V1, TaskAttemptWallEndV1};
     let envelope = cas
         .get_optional_artifact(wall_end_id)
-        .map_err(|error| StoreError::Artifact(error.to_string()))?
+        .map_err(|error| artifact_read_error(wall_end_id, error))?
         .ok_or_else(|| conflict("A recorded Attempt wall end is not in the CAS"))?;
     let producer = af_contracts::Producer::Attempt {
         run_id: task_run_id(task_id)?,
@@ -2196,7 +2197,7 @@ impl EventStore {
         }
         for id in refs {
             cas.verify(&id)
-                .map_err(|e| StoreError::Artifact(e.to_string()))?;
+                .map_err(|error| artifact_read_error(&id, error))?;
         }
         authority
             .validate_output(cas, &state.revision, plan, &input, &out, &definition)

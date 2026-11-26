@@ -227,7 +227,7 @@ pub fn history_prefix_hash(prior: &str, event: &RunEvent) -> Result<String, Stor
 /// The checkpoint's lease cause is the latest of exactly these checked transitions.
 pub fn history_is_lease_boundary(event: &RunEvent) -> Result<bool, StoreError> {
     use af_contracts::task::event::TaskChangeV1;
-    Ok(event.event_type == EventType::TaskTransitionV6
+    Ok(event.event_type == EventType::TaskTransitionV7
         && matches!(
             task::read_task_transition(event)?.change,
             TaskChangeV1::Opened { .. }
