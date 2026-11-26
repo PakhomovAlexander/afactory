@@ -77,7 +77,7 @@ and use an admitted Provider binding. For example:
 [runner]
 kind = "model"
 provider_kind = "codex"
-model = "gpt-6.1-sol"
+model = "gpt-6.2-sol"
 effort = "medium"
 ```
 

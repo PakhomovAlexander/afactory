@@ -25,7 +25,7 @@ policy that install names as `report_policy = ".af/report-policy.toml"`.
 |---|---|
 | `backlog/triage-kind` | `af.task-kind/3`: the kind `triage` on the `report` profile |
 | `backlog/triage` | `af.pipeline/6`: the shape of `kernel/report` (author, `report_seal`, `report_check`, verifier, `report_accept`), accepting the kind `triage` |
-| `backlog/triage-author` | Codex `gpt-6.1-sol`, effort medium, `read-source` only: no shell |
+| `backlog/triage-author` | Codex `gpt-6.2-sol`, effort medium, `read-source` only: no shell |
 | `backlog/triage-verifier` | Codex `gpt-6.1-terra`, effort medium, `read-source` only, independent of the author |
 
 Each triager has 40,000 tokens and 500,000 ms per Attempt. The author returns its

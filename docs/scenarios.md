@@ -725,7 +725,7 @@ it is never automatically re-claimed under another date or revision. A future re
 unclaimed planning, but cannot replace captured goals or accumulated accounting. Roadmap history,
 claims and native receipts share the private Store and its bounded journal and Storage Budget.
 
-Performance roadmap implementation and verification model plans must use Sol (`gpt-6.1-sol`) medium
+Performance roadmap implementation and verification model plans must use Sol (`gpt-6.2-sol`) medium
 for implementation, Terra
 (`gpt-6.1-terra`) high for bugs, Terra (`gpt-6.1-terra`) high for correctness, and Terra
 (`gpt-6.1-terra`) medium for evaluation, all on `codex-personal`. Verification is read-only and has

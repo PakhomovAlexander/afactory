@@ -92,7 +92,7 @@ def document(root, treatment):
         "crates/smoke-app/src/lib.rs": "pub fn feature() -> i32 {\n    smoke_logic::calculate() + 1\n}\n",
     }
     invocations = []
-    for model in ("gpt-6.1-sol", "gpt-6.1-terra"):
+    for model in ("gpt-6.2-sol", "gpt-6.1-terra"):
         invocations.extend({
             "role": "admission", "model": model,
             "binding": f"codex-main:{model}:high", "effort": "high",

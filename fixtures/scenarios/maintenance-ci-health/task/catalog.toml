@@ -18,4 +18,4 @@ digest = "sha256:9173b5446b0419cdf7e3ecc17c7a7f5d7c91aa2f8d0d8fb4f0815bf2d41ac10
 [packages."ci/diagnosis-worker"]
 version = "1.0.5"
 path = "fixtures/scenarios/maintenance-ci-health/task/worker"
-digest = "sha256:ececee0f6dd2a46e330526bc2a3e4b016f69429075d03f2280e9718571c76e60"
+digest = "sha256:5437480cce9fdcf0fd66853ab9aedf898073f647ecaeff083ca3151848076823"

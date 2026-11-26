@@ -156,12 +156,14 @@ fn every_published_package_pin_reproduces() {
     );
 }
 
-const RAW_CODEX_MODELS: &[u8] =
+const OPERATOR_CODEX_MODEL_IDS: &[&str] = &["gpt-6.2-sol", "gpt-6.2-astra"];
+const HISTORICAL_RAW_CODEX_MODELS: &[u8] =
     include_bytes!("../fixtures/provider-models/codex-provider-models-raw-20261107.json");
-const PROJECTED_CODEX_MODELS: &[u8] =
+const HISTORICAL_PROJECTED_CODEX_MODELS: &[u8] =
     include_bytes!("../fixtures/provider-models/codex-provider-models-recorded-20261107.json");
+const HISTORICAL_CODEX_MODEL_IDS: &[&str] = &["gpt-6.1-sol", "gpt-6.1-terra"];
 
-fn codex_observation_provenance() -> serde_json::Value {
+fn historical_codex_observation_provenance() -> serde_json::Value {
     serde_json::from_str(include_str!(
         "../fixtures/provider-models/codex-provider-models-recorded-20261107.provenance.json"
     ))
@@ -183,15 +185,12 @@ fn validate_recorded_codex_projection(
     raw_bytes: &[u8],
     bytes: &[u8],
     provenance: &serde_json::Value,
+    selected_model_ids: &[&str],
+    provider_schema: &jsonschema::Validator,
 ) -> Result<serde_json::Value, String> {
-    static SCHEMAS: std::sync::OnceLock<(jsonschema::Validator, jsonschema::Validator)> =
-        std::sync::OnceLock::new();
-    let (schema, provider_schema) = SCHEMAS.get_or_init(|| {
-        (
-            crate::schemas::validator("codex-model-catalog-observation-v1.json"),
-            crate::schemas::validator("provider-models-v2.json"),
-        )
-    });
+    static SCHEMA: std::sync::OnceLock<jsonschema::Validator> = std::sync::OnceLock::new();
+    let schema =
+        SCHEMA.get_or_init(|| crate::schemas::validator("codex-model-catalog-observation-v1.json"));
     if !schema.is_valid(provenance) {
         return Err("invalid observation provenance schema".into());
     }
@@ -216,7 +215,7 @@ fn validate_recorded_codex_projection(
     providers[0]["models"]
         .as_array_mut()
         .unwrap()
-        .retain(|model| matches!(model["id"].as_str(), Some("gpt-6.1-sol" | "gpt-6.1-terra")));
+        .retain(|model| selected_model_ids.contains(&model["id"].as_str().unwrap()));
     let observation: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     if projected != observation {
         return Err("recorded projection differs from filtered raw response".into());
@@ -227,14 +226,15 @@ fn validate_recorded_codex_projection(
 /// The coordinator's real token-free observation is separate from the synthetic parser
 /// fixtures. It proves harness-advertised support only; inference access needs admission.
 fn historical_codex_models() -> Vec<serde_json::Value> {
-    let provenance = codex_observation_provenance();
-    let observation =
-        validate_recorded_codex_projection(RAW_CODEX_MODELS, PROJECTED_CODEX_MODELS, &provenance)
-            .unwrap();
-    let schema = crate::schemas::validator("codex-model-catalog-observation-v1.json");
-    let mut old = provenance.clone();
-    old["schema"] = "af.codex-model-catalog-observation/0".into();
-    assert!(!schema.is_valid(&old));
+    let provenance = historical_codex_observation_provenance();
+    let observation = validate_recorded_codex_projection(
+        HISTORICAL_RAW_CODEX_MODELS,
+        HISTORICAL_PROJECTED_CODEX_MODELS,
+        &provenance,
+        HISTORICAL_CODEX_MODEL_IDS,
+        &crate::schemas::validator("provider-models-v2.json"),
+    )
+    .unwrap();
     assert_eq!(
         provenance["raw_response_sha256"],
         "sha256:840e259bf064b579ff4d9362d38ef6bde3c9592e11b893b9ce5f3beb9f5d3ffe"
@@ -255,24 +255,88 @@ fn historical_codex_models() -> Vec<serde_json::Value> {
             .iter()
             .map(|model| model["id"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["gpt-6.1-sol", "gpt-6.1-terra"]
+        HISTORICAL_CODEX_MODEL_IDS
     );
-    // The historical projection selects only the two 6.1 models. Audit replacement roles
-    // against the complete authenticated raw observation, which also lists Sol and Astra.
-    let raw: serde_json::Value = serde_json::from_slice(RAW_CODEX_MODELS).unwrap();
+    // The Worker audit also needs the raw model entries outside the historical projection.
+    let raw: serde_json::Value = serde_json::from_slice(HISTORICAL_RAW_CODEX_MODELS).unwrap();
     raw["providers"][0]["models"].as_array().unwrap().clone()
 }
 
 #[test]
+fn recorded_historical_codex_projection_matches_raw_observation() {
+    assert!(historical_codex_models().len() > HISTORICAL_CODEX_MODEL_IDS.len());
+}
+
+#[test]
+fn recorded_codex_projections_reject_old_provenance_schema() {
+    let schema = crate::schemas::validator("codex-model-catalog-observation-v1.json");
+    let reject_old_provenance = |date: &str,
+                                 raw: &[u8],
+                                 projected: &[u8],
+                                 mut provenance: serde_json::Value,
+                                 selected_model_ids: &[&str],
+                                 provider_schema: &str| {
+        assert!(schema.is_valid(&provenance), "{date}");
+        provenance["schema"] = "af.codex-model-catalog-observation/0".into();
+        assert!(!schema.is_valid(&provenance), "{date}");
+        assert_eq!(
+            validate_recorded_codex_projection(
+                raw,
+                projected,
+                &provenance,
+                selected_model_ids,
+                &crate::schemas::validator(provider_schema),
+            )
+            .unwrap_err(),
+            "invalid observation provenance schema",
+            "{date}"
+        );
+    };
+    reject_old_provenance(
+        "2026-11-07",
+        HISTORICAL_RAW_CODEX_MODELS,
+        HISTORICAL_PROJECTED_CODEX_MODELS,
+        historical_codex_observation_provenance(),
+        HISTORICAL_CODEX_MODEL_IDS,
+        "provider-models-v2.json",
+    );
+    if uses_operator_observation() {
+        let root = workspace();
+        let (raw, provenance) = operator_codex_observation(&root);
+        reject_old_provenance(
+            "2026-11-23",
+            &raw,
+            &operator_codex_projection(&root),
+            provenance,
+            OPERATOR_CODEX_MODEL_IDS,
+            "provider-models-v4.json",
+        );
+    }
+}
+
+#[test]
 fn recorded_codex_projection_rejects_changed_selected_models_and_other_fields() {
-    let provenance = codex_observation_provenance();
-    validate_recorded_codex_projection(RAW_CODEX_MODELS, PROJECTED_CODEX_MODELS, &provenance)
-        .unwrap();
-    let mut reformatted = PROJECTED_CODEX_MODELS.to_vec();
+    if !uses_operator_observation() {
+        return;
+    }
+    let root = workspace();
+    let (raw, provenance) = operator_codex_observation(&root);
+    let projected = operator_codex_projection(&root);
+    let provider_schema = crate::schemas::validator("provider-models-v4.json");
+    let validate = |raw: &[u8], projected: &[u8], provenance: &serde_json::Value| {
+        validate_recorded_codex_projection(
+            raw,
+            projected,
+            provenance,
+            OPERATOR_CODEX_MODEL_IDS,
+            &provider_schema,
+        )
+    };
+    validate(&raw, &projected, &provenance).unwrap();
+    let mut reformatted = projected.clone();
     reformatted.push(b'\n');
     assert_eq!(
-        validate_recorded_codex_projection(RAW_CODEX_MODELS, &reformatted, &provenance)
-            .unwrap_err(),
+        validate(&raw, &reformatted, &provenance).unwrap_err(),
         "projected response digest mismatch"
     );
     // Each mutation remains schema-valid. Update its digest too: the equality check must
@@ -297,51 +361,61 @@ fn recorded_codex_projection_rejects_changed_selected_models_and_other_fields() 
             serde_json::json!(["high"]),
         ),
     ] {
-        let mut altered: serde_json::Value =
-            serde_json::from_slice(PROJECTED_CODEX_MODELS).unwrap();
+        let mut altered: serde_json::Value = serde_json::from_slice(&projected).unwrap();
         *altered.pointer_mut(pointer).unwrap() = replacement;
         let bytes = serde_json::to_vec(&altered).unwrap();
         let mut updated = provenance.clone();
         updated["recorded_projection_sha256"] = response_digest(&bytes).into();
-        let error =
-            validate_recorded_codex_projection(RAW_CODEX_MODELS, &bytes, &updated).unwrap_err();
+        let error = validate(&raw, &bytes, &updated).unwrap_err();
         assert_eq!(
             error, "recorded projection differs from filtered raw response",
             "{pointer}"
         );
     }
 
-    let mut raw: serde_json::Value = serde_json::from_slice(RAW_CODEX_MODELS).unwrap();
-    raw["providers"][0]["models"][2]["default_effort"] = "high".into();
+    let mut raw: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+    raw["providers"][0]["models"][0]["default_effort"] = "high".into();
     let bytes = serde_json::to_vec(&raw).unwrap();
     assert_eq!(
-        validate_recorded_codex_projection(&bytes, PROJECTED_CODEX_MODELS, &provenance)
-            .unwrap_err(),
+        validate(&bytes, &projected, &provenance).unwrap_err(),
         "raw response digest mismatch"
     );
     let mut updated = provenance.clone();
     updated["raw_response_sha256"] = response_digest(&bytes).into();
     assert_eq!(
-        validate_recorded_codex_projection(&bytes, PROJECTED_CODEX_MODELS, &updated).unwrap_err(),
+        validate(&bytes, &projected, &updated).unwrap_err(),
         "recorded projection differs from filtered raw response"
     );
     raw["token_free"] = false.into();
     let bytes = serde_json::to_vec(&raw).unwrap();
     updated["raw_response_sha256"] = response_digest(&bytes).into();
     assert_eq!(
-        validate_recorded_codex_projection(&bytes, PROJECTED_CODEX_MODELS, &updated).unwrap_err(),
+        validate(&bytes, &projected, &updated).unwrap_err(),
         "invalid raw provider-models schema"
     );
 }
 
 const OPERATOR_RAW_DIGEST: &str =
-    "sha256:4ebc5e15b5400c3606c0ef1334b932a5c5396965fc602e4eaf4590c6dfaead7f";
+    "sha256:ef3f4c9e6b46fa6d928db94476fd6672e31835c5d8f166b86d4c53d446df52e5";
+
+fn uses_operator_observation() -> bool {
+    // The November 23 files are only carried by the operator fixture port.
+    crate::issue_workflows::model_profile().sol == "gpt-6.2-sol"
+}
+
+fn operator_codex_projection(root: &Path) -> Vec<u8> {
+    std::fs::read(root.join(
+        "crates/af/tests/fixtures/provider-models/codex-provider-models-recorded-20261123.json",
+    ))
+    .unwrap()
+}
 
 fn operator_codex_observation(root: &Path) -> (Vec<u8>, serde_json::Value) {
     let fixtures = root.join("crates/af/tests/fixtures/provider-models");
-    let bytes = std::fs::read(fixtures.join("codex-provider-models-raw-20261122.json")).unwrap();
+    let bytes = std::fs::read(fixtures.join("codex-provider-models-raw-20261123.json")).unwrap();
     let provenance =
-        std::fs::read(fixtures.join("codex-provider-models-raw-20261122.provenance.json")).unwrap();
+        std::fs::read(fixtures.join("codex-provider-models-recorded-20261123.provenance.json"))
+            .unwrap();
     (bytes, serde_json::from_slice(&provenance).unwrap())
 }
 
@@ -364,14 +438,16 @@ fn validate_operator_codex_observation(
     };
     if *provenance
         != json!({
-            "host": "r-400",
-            "af_version": "0.15.1-rc.3",
-            "engine": "e3c45a0a769fe9042079e442cb036965a352c6a1",
-            "capture_command": "af provider models codex-personal --json --page 0",
+            "schema": "af.codex-model-catalog-observation/1",
+            "observed_at_utc": "2026-11-23T12:13:53.000000+00:00",
+            "capture_command": "AF_PROVIDERS_FILE=<machine-local registry> af provider models codex-personal --json",
             "raw_response_sha256": OPERATOR_RAW_DIGEST,
             "source": provider["source"],
             "harness_version": provider["harness_version"],
             "freshness": provider["freshness"],
+            "scope": "Real token-free harness observation of advertised model IDs and effort levels, projected to Sol 6.2 and Astra 6.2. Not a synthetic parser fixture and not proof of inference access. No credentials, account identifiers or authentication paths are included.",
+            "projection": "Filter the models array of the adjacent in-tree codex-provider-models-raw-20261123.json to gpt-6.2-sol and gpt-6.2-astra, retaining array order, selected model objects and every other field unchanged. The raw_response_sha256 identifies its exact original bytes; recorded_projection_sha256 identifies the pretty-printed codex-provider-models-recorded-20261123.json. Other raw model entries are observational data, not configured pipeline selections.",
+            "recorded_projection_sha256": "sha256:84548913aa17fa5a6c6a425147eb4f0e74c2507ed5c597e6eda8aad814068638"
         })
     {
         return Err("operator capture provenance mismatch".into());
@@ -411,28 +487,16 @@ fn recorded_codex_support(
 }
 
 #[test]
-fn recorded_codex_support_rejects_missing_exact_bindings() {
-    let historical = historical_codex_models();
-    for (product, operator) in [
-        ("gpt-6.1-sol", "gpt-6.2-sol"),
-        ("gpt-6-astra", "gpt-6.2-astra"),
-    ] {
-        recorded_codex_support(&historical, product, "medium").unwrap();
-        assert_eq!(
-            recorded_codex_support(&historical, operator, "medium").unwrap_err(),
-            format!("{operator} absent from recorded observation")
-        );
-    }
+fn recorded_codex_support_rejects_missing_effort() {
     assert_eq!(
-        recorded_codex_support(&historical, "gpt-6-luna", "ultra").unwrap_err(),
+        recorded_codex_support(&historical_codex_models(), "gpt-6-luna", "ultra").unwrap_err(),
         "gpt-6-luna/ultra absent from recorded observation"
     );
 }
 
 #[test]
 fn operator_codex_observation_rejects_mutation() {
-    if crate::issue_workflows::model_profile().sol != "gpt-6.2-sol" {
-        // The operator capture is only carried by the operator fixture port.
+    if !uses_operator_observation() {
         return;
     }
     let (mut bytes, mut provenance) = operator_codex_observation(&workspace());
@@ -450,27 +514,173 @@ fn operator_codex_observation_rejects_mutation() {
     );
 }
 
+fn expected_worker_model<'a>(
+    name: &str,
+    table_model: &'a str,
+    profile: &'a crate::issue_workflows::ModelProfile,
+) -> &'a str {
+    match (name, table_model) {
+        // The installed backlog author has its own fixed pin for each source baseline.
+        ("backlog/triage-author", _) if profile.sol == "gpt-6.2-sol" => "gpt-6.2-sol",
+        ("backlog/triage-author", _) => "gpt-6.1-sol",
+        (_, "gpt-6.1-sol" | "gpt-6.2-sol") => &profile.sol,
+        (_, "gpt-6-astra" | "gpt-6.2-astra") => &profile.astra,
+        _ => table_model,
+    }
+}
+
+fn recorded_worker_models(
+    root: &Path,
+    profile: &crate::issue_workflows::ModelProfile,
+) -> Vec<serde_json::Value> {
+    if profile.sol == "gpt-6.2-sol" {
+        let (bytes, provenance) = operator_codex_observation(root);
+        validate_operator_codex_observation(&bytes, &provenance).unwrap()
+    } else {
+        historical_codex_models()
+    }
+}
+
+#[test]
+fn installed_worker_model_expectations_follow_both_fixture_profiles() {
+    use crate::issue_workflows::ModelProfile;
+
+    let root = workspace();
+    let product = ModelProfile {
+        sol: "gpt-6.1-sol".into(),
+        astra: "gpt-6-astra".into(),
+    };
+    let operator = ModelProfile {
+        sol: "gpt-6.2-sol".into(),
+        astra: "gpt-6.2-astra".into(),
+    };
+    let historical = recorded_worker_models(&root, &product);
+    let current = uses_operator_observation().then(|| recorded_worker_models(&root, &operator));
+    for (profile, models, triage_author_pin) in [
+        (&product, Some(historical.as_slice()), "gpt-6.1-sol"),
+        (&operator, current.as_deref(), "gpt-6.2-sol"),
+    ] {
+        for (worker, product_id, operator_id, expected) in [
+            (
+                "issue-internal/implementer",
+                product.sol.as_str(),
+                operator.sol.as_str(),
+                profile.sol.as_str(),
+            ),
+            (
+                "issue-internal/evaluator",
+                product.astra.as_str(),
+                operator.astra.as_str(),
+                profile.astra.as_str(),
+            ),
+            // A Sol table entry would still resolve to the pin through the generic arm.
+            (
+                "backlog/triage-author",
+                product.astra.as_str(),
+                operator.astra.as_str(),
+                triage_author_pin,
+            ),
+        ] {
+            for table_model in [product_id, operator_id] {
+                let model = expected_worker_model(worker, table_model, profile);
+                assert_eq!(model, expected, "{worker} from {table_model}");
+                if let Some(models) = models {
+                    recorded_codex_support(models, model, "medium").unwrap();
+                }
+            }
+        }
+        for (worker, model) in [
+            ("issue-internal/bugs", "gpt-6.1-terra"),
+            ("issue-internal/kimi", "k3.1-pro"),
+        ] {
+            assert_eq!(
+                expected_worker_model(worker, model, profile),
+                model,
+                "{worker}"
+            );
+        }
+    }
+
+    // The November 23 listing advertises both generations. The November 7 listing
+    // must refuse either 6.2 binding, and the exact expectations above pin the operator to 6.2.
+    for model in [&operator.sol, &operator.astra] {
+        assert_eq!(
+            recorded_codex_support(&historical, model, "medium").unwrap_err(),
+            format!("{model} absent from recorded observation")
+        );
+    }
+}
+
+#[test]
+fn installed_worker_audit_accepts_product_profile() {
+    let root = workspace();
+    let port = tempfile::tempdir().unwrap();
+    let mut catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(root.join(".af/task-catalog.toml")).unwrap())
+            .unwrap();
+    for (name, pin) in catalog["packages"].as_table_mut().unwrap() {
+        let relative = pin["path"].as_str().unwrap();
+        let source = root.join(relative);
+        let manifest = source.join("worker.toml");
+        if !manifest.is_file() {
+            continue;
+        }
+        let package = port.path().join(relative);
+        copy(&source, &package);
+        let mut worker: toml::Value =
+            toml::from_str(&std::fs::read_to_string(manifest).unwrap()).unwrap();
+        // Simulate the product port's installed bindings independently of audit expectations.
+        let model = match worker["runner"]["model"].as_str() {
+            Some("gpt-6.2-sol") => "gpt-6.1-sol",
+            Some("gpt-6.2-astra") => "gpt-6-astra",
+            _ => continue,
+        };
+        worker["runner"]["model"] = model.into();
+        std::fs::write(
+            package.join("worker.toml"),
+            toml::to_string(&worker).unwrap(),
+        )
+        .unwrap();
+        pin["digest"] = af_pipeline_config::lock::package_digest(name, &package)
+            .unwrap()
+            .into();
+    }
+    std::fs::write(
+        port.path().join(".af/task-catalog.toml"),
+        toml::to_string(&catalog).unwrap(),
+    )
+    .unwrap();
+    let profile = crate::issue_workflows::ModelProfile {
+        sol: "gpt-6.1-sol".into(),
+        astra: "gpt-6-astra".into(),
+    };
+    audit_installed_workers(port.path(), &profile);
+}
+
 /// Exact approved replacement Workers, including personal accounts and independent roles.
 #[test]
 fn every_shipped_model_worker_uses_recorded_models_and_independent_judges() {
+    audit_installed_workers(&workspace(), &crate::issue_workflows::model_profile());
+}
+
+fn audit_installed_workers(root: &Path, profile: &crate::issue_workflows::ModelProfile) {
     use af_pipeline_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
-    let root = workspace();
     let catalog: toml::Value =
         toml::from_str(&std::fs::read_to_string(root.join(".af/task-catalog.toml")).unwrap())
             .unwrap();
     let expected = BTreeMap::from([
-        ("backlog/triage-author", ("gpt-6.1-sol", "medium", "author")),
+        ("backlog/triage-author", ("gpt-6.2-sol", "medium", "author")),
         (
             "backlog/triage-verifier",
             ("gpt-6.1-terra", "medium", "verify"),
         ),
         (
             "issue-internal/implementer",
-            ("gpt-6.1-sol", "medium", "implement"),
+            ("gpt-6.2-sol", "medium", "implement"),
         ),
         (
             "issue-internal/researched-implementer",
-            ("gpt-6.1-sol", "medium", "implement"),
+            ("gpt-6.2-sol", "medium", "implement"),
         ),
         ("issue-internal/kimi", ("k3.1-pro", "high", "implement")),
         (
@@ -487,11 +697,11 @@ fn every_shipped_model_worker_uses_recorded_models_and_independent_judges() {
         ),
         (
             "issue-internal/design-acceptor",
-            ("gpt-6.1-sol", "medium", "verify"),
+            ("gpt-6.2-sol", "medium", "verify"),
         ),
         (
             "issue-internal/codex-light-evaluator",
-            ("gpt-6-astra", "medium", "evaluate"),
+            ("gpt-6.2-astra", "medium", "evaluate"),
         ),
         ("issue-internal/bugs", ("gpt-6.1-terra", "high", "review")),
         (
@@ -500,36 +710,30 @@ fn every_shipped_model_worker_uses_recorded_models_and_independent_judges() {
         ),
         (
             "issue-internal/evaluator",
-            ("gpt-6-astra", "medium", "evaluate"),
+            ("gpt-6.2-astra", "medium", "evaluate"),
         ),
         (
             "issue-internal/light-evaluator",
-            ("gpt-6.1-sol", "medium", "evaluate"),
+            ("gpt-6.2-sol", "medium", "evaluate"),
         ),
         (
             "issue-internal/experiment-evaluator",
-            ("gpt-6-astra", "medium", "evaluate"),
+            ("gpt-6.2-astra", "medium", "evaluate"),
         ),
         (
             "issue-internal/investigator",
-            ("gpt-6.1-sol", "high", "author"),
+            ("gpt-6.2-sol", "high", "author"),
         ),
         (
             "issue-internal/designer",
-            ("gpt-6-astra", "medium", "author"),
+            ("gpt-6.2-astra", "medium", "author"),
         ),
         (
             "issue-internal/report-verifier",
             ("gpt-6.1-terra", "high", "verify"),
         ),
     ]);
-    let profile = crate::issue_workflows::model_profile();
-    let models = if profile.sol == "gpt-6.2-sol" {
-        let (bytes, provenance) = operator_codex_observation(&root);
-        validate_operator_codex_observation(&bytes, &provenance).unwrap()
-    } else {
-        historical_codex_models()
-    };
+    let models = recorded_worker_models(root, profile);
     let mut checked = std::collections::BTreeSet::new();
     for (name, pin) in catalog["packages"].as_table().unwrap() {
         let package = root.join(pin["path"].as_str().unwrap());
@@ -550,15 +754,10 @@ fn every_shipped_model_worker_uses_recorded_models_and_independent_judges() {
             af_pipeline_config::lock::package_digest(name, &package).unwrap(),
             "{name}"
         );
-        let &(product_model, effort, role) = expected
+        let &(table_model, effort, role) = expected
             .get(name.as_str())
             .unwrap_or_else(|| panic!("unapproved Worker {name}"));
-        let model = match (name.as_str(), product_model) {
-            ("backlog/triage-author", _) => product_model,
-            (_, "gpt-6.1-sol") => profile.sol.as_str(),
-            (_, "gpt-6-astra") => profile.astra.as_str(),
-            _ => product_model,
-        };
+        let model = expected_worker_model(name, table_model, profile);
         assert_eq!(
             worker.signature.roles,
             std::collections::BTreeSet::from([role.to_owned()]),

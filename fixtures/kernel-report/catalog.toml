@@ -1,7 +1,7 @@
 schema = "af.shared-task-catalog/1"
 
 [packages."kernel/analyst"]
-digest = "sha256:f26fdb07ae6ecbbe6d4e79ef9f4c6286334d8ce8d56a5bfab8c3b1bcfb508e30"
+digest = "sha256:85fede162a580df8d260d7312e8968df4d094869103a53c9e3fd05f682ee217b"
 path = "fixtures/kernel-report/task-packages/kernel/analyst"
 version = "1.0.1"
 

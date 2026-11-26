@@ -71,13 +71,20 @@ exact authority bytes. Production `.af/` packages and captured authority stay as
 
 The shipped-worker audit queries the exact model and effort read from each installed Codex
 Worker. The product port uses the complete 2026-11-07 response after verifying its historical
-projection. Carry the two 2026-11-22 files under `crates/af/tests/fixtures/provider-models/` with
-the operator port. The product port needs neither file. The operator files contain the exact
-normalized `af/provider-models@4` response and its capture provenance from
-`af provider models codex-personal --json --page 0` on r-400, using AF 0.15.1-rc.3 and
-Codex 0.169.0. The audit checks the pinned raw SHA-256, capture metadata and complete
-`codex-personal` listing, including Sol 6.2 medium/high and Astra 6.2 medium. These observations
-establish harness-advertised support. Synthetic catalog rows are used for hermetic planning.
+projection. The operator port carries three 2026-11-23 files under
+`crates/af/tests/fixtures/provider-models/`.
+
+- `codex-provider-models-raw-20261123.json` holds the exact normalized `af/provider-models@4`
+  response.
+- `codex-provider-models-recorded-20261123.json` holds the projection to Sol 6.2 and Astra 6.2.
+- `codex-provider-models-recorded-20261123.provenance.json` records the capture command
+  `AF_PROVIDERS_FILE=<machine-local registry> af provider models codex-personal --json`
+  and Codex 0.171.0.
+
+The operator audit checks the pinned raw SHA-256, capture metadata and complete `codex-personal`
+listing, including Sol 6.2 medium/high and Astra 6.2 medium. The observations establish
+harness-advertised support. Inference access requires separate qualification. Synthetic catalog
+rows are used for hermetic planning.
 
 Verify either port with the focused commands below and the fast Task gate.
 

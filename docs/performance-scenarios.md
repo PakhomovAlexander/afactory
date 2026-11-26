@@ -181,10 +181,10 @@ performance route composes research, `perf/research-experiment-codex` and shared
 These files contain no local package definitions, authentication paths or credentials. They do
 not activate a Task, Scenario, Ant or publication. All selected Workers use `codex-personal`;
 that alias must already name the operator's admitted Codex account on the capture machine.
-The Report author uses Codex `gpt-6.1-sol` medium with only `read-source`, the existing Report
+The Report author uses Codex `gpt-6.2-sol` medium with only `read-source`, the existing Report
 contract and unchanged author reservations. The existing independent `kernel/report-verifier`
 uses Codex `gpt-6.1-terra` high with only `read-source`. The generic `kernel/analyst` uses Codex
-`gpt-6.1-sol` high with `read-source` and `execute-checks`; the separate committed owner author
+`gpt-6.2-sol` high with `read-source` and `execute-checks`; the separate committed owner author
 keeps the owner's medium-effort, read-only selection explicit.
 
 For a consuming repository, copy the complete pinned package/Pipeline closure into its reviewed
@@ -198,13 +198,13 @@ overrides and silent old-role fallback are refused by native performance templat
 
 | Development role | Model | Effort | Provider |
 | --- | --- | --- | --- |
-| Implementer | `gpt-6.1-sol` | medium | `codex-personal` |
+| Implementer | `gpt-6.2-sol` | medium | `codex-personal` |
 | Bugs | `gpt-6.1-terra` | high | `codex-personal` |
 | Correctness | `gpt-6.1-terra` | high | `codex-personal` |
 | Evaluator | `gpt-6.1-terra` | medium | `codex-personal` |
 
-All owner Workers use GPT-6.1: Sol for implementation and Report authoring, Terra for the
-development judges, preserving their model independence from the Sol implementer.
+Owner Workers use Sol 6.2 for implementation and Report authoring and Terra 6.1 for
+the development judges, preserving their model independence from the Sol implementer.
 There is no advisory role or default-light pipeline. Verification has no implementer. Native
 performance roadmap admission checks these model bindings before dispatch. Research and final
 reporting use the explicit read-only Report bindings above.

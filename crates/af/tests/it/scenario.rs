@@ -5536,7 +5536,7 @@ fn scoped_startup_native_preflight_refuses_command_template_before_zero_task_dis
     let scope = json!({"schema":"af/implementation-startup-scope@2", "owner":"owner", "recipe_id":af_scenario::contract::hash(&typed).unwrap(),
         "repo":template["repo"], "task_state":template["state"], "repository_id":template["repository_id"], "source_commit":commit.trim(), "source_content_digest":template["source_content_digest"],
         "repository":"owner/project", "destination_repository_id":1,"actor_id":2,"actor_login":"owner", "branch_prefix":"implementation/", "base":"main", "grants":[],
-        "templates":{pinned["template_id"].as_str().unwrap():{"fixture/worker":{"provider":"codex-personal","provider_kind":"codex","model":"gpt-6.1-sol","effort":"medium"}}},
+        "templates":{pinned["template_id"].as_str().unwrap():{"fixture/worker":{"provider":"codex-personal","provider_kind":"codex","model":"gpt-6.2-sol","effort":"medium"}}},
         "limits":typed.definitions["main"].limits,"max_repairs":0,"expires_unix_ms":8_000_000_000_000_u64});
     let mut policy: Value = serde_json::from_slice(&std::fs::read(&f.policy).unwrap()).unwrap();
     policy["task_templates"] = json!([pinned["template_id"]]);

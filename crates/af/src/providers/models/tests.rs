@@ -1,11 +1,10 @@
-//! The two recorded catalogs of 2026-10-15, as `tests/fixtures/provider-models/` keeps them:
-//! Claude Code 2.1.300's `list_models` answer and codex-cli 0.162.1's `model/list` result. The
-//! fields the recording elided (descriptions, the effort levels of the alias entries, the efforts
-//! of the Codex models other than `gpt-6.1-sol` and `gpt-6-luna`) are filled to match what was
-//! recorded; every exact ID, alias, display name and the effort facts the requirements cite are
-//! verbatim. `gpt-6.1-terra`, which the catalog's independent judges bind, is added after the
-//! recording as a synthetic entry covering low/medium/high/xhigh, so plans verify the shipped
-//! bindings without claiming a new live catalog recording.
+//! The mocks in `tests/fixtures/provider-models/` are based on the 2026-10-15 `list_models`
+//! response from Claude Code 2.1.300 and `model/list` response from codex-cli 0.162.1. The
+//! original entries preserve recorded IDs, aliases, display names and known effort facts, with
+//! descriptions, Claude alias effort levels and unrecorded Codex effort details filled in.
+//! Both Codex mocks add a synthetic `gpt-6.1-terra` entry with low/medium/high/xhigh for the
+//! independent judges' bindings. The `model/list` mock updates the Sol and Astra entries to
+//! `gpt-6.2-sol` and `gpt-6.2-astra` for current bindings. The cache mock retains `gpt-6.1-sol`.
 use super::*;
 
 const CLAUDE: &str =
@@ -97,8 +96,10 @@ fn the_codex_catalog_keeps_each_models_levels_and_default() {
     assert_eq!(
         ids,
         [
-            "gpt-6.1-sol",
+            "gpt-6.2-sol",
             "gpt-6.1-terra",
+            "gpt-6.2-astra",
+            "gpt-6.1-sol",
             "gpt-6-astra",
             "gpt-6-sol",
             "gpt-6-luna",
@@ -106,8 +107,8 @@ fn the_codex_catalog_keeps_each_models_levels_and_default() {
             "gpt-5.6-terra"
         ]
     );
-    let sol = report.catalog.model("gpt-6.1-sol").unwrap();
-    assert_eq!(sol.display_name, "GPT-6.1-Sol");
+    let sol = report.catalog.model("gpt-6.2-sol").unwrap();
+    assert_eq!(sol.display_name, "GPT-6.2-Sol");
     assert_eq!(sol.default_effort.as_deref(), Some("low"));
     assert_eq!(
         effort_levels(sol),
@@ -124,7 +125,7 @@ fn an_entry_outside_g_is_left_out_and_counted() {
     list["data"][0]["id"] = "gpt 6/sol".into();
     let (catalog, skipped) = parse_codex_model_list(&list).unwrap();
     assert_eq!(skipped, 1);
-    assert_eq!(catalog.models.len(), 6);
+    assert_eq!(catalog.models.len(), 8);
     assert!(parse_codex_model_list(&serde_json::json!({})).is_err());
     assert!(parse_claude_list_models(&serde_json::json!({"models": 1})).is_err());
 }

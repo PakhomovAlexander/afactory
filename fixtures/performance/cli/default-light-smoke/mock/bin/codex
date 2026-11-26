@@ -127,7 +127,7 @@ def business(args):
     inputs = request.get("inputs", {})
     role = ("correctness" if "assignment" in inputs else
             "evaluator" if "checks" in inputs else "implementer")
-    expected_model = "gpt-6.1-sol" if role == "implementer" else "gpt-6.1-terra"
+    expected_model = "gpt-6.2-sol" if role == "implementer" else "gpt-6.1-terra"
     if model != expected_model:
         raise RuntimeError(f"unexpected {role} model: {model}")
     if not any("model_reasoning_effort=\"high\"" in arg for arg in args):
