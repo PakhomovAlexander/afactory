@@ -672,11 +672,80 @@ class Adapter:
         record = self.journal.publication(subject_value, revision)
         return record, self.read_object(record)
 
+    def actions_runs(self, revision):
+        runs = self.service.pages(self.repo + "/actions/runs", key="workflow_runs",
+                                  params={"head_sha": revision})
+        by_suite, latest = {}, {}
+        numbers = set()
+        for run in runs:
+            need(run.get("head_sha") == revision, "workflow run belongs to a stale SHA")
+            suite_id = integer(run.get("check_suite_id"))
+            workflow = integer(run.get("workflow_id"))
+            number = integer(run.get("run_number"))
+            integer(run.get("run_attempt"))
+            need(suite_id not in by_suite and (workflow, number) not in numbers,
+                 "ambiguous workflow run identity")
+            by_suite[suite_id] = run
+            numbers.add((workflow, number))
+            if workflow not in latest or number > latest[workflow]["run_number"]:
+                latest[workflow] = run
+        return by_suite, latest
+
+    def attempt_check_urls(self, revision, run):
+        path = self.repo + f"/actions/runs/{integer(run['id'])}/attempts/{run['run_attempt']}/jobs"
+        jobs = self.service.pages(path, key="jobs")
+        urls = set()
+        for job in jobs:
+            need(integer(job.get("run_id")) == run["id"] and job.get("head_sha") == revision,
+                 "workflow job belongs to a different run or SHA")
+            urls.add(string(job.get("check_run_url")))
+        return urls
+
+    def actions_check(self, revision, matches, suites, runs, attempts):
+        by_suite, latest = runs
+        # An unlinked suite could be a new run of the required workflow.
+        if suites.keys() - by_suite.keys():
+            return None
+        for suite in suites.values():
+            need(suite.get("head_sha") == revision, "stale check suite")
+        for row in matches:
+            link = row.get("check_suite")
+            need(isinstance(link, dict), "missing workflow check suite")
+            if integer(link.get("id")) not in suites:
+                return None
+        producers = {by_suite[row["check_suite"]["id"]]["workflow_id"] for row in matches}
+        if len(producers) != 1:
+            return None
+        run = latest[producers.pop()]
+        suite_id = run["check_suite_id"]
+        current = [row for row in matches if row["check_suite"]["id"] == suite_id]
+        if current and run["run_attempt"] > 1:
+            if run["id"] not in attempts:
+                attempts[run["id"]] = self.attempt_check_urls(revision, run)
+            current = [row for row in current if
+                       "https://api.github.com" + self.repo + f"/check-runs/{row['id']}" in attempts[run["id"]]]
+        if not current:
+            old = max(matches, key=lambda row: row["id"])
+            return old, old["check_suite"]["id"], "pending"
+        check = max(current, key=lambda row: row["id"])
+        outcome = self.check_outcome(check, suites[suite_id]) if run.get("status") == "completed" else "pending"
+        return check, suite_id, outcome
+
+    @staticmethod
+    def check_outcome(check, suite):
+        conclusions = (check.get("conclusion"), suite.get("conclusion"))
+        terminal = ("success", "failure", "cancelled", "timed_out", "action_required", "startup_failure")
+        if (check.get("status") != "completed" or suite.get("status") != "completed"
+                or any(c not in terminal for c in conclusions)):
+            return "pending"
+        return "ready" if all(c == "success" for c in conclusions) else "repairable"
+
     def checks(self, revision):
         """One exact-head enumeration for both green gating and terminal outcomes."""
         evidence = []
         pending = False
         required = self.config["required_checks"]
+        runs, attempts = None, {}
         for kind in ("check", "status"):
             checks = [c for c in required if c["kind"] == kind]
             if not checks:
@@ -692,7 +761,7 @@ class Adapter:
                 for row in rows:
                     if kind == "check" and row.get("name") == wanted["name"]:
                         need(isinstance(row.get("app"), dict)
-                             and row["app"].get("id") == wanted["app_id"], "untrusted check app for required name")
+                             and integer(row["app"].get("id")) == wanted["app_id"], "untrusted check app for required name")
                         need(row.get("head_sha") == revision, "check belongs to a stale SHA")
                         matches.append(row)
                     elif kind == "status" and row.get("context") == wanted["context"]:
@@ -707,22 +776,27 @@ class Adapter:
                     continue
                 latest = max(matches, key=lambda row: integer(row["id"]))
                 if kind == "check":
-                    app_suites = [s for s in suites if isinstance(s.get("app"), dict)
-                                  and s["app"].get("id") == wanted["app_id"]]
+                    app_suites = {s["id"]: s for s in suites if isinstance(s.get("app"), dict)
+                                  and type(s["app"].get("id")) is int and s["app"]["id"] == wanted["app_id"]}
                     if not app_suites:
                         pending = True
                         continue
-                    newest = max(app_suites, key=lambda s: integer(s["id"]))
-                    need(newest.get("head_sha") == revision, "stale check suite")
-                    current = (isinstance(latest.get("check_suite"), dict)
-                               and latest["check_suite"].get("id") == newest["id"])
-                    conclusions = (latest.get("conclusion"), newest.get("conclusion"))
-                    failures = {"failure", "cancelled", "timed_out", "action_required", "startup_failure"}
-                    complete = (current and latest.get("status") == "completed"
-                                and newest.get("status") == "completed"
-                                and all(c == "success" or c in failures for c in conclusions))
-                    outcome = ("ready" if all(c == "success" for c in conclusions) else "repairable") if complete else "pending"
-                    suite_id = integer(newest["id"])
+                    if any(row["app"].get("slug") == "github-actions"
+                           for row in (*matches, *app_suites.values())):
+                        if runs is None:
+                            runs = self.actions_runs(revision)
+                        resolved = self.actions_check(revision, matches, app_suites, runs, attempts)
+                        if resolved is None:
+                            pending = True
+                            continue
+                        latest, suite_id, outcome = resolved
+                    else:
+                        suite_id = max(app_suites)
+                        newest = app_suites[suite_id]
+                        need(newest.get("head_sha") == revision, "stale check suite")
+                        link = latest.get("check_suite")
+                        current = isinstance(link, dict) and type(link.get("id")) is int and link["id"] == suite_id
+                        outcome = self.check_outcome(latest, newest) if current else "pending"
                 else:
                     state = latest.get("state")
                     outcome = "ready" if state == "success" else "repairable" if state in ("failure", "error") else "pending"

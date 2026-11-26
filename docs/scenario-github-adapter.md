@@ -44,7 +44,8 @@ Provision a repository-scoped fine-grained personal access token for that bot us
 V1 verifies the user through `/user`; installation tokens without a user identity are unsupported.
 Grant only the selected operations' permissions: Metadata read, Administration read (to inspect
 head protection), Contents read, Pull requests read/write (create and request reviews), Checks
-read, Commit statuses read and Issues read/write if follow-ups are enabled. The repository
+read, Actions read for required GitHub Actions checks, Commit statuses read and Issues
+read/write if follow-ups are enabled. The repository
 administrator provisions and locks branches separately; this adapter never changes protection,
 pushes, creates/deletes refs or merges. Token rotation in the same file is allowed only while
 `/user` retains the pinned actor. Neither token bytes nor their digest enter receipts or stdout.
@@ -154,14 +155,18 @@ local publication receipt. No PR-number projection, invented runtime port or man
 is required. Observe never adopts a PR from remote search alone.
 
 CI requires every machine-authorized identity at that exact SHA. Checks use exact name and app
-ID, latest run ID and latest check suite per app; both suite and run must have explicit completed
-success. A required name emitted by another app is refused. V1 conservatively supports required
-names in the newest suite for each app; multiple independent workflows using the same app may
-remain unsatisfied until all required names occur in that suite. This conservative scope avoids
-accepting old suite success while a new suite has not emitted its required job. Statuses use
+ID. A required name emitted by another app is refused. For GitHub Actions checks, the adapter
+uses [workflow runs](https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-repository)
+to associate each check's suite ID with its producing workflow. Each required name must have
+a unique producing workflow at the approved head. The workflow's highest run number must have
+completed, and for reruns the check must belong to its
+[current attempt](https://docs.github.com/en/rest/actions/workflow-jobs#list-jobs-for-a-workflow-run-attempt).
+A newer run or attempt with no matching check keeps that requirement pending. Other apps use
+the latest check run ID and newest suite per app. Green requires explicit completed success
+from each check and its suite. Statuses use
 exact context and creator ID, selecting the newest status ID from the exact-SHA endpoint.
 Missing, pending, stale, failing, skipped, neutral, cancelled or incomplete evidence is never
-green. Both APIs paginate completely within the configured bounds; HTTP errors, auth failures,
+green. Listings paginate completely within the configured bounds; HTTP errors, auth failures,
 rate limits and shifted/partial listings remain unknown. The PR identity and head are read
 before and after observation. This is an observation of current service evidence, not an
 immutable guarantee about future checks or a substitute for Task acceptance.
