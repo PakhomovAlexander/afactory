@@ -17,8 +17,9 @@ af cluster inbox --context lab --json
 ```
 
 A sole context is selected automatically. With multiple contexts, select one explicitly.
-Connecting checks the pinned host and reads both management capabilities before saving a private
-binding. Repeat the same command to verify it again. A different descriptor or credential
+Connecting checks the pinned host and reads both management capabilities concurrently under one
+30-second deadline. It saves a private binding only after both reads succeed. Repeat the same
+command to verify it again. A different descriptor or credential
 reference requires a different alias. Fleet commands use the running release independently of
 the current checkout. Ordinary Task and Review commands continue to use local selection.
 
@@ -94,7 +95,7 @@ action, its reason and its success condition. JSON reports unknown storage pool 
 `inventory.data.pools: null` and a known empty inventory as `inventory.data.pools: []`. Text
 displays “Storage pool inventory unknown” and “No storage pools” respectively. Host-level SSD
 availability is reported independently. The two `af infra` management reads run concurrently
-under one deadline. A timeout on one reader can leave a fresh observation from the other.
+under one 20-second deadline. A timeout on one reader can leave a fresh observation from the other.
 
 The infrastructure cache lives under `${XDG_STATE_HOME:-$HOME/.local/state}/af/fleet-cache`.
 A successful management read can refresh its per-context observation if it fits the
@@ -126,7 +127,8 @@ cargo nextest run --workspace --locked --profile ci -E 'binary_id(af::it) & test
 ```
 
 The authenticated test requires `/usr/bin/ssh`, `/usr/sbin/sshd`, and `ssh-keygen`. The native SSH
-test hands accepted loopback sockets to Apple's inetd-mode `sshd` so it can create audit sessions
-for the forced commands. It requires a shell where the daemon can initialize its own sandbox.
+test hands each accepted loopback socket to a separate Apple inetd-mode `sshd` so both management
+reads can proceed concurrently and create audit sessions for their forced commands. It requires
+a shell where the daemon can initialize its own sandbox.
 The Linux fixture uses stdio so it can authenticate in gates that
 forbid TCP listeners. Both use isolated per-test configuration and require no running SSH service.

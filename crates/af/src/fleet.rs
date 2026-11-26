@@ -10,17 +10,52 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use af_contracts::fleet::{
-    Action, BriefingV2, ClusterState, FLEET_BRIEFING_V2, Freshness, NextAction, Observation,
-    Readiness, Reading, View,
+    Action, Allocation, BriefingV2, ClusterState, FLEET_BRIEFING_V2, Freshness, Inventory,
+    NextAction, Observation, Readiness, Reading, View,
 };
 use clap::{Args, Subcommand};
 use serde::{Serialize, de::DeserializeOwned};
 
 use cache::Cache;
 use context::{Binding, Config, Descriptor};
-use transport::{ALLOCATIONS, POOLS, ReadFailure};
+use transport::{ALLOCATIONS, POOLS, ReadFailure, Target};
 
 const COMMAND_WALL: Duration = Duration::from_secs(20);
+const CONNECT_WALL: Duration = Duration::from_secs(30);
+
+type PoolsRead = Result<Inventory, ReadFailure>;
+type AllocationsRead = Result<Vec<Allocation>, ReadFailure>;
+
+struct ManagementReader<'a> {
+    target: &'a Target,
+    key: PathBuf,
+    deadline: Instant,
+}
+
+impl ManagementReader<'_> {
+    fn pools(&self) -> PoolsRead {
+        self.target
+            .read(&self.key, POOLS, self.deadline)
+            .and_then(inventory::Pools::normalize)
+    }
+
+    fn allocations(&self) -> AllocationsRead {
+        self.target
+            .read(&self.key, ALLOCATIONS, self.deadline)
+            .and_then(inventory::allocations)
+    }
+
+    fn both(&self) -> Result<(PoolsRead, AllocationsRead), &'static str> {
+        std::thread::scope(|threads| {
+            let pools = threads.spawn(|| self.pools());
+            let allocations = self.allocations();
+            let pools = pools
+                .join()
+                .map_err(|_| "Management pools reader terminated")?;
+            Ok((pools, allocations))
+        })
+    }
+}
 
 #[derive(Debug, Args)]
 #[command(args_conflicts_with_subcommands = true)]
@@ -129,16 +164,14 @@ fn connect(
         return Err(context::conflict(&context));
     }
 
-    let target = &binding.descriptor.management;
-    let key = config.management_key(&binding.credential_ref);
-    let deadline = Instant::now() + COMMAND_WALL;
-    target
-        .read(&key, POOLS, deadline)
-        .and_then(inventory::Pools::normalize)
-        .map_err(|error| format!("Management pools capability: {}", error.reason()))?;
-    target
-        .read(&key, ALLOCATIONS, deadline)
-        .and_then(inventory::allocations)
+    let (pools, allocations) = ManagementReader {
+        target: &binding.descriptor.management,
+        key: config.management_key(&binding.credential_ref),
+        deadline: Instant::now() + CONNECT_WALL,
+    }
+    .both()?;
+    pools.map_err(|error| format!("Management pools capability: {}", error.reason()))?;
+    allocations
         .map_err(|error| format!("Management allocations capability: {}", error.reason()))?;
     if previous.is_none() {
         config.publish(&context, &binding)?;
@@ -208,40 +241,31 @@ fn brief(config: Config, view: View, read: ReadArgs) -> Result<i32, String> {
     briefing.cluster = descriptor.cluster;
     let deadline = Instant::now() + COMMAND_WALL;
     let mut readings = Vec::new();
+    let mut timed_out = false;
     if matches!(view, View::Infra | View::Status | View::Allocations) {
-        let key = config.management_key(&binding.credential_ref);
         let cache = Cache::new(&alias, &binding);
-        let management = &descriptor.management;
-        let read_pools = || {
-            management
-                .read(&key, POOLS, deadline)
-                .and_then(inventory::Pools::normalize)
+        let reader = ManagementReader {
+            target: &descriptor.management,
+            key: config.management_key(&binding.credential_ref),
+            deadline,
         };
-        let read_allocations = || {
-            management
-                .read(&key, ALLOCATIONS, deadline)
-                .and_then(inventory::allocations)
+        let (pools, allocations) = match view {
+            View::Infra => {
+                let (pools, allocations) = reader.both()?;
+                (Some(pools), Some(allocations))
+            }
+            View::Status => (Some(reader.pools()), None),
+            View::Allocations => (None, Some(reader.allocations())),
+            _ => unreachable!(),
         };
-        let (pools, allocations) = std::thread::scope(|threads| {
-            let pools =
-                matches!(view, View::Infra | View::Status).then(|| threads.spawn(read_pools));
-            let allocations =
-                matches!(view, View::Infra | View::Allocations).then(read_allocations);
-            let pools = pools
-                .map(|reader| {
-                    reader
-                        .join()
-                        .map_err(|_| "Management pools reader terminated")
-                })
-                .transpose()?;
-            Ok::<_, &str>((pools, allocations))
-        })?;
         if let Some(result) = pools {
+            timed_out |= matches!(result, Err(ReadFailure::TimedOut));
             let reading = observe(&descriptor.scope, "pools", cache.as_ref(), result)?;
             readings.push(reading.observation.freshness);
             briefing.inventory = Some(reading);
         }
         if let Some(result) = allocations {
+            timed_out |= matches!(result, Err(ReadFailure::TimedOut));
             let reading = observe(&descriptor.scope, "allocations", cache.as_ref(), result)?;
             readings.push(reading.observation.freshness);
             briefing.allocations = Some(reading);
@@ -276,6 +300,9 @@ fn brief(config: Config, view: View, read: ReadArgs) -> Result<i32, String> {
         );
     }
     (briefing.discovery, briefing.next_action) = readiness(&readings, view);
+    if timed_out && matches!(briefing.next_action.action, Action::Wait) {
+        briefing.next_action.reason = "A management reader exceeded the command deadline".into();
+    }
     print(&briefing, read.json)
 }
 

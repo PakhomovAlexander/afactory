@@ -203,7 +203,7 @@
     "workflow": "ci.yml",
     "source_files": {
       ".github/workflows/ci.yml": "27944b207fc1e97dcde3b3647647b0c6666f0ddaa21ae7c32ce895dba8bcbe6b",
-      ".github/workflows/validate.yml": "6118ef573409790c016677bc008042e4a658f626b46ae7397799ad3a07628f51",
+      ".github/workflows/validate.yml": "01e72e65869eb1ee587762142989d12740fc4c05724e7127ca3eb77d31ff0b72",
       "scripts/test-classes.py": "70a6b168556366417ffbf6c1d8b7cfc37b6515e2eb9fd40fbebe6236047d52a6",
       ".config/test-classes.json": "49dea52eec8818a0f0ad530cb98c63ec9203d7516aa4294c38ca10474cc74162"
     }

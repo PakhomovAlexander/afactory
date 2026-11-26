@@ -3,6 +3,7 @@ use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -667,9 +668,16 @@ fn endpoint(machine: &Machine, sshd: &Path, name: &str, allowed: &[(&str, &str)]
     }
 }
 
-// Keep stdio on Linux so the authenticated fixture also runs in gates that forbid TCP listeners.
-#[cfg(not(target_os = "macos"))]
 fn ssh_fixture(machine: &Machine) {
+    // Keep stdio on Linux so this also runs in gates that forbid TCP listeners.
+    let transport = if cfg!(target_os = "macos") {
+        "exec /usr/bin/ssh \"$@\"".to_owned()
+    } else {
+        format!(
+            "[ -n \"$reader\" ] || exit 255\nexec /usr/bin/ssh -o \"ProxyCommand={}/$reader.proxy\" \"$@\"",
+            quoted(machine.root.path())
+        )
+    };
     executable(
         &machine.path("bin/ssh"),
         &format!(
@@ -679,13 +687,45 @@ for arg do
     broker.invalid) reader=broker ;;
     project.invalid) reader=project ;;
   esac
+  operation=$arg
 done
-[ -n "$reader" ] || exit 255
-exec /usr/bin/ssh -o "ProxyCommand={}/$reader.proxy" "$@"
+case "$operation" in
+  'control-api '*)
+    if [ -f {first_reader} ] && [ "$operation" != "$(cat {first_reader})" ]; then
+      while [ ! -e {first_request} ]; do /bin/sleep 0.05; done
+    fi ;;
+esac
+{transport}
 "#,
-            quoted(machine.root.path())
+            first_reader = quoted(&machine.path("first-reader")),
+            first_request = quoted(&machine.path("first-request")),
         ),
     );
+}
+
+// A forced command can survive the client disconnect in its own SSH session.
+// Release it explicitly on both success and unwind, with a finite remote fallback.
+struct PoolsHold<'a>(&'a Machine);
+
+impl<'a> PoolsHold<'a> {
+    fn start(machine: &'a Machine, seconds: u8) -> Self {
+        fs::write(machine.path("hold-pools"), seconds.to_string()).unwrap();
+        Self(machine)
+    }
+}
+
+impl Drop for PoolsHold<'_> {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(self.0.path("hold-pools"));
+        let active = self.0.path("pools-held");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while active.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if !std::thread::panicking() {
+            assert!(!active.exists(), "forced pools command did not release");
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -717,18 +757,20 @@ mod loopback {
             let port = listener.local_addr().unwrap().port();
             listener.set_nonblocking(true).unwrap();
             let (stop, stopped) = mpsc::channel();
-            let mut command = Command::new(sshd);
-            command.args(["-i", "-e", "-f"]).arg(config);
+            let sshd = sshd.to_owned();
             let stderr = File::create(&log).unwrap();
             let worker = thread::spawn(move || {
-                let mut child = ChildGuard(None);
+                let mut children: Vec<ChildGuard> = Vec::new();
                 while stopped.recv_timeout(POLL) == Err(RecvTimeoutError::Timeout) {
-                    if let Some(process) = &mut child.0 {
-                        if process.try_wait().unwrap().is_none() {
-                            continue;
+                    children.retain_mut(|child| {
+                        if af_process::reap::try_wait(child.0.as_mut().unwrap())
+                            .unwrap()
+                            .is_some()
+                        {
+                            child.0 = None;
                         }
-                        child.0 = None;
-                    }
+                        child.0.is_some()
+                    });
                     let (stream, _) = match listener.accept() {
                         Ok(connection) => connection,
                         Err(error) if error.kind() == ErrorKind::WouldBlock => continue,
@@ -736,17 +778,17 @@ mod loopback {
                     };
                     // Apple's inetd-mode sshd needs a connected TCP socket on both descriptors
                     // to create the audit session for its forced command.
-                    child.0 = Some(
-                        command
+                    // The temporary Command closes the parent's socket copies after spawn.
+                    let child = af_process::spawn(
+                        Command::new(&sshd)
+                            .args(["-i", "-e", "-f"])
+                            .arg(&config)
                             .stdin(Stdio::from(OwnedFd::from(stream.try_clone().unwrap())))
                             .stdout(Stdio::from(OwnedFd::from(stream)))
-                            .stderr(Stdio::from(stderr.try_clone().unwrap()))
-                            .spawn()
-                            .unwrap(),
-                    );
-                    // Command retains the descriptors used for spawn. Close the parent's copies
-                    // so ssh gets EOF as soon as the server closes its side of the connection.
-                    command.stdin(Stdio::null()).stdout(Stdio::null());
+                            .stderr(Stdio::from(stderr.try_clone().unwrap())),
+                    )
+                    .unwrap();
+                    children.push(ChildGuard(Some(child)));
                 }
             });
             Self {
@@ -854,18 +896,36 @@ fn pinned_ssh_broker_and_project_origin_keep_independent_read_authority() {
         &format!(
             r#"#!/bin/sh
 printf '%s\n' "$SSH_ORIGINAL_COMMAND" >> {requests}
+if [ -f {first_reader} ] && [ "$SSH_ORIGINAL_COMMAND" = "$(cat {first_reader})" ]; then
+  : > {first_request}
+fi
 case "$SSH_ORIGINAL_COMMAND" in
   'control-api http://localhost/pools')
     [ ! -e {temporary} ] || exit 75
-    if [ -e {stall} ]; then exec /bin/sleep 22; fi
+    if [ -f {hold} ]; then
+      : > {held}
+      remaining=$(cat {hold})
+      while [ -e {hold} ] && [ "${{remaining:-0}}" -gt 0 ]; do
+        /bin/sleep 1
+        remaining=$((remaining - 1))
+      done
+      rm -f {held}
+      [ -e {hold} ] || exit 75
+    fi
     exec /bin/cat {pools} ;;
-  'control-api http://localhost/dynamic/allocations') exec /bin/cat {allocations} ;;
+  'control-api http://localhost/dynamic/allocations')
+    [ ! -e {temporary_allocations} ] || exit 75
+    exec /bin/cat {allocations} ;;
   *) exit 77 ;;
 esac
 "#,
             requests = quoted(&machine.path("requests")),
+            first_reader = quoted(&machine.path("first-reader")),
+            first_request = quoted(&machine.path("first-request")),
             temporary = quoted(&machine.path("temporary")),
-            stall = quoted(&machine.path("stall-pools")),
+            temporary_allocations = quoted(&machine.path("temporary-allocations")),
+            hold = quoted(&machine.path("hold-pools")),
+            held = quoted(&machine.path("pools-held")),
             pools = quoted(&machine.path("pools.json")),
             allocations = quoted(&machine.path("allocations.json"))
         ),
@@ -908,15 +968,10 @@ if [ -e {} ]; then exec /bin/cat {}; fi
         &[(&owner_key, &quoted(&machine.path("project")))],
     );
     #[cfg(target_os = "macos")]
-    let (_reserved_port, disconnected) = {
-        symlink("/usr/bin/ssh", machine.path("bin/ssh")).unwrap();
-        loopback::disconnected()
-    };
+    let (_reserved_port, disconnected) = loopback::disconnected();
     #[cfg(not(target_os = "macos"))]
-    let disconnected = {
-        ssh_fixture(&machine);
-        ("offline.invalid", 22)
-    };
+    let disconnected = ("offline.invalid", 22);
+    ssh_fixture(&machine);
     let user = success(Command::new("id").arg("-un").output().unwrap());
     let target = |(host, port): (&str, u16), pin: &str| json!({"host":host,"port":port,"user":user.trim(),"host_key":pin});
     let origin = |address, id: &str| {
@@ -956,7 +1011,20 @@ if [ -e {} ]; then exec /bin/cat {}; fi
     );
     assert!(!machine.path("config/af/fleet/contexts/bad.json").exists());
     assert!(!machine.path("requests").exists());
-    let first = success(connect("lab", "lab.afcontext"));
+    let pools_operation = "control-api http://localhost/pools";
+    let allocations_operation = "control-api http://localhost/dynamic/allocations";
+    fs::write(machine.path("first-reader"), allocations_operation).unwrap();
+    let first = {
+        let _hold = PoolsHold::start(&machine, 22);
+        success(connect("lab", "lab.afcontext"))
+    };
+    let requests = fs::read_to_string(machine.path("requests")).unwrap();
+    assert_eq!(
+        requests.lines().collect::<Vec<_>>(),
+        [allocations_operation, pools_operation]
+    );
+    fs::remove_file(machine.path("first-reader")).unwrap();
+    fs::remove_file(machine.path("first-request")).unwrap();
     assert!(
         first.contains("pinned management reader is authenticated"),
         "{first}"
@@ -981,6 +1049,17 @@ if [ -e {} ]; then exec /bin/cat {}; fi
         "already has a different binding",
     );
     assert_eq!(fs::read(binding_path).unwrap(), bytes);
+    fs::write(machine.path("temporary-allocations"), "").unwrap();
+    require_failure(
+        connect("incomplete", "lab.afcontext"),
+        "Management allocations capability: reader unavailable",
+    );
+    assert!(
+        !machine
+            .path("config/af/fleet/contexts/incomplete.json")
+            .exists()
+    );
+    fs::remove_file(machine.path("temporary-allocations")).unwrap();
 
     let brief = machine.json(&["infra", "--json"]);
     schemas::valid(&validator, &brief);
@@ -1052,6 +1131,15 @@ if [ -e {} ]; then exec /bin/cat {}; fi
     let mut record: Value = serde_json::from_slice(&fs::read(&cache).unwrap()).unwrap();
     schemas::valid(&schemas::validator("fleet-cache-v2.json"), &record);
     fs::write(machine.path("temporary"), "").unwrap();
+    require_failure(
+        connect("incomplete", "lab.afcontext"),
+        "Management pools capability: reader unavailable",
+    );
+    assert!(
+        !machine
+            .path("config/af/fleet/contexts/incomplete.json")
+            .exists()
+    );
     let stale = machine.json(&["infra", "status", "--context", "lab", "--json"]);
     assert_eq!(stale["inventory"]["observation"]["freshness"], "stale");
     assert_eq!(stale["inventory"]["data"], *inventory);
@@ -1063,17 +1151,35 @@ if [ -e {} ]; then exec /bin/cat {}; fi
     assert!(!cache.exists());
     fs::remove_file(machine.path("temporary")).unwrap();
 
-    fs::write(machine.path("stall-pools"), "").unwrap();
-    let partial = machine.json(&["infra", "--context", "lab", "--json"]);
-    assert_eq!(partial["discovery"], "partial");
-    assert_eq!(
-        partial["inventory"]["observation"]["freshness"],
-        "unavailable"
-    );
-    assert!(partial["inventory"]["data"].is_null());
-    assert_eq!(partial["allocations"]["observation"]["freshness"], "fresh");
-    assert_eq!(partial["allocations"]["data"], *vms);
-    fs::remove_file(machine.path("stall-pools")).unwrap();
+    for (first, second) in [
+        (pools_operation, allocations_operation),
+        (allocations_operation, pools_operation),
+    ] {
+        let previous = fs::metadata(machine.path("requests")).unwrap().len() as usize;
+        fs::write(machine.path("first-reader"), first).unwrap();
+        let hold = PoolsHold::start(&machine, 40);
+        let partial = machine.json(&["infra", "--context", "lab", "--json"]);
+        drop(hold);
+        let requests = fs::read_to_string(machine.path("requests")).unwrap();
+        assert_eq!(
+            requests[previous..].lines().collect::<Vec<_>>(),
+            [first, second]
+        );
+        fs::remove_file(machine.path("first-reader")).unwrap();
+        fs::remove_file(machine.path("first-request")).unwrap();
+        assert_eq!(partial["discovery"], "partial", "{first}: {partial}");
+        assert_eq!(
+            partial["next_action"]["reason"],
+            "A management reader exceeded the command deadline"
+        );
+        assert_eq!(
+            partial["inventory"]["observation"]["freshness"],
+            "unavailable"
+        );
+        assert!(partial["inventory"]["data"].is_null());
+        assert_eq!(partial["allocations"]["observation"]["freshness"], "fresh");
+        assert_eq!(partial["allocations"]["data"], *vms);
+    }
 
     let denied = machine.json(&["cluster", "inbox", "--context", "lab", "--json"]);
     assert_eq!(denied["origins"][0]["observation"]["freshness"], "denied");

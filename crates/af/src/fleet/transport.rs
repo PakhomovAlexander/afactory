@@ -4,7 +4,7 @@ use std::process::Command;
 use std::time::Instant;
 
 use af_contracts::fleet::Freshness;
-use af_process::{ExitPolicy, run_supervised_captured_bounded_until};
+use af_process::{ExitPolicy, SupervisedError, run_supervised_captured_bounded_until};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 pub(super) const MAX_REPLY_BYTES: usize = 2 * 1024 * 1024;
@@ -135,7 +135,10 @@ impl Target {
             MAX_REPLY_BYTES,
         )
         .into_result()
-        .map_err(|_| ReadFailure::Unavailable)?;
+        .map_err(|error| match error {
+            SupervisedError::TimedOut { .. } => ReadFailure::TimedOut,
+            _ => ReadFailure::Unavailable,
+        })?;
         if output.truncation.is_truncated() || output.stderr_held {
             return Err(ReadFailure::InvalidResponse);
         }
@@ -169,6 +172,7 @@ pub(super) enum ReadFailure {
     MissingCredential,
     InvalidResponse,
     Temporary,
+    TimedOut,
     Unavailable,
 }
 
@@ -179,7 +183,7 @@ impl ReadFailure {
             Self::IdentityMismatch => Freshness::IdentityMismatch,
             Self::MissingCredential => Freshness::MissingCredential,
             Self::InvalidResponse => Freshness::InvalidResponse,
-            Self::Temporary | Self::Unavailable => Freshness::Unavailable,
+            Self::Temporary | Self::TimedOut | Self::Unavailable => Freshness::Unavailable,
         }
     }
 
@@ -189,6 +193,7 @@ impl ReadFailure {
             Self::IdentityMismatch => "server identity mismatch",
             Self::MissingCredential => "local SSH credential reference could not be resolved",
             Self::InvalidResponse => "invalid observation response",
+            Self::TimedOut => "reader exceeded the command deadline",
             Self::Temporary | Self::Unavailable => "reader unavailable",
         }
     }
