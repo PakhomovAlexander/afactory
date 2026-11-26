@@ -86,7 +86,7 @@ const SCHEMAS: [&str; 275] = [
     "task-status-v3.json",
     "task-detached-v4.json",
     "task-cancelled-v3.json",
-    "task-event-v3.json",
+    "task-event-v4.json",
     "task-run-process-v1.json",
     "task-cancel-request-v1.json",
     "task-delivery-proof-v1.json",
@@ -157,7 +157,7 @@ const SCHEMAS: [&str; 275] = [
     "optimization-adoption-task-evidence-v1.json",
     "optimization-evaluation-v1.json",
     "experimental-slot-v2.json",
-    "task-inspection-v21.json",
+    "task-inspection-v22.json",
     "experiment-execution-plan-v3.json",
     "task-runtime-evidence-v1.json",
     "optimization-sources-v1.json",
@@ -234,7 +234,7 @@ const SCHEMAS: [&str; 275] = [
     "worker-reply-reask-v1.json",
     "artifact-envelope-v1.json",
     "task-contracts-v4.json",
-    "task-transition-v6.json",
+    "task-transition-v7.json",
     "task-collected-v1.json",
     "task-gate-cleanup-v1.json",
     "task-storage-sweep-v2.json",
@@ -276,7 +276,7 @@ const SCHEMAS: [&str; 275] = [
     "review-slice-v1.json",
     "reviewer-result-v2.json",
     "resolution-challenge-v1.json",
-    "run-event-v4.json",
+    "run-event-v5.json",
     "backlog-batch-audit-v3.json",
     "backlog-assessment-v2.json",
     "backlog-collected-batch-v3.json",
@@ -811,8 +811,8 @@ fn validator(name: &str) -> &'static jsonschema::Validator {
             let root = schema(name);
             let mut builder = jsonschema::Registry::new()
                 .add(
-                    "urn:af:schema:task-transition:6",
-                    jsonschema::Resource::from_contents(schema("task-transition-v6.json")),
+                    "urn:af:schema:task-transition:7",
+                    jsonschema::Resource::from_contents(schema("task-transition-v7.json")),
                 )
                 .unwrap_or_else(|e| panic!("{name}: {e}"));
             for resource in resources {
@@ -2010,14 +2010,14 @@ fn run_event_roundtrips() {
         payload: json!({ "severity": "major" }),
     };
     let value = serde_json::to_value(&event).unwrap();
-    assert_valid("run-event-v4.json", &value);
+    assert_valid("run-event-v5.json", &value);
     assert_eq!(serde_json::from_value::<RunEvent>(value).unwrap(), event);
     assert_eq!(event.typed(), ("FindingReported", 1));
 }
 
 #[test]
 fn run_event_schema_and_rust_vocabulary_are_identical() {
-    let schema = schema("run-event-v4.json");
+    let schema = schema("run-event-v5.json");
     let declared = schema["properties"]["type"]["enum"].as_array().unwrap();
     let rust: Vec<Value> = EventType::ALL
         .into_iter()
@@ -2250,11 +2250,21 @@ mod task_state;
 #[test]
 fn task_lifecycle_events_have_closed_versioned_payloads() {
     use af_contracts::task::TaskWaitingReasonV1;
-    use af_contracts::task::event::{TaskChangeV1, TaskTransitionV1};
+    use af_contracts::task::event::{PreparedPlan, TaskChangeV1, TaskTransitionV1};
     let id = format!("sha256:{}", "a".repeat(64));
+    assert!("TaskTransition@6".parse::<EventType>().is_err());
     let changes = [
         TaskChangeV1::Opened {
             revision_id: id.clone(),
+            prepared_plan: None,
+            lease_until_unix_ms: 200,
+        },
+        TaskChangeV1::Opened {
+            revision_id: id.clone(),
+            prepared_plan: Some(PreparedPlan {
+                plan_id: id.clone(),
+                planned_unix_ms: 300,
+            }),
             lease_until_unix_ms: 200,
         },
         TaskChangeV1::LeaseTaken {
@@ -2318,19 +2328,39 @@ fn task_lifecycle_events_have_closed_versioned_payloads() {
         };
         transition.validate().unwrap();
         let mut value = serde_json::to_value(&transition).unwrap();
-        assert_valid("task-transition-v6.json", &value);
-        af_contracts::event::validate_event_payload(EventType::TaskTransitionV6, &value).unwrap();
+        assert_valid("task-transition-v7.json", &value);
+        af_contracts::event::validate_event_payload(EventType::TaskTransitionV7, &value).unwrap();
+        if value["change"]["prepared_plan"].is_object() {
+            for bad_time in [0, af_contracts::json::SAFE_INTEGER_MAX as u64 + 1] {
+                let mut invalid = value.clone();
+                invalid["change"]["prepared_plan"]["planned_unix_ms"] = json!(bad_time);
+                assert_invalid("task-transition-v7.json", &invalid, "preparation time");
+                assert!(
+                    af_contracts::event::validate_event_payload(
+                        EventType::TaskTransitionV7,
+                        &invalid
+                    )
+                    .is_err()
+                );
+            }
+            let mut expired = value.clone();
+            expired["change"]["lease_until_unix_ms"] = value["now_unix_ms"].clone();
+            assert!(
+                af_contracts::event::validate_event_payload(EventType::TaskTransitionV7, &expired)
+                    .is_err()
+            );
+        }
         value["change"]["unrecognized"] = json!(true);
-        assert!(!validator("task-transition-v6.json").is_valid(&value));
+        assert!(!validator("task-transition-v7.json").is_valid(&value));
         assert!(
-            af_contracts::event::validate_event_payload(EventType::TaskTransitionV6, &value)
+            af_contracts::event::validate_event_payload(EventType::TaskTransitionV7, &value)
                 .is_err()
         );
     }
     // A revocation always carries its retained proof.
     let unproven = json!({"writer":"writer-1","epoch":1,"now_unix_ms":100,
         "change":{"kind":"approval_revoked","decision_id":id,"reason":"Revoked by developer"}});
-    assert_invalid("task-transition-v6.json", &unproven, "revocation proof");
+    assert_invalid("task-transition-v7.json", &unproven, "revocation proof");
     assert!(serde_json::from_value::<TaskTransitionV1>(unproven).is_err());
 }
 
@@ -2366,9 +2396,9 @@ fn a_task_tombstone_is_one_closed_transition_referencing_no_artifact() {
     let value = serde_json::to_value(&transition).unwrap();
     assert_eq!(value["change"]["kind"], "task_collected");
     assert_eq!(value["change"]["collected"]["schema"], "af/TaskCollected@1");
-    assert_valid("task-transition-v6.json", &value);
+    assert_valid("task-transition-v7.json", &value);
     assert_valid("task-collected-v1.json", &value["change"]["collected"]);
-    af_contracts::event::validate_event_payload(EventType::TaskTransitionV6, &value).unwrap();
+    af_contracts::event::validate_event_payload(EventType::TaskTransitionV7, &value).unwrap();
     // ADR-0143: the count of Attempts whose usage was unknown is kept, and absent when none.
     assert_eq!(value["change"]["collected"]["unknown_usage_attempts"], 1);
     let mut known = value.clone();
@@ -2376,8 +2406,8 @@ fn a_task_tombstone_is_one_closed_transition_referencing_no_artifact() {
         .as_object_mut()
         .unwrap()
         .remove("unknown_usage_attempts");
-    assert_valid("task-transition-v6.json", &known);
-    af_contracts::event::validate_event_payload(EventType::TaskTransitionV6, &known).unwrap();
+    assert_valid("task-transition-v7.json", &known);
+    af_contracts::event::validate_event_payload(EventType::TaskTransitionV7, &known).unwrap();
     for (field, bad) in [
         ("schema", json!("af/TaskCollected@2")),
         ("chargeable_tokens", json!("012")),
@@ -2390,9 +2420,9 @@ fn a_task_tombstone_is_one_closed_transition_referencing_no_artifact() {
     ] {
         let mut forged = value.clone();
         forged["change"]["collected"][field] = bad;
-        assert_invalid("task-transition-v6.json", &forged, field);
+        assert_invalid("task-transition-v7.json", &forged, field);
         assert!(
-            af_contracts::event::validate_event_payload(EventType::TaskTransitionV6, &forged)
+            af_contracts::event::validate_event_payload(EventType::TaskTransitionV7, &forged)
                 .is_err(),
             "{field}"
         );
@@ -2470,7 +2500,7 @@ fn a_storage_sweep_is_one_closed_transition_referencing_no_artifact() {
     assert!(transition.artifact_refs().is_empty(), "references nothing");
     let value = serde_json::to_value(&transition).unwrap();
     assert_eq!(value["change"]["kind"], "storage_sweep");
-    assert_valid("task-transition-v6.json", &value);
+    assert_valid("task-transition-v7.json", &value);
     assert_valid("task-storage-sweep-v2.json", &value["change"]["sweep"]);
     // A removal that stopped part way and could not measure what it left: recorded all the
     // same, with what left the disk, its total after it and its stop `unknown`.
@@ -2489,15 +2519,15 @@ fn a_storage_sweep_is_one_closed_transition_referencing_no_artifact() {
     .unwrap();
     assert_eq!(unknown["change"]["sweep"]["total_after"], "unknown");
     assert_eq!(unknown["change"]["sweep"]["stop"], "unknown");
-    assert_valid("task-transition-v6.json", &unknown);
+    assert_valid("task-transition-v7.json", &unknown);
     assert_valid("task-storage-sweep-v2.json", &unknown["change"]["sweep"]);
-    af_contracts::event::validate_event_payload(EventType::TaskTransitionV6, &unknown).unwrap();
+    af_contracts::event::validate_event_payload(EventType::TaskTransitionV7, &unknown).unwrap();
     let sweep_of = |base: &Value, field: &str, bad: Value| {
         let mut forged = base.clone();
         forged["change"]["sweep"][field] = bad;
         forged
     };
-    af_contracts::event::validate_event_payload(EventType::TaskTransitionV6, &value).unwrap();
+    af_contracts::event::validate_event_payload(EventType::TaskTransitionV7, &value).unwrap();
     let removal = |field: &str, bad: Value| {
         let mut forged = value.clone();
         forged["change"]["sweep"]["removals"][0][field] = bad;
@@ -2567,9 +2597,9 @@ fn a_storage_sweep_is_one_closed_transition_referencing_no_artifact() {
             forged
         }),
     ] {
-        assert_invalid("task-transition-v6.json", &forged, why);
+        assert_invalid("task-transition-v7.json", &forged, why);
         assert!(
-            af_contracts::event::validate_event_payload(EventType::TaskTransitionV6, &forged)
+            af_contracts::event::validate_event_payload(EventType::TaskTransitionV7, &forged)
                 .is_err(),
             "{why}"
         );
@@ -2578,7 +2608,7 @@ fn a_storage_sweep_is_one_closed_transition_referencing_no_artifact() {
 
 /// ADR-0153 and ADR-0145: the execution marker `af/TaskExecutionStarted@1` is its own event kind
 /// of the Task log, `TaskExecutionStarted@1`, naming its lease and referencing no artifact;
-/// `TaskTransition@6` keeps exactly its shape and carries no `execution_started` change. The
+/// `TaskTransition@7` keeps exactly its shape and carries no `execution_started` change. The
 /// schemas and the typed contracts accept and refuse the same shapes.
 #[test]
 fn an_execution_marker_is_its_own_task_log_event() {
@@ -2610,7 +2640,7 @@ fn an_execution_marker_is_its_own_task_log_event() {
     };
     let wire = serde_json::to_value(&event).unwrap();
     assert_eq!(wire["type"], "TaskExecutionStarted@1");
-    assert_valid("run-event-v4.json", &wire);
+    assert_valid("run-event-v5.json", &wire);
     assert_eq!(
         serde_json::from_value::<RunEvent>(wire.clone()).unwrap(),
         event
@@ -2650,14 +2680,14 @@ fn an_execution_marker_is_its_own_task_log_event() {
         assert_invalid("task-execution-started-v1.json", &forged, why);
         let mut wrapped = wire.clone();
         wrapped["payload"] = forged.clone();
-        assert_invalid("run-event-v4.json", &wrapped, why);
+        assert_invalid("run-event-v5.json", &wrapped, why);
         assert!(
             af_contracts::event::validate_event_payload(EventType::TaskExecutionStartedV1, &forged)
                 .is_err(),
             "{why}"
         );
     }
-    // `TaskTransition@6` is the shape main accepts: an `execution_started` change fails closed.
+    // `TaskTransition@7` is the shape main accepts: an `execution_started` change fails closed.
     let transition = json!({
         "writer": "cli-4242",
         "epoch": 2,
@@ -2665,12 +2695,12 @@ fn an_execution_marker_is_its_own_task_log_event() {
         "change": {"kind": "execution_started", "execution": {"schema": "af/TaskExecutionStarted@1"}}
     });
     assert_invalid(
-        "task-transition-v6.json",
+        "task-transition-v7.json",
         &transition,
         "no execution_started change",
     );
     assert!(
-        af_contracts::event::validate_event_payload(EventType::TaskTransitionV6, &transition)
+        af_contracts::event::validate_event_payload(EventType::TaskTransitionV7, &transition)
             .is_err()
     );
 }
@@ -2714,9 +2744,9 @@ fn a_gate_cleanup_is_one_closed_transition_referencing_no_artifact() {
         assert!(transition.artifact_refs().is_empty(), "references nothing");
         let value = serde_json::to_value(&transition).unwrap();
         assert_eq!(value["change"]["kind"], "gate_cleanup");
-        assert_valid("task-transition-v6.json", &value);
+        assert_valid("task-transition-v7.json", &value);
         assert_valid("task-gate-cleanup-v1.json", &value["change"]["cleanup"]);
-        af_contracts::event::validate_event_payload(EventType::TaskTransitionV6, &value).unwrap();
+        af_contracts::event::validate_event_payload(EventType::TaskTransitionV7, &value).unwrap();
     }
     let value = serde_json::to_value(TaskTransitionV1 {
         writer: "cli-1".into(),
@@ -2741,9 +2771,9 @@ fn a_gate_cleanup_is_one_closed_transition_referencing_no_artifact() {
     ] {
         let mut forged = value.clone();
         forged["change"]["cleanup"][field] = bad;
-        assert_invalid("task-transition-v6.json", &forged, field);
+        assert_invalid("task-transition-v7.json", &forged, field);
         assert!(
-            af_contracts::event::validate_event_payload(EventType::TaskTransitionV6, &forged)
+            af_contracts::event::validate_event_payload(EventType::TaskTransitionV7, &forged)
                 .is_err(),
             "{field}"
         );
@@ -2751,12 +2781,12 @@ fn a_gate_cleanup_is_one_closed_transition_referencing_no_artifact() {
     let mut unexplained = value.clone();
     unexplained["change"]["cleanup"]["outcome"] = json!("failed");
     assert_invalid(
-        "task-transition-v6.json",
+        "task-transition-v7.json",
         &unexplained,
         "failure without reason",
     );
     assert!(
-        af_contracts::event::validate_event_payload(EventType::TaskTransitionV6, &unexplained)
+        af_contracts::event::validate_event_payload(EventType::TaskTransitionV7, &unexplained)
             .is_err()
     );
 }
@@ -2830,7 +2860,7 @@ fn source_refresh_event_requires_exactly_one_plan_or_unresolved_reason() {
             .unwrap()
             .extend(fields.as_object().unwrap().clone());
         assert_invalid(
-            "task-transition-v6.json",
+            "task-transition-v7.json",
             &value,
             "ambiguous source barrier",
         );
@@ -3136,7 +3166,7 @@ fn retired_warm_set_and_session_contracts_are_refused() {
         );
         assert!(serde_json::from_value::<EventType>(json!(retired)).is_err());
         let event = json!({
-            "schema": "review.kernel/RunEvent@4", "event_id": "b".repeat(26),
+            "schema": "review.kernel/RunEvent@5", "event_id": "b".repeat(26),
             "run_id": "run",
             "sequence": 8,
             "type": retired,
@@ -3144,7 +3174,7 @@ fn retired_warm_set_and_session_contracts_are_refused() {
             "artifact_refs": [],
             "payload": {},
         });
-        assert_invalid("run-event-v4.json", &event, retired);
+        assert_invalid("run-event-v5.json", &event, retired);
     }
     assert_eq!(
         af_contracts::contract::WARM_SET_V3,
@@ -3704,7 +3734,7 @@ fn a_provider_event_is_its_own_task_log_event() {
         })
         .unwrap();
         assert_eq!(wire["type"], "TaskProviderEvent@1");
-        assert_valid("run-event-v4.json", &wire);
+        assert_valid("run-event-v5.json", &wire);
     }
     let base = serde_json::to_value(TaskProviderEventV1::new(
         "cli-4242",
@@ -3967,13 +3997,13 @@ fn implementation_evaluation_input_requires_testing_and_closed_typed_envelopes()
 
 #[test]
 fn retired_campaign_bootstrap_and_prior_event_envelopes_fail_closed() {
-    let current = json!({"schema":"review.kernel/RunEvent@4","event_id":"a".repeat(26),"run_id":"run","sequence":0,"type":"SourceCaptured@1","occurred_at":"2026-11-10T00:00:00Z","payload":{}});
-    assert_valid("run-event-v4.json", &current);
+    let current = json!({"schema":"review.kernel/RunEvent@5","event_id":"a".repeat(26),"run_id":"run","sequence":0,"type":"SourceCaptured@1","occurred_at":"2026-11-10T00:00:00Z","payload":{}});
+    assert_valid("run-event-v5.json", &current);
     serde_json::from_value::<RunEvent>(current.clone()).unwrap();
     let mut unversioned = current.clone();
     unversioned.as_object_mut().unwrap().remove("schema");
     assert_invalid(
-        "run-event-v4.json",
+        "run-event-v5.json",
         &unversioned,
         "retired unversioned envelope",
     );
@@ -3982,10 +4012,11 @@ fn retired_campaign_bootstrap_and_prior_event_envelopes_fail_closed() {
         "review.kernel/RunEvent@1",
         "review.kernel/RunEvent@2",
         "review.kernel/RunEvent@3",
+        "review.kernel/RunEvent@4",
     ] {
         let mut value = current.clone();
         value["schema"] = json!(old);
-        assert_invalid("run-event-v4.json", &value, old);
+        assert_invalid("run-event-v5.json", &value, old);
         assert!(serde_json::from_value::<RunEvent>(value).is_err());
     }
     for old in [
@@ -3995,7 +4026,7 @@ fn retired_campaign_bootstrap_and_prior_event_envelopes_fail_closed() {
     ] {
         let mut value = current.clone();
         value["type"] = json!(old);
-        assert_invalid("run-event-v4.json", &value, old);
+        assert_invalid("run-event-v5.json", &value, old);
         assert!(serde_json::from_value::<RunEvent>(value).is_err());
     }
 }
@@ -4045,8 +4076,8 @@ fn scenario_template_pin_event_has_exact_reference_schema_parity() {
             false,
         ),
     ] {
-        let wire = json!({"schema":"review.kernel/RunEvent@4","event_id":"01jd8m4qz9k7v3n2p6r8t0w1xy","run_id":"scenario-template-fixture","sequence":0,"type":"ScenarioTemplatePinned@1","occurred_at":"2026-11-13T00:00:00Z","payload":payload});
-        assert_eq!(validator("run-event-v4.json").is_valid(&wire), accepted);
+        let wire = json!({"schema":"review.kernel/RunEvent@5","event_id":"01jd8m4qz9k7v3n2p6r8t0w1xy","run_id":"scenario-template-fixture","sequence":0,"type":"ScenarioTemplatePinned@1","occurred_at":"2026-11-13T00:00:00Z","payload":payload});
+        assert_eq!(validator("run-event-v5.json").is_valid(&wire), accepted);
         assert_eq!(
             af_contracts::event::validate_event_payload(
                 EventType::ScenarioTemplatePinnedV1,

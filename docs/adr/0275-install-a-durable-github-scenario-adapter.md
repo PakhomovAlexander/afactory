@@ -3,6 +3,8 @@
 **Status:** accepted (2026-11-02). Implements the separately installed adapter boundary of
 [ADR-0274](0274-orchestrate-pinned-scenarios-and-admit-ant-occurrences.md); it changes no Scenario
 wire shape, Task delivery authority, Remote Check or signed Decision boundary.
+The newest-suite-per-app rule in clause 6 is superseded for GitHub Actions checks by
+[ADR-2026-11-25-resolve-required-checks-by-workflow](2026-11-25-resolve-required-checks-by-workflow.md).
 
 ## Context
 

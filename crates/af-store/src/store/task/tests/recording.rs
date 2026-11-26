@@ -321,7 +321,7 @@ fn recording_resume_pins_exact_report_and_outputs_without_dispatch_or_new_resour
         .store
         .resume_task_for_recording(&f.cas, &current, &f.authority)
         .unwrap();
-    assert_eq!(event.event_type, EventType::TaskTransitionV6);
+    assert_eq!(event.event_type, EventType::TaskTransitionV7);
     assert!(event.artifact_refs.contains(&output));
     f.store = EventStore::open(&f.path).unwrap();
     let after = f.state();

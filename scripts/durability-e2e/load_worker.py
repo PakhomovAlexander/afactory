@@ -15,6 +15,7 @@ import sys
 import time
 
 from load_cases import CASES, DIGEST_PATTERN, FIXTURES, MARKER, SUITE_FILES, file_sha, files_identity
+from native_artifact_fault import native_fault
 from native_budget import ADMISSION
 from native_smoke import private_scratch
 from worker_failover import REQUIRED
@@ -213,8 +214,24 @@ def witness(case_id, root):
         disk = read(root / "disk-fault.json")
         if disk.get("pressure_errno") == errno.ENOSPC and disk.get("af_reported_full_store"):
             return "disk-fault.json"
-    if case_id == "artifact-enospc" and read(root / "cas-fault.json").get("errno") == errno.ENOSPC:
-        return "cas-fault.json"
+    if case_id == "artifact-enospc":
+        receipt = read(root / "cas-fault.json")
+        full = read(root / "at-full.json")
+        fault = native_fault(full)
+        if fault:
+            step, diagnostic = fault
+            intent_id = step["intents"][0].get("id", "")
+            if (re.fullmatch("sha256:" + DIGEST_PATTERN, intent_id)
+                    and receipt.get("errno") == receipt.get("pressure_errno") == errno.ENOSPC
+                    and receipt.get("native_diagnostic") == diagnostic
+                    and receipt.get("step") == "root/second"
+                    and receipt.get("intent_id") == intent_id
+                    and receipt.get("task_id") == "scenario-" + intent_id.removeprefix("sha256:")
+                    and re.fullmatch("sha256:" + DIGEST_PATTERN, full.get("execution_id", ""))
+                    and receipt.get("execution_id") == full.get("execution_id")
+                    and type(step.get("deadline_unix_ms")) is int
+                    and receipt.get("deadline_unix_ms") == step.get("deadline_unix_ms")):
+                return "cas-fault.json"
     if case_id == "writer-loss" and read(root / "writer-loss.json").get("signal") == 9:
         return "writer-loss.json"
     if case_id == "child-cancel" and read(root / "outage.json").get("stopped_signal"):
@@ -256,7 +273,7 @@ def outcomes(root, case, summary):
         "smoke": ("observed.json", "task.json"),
         "gate_repair": ("observed.json", "first-task.json", "repair-task.json"),
         "recovery": ("after.json", "task-after.json"),
-        "artifact_fault": ("after.json", "at-full.json", "task-after.json"),
+        "artifact_fault": ("after.json", "at-full.json", "task-after.json", "second-task-after.json"),
         "writer_loss": ("terminal.json", "after-late.json", "task-after.json"),
         "child_cancel": ("final.json", "task-cancelled.json", "task-after.json", "next-task.json"),
         "admission": ("recovered-runs.json", "paused-after-restart-runs.json",

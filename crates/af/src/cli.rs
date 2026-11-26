@@ -1708,7 +1708,7 @@ af task status TASK_ID --json   # needs: a Task"
     /// Follow a Task as JSON lines: each event of its log, then one terminal record
     #[command(
         long_about = "Print the events a Task's log records as JSON lines on stdout, one \
-`af/task-event@3` document per line, and follow the Task until it settles — no writer holds it \
+`af/task-event@4` document per line, and follow the Task until it settles — no writer holds it \
 and no run of this host is starting — then print one terminal record and exit with the Task's \
 exit code, as `af task wait` does: its outcome's (`af help exit-codes`), 4 for a Task that waits \
 for a person.\n\nAn event line (`record: event`) is one event of the Task's log, in the order \

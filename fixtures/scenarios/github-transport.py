@@ -33,6 +33,16 @@ def github_fixture_reply(state, method, path, body):
             return 200, state["protection"]
         if "/branches/" in route:
             return 200, {"name": state["head"], "protected": True, "commit": {"sha": state["revision"]}}
+        if route == prefix + "/actions/runs":
+            query = parse_qs(parsed.query)
+            assert query["head_sha"] == [state["revision"]]
+            rows = state["workflow_runs"]
+            page = int(query["page"][0])
+            return 200, {"total_count": len(rows), "workflow_runs": rows[(page - 1) * 100:page * 100]}
+        if route.startswith(prefix + "/actions/runs/") and route.endswith("/jobs"):
+            rows = state["attempt_jobs"][route.removeprefix(prefix + "/actions/runs/")]
+            page = int(parse_qs(parsed.query)["page"][0])
+            return 200, {"total_count": len(rows), "jobs": rows[(page - 1) * 100:page * 100]}
         if route.endswith(("/check-runs", "/check-suites", "/statuses")):
             key = "checks" if route.endswith("/check-runs") else "suites" if route.endswith("/check-suites") else "statuses"
             rows = state[key]

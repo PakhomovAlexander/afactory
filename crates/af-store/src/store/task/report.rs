@@ -8,7 +8,7 @@ use super::*;
 pub fn read_task_run_report(cas: &Cas, id: &str) -> Result<TaskRunReportV1, StoreError> {
     let frame = cas
         .get_artifact(id)
-        .map_err(|e| StoreError::Artifact(e.to_string()))?;
+        .map_err(|error| artifact_read_error(id, error))?;
     if frame.artifact_type != TASK_RUN_REPORT_V3 {
         return Err(conflict("Expected a typed Task run report"));
     }

@@ -1870,7 +1870,7 @@ fn telemetry_execution_marker_is_identical_at_off_and_content() {
     assert_eq!(content[marker].3, "test-writer", "the lease's own writer");
     assert!(
         !kinds.contains(&"execution_started"),
-        "no TaskTransition@6 carries it"
+        "no TaskTransition@7 carries it"
     );
     let first_record = kinds
         .iter()

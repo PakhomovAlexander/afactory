@@ -19,6 +19,20 @@ use std::time::Duration;
 /// whose log the parent created. Never set it yourself.
 pub(crate) const DETACHED_ENV: &str = "AF_TASK_RUN_DETACHED";
 
+/// Internal attribution supplied by the Scenario host to its supervised child. It
+/// labels the writer; plan confirmation and Task lease admission remain mandatory.
+pub(crate) const SCENARIO_BINDING_ENV: &str = "AF_INTERNAL_SCENARIO_TASK_BINDING";
+
+pub(super) fn scenario_binding() -> Option<String> {
+    std::env::var(SCENARIO_BINDING_ENV)
+        .ok()
+        .filter(|binding| af_contracts::is_digest(binding))
+}
+
+pub(crate) fn scenario_writer_prefix(binding: &str) -> String {
+    format!("cli-scenario-{}-", binding.replace(':', "-"))
+}
+
 /// How long `af task run --detach` waits for its run to take the Task and admit its plan before
 /// it returns without claiming that it runs.
 const DETACH_ADMISSION: Duration = Duration::from_secs(120);
@@ -114,6 +128,207 @@ pub(crate) fn cancel_requests(state: &Path, task_id: &str) -> Vec<TaskCancelRequ
         .filter_map(|(run, _, path)| read::<TaskCancelRequestV1>(&path).filter(|r| r.run == run))
         .filter(|request| request.validate().is_ok() && request.task_id == task_id)
         .collect()
+}
+
+/// A Scenario uses these records for dispatch and settlement, so an unreadable
+/// recorder cannot be interpreted as absence of a cancellation request.
+fn scenario_files(
+    state: &Path,
+    task_id: &str,
+) -> Result<Vec<(u64, String, PathBuf)>, TaskReadError> {
+    let directory = runs_dir(state);
+    let unavailable =
+        |error| TaskReadError::Unavailable(format!("Reading {}: {error}", directory.display()));
+    let entries = match std::fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return match std::fs::symlink_metadata(&directory) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+                _ => Err(unavailable(error)),
+            };
+        }
+        Err(error) => return Err(unavailable(error)),
+    };
+    let mut found = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(unavailable)?;
+        if let Some((run, kind @ ("json" | "cancel.json"))) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| run_of(task_id, name))
+        {
+            found.push((run, kind.to_owned(), entry.path()));
+        }
+    }
+    found.sort();
+    Ok(found)
+}
+
+fn scenario_record<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, TaskReadError> {
+    use std::io::Read as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let unavailable =
+        |error| TaskReadError::Unavailable(format!("Reading {}: {error}", path.display()));
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
+        .open(path)
+        .map_err(unavailable)?;
+    if !file.metadata().map_err(unavailable)?.is_file() {
+        return Err(TaskReadError::Refused(format!(
+            "Task run recorder {} is not a regular file",
+            path.display()
+        )));
+    }
+    let mut bytes = Vec::new();
+    file.take(65_537)
+        .read_to_end(&mut bytes)
+        .map_err(unavailable)?;
+    if bytes.len() > 65_536 {
+        return Err(TaskReadError::Refused(format!(
+            "Oversized Task run recorder {}",
+            path.display()
+        )));
+    }
+    serde_json::from_slice(&bytes)
+        .map_err(|error| TaskReadError::Refused(format!("Reading {}: {error}", path.display())))
+}
+
+fn checked_scenario_process(
+    path: &Path,
+    task_id: &str,
+    run: u64,
+) -> Result<TaskRunProcessV1, TaskReadError> {
+    let record: TaskRunProcessV1 = scenario_record(path)?;
+    record.validate().map_err(TaskReadError::Refused)?;
+    if record.run != run || record.task_id != task_id {
+        return Err(TaskReadError::Refused(format!(
+            "Task run identity disagrees with {}",
+            path.display()
+        )));
+    }
+    Ok(record)
+}
+
+fn checked_scenario_request(
+    path: &Path,
+    task_id: &str,
+    run: u64,
+) -> Result<TaskCancelRequestV1, TaskReadError> {
+    let request: TaskCancelRequestV1 = scenario_record(path)?;
+    request.validate().map_err(TaskReadError::Refused)?;
+    if request.run != run || request.task_id != task_id {
+        return Err(TaskReadError::Refused(format!(
+            "Task cancellation identity disagrees with {}",
+            path.display()
+        )));
+    }
+    Ok(request)
+}
+
+/// An absent Task log cannot prove absence of a writer if its exact binding has a recorder.
+pub(crate) fn scenario_has_recorded_writer(
+    state: &Path,
+    task_id: &str,
+    binding: &str,
+) -> Result<bool, TaskReadError> {
+    let prefix = scenario_writer_prefix(binding);
+    for (run, kind, path) in scenario_files(state, task_id)? {
+        let writer = if kind == "json" {
+            checked_scenario_process(&path, task_id, run)?.writer
+        } else {
+            checked_scenario_request(&path, task_id, run)?.writer
+        };
+        if writer.starts_with(&prefix) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn scenario_cancel_requests(
+    state: &Path,
+    task_id: &str,
+    binding: &str,
+) -> Result<Vec<TaskCancelRequestV1>, TaskReadError> {
+    let prefix = scenario_writer_prefix(binding);
+    let mut requests = Vec::new();
+    for (run, kind, path) in scenario_files(state, task_id)? {
+        if kind != "cancel.json" {
+            continue;
+        }
+        let request = checked_scenario_request(&path, task_id, run)?;
+        if !request.writer.starts_with(&prefix) {
+            continue;
+        }
+        let process_path = runs_dir(state).join(format!("{task_id}-{run}.json"));
+        let record = checked_scenario_process(&process_path, task_id, run)?;
+        if record.writer != request.writer
+            || record.pid != request.pid
+            || record.host != request.host
+        {
+            return Err(TaskReadError::Refused(format!(
+                "Task {task_id} cancellation disagrees with run {run}"
+            )));
+        }
+        requests.push(request);
+    }
+    Ok(requests)
+}
+
+/// Match the process-scoped request against the checked Task log. A later writer
+/// can hold the Task already. In that case return the prefix before its successor claimed it.
+pub(crate) fn scenario_cancelled_lease(
+    state: &Path,
+    store: &EventStore,
+    cas: &Cas,
+    current: &TaskProjection,
+    binding: &str,
+) -> Result<Option<(TaskCancelRequestV1, Option<TaskProjection>)>, TaskReadError> {
+    use af_contracts::task::event::TaskChangeV1;
+    use af_store::store::task::{journal, task_run_id};
+    let requests = scenario_cancel_requests(state, &current.task_id, binding)?;
+    for request in requests {
+        let historical = if request.epoch == current.lease_epoch() {
+            None
+        } else if request.epoch < current.lease_epoch() {
+            // A later manual writer can finish before the coordinator wakes.
+            let stream =
+                task_run_id(&current.task_id).map_err(|e| TaskReadError::Refused(e.to_string()))?;
+            let events = store
+                .replay(&stream)
+                .map_err(|e| TaskReadError::from_store(state, e))?;
+            let mut next_lease = None;
+            for event in events.iter().filter(|event| journal::is_transition(event)) {
+                let transition = journal::read_task_transition(event)
+                    .map_err(|e| TaskReadError::Refused(e.to_string()))?;
+                if transition.epoch > request.epoch
+                    && matches!(transition.change, TaskChangeV1::LeaseTaken { .. })
+                {
+                    next_lease = Some(event.sequence);
+                    break;
+                }
+            }
+            let Some(sequence) = next_lease else {
+                continue;
+            };
+            Some(
+                store
+                    .task_projection_at_sequence(cas, &current.task_id, sequence - 1)
+                    .map_err(|e| TaskReadError::from_store(state, e))?
+                    .ok_or_else(|| {
+                        TaskReadError::Refused("Missing Task prefix before successor lease".into())
+                    })?,
+            )
+        } else {
+            continue;
+        };
+        let stopped = historical.as_ref().unwrap_or(current);
+        if stopped.lease_epoch() == request.epoch && stopped.lease_writer() == request.writer {
+            return Ok(Some((request, historical)));
+        }
+    }
+    Ok(None)
 }
 
 /// The lease epoch of the Task's last lease, when an `af task cancel` request stopped exactly
@@ -225,7 +440,7 @@ fn test_duration(name: &str) -> Option<Duration> {
 /// commits. Numbered barriers make initial and refreshed views deterministic without sleeps
 /// deciding which side of an observation a commit lands on. Release builds have no hook.
 #[cfg(debug_assertions)]
-pub(super) fn observation_barrier(point: &str) -> Result<(), String> {
+pub(crate) fn observation_barrier(point: &str) -> Result<(), String> {
     let Some(root) = std::env::var_os("AF_TEST_WAIT_OBSERVATION_BARRIER") else {
         return Ok(());
     };
@@ -1002,6 +1217,15 @@ fn cancel_document(
     expected_run: Option<u64>,
 ) -> Result<TaskCancelledV2, String> {
     let mut opened = open_task(id, &inspect.repo, inspect.state.as_deref())?;
+    let epoch = opened.task.lease_epoch();
+    let hold = crate::storage::hold_running(&opened.state)?;
+    let settlement = lock_cancellation(&opened.state)?;
+    opened.refresh_if_changed()?;
+    if opened.task.lease_epoch() != epoch {
+        return Err(format!(
+            "Task {id} changed writers before cancellation; nothing was signalled"
+        ));
+    }
     let (_, view) = opened.view()?;
     let held = opened.task.lease_until_unix_ms() > now_ms();
     if !held {
@@ -1013,7 +1237,6 @@ fn cancel_document(
         ));
     }
     let writer = opened.task.lease_writer().to_owned();
-    let epoch = opened.task.lease_epoch();
     if writer.starts_with("delivery-") {
         return Err(format!(
             "Task {id} is being delivered (writer {writer}), not run: `af task cancel` stops \
@@ -1064,6 +1287,8 @@ fn cancel_document(
     };
     request.validate()?;
     let (request, ours) = record_request(&opened.state, request)?;
+    drop(settlement);
+    drop(hold);
     if ours {
         eprintln!(
             "af task cancel: stopping run {} of Task {id} (pid {} on {})",
@@ -1110,6 +1335,17 @@ fn cancel_document(
     };
     document.validate()?;
     Ok(document)
+}
+
+/// Serialize cancel record publication with native Scenario settlement. Lock the Store
+/// directory itself so both sides share a stable inode without a new persisted record.
+pub(crate) fn lock_cancellation(state: &Path) -> Result<std::fs::File, String> {
+    let directory = std::fs::File::from(
+        af_sandbox::open_anchor(state).map_err(|e| format!("Opening Task Store: {e}"))?,
+    );
+    fs2::FileExt::lock_exclusive(&directory)
+        .map_err(|e| format!("Locking Task cancellation: {e}"))?;
+    Ok(directory)
 }
 
 /// Record `request` as the cancel request of its run, unless one is recorded already: then the
@@ -1534,6 +1770,69 @@ mod tests {
             vec![other],
             "another Task's records stay"
         );
+    }
+
+    #[test]
+    fn a_scenario_stop_remains_bound_to_the_recorded_epoch_after_a_manual_successor() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = directory.path();
+        let cas = Cas::open(state.join("cas")).unwrap();
+        let mut store = EventStore::open(state.join("events.sqlite")).unwrap();
+        let (_, opened) = super::super::gate_history::tests::task_with_identity(
+            &cas,
+            &mut store,
+            "t",
+            "repository",
+            "policy",
+        );
+        store.release_task_lease(&cas, &opened).unwrap();
+
+        let binding = af_scenario::contract::digest(b"native intent binding");
+        let writer = format!("{}child", scenario_writer_prefix(&binding));
+        let run = begin(state, "t", &writer).unwrap();
+        let child = store.take_task_lease(&cas, "t", &writer, 60_000).unwrap();
+        let stop = TaskCancelRequestV1 {
+            schema: TASK_CANCEL_REQUEST_V1.into(),
+            task_id: "t".into(),
+            run: run.run,
+            epoch: child.epoch(),
+            writer: writer.clone(),
+            pid: run.pid,
+            host: run.host,
+            requester: requester(),
+            requested_unix_ms: now_ms(),
+        };
+        assert!(record_request(state, stop.clone()).unwrap().1);
+        store.release_task_lease(&cas, &child).unwrap();
+        let cancelled = store.task_projection(&cas, "t").unwrap().unwrap();
+        let (request, historical) =
+            scenario_cancelled_lease(state, &store, &cas, &cancelled, &binding)
+                .unwrap()
+                .unwrap();
+        assert_eq!(request, stop);
+        assert!(historical.is_none());
+
+        let manual = begin(state, "t", "cli-manual").unwrap();
+        store
+            .take_task_lease(&cas, "t", &manual.writer, 60_000)
+            .unwrap();
+        let current = store.task_projection(&cas, "t").unwrap().unwrap();
+        assert_eq!(current.lease_writer(), manual.writer);
+        assert!(cancelled_epoch(Some(state), &current).is_none());
+        let other = af_scenario::contract::digest(b"another intent binding");
+        assert!(
+            scenario_cancelled_lease(state, &store, &cas, &current, &other)
+                .unwrap()
+                .is_none()
+        );
+        let (request, historical) =
+            scenario_cancelled_lease(state, &store, &cas, &current, &binding)
+                .unwrap()
+                .unwrap();
+        assert_eq!(request, stop);
+        let historical = historical.unwrap();
+        assert_eq!(historical.lease_epoch(), child.epoch());
+        assert_eq!(historical.lease_writer(), writer);
     }
 
     fn record(run: u64, pid: u32, writer: &str) -> TaskRunProcessV1 {

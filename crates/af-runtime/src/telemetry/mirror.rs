@@ -298,7 +298,7 @@ impl StoreMirror {
             return;
         };
         for event in commit.events {
-            if event.event_type != EventType::TaskTransitionV6 {
+            if event.event_type != EventType::TaskTransitionV7 {
                 continue;
             }
             let Ok(transition) = read_task_transition(event) else {
@@ -418,7 +418,7 @@ impl StoreMirror {
         use af_contracts::task::review::{
             ReviewConclusionV1, TASK_REVIEW_ROUND_V1, TaskReviewRoundV1,
         };
-        if event.event_type != EventType::TaskTransitionV6 {
+        if event.event_type != EventType::TaskTransitionV7 {
             return Ok((0, vec![]));
         }
         let transition = read_task_transition(event).map_err(|e| e.to_string())?;

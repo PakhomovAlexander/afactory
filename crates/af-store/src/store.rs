@@ -50,12 +50,12 @@ fn event_envelope_conflict() -> StoreError {
 
 // The SQLite layout version binds the database to the RunEvent envelope. The row
 // carries the full identity so replay also refuses a mixed or damaged log.
-const EVENT_LAYOUT_VERSION: u32 = 4;
+const EVENT_LAYOUT_VERSION: u32 = 5;
 
 // SQLite stores each CREATE statement in sqlite_schema without IF NOT EXISTS
-// or the terminating semicolon. Keep the spelling of the AF-produced v4 layout.
+// or the terminating semicolon. Keep the spelling of the AF-produced layout.
 const EVENT_TABLE: &str = "CREATE TABLE events (
-                 envelope       TEXT NOT NULL CHECK (envelope = 'review.kernel/RunEvent@4'),
+                 envelope       TEXT NOT NULL CHECK (envelope = 'review.kernel/RunEvent@5'),
                  run_id         TEXT    NOT NULL,
                  sequence       INTEGER NOT NULL,
                  event_id       TEXT    NOT NULL UNIQUE,
@@ -79,7 +79,7 @@ const EVENT_AUXILIARY_LAYOUT: &[&str] = &[
                  ON events (run_id, causation_id, type, sequence)",
     "CREATE INDEX task_execution_history
                  ON events (run_id, sequence)
-                 WHERE type = 'TaskTransition@6'
+                 WHERE type = 'TaskTransition@7'
                    AND json_extract(payload, '$.change.kind') = 'execution_recorded'",
     "CREATE TABLE attempt_wall (
                  run_id             TEXT    NOT NULL,
@@ -207,6 +207,9 @@ pub(crate) fn u64_column(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Res
 #[derive(Debug)]
 pub enum StoreError {
     Sqlite(rusqlite::Error),
+    JournalCapacity {
+        source: std::io::Error,
+    },
     Json(serde_json::Error),
     /// An event referenced an artifact that is not durable yet.
     DanglingArtifact {
@@ -227,6 +230,11 @@ pub enum StoreError {
     Durability(String),
     /// A referenced artifact required for replay was missing or malformed.
     Artifact(String),
+    /// A CAS read failed before the referenced bytes could be verified.
+    ArtifactIo {
+        artifact_id: String,
+        source: std::io::Error,
+    },
     /// The Task was collected by `af task gc --apply` (ADR-0135): its log ends in a tombstone,
     /// its projection stops there, and nothing may act on it again.
     Collected {
@@ -239,6 +247,7 @@ impl std::fmt::Display for StoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             StoreError::Sqlite(e) => write!(f, "event store: {e}"),
+            StoreError::JournalCapacity { source } => write!(f, "event store: {source}"),
             StoreError::Json(e) => write!(f, "event store json: {e}"),
             StoreError::DanglingArtifact { digest } => write!(
                 f,
@@ -264,6 +273,15 @@ impl std::fmt::Display for StoreError {
                 write!(f, "a referenced artifact could not be made durable: {what}")
             }
             StoreError::Artifact(what) => write!(f, "event store artifact: {what}"),
+            StoreError::ArtifactIo {
+                artifact_id,
+                source,
+            } => {
+                write!(
+                    f,
+                    "event store artifact: cannot read CAS object {artifact_id}: {source}"
+                )
+            }
             StoreError::Collected {
                 task_id,
                 collected_unix_ms,
@@ -276,7 +294,23 @@ impl std::fmt::Display for StoreError {
     }
 }
 
-impl std::error::Error for StoreError {}
+impl std::error::Error for StoreError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ArtifactIo { source, .. } => Some(source),
+            Self::JournalCapacity { source } => Some(source),
+            _ => None,
+        }
+    }
+}
+
+impl StoreError {
+    pub fn is_journal_capacity(&self) -> bool {
+        matches!(self, Self::JournalCapacity { .. })
+            || matches!(self, Self::Sqlite(rusqlite::Error::SqliteFailure(code, _))
+                if code.code == rusqlite::ErrorCode::DiskFull)
+    }
+}
 
 impl From<rusqlite::Error> for StoreError {
     fn from(e: rusqlite::Error) -> Self {
@@ -562,10 +596,14 @@ impl EventStore {
 
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
         // Created private before SQLite sees it: SQLite creates a missing database 0644 under
-        // the umask, and gives its `-wal` and `-shm` files the database's own mode. A failure
-        // here is SQLite's to report when it opens the same path.
-        if !path.as_ref().as_os_str().is_empty() && path.as_ref() != Path::new(":memory:") {
-            let _ = crate::local_fs::create_private_file(path.as_ref());
+        // the umask, and gives its `-wal` and `-shm` files the database's own mode. Preserve
+        // ENOSPC here because SQLite can report a generic CANTOPEN if creation failed.
+        if !path.as_ref().as_os_str().is_empty()
+            && path.as_ref() != Path::new(":memory:")
+            && let Err(source) = crate::local_fs::create_private_file(path.as_ref())
+            && source.raw_os_error() == Some(nix::errno::Errno::ENOSPC as i32)
+        {
+            return Err(StoreError::JournalCapacity { source });
         }
         let conn = Connection::open(path)?;
         Self::init(conn)
@@ -879,7 +917,7 @@ impl EventStore {
         if events.iter().any(|e| {
             matches!(
                 e.event_type,
-                EventType::TaskTransitionV6
+                EventType::TaskTransitionV7
                     | EventType::TaskExecutionStartedV1
                     | EventType::TaskGateRetriedV1
                     | EventType::TaskProviderEventV1
@@ -920,7 +958,7 @@ impl EventStore {
             permit.validate(&tx, run_id, first, events)?;
         } else {
             let task_log: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM events WHERE run_id = ?1 AND type = 'TaskTransition@6')",
+                "SELECT EXISTS(SELECT 1 FROM events WHERE run_id = ?1 AND type = 'TaskTransition@7')",
                 [run_id], |row| row.get(0),
             )?;
             if task_log {
@@ -1531,6 +1569,56 @@ mod tests {
     }
 
     #[test]
+    fn journal_capacity_requires_native_sqlite_full_or_enospc() {
+        let (_dir, mut store, cas) = fixture();
+        let pages: i64 = store
+            .conn
+            .pragma_query_value(None, "page_count", |r| r.get(0))
+            .unwrap();
+        store
+            .conn
+            .pragma_update(None, "max_page_count", pages)
+            .unwrap();
+        let error = store
+            .append(
+                "capacity",
+                &cas,
+                NewEvent::new(
+                    EventType::SourceCapturedV1,
+                    json!({"large": "x".repeat(128 * 1024)}),
+                ),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(&error, StoreError::Sqlite(rusqlite::Error::SqliteFailure(code, _))
+            if code.code == rusqlite::ErrorCode::DiskFull),
+            "{error}"
+        );
+        assert!(error.is_journal_capacity());
+        assert!(store.replay("capacity").unwrap().is_empty());
+
+        let native = StoreError::JournalCapacity {
+            source: std::io::Error::from_raw_os_error(nix::errno::Errno::ENOSPC as i32),
+        };
+        assert!(native.is_journal_capacity());
+        for code in [
+            rusqlite::ffi::SQLITE_PERM,
+            rusqlite::ffi::SQLITE_CORRUPT,
+            rusqlite::ffi::SQLITE_READONLY,
+            rusqlite::ffi::SQLITE_IOERR,
+        ] {
+            assert!(
+                !StoreError::from(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(code),
+                    None
+                ))
+                .is_journal_capacity()
+            );
+        }
+        assert!(!StoreError::Conflict("database or disk is full".into()).is_journal_capacity());
+    }
+
+    #[test]
     fn an_unchanged_reader_writes_nothing_and_reads_an_unwritable_database() {
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
@@ -1956,7 +2044,7 @@ mod tests {
         let replay = store.replay("run-a").unwrap();
         assert_eq!(replay, [first]);
         let mut envelope = serde_json::to_value(&replay[0]).unwrap();
-        assert_eq!(envelope["schema"], "review.kernel/RunEvent@4");
+        assert_eq!(envelope["schema"], "review.kernel/RunEvent@5");
         assert_eq!(
             serde_json::from_value::<RunEvent>(envelope.clone()).unwrap(),
             replay[0],
@@ -2049,7 +2137,7 @@ mod tests {
             ),
             (
                 "missing envelope check",
-                EVENT_TABLE.replace(" CHECK (envelope = 'review.kernel/RunEvent@4')", ""),
+                EVENT_TABLE.replace(" CHECK (envelope = 'review.kernel/RunEvent@5')", ""),
             ),
         ] {
             let directory = tempfile::tempdir().unwrap();
@@ -2187,13 +2275,57 @@ mod tests {
     }
 
     #[test]
-    fn opens_v4_created_with_prior_ddl_and_marks_it_only_on_append() {
+    fn refuses_initialized_layout_4_even_without_events() {
+        for with_event in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("events.sqlite");
+            let conn = Connection::open(&path).unwrap();
+            conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+            conn.execute(
+                &EVENT_TABLE.replace(RunEvent::SCHEMA, "review.kernel/RunEvent@4"),
+                [],
+            )
+            .unwrap();
+            for definition in required_layout()
+                .skip(1)
+                .chain(std::iter::once(writers::CREATE))
+            {
+                conn.execute_batch(definition).unwrap();
+            }
+            conn.pragma_update(None, "user_version", 4).unwrap();
+            if with_event {
+                conn.execute(
+                    "INSERT INTO events (envelope, run_id, sequence, event_id, type, occurred_at, artifact_refs, payload)
+                     VALUES ('review.kernel/RunEvent@4', 'prior', 0, ?1, 'SourceCaptured@1', '2026-11-10T00:00:00Z', '[]', '{}')",
+                    [derive_event_id("prior", 0)],
+                )
+                .unwrap();
+            }
+            let wal = directory.path().join("events.sqlite-wal");
+            let persisted = || (std::fs::read(&path).unwrap(), std::fs::read(&wal).unwrap());
+            let before = persisted();
+            for result in [
+                EventStore::open(&path),
+                EventStore::open_read_only(&path),
+                EventStore::open_unchanged(&path),
+            ] {
+                assert!(
+                    matches!(result, Err(StoreError::Conflict(message)) if message.contains(RunEvent::SCHEMA)),
+                    "layout 4 with_event={with_event}"
+                );
+            }
+            assert_eq!(persisted(), before);
+        }
+    }
+
+    #[test]
+    fn opens_current_layout_created_with_if_not_exists_and_marks_it_only_on_append() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("events.sqlite");
         let conn = Connection::open(&path).unwrap();
         conn.pragma_update(None, "journal_mode", "WAL").unwrap();
         conn.execute(EVENT_TABLE, []).unwrap();
-        // Prior AF v4 initialization used IF NOT EXISTS for every auxiliary object.
+        // SQLite omits IF NOT EXISTS when recording these definitions.
         for definition in required_layout().skip(1) {
             let mut parts = definition.splitn(3, ' ').skip(1);
             let kind = parts.next().unwrap();
@@ -2251,12 +2383,12 @@ mod tests {
 
         let conn = Connection::open(path).unwrap();
         assert!(
-            conn.execute("UPDATE events SET envelope='review.kernel/RunEvent@3'", [])
+            conn.execute("UPDATE events SET envelope='review.kernel/RunEvent@4'", [])
                 .is_err()
         );
         conn.execute_batch(
             "PRAGMA ignore_check_constraints=ON;
-             UPDATE events SET envelope='review.kernel/RunEvent@3';",
+             UPDATE events SET envelope='review.kernel/RunEvent@4';",
         )
         .unwrap();
         assert!(
@@ -2436,7 +2568,7 @@ mod tests {
             for sequence in &sequences {
                 store.conn.execute(
                     "INSERT INTO events (envelope, run_id,sequence,event_id,type,occurred_at,artifact_refs,payload)
-                     VALUES ('review.kernel/RunEvent@4', 'pin',?1,?2,'SourceCaptured@1','2026-11-13T00:00:00Z','[]','{}')",
+                     VALUES ('review.kernel/RunEvent@5', 'pin',?1,?2,'SourceCaptured@1','2026-11-13T00:00:00Z','[]','{}')",
                     params![sequence, derive_event_id("pin", *sequence)],
                 ).unwrap();
             }
@@ -2654,7 +2786,7 @@ mod tests {
             "TaskReviewResultSelected@1",
         ] {
             let (_, store, _) = fixture();
-            store.conn.execute("INSERT INTO events (envelope, run_id,sequence,event_id,type,occurred_at,artifact_refs,payload) VALUES ('review.kernel/RunEvent@4', 'old',0,?1,?2,'2026-11-10T00:00:00Z','[]','{}')",params![derive_event_id("old",0),retired]).unwrap();
+            store.conn.execute("INSERT INTO events (envelope, run_id,sequence,event_id,type,occurred_at,artifact_refs,payload) VALUES ('review.kernel/RunEvent@5', 'old',0,?1,?2,'2026-11-10T00:00:00Z','[]','{}')",params![derive_event_id("old",0),retired]).unwrap();
             assert_eq!(
                 store.unknown_event_type().unwrap().as_deref(),
                 Some(retired)

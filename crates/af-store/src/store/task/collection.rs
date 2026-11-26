@@ -211,7 +211,7 @@ pub(super) fn tombstone_in(
     }
     let payload: Option<String> = connection
         .query_row(
-            "SELECT payload FROM events WHERE run_id=?1 AND type='TaskTransition@6'
+            "SELECT payload FROM events WHERE run_id=?1 AND type='TaskTransition@7'
              ORDER BY sequence DESC LIMIT 1",
             [run_id],
             |row| row.get(0),

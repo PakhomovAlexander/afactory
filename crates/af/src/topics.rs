@@ -570,7 +570,7 @@ af/provider-setup@2, af/pi-provider-setup@4 and af/provider-models@4; none carri
 a credential or the Provider CLI's own words.
 
 One command prints JSON lines instead and takes no --json: `af task events ID` writes one
-af/task-event@3 document per line while it follows a Task, and its refusal or usage error is one
+af/task-event@4 document per line while it follows a Task, and its refusal or usage error is one
 af/error@2 line with the same exit code.
 
 Documents carry `kind@version` identifiers where they describe persisted records; a payload shape
@@ -580,13 +580,13 @@ never under --json.
 
 Native Review commands use current Task and Ledger documents:
 
-  af review inspect TASK_ID --json    af/task-inspection@21
-  af review show TASK_ID --json       af/task-inspection@21
+  af review inspect TASK_ID --json    af/task-inspection@22
+  af review show TASK_ID --json       af/task-inspection@22
   af review ledger TASK_ID --json     af/review-ledger@3
   af review ledger TASK_ID --format sarif   SARIF 2.1.0, af/findings-sarif@1
   af review report TASK_ID --json     af/task-report@4
   af review decision-context ID --json    af/review-decision-context@1
-  af review decide NEW --from ID --file BATCH --json   af/task-inspection@21 or af/task-selection@3
+  af review decide NEW --from ID --file BATCH --json   af/task-inspection@22 or af/task-selection@3
   af review export TASK_ID PROPOSAL_ID      exact patch bytes, no JSON envelope
 
 The Ledger carries the complete selected canonical Finding Set and original Report envelopes,
@@ -642,7 +642,7 @@ Scenario and Ant documents (ADR-0274; `af help scenarios`):
 
 The Task documents, each named by its `schema`:
 
-  af task show --json                  af/task-inspection@21; a collected Task:
+  af task show --json                  af/task-inspection@22; a collected Task:
                                        af/task-collected-inspection@4
   af task show --checks --json         af/task-checks@4
   af task list --json                  af/task-list@5, one af/task-list-entry@5 per Task
@@ -655,7 +655,7 @@ The Task documents, each named by its `schema`:
   af task diff --json                  af/task-diff@1
   af task materialize --json           af/task-materialized@1
   af task status --json, wait --json   af/task-status@3
-  af task events                       JSON lines, no --json: one af/task-event@3 per event
+  af task events                       JSON lines, no --json: one af/task-event@4 per event
                                        of the Task's log, with the Store's gap-free
                                        `sequence` (--after N resumes), then one terminal
                                        record with the Task's state and exit_code
@@ -665,10 +665,10 @@ The Task documents, each named by its `schema`:
                                        and `next_action`; an infeasible plan carries
                                        planning_diagnostic.required_limits and .reserves
 
-af/task-inspection@21, af/task-collected-inspection@4, af/task-checks@4, each
+af/task-inspection@22, af/task-collected-inspection@4, af/task-checks@4, each
 af/task-list-entry@5, the groups of af/task-attention@2, af/task-report@4, af/task-findings@3,
 af/task-status@3, af/task-detached@4, af/task-cancelled@3 and the terminal record of
-af/task-event@3 carry the Task's `state` (`af help task-states`), its `next_action` carrying the
+af/task-event@4 carry the Task's `state` (`af help task-states`), its `next_action` carrying the
 selectors the command was given (a report, pasted into a pull request, names no Store path); the
 diff, the materialized candidate and the refused selection describe no Task state. A previous
 version is refused, never read.

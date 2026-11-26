@@ -1,11 +1,39 @@
 //! Explicit application services required by the Scenario domain.
-use crate::adapter::Settlement;
+use crate::adapter::{Settlement, TaskCancellation};
 use crate::contract::{Result, TaskReceipt, TaskTarget};
 use crate::performance::{ProofRequest, Scope};
 use crate::template::Template;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
+
+/// The outcome of reading the exact binding, independent of adapter completion.
+pub enum TaskCancellationObservation {
+    Observed(Option<TaskCancellation>),
+    Missing(String),
+    Unavailable(String),
+}
+
+pub type FencedTaskCancellation = (TaskCancellationObservation, Option<Box<dyn Send>>);
+
+/// Failure to materialize a prepared FreshTask intent.
+#[derive(Debug)]
+pub enum TemplatePlanError {
+    StorageCapacity(String),
+    Refused(String),
+}
+
+impl From<String> for TemplatePlanError {
+    fn from(diagnostic: String) -> Self {
+        Self::Refused(diagnostic)
+    }
+}
+
+impl From<&str> for TemplatePlanError {
+    fn from(diagnostic: &str) -> Self {
+        diagnostic.to_owned().into()
+    }
+}
 
 /// Native Task and machine Store services. Implementations must read exact native receipts,
 /// preserve cancellation's recorded-run lease, and keep the Store collection hold alive until
@@ -58,15 +86,17 @@ pub trait Host: Send + Sync {
         &self,
         template: &Template,
         document: serde_json::Value,
+        started_unix_ms: u64,
         performance: bool,
         predecessors: &BTreeMap<String, (TaskReceipt, String)>,
-    ) -> Result<TaskTarget>;
+    ) -> std::result::Result<TaskTarget, TemplatePlanError>;
     fn check_repair(&self, _: &Template, _: &crate::task_outcome::TaskOutcome) -> Result<()> {
         Err("Host does not support checked native repair".into())
     }
     fn run_task(
         &self,
         target: &TaskTarget,
+        intent_id: &str,
         timeout_ms: u64,
         cancellation: &AtomicBool,
     ) -> Result<Settlement>;
@@ -87,6 +117,7 @@ pub trait Host: Send + Sync {
     fn run_ci_diagnosis(
         &self,
         _target: &TaskTarget,
+        _intent_id: &str,
         _timeout_ms: u64,
         _cancellation: &AtomicBool,
     ) -> Result<Settlement> {
@@ -104,6 +135,23 @@ pub trait Host: Send + Sync {
     }
     fn active_task_run(&self, target: &TaskTarget) -> Option<u64>;
     fn cancel_task_run(&self, target: &TaskTarget, expected: u64) -> Result<()>;
+    /// Observe an operator stop of a writer bound to this native intent.
+    fn task_cancellation(
+        &self,
+        _target: &TaskTarget,
+        _intent_id: &str,
+    ) -> Result<TaskCancellationObservation> {
+        Ok(TaskCancellationObservation::Observed(None))
+    }
+    /// Observe cancellation under a guard that fences publication of new requests.
+    /// The caller keeps the guard until the Scenario transaction commits.
+    fn task_cancellation_for_settlement(
+        &self,
+        target: &TaskTarget,
+        intent_id: &str,
+    ) -> Result<FencedTaskCancellation> {
+        Ok((self.task_cancellation(target, intent_id)?, None))
+    }
     /// Missing, unreadable, running or mismatched Tasks retain the full reservation (`None`).
     fn task_charge(&self, target: &TaskTarget) -> Result<Option<(u64, bool)>>;
     fn validate_implementation_proof(

@@ -3674,7 +3674,7 @@ fn markdown_revision_round_trip(exhaust_revision: bool) {
     let event = events.last().unwrap();
     assert_eq!(event.payload, revised);
     let envelope = serde_json::to_value(event).unwrap();
-    assert_eq!(envelope["schema"], "review.kernel/RunEvent@4");
+    assert_eq!(envelope["schema"], "review.kernel/RunEvent@5");
     assert_eq!(
         serde_json::from_value::<af_contracts::RunEvent>(envelope).unwrap(),
         *event

@@ -97,7 +97,7 @@ pub fn read_task_owned_children(cas: &Cas, id: &str) -> Result<TaskOwnedChildSet
     }
     for id in set.artifact_refs() {
         cas.verify(id)
-            .map_err(|e| StoreError::Artifact(e.to_string()))?;
+            .map_err(|error| artifact_read_error(id, error))?;
     }
     Ok(set)
 }
@@ -265,7 +265,7 @@ impl TaskExecutionProjection {
             }
             let item = cas
                 .get_artifact(&child.source_item_id)
-                .map_err(|e| StoreError::Artifact(e.to_string()))?;
+                .map_err(|error| artifact_read_error(&child.source_item_id, error))?;
             if item.input_artifacts != [set.source_artifact_id.clone()]
                 || item.subject_snapshot_id != source.snapshot_id
             {
@@ -488,7 +488,7 @@ pub(in crate::store::task) fn validate_cached(
                     return Err(conflict("Cached owned invocation changed identity"));
                 }
                 cas.verify(&child.source_item_id)
-                    .map_err(|e| StoreError::Artifact(e.to_string()))?;
+                    .map_err(|error| artifact_read_error(&child.source_item_id, error))?;
             }
             for id in set
                 .published
@@ -502,7 +502,7 @@ pub(in crate::store::task) fn validate_cached(
                 }
                 for id in refs {
                     cas.verify(&id)
-                        .map_err(|e| StoreError::Artifact(e.to_string()))?;
+                        .map_err(|error| artifact_read_error(&id, error))?;
                 }
             }
         }

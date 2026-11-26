@@ -122,7 +122,7 @@ pub fn experiment_measured_costs(
         for id in &attempt.raw_artifact_ids {
             let Some(envelope) = cas
                 .get_optional_artifact(id)
-                .map_err(|error| StoreError::Artifact(error.to_string()))?
+                .map_err(|error| artifact_read_error(id, error))?
             else {
                 continue;
             };
@@ -252,10 +252,10 @@ fn validate_derived_worker_package(
 ) -> Result<(), StoreError> {
     let derived_envelope = cas
         .get_artifact(&closure.worker_package_id)
-        .map_err(|error| StoreError::Artifact(error.to_string()))?;
+        .map_err(|error| artifact_read_error(&closure.worker_package_id, error))?;
     let original_envelope = cas
         .get_artifact(original_id)
-        .map_err(|error| StoreError::Artifact(error.to_string()))?;
+        .map_err(|error| artifact_read_error(original_id, error))?;
     if derived_envelope.artifact_type != "af/TaskPackage@1"
         || original_envelope.artifact_type != "af/TaskPackage@1"
     {
@@ -296,7 +296,7 @@ fn validate_derived_worker_package(
         .ok_or_else(|| conflict("Derived Worker invocation lacks protected configuration"))?;
     let task_configuration = cas
         .get_artifact(task_configuration_id)
-        .map_err(|error| StoreError::Artifact(error.to_string()))?;
+        .map_err(|error| artifact_read_error(task_configuration_id, error))?;
     let field = |name: &str| {
         task_configuration
             .payload
@@ -524,7 +524,7 @@ impl TaskExecutionProjection {
                 let decision = &recorded.decision.as_ref().expect("checked").1;
                 let slot_envelope = cas
                     .get_artifact(&recorded.prepared.slot_id)
-                    .map_err(|e| StoreError::Artifact(e.to_string()))?;
+                    .map_err(|error| artifact_read_error(&recorded.prepared.slot_id, error))?;
                 let specification: ExperimentSpecificationV1 = typed(
                     cas,
                     &recorded.prepared.specification_id,

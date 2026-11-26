@@ -49,7 +49,7 @@ fn foreign_store(dir: &Path, release: Option<&str>, run_id: &str, event: &str, p
     conn.execute(
         "INSERT INTO events (envelope, run_id, sequence, event_id, type, occurred_at, artifact_refs,
                              payload)
-         VALUES ('review.kernel/RunEvent@4', ?1, 0, ?2, ?3, '1970-01-01T00:00:00Z', '[]', ?4)",
+         VALUES ('review.kernel/RunEvent@5', ?1, 0, ?2, ?3, '1970-01-01T00:00:00Z', '[]', ?4)",
         [run_id, &event_id, event, payload],
     )
     .unwrap();

@@ -61,7 +61,7 @@ def pilot(name):
         artifacts[task + '-revision'] = {'type': 'af/TaskRevision@1', 'payload': {
             'task_id': task, 'goal': 'issue goal' if task != 'research' else 'research goal',
             'inputs': inputs, 'provenance': {'input_artifact_ids': []}}}
-        values[task] = {'schema': 'af/task-inspection@21', 'task_id': task, 'revision_id': task + '-revision',
+        values[task] = {'schema': 'af/task-inspection@22', 'task_id': task, 'revision_id': task + '-revision',
                         'plan_id': 'plan-' + task, 'chargeable_tokens': '10', 'state': {},
                         'unknown_usage_attempts': 1 if task in ('repair', 'research') else 0,
                         'selection': {'assessment': {'decision': {'kind': 'selected', 'pipeline': pipeline}}},

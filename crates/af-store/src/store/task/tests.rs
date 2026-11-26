@@ -525,6 +525,79 @@ impl Fixture {
 }
 
 #[test]
+fn prepared_plan_wall_starts_at_first_native_admission_in_either_clock_order() {
+    let opened_at = 4_000_000;
+    for logical_origin in [2_000_000, 6_000_000] {
+        test_clock::with_time(logical_origin, |clock| {
+            let mut f = Fixture::new(false).with_execution_graph();
+            let captured_deadline = f.revision.limits.deadline_unix_ms;
+            let wall = captured_deadline - logical_origin;
+            clock.set(opened_at);
+            let lease = f
+                .store
+                .open_task_with_prepared_plan(
+                    &f.cas,
+                    &f.revision_id,
+                    Some(task::event::PreparedPlan {
+                        plan_id: f.plan_id.clone(),
+                        planned_unix_ms: logical_origin,
+                    }),
+                    "writer-1",
+                    100,
+                )
+                .unwrap();
+            let opened = f.state();
+            assert_eq!(opened.last_recorded_unix_ms(), opened_at);
+            assert_eq!(opened.lease_until_unix_ms(), opened_at + 100);
+            assert_eq!(opened.prepared_plan_id.as_deref(), Some(f.plan_id.as_str()));
+            assert_eq!(opened.wall_ms(), wall);
+            assert_eq!(opened.deadline_unix_ms(), captured_deadline);
+            f.propose(&lease);
+
+            let admitted_at = opened_at + 30;
+            clock.set(admitted_at);
+            let event = f
+                .store
+                .admit_task_plan(&f.cas, &lease, &f.authority)
+                .unwrap();
+            assert_eq!(
+                read_task_transition(&event).unwrap().now_unix_ms,
+                admitted_at
+            );
+            let runtime_deadline = admitted_at + wall;
+            clock.set(opened_at + 100);
+            f.store = EventStore::open(&f.path).unwrap();
+            let lease = f
+                .store
+                .take_task_lease(&f.cas, lease.task_id(), "writer-2", wall + 100)
+                .unwrap();
+            f.record_execution_inputs(&lease);
+            let state = f.state();
+            assert_eq!(state.clock_started_unix_ms(), Some(admitted_at));
+            assert_eq!(state.plan_id.as_deref(), Some(f.plan_id.as_str()));
+            assert_eq!(state.revision.limits.deadline_unix_ms, captured_deadline);
+            assert_eq!(state.deadline_unix_ms(), runtime_deadline);
+            assert_eq!(state.deadline_at(clock.get()), runtime_deadline);
+            assert_eq!(
+                state
+                    .execution
+                    .as_ref()
+                    .unwrap()
+                    .budget
+                    .remaining_limits()
+                    .deadline_unix_ms,
+                runtime_deadline
+            );
+            assert!(state.check_approval(&f.cas, runtime_deadline - 1).is_ok());
+            assert!(matches!(
+                state.check_approval(&f.cas, runtime_deadline),
+                Err(StoreError::Conflict(message)) if message == "Task plan deadline expired"
+            ));
+        });
+    }
+}
+
+#[test]
 fn generated_plan_and_approval_survive_reopen_without_admitting_execution() {
     let mut f = Fixture::new(true);
     let lease = f.open();
@@ -579,7 +652,7 @@ fn worker_output_and_generic_event_append_cannot_supply_developer_authority() {
             .is_err()
     );
     let fake = NewEvent::new(
-        EventType::TaskTransitionV6,
+        EventType::TaskTransitionV7,
         serde_json::to_value(TaskTransitionV1 {
             writer: "writer-1".into(),
             epoch: 1,
@@ -759,6 +832,7 @@ fn lease_takeover_fences_old_writer_and_sequence_comparison_is_atomic() {
                 now_unix_ms: 100,
                 change: TaskChangeV1::Opened {
                     revision_id: f.revision_id.clone(),
+                    prepared_plan: None,
                     lease_until_unix_ms: 200,
                 },
             },
@@ -788,13 +862,13 @@ fn lease_takeover_fences_old_writer_and_sequence_comparison_is_atomic() {
         },
     };
     let value = serde_json::to_value(&transition).unwrap();
-    let event = NewEvent::new(EventType::TaskTransitionV6, value.clone())
+    let event = NewEvent::new(EventType::TaskTransitionV7, value.clone())
         .referencing(references(&f.cas, &transition.change, Some(&f.state())).unwrap());
     let permit = WritePermit {
         run_id: task_run_id("task-1").unwrap(),
         first,
         payloads: vec![value],
-        event_type: EventType::TaskTransitionV6,
+        event_type: EventType::TaskTransitionV7,
         valid_until: None,
         review_prefix: None,
         bound_tasks: vec![],
@@ -1706,7 +1780,7 @@ fn execution_history_index_omits_lease_only_tasks_and_checks_selected_rows() {
         .store
         .conn
         .query_row(
-            "EXPLAIN QUERY PLAN SELECT run_id,sequence FROM events WHERE type='TaskTransition@6'
+            "EXPLAIN QUERY PLAN SELECT run_id,sequence FROM events WHERE type='TaskTransition@7'
          AND json_extract(payload,'$.change.kind')='execution_recorded' ORDER BY run_id,sequence",
             [],
             |row| row.get(3),

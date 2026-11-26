@@ -1488,7 +1488,14 @@ fn nested_dispatch_inherits_ancestor_deadline_and_retry_dispatch_bounds() {
             .is_none()
     );
     assert_eq!(expired.status, Status::Failed);
-    assert_eq!(expired.task_charges.len(), 1);
+    assert_eq!(expired.frames["root"].steps[0].status, Status::Failed);
+    let child = &expired.frames["root/review"].steps[0];
+    assert_eq!(child.status, Status::Failed);
+    assert_eq!(child.intents, run.frames["root/review"].steps[0].intents);
+    assert_eq!(expired.task_charges, run.task_charges);
+    let replay: Run = serde_json::from_slice(&serde_json::to_vec(&expired).unwrap()).unwrap();
+    replay.validate(&TestHost::default()).unwrap();
+    assert_eq!(replay, expired);
 }
 
 #[test]
@@ -2011,6 +2018,8 @@ pub(super) struct TestHost {
     pub live_clock: bool,
     pub planned_tasks: Option<std::sync::Mutex<Vec<TaskTarget>>>,
     pub settle_all_planned: bool,
+    pub template_failures:
+        std::sync::Mutex<std::collections::VecDeque<Option<crate::host::TemplatePlanError>>>,
     pub reject_templates: std::sync::atomic::AtomicBool,
     pub startup_time: std::sync::atomic::AtomicU64,
     pub startup_templates: std::sync::Mutex<Vec<String>>,
@@ -2022,6 +2031,7 @@ pub(super) struct TestHost {
     pub task_settlement: Option<super::adapter::Settlement>,
     pub task_settlements: BTreeMap<String, Result<super::adapter::Settlement>>,
     pub task_charges: BTreeMap<String, (u64, bool)>,
+    pub task_cancel: Option<(String, super::adapter::TaskCancellation)>,
     pub ci_output: Option<Value>,
     pub ci_settlement: Option<Observation>,
 }
@@ -2105,9 +2115,13 @@ impl crate::Host for TestHost {
         &self,
         template: &template::Template,
         document: Value,
+        _: u64,
         _: bool,
         _: &BTreeMap<String, (TaskReceipt, String)>,
-    ) -> Result<TaskTarget> {
+    ) -> std::result::Result<TaskTarget, crate::host::TemplatePlanError> {
+        if let Some(Some(error)) = self.template_failures.lock().unwrap().pop_front() {
+            return Err(error);
+        }
         let tasks = self
             .planned_tasks
             .as_ref()
@@ -2130,11 +2144,15 @@ impl crate::Host for TestHost {
     fn run_task(
         &self,
         target: &TaskTarget,
+        _: &str,
         _: u64,
         _: &std::sync::atomic::AtomicBool,
     ) -> Result<adapter::Settlement> {
         self.native_dispatches
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if let Some(settlement) = &self.task_settlement {
+            return Ok(settlement.clone());
+        }
         if let Some(tasks) = &self.planned_tasks {
             if self.settle_all_planned || tasks.lock().unwrap().len() == 1 {
                 let receipt: TaskReceipt = serde_json::from_value(serde_json::json!({
@@ -2158,14 +2176,12 @@ impl crate::Host for TestHost {
         if let Some(result) = self.task_settlements.get(&target.task_id) {
             return result.clone();
         }
-        Ok(self
-            .task_settlement
-            .clone()
-            .unwrap_or_else(|| panic!("unexpected native Task dispatch")))
+        panic!("unexpected native Task dispatch")
     }
     fn run_ci_diagnosis(
         &self,
         target: &TaskTarget,
+        _: &str,
         _: u64,
         _: &std::sync::atomic::AtomicBool,
     ) -> Result<adapter::Settlement> {
@@ -2198,6 +2214,18 @@ impl crate::Host for TestHost {
     }
     fn cancel_task_run(&self, _: &TaskTarget, _: u64) -> Result<()> {
         panic!("unexpected native cancellation")
+    }
+    fn task_cancellation(
+        &self,
+        _: &TaskTarget,
+        intent_id: &str,
+    ) -> Result<crate::host::TaskCancellationObservation> {
+        Ok(crate::host::TaskCancellationObservation::Observed(
+            self.task_cancel
+                .as_ref()
+                .filter(|(id, _)| id == intent_id)
+                .map(|(_, stop)| stop.clone()),
+        ))
     }
     fn task_charge(&self, target: &TaskTarget) -> Result<Option<(u64, bool)>> {
         Ok(self

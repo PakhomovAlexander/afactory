@@ -1476,7 +1476,7 @@ fn retained_cancellation_checkpoint(fault: Option<&str>, point: Option<&str>) {
             let event = events
                 .iter()
                 .find(|event| {
-                    event.event_type == EventType::TaskTransitionV6
+                    event.event_type == EventType::TaskTransitionV7
                         && !matches!(
                             af_store::store::task::read_task_transition(event)
                                 .unwrap()
@@ -4555,17 +4555,17 @@ fn bounded_follower(
     }
 }
 
-/// The lines of `af task events`, each one `af/task-event@3` document, its events numbered
+/// The lines of `af task events`, each one `af/task-event@4` document, its events numbered
 /// without a gap from `first` and at most one terminal record, the last line.
 fn event_lines(text: &str, first: u64) -> Vec<Value> {
-    let schema = schemas::validator("task-event-v3.json");
+    let schema = schemas::validator("task-event-v4.json");
     let lines: Vec<Value> = text
         .lines()
         .map(|line| serde_json::from_str(line).unwrap_or_else(|_| panic!("not one line: {line}")))
         .collect();
     for (at, line) in lines.iter().enumerate() {
         schemas::valid(&schema, line);
-        assert_eq!(line["schema"], "af/task-event@3", "{line}");
+        assert_eq!(line["schema"], "af/task-event@4", "{line}");
         if line["record"] == "terminal" {
             assert_eq!(
                 at + 1,
@@ -5107,7 +5107,7 @@ fn a_planned_task_whose_starting_run_died_is_refused_at_a_later_poll() {
     std::io::BufRead::read_line(&mut stdout, &mut first).unwrap();
     let first: Value = serde_json::from_str(&first)
         .unwrap_or_else(|_| panic!("not one line at the first poll: {first:?}"));
-    assert_eq!(first["schema"], "af/task-event@3", "{first}");
+    assert_eq!(first["schema"], "af/task-event@4", "{first}");
     assert_eq!(first["record"], "event", "{first}");
     run.kill().unwrap();
     run.wait().unwrap();
