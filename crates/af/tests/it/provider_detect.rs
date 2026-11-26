@@ -172,13 +172,13 @@ fn code(output: &Output) -> i32 {
     output.status.code().unwrap()
 }
 
-/// stdout as the one `af/provider-detect@4` document, valid against the published schema.
+/// stdout as the one `af/provider-detect@5` document, valid against the published schema.
 fn detected(output: &Output) -> Value {
     let stdout = out(output);
     let document: Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|error| panic!("stdout is not one document: {error}\n{stdout}"));
     crate::schemas::valid(
-        &crate::schemas::validator("provider-detect-v4.json"),
+        &crate::schemas::validator("provider-detect-v5.json"),
         &document,
     );
     assert_eq!(document["exit_code"], code(output), "{document}");
@@ -250,6 +250,11 @@ fn detect_with_nothing_found_prints_the_install_guidance() {
                 "kind": "codex",
                 "command": "npm install -g @openai/codex",
                 "docs": "https://developers.openai.com/codex/cli",
+            },
+            {
+                "kind": "antigravity",
+                "command": "curl -fsSL https://antigravity.google/install.sh | sh",
+                "docs": "https://antigravity.google/docs/getting-started",
             },
         ]),
         "{document}"
@@ -768,6 +773,8 @@ codex  ~/.codex-acme              sibling  ChatGPT                -             
 binaries: claude 2.1.299, codex 0.163.0
   claude ~/bin/claude
   codex ~/bin/codex
+  antigravity not found: curl -fsSL https://antigravity.google/install.sh | sh
+    or: see https://antigravity.google/docs/getting-started
 
 next, one line per directory:
   af provider add claude-personal --kind claude --auth-dir ~/.config/claude-personal
@@ -1136,7 +1143,7 @@ fn exit_codes_follow_the_documented_table() {
         "{message}"
     );
     assert!(
-        message.contains("pass --kind claude or --kind codex"),
+        message.contains("pass --kind claude, --kind codex, or --kind antigravity"),
         "{message}"
     );
 
@@ -1342,7 +1349,7 @@ fn status_and_detect_leave_a_fresh_home_without_a_codex_directory() {
     assert_eq!(code(&json), 0, "{}", err(&json));
     let document: Value = serde_json::from_str(out(&json).trim()).unwrap();
     crate::schemas::valid(
-        &crate::schemas::validator("provider-status-v6.json"),
+        &crate::schemas::validator("provider-status-v7.json"),
         &document,
     );
     assert_eq!(document["providers"][0]["auth"], "not_probed");
@@ -1554,7 +1561,7 @@ fn status_doctor_and_onboarding_list_the_same_unregistered_directories() {
     assert_eq!(code(&status), 0, "{}", err(&status));
     let document: Value = serde_json::from_str(out(&status).trim()).unwrap();
     crate::schemas::valid(
-        &crate::schemas::validator("provider-status-v6.json"),
+        &crate::schemas::validator("provider-status-v7.json"),
         &document,
     );
     assert_eq!(
@@ -1691,7 +1698,7 @@ fn detect_recognizes_the_default_claude_context_that_status_accepts() {
     assert_eq!(code(&status), 0, "{}", err(&status));
     let status: Value = serde_json::from_str(out(&status).trim()).unwrap();
     crate::schemas::valid(
-        &crate::schemas::validator("provider-status-v6.json"),
+        &crate::schemas::validator("provider-status-v7.json"),
         &status,
     );
     let main = status["providers"]
@@ -1715,11 +1722,18 @@ fn detect_names_the_missing_kind_and_the_rerun_as_typed_fields() {
     let document = detected(&output);
     assert_eq!(
         document["install"],
-        serde_json::json!([{
-            "kind": "codex",
-            "command": "npm install -g @openai/codex",
-            "docs": "https://developers.openai.com/codex/cli",
-        }]),
+        serde_json::json!([
+            {
+                "kind": "codex",
+                "command": "npm install -g @openai/codex",
+                "docs": "https://developers.openai.com/codex/cli",
+            },
+            {
+                "kind": "antigravity",
+                "command": "curl -fsSL https://antigravity.google/install.sh | sh",
+                "docs": "https://antigravity.google/docs/getting-started",
+            },
+        ]),
         "{document}"
     );
     assert_eq!(document["next_action"], Value::Null, "{document}");

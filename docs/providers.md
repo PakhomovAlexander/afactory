@@ -106,15 +106,21 @@ See the [Pi design and evidence](design/pi-provider.md) for the protocol, identi
 accounting and confinement details, supported matrix and limits. The official SDK creation
 and tool test is token-free; **paid live smoke was not run**.
 
-The registry format is version 4; versions 1, 2 and 3 fail closed under ADR-0145. Recreate older
-registrations with this release. Codex and Claude retain their registration fields and native
-adapter behavior. Pi setup emits a safe typed report for every internal refusal, including early
+The registry format is version 5; versions 1–4 fail closed under ADR-0145. Recreate older
+registrations with this release. Codex, Claude, Pi, and Antigravity (`agy`) share this registry.
+Antigravity uses `agy acp --stdio` (`initialize` and `session/new`) for token-free capability,
+status, and model catalog probes and `agy --input-format stream-json --output-format stream-json`
+with adapter-owned `--sandbox` and `--settings` confinement for Worker execution. Because `agy`
+does not expose an account principal ID over ACP, Antigravity Task bindings record
+`principal_id: null` and are refused under `distinct_principals = true` policy.
+Pi setup emits a safe typed report for every internal refusal, including early
 validation/discovery failures. Invalid or reserved requested IDs and absent or malformed
 backend IDs appear as null, never as an invented supported identity or a raw invalid value.
 Failures repeat the AF-authored detail/outcome on stderr even with `--json`; early refusals
 exit 3 and registry conflicts exit 5. CLI parser errors remain usage errors before Pi setup.
-Pi setup JSON is `af/pi-provider-setup@4`; the shared status and catalog
-versions are `af/provider-status@6` and `af/provider-models@4`.
+Pi setup JSON is `af/pi-provider-setup@4`; the shared status, setup, detect, and catalog
+versions are `af/provider-status@7`, `af/provider-setup@3`, `af/provider-detect@5`, and
+`af/provider-models@5`.
 
 ## In a first run
 
@@ -170,7 +176,7 @@ command that registers it; `--apply` runs those commands
 ```sh
 af provider detect              # what is here; writes nothing
 af provider detect --apply      # register every logged-in directory not registered yet
-af provider detect --json       # the same scan, as af/provider-detect@4
+af provider detect --json       # the same scan, as af/provider-detect@5
 ```
 
 On a machine whose `CLAUDE_CONFIG_DIR` is `~/.config/claude-personal`, with logins in
@@ -378,7 +384,7 @@ Each new lookup compares the current wall clock to the stored absolute Unix time
 nanoseconds: the Provider is available at the expiry instant, across restarts and downtime.
 Changing the system clock changes the remaining suspension. No background process is needed.
 Status shows a disabled row, the RFC3339 UTC expiry and `af provider enable ID` without probing
-that Provider, even with `--usage`. JSON is `af/provider-status@6`, with `disabled_until` and `enable_command`
+that Provider, even with `--usage`. JSON is `af/provider-status@7`, with `disabled_until` and `enable_command`
 (non-null only while disabled), `auth = "not_probed"` and `usability = "unusable"`.
 
 Review and model preflights, Task admission and every captured or resumed Task private send
@@ -475,7 +481,7 @@ Enter runs it.
 
 ```sh
 af provider status                 # fast: the registry, the CLI capability check and one authentication check per context
-af provider status --json          # the same, as af/provider-status@6
+af provider status --json          # the same, as af/provider-status@7
 af provider status --usage         # additionally probe subscription and quota windows
 af provider doctor TASK_ID --confirm-plan PLAN_ID
 ```
@@ -516,7 +522,7 @@ refusal that happens anyway is still `model_refused`
 
 ```sh
 af provider models                                        # every registered Provider's catalog
-af provider models claude-work --json                     # the same, as af/provider-models@4
+af provider models claude-work --json                     # the same, as af/provider-models@5
 af provider models claude-work --resolve 'Fable 5.1/xhigh'
 af provider models codex-main --resolve 'GPT-6.1 Sol/ultra'
 af provider models pi-personal --page 1 --json
@@ -572,7 +578,7 @@ configurations to copy. Each is a TOML document that parses on its own: the Task
                    "PACKAGE" = "claude-work"
 ```
 
-With `--json`, `af/provider-models@4` carries these texts in `configuration.worker_runner`
+With `--json`, `af/provider-models@5` carries these texts in `configuration.worker_runner`
 and `configuration.binding`. There is no Reviewer manifest or `reviewer_runner` template.
 An alias or an effort level the model does not list prints no configuration. Provider capability
 and recorded-evidence checks apply equally to implementation and Review Workers.
@@ -768,10 +774,10 @@ names the denied operation. Retry outside the agent sandbox or with host-approve
 reinstalling the CLI cannot grant a host permission. `af doctor` reports the detected agent
 harness, sandbox and network context without treating markers as proof of CLI compatibility.
 
-The versioned documents are [`provider-detect-v4.json`](../schemas/provider-detect-v4.json),
-[`provider-status-v6.json`](../schemas/provider-status-v6.json),
-[`provider-setup-v2.json`](../schemas/provider-setup-v2.json) and
-[`provider-models-v4.json`](../schemas/provider-models-v4.json). They are closed vocabularies; the
+The versioned documents are [`provider-detect-v5.json`](../schemas/provider-detect-v5.json),
+[`provider-status-v7.json`](../schemas/provider-status-v7.json),
+[`provider-setup-v3.json`](../schemas/provider-setup-v3.json) and
+[`provider-models-v5.json`](../schemas/provider-models-v5.json). They are closed vocabularies; the
 models document carries model IDs, aliases, effort levels and bounded display names only. None
 can represent an account email, an organization or account identity, a credential, OAuth material,
 or raw Provider output — quota windows carry only the numbers `af` derived itself, and the human

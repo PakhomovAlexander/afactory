@@ -750,7 +750,7 @@ print(json.dumps({{'schema':'af.worker-reply/1','outputs':{{'result':[stage]}}}}
         }
         let plan_id = cas
             .put_artifact(
-                EXECUTION_PLAN_V4,
+                EXECUTION_PLAN_V5,
                 producer(),
                 vec![],
                 None,

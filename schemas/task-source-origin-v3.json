@@ -20,7 +20,7 @@
       "maxLength": 512
     },
     "content_digest": {
-      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
     },
     "bound_from": {
       "type": "object",
@@ -31,10 +31,10 @@
       ],
       "properties": {
         "artifact_id": {
-          "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
         },
         "snapshot_id": {
-          "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
         },
         "task": {
           "$ref": "urn:af:schema:task-input-bindings:1#/$defs/referencedTask"

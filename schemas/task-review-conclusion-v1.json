@@ -16,13 +16,13 @@
   ],
   "properties": {
     "task_revision_id": {
-      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
     },
     "plan_id": {
-      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
     },
     "task_report_id": {
-      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
     },
     "through_sequence": {
       "type": "integer",
@@ -43,7 +43,7 @@
       "minItems": 0,
       "maxItems": 64,
       "items": {
-        "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+        "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
       }
     },
     "conclusion": {

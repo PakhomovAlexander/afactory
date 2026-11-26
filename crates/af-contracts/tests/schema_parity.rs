@@ -75,7 +75,7 @@ const SCHEMAS: [&str; 275] = [
     "pi-inference-evidence-v2.json",
     "pi-validation-claim-v1.json",
     "pi-provider-setup-v4.json",
-    "provider-registry-v4.json",
+    "provider-registry-v5.json",
     "error-v2.json",
     "findings-sarif-v1.json",
     "task-attempt-wall-end-v1.json",
@@ -110,7 +110,7 @@ const SCHEMAS: [&str; 275] = [
     "task-list-v5.json",
     "task-attention-v2.json",
     "task-checks-v4.json",
-    "provider-detect-v4.json",
+    "provider-detect-v5.json",
     "store-writer-v1.json",
     "doctor-v3.json",
     "project-registered-v1.json",
@@ -131,16 +131,16 @@ const SCHEMAS: [&str; 275] = [
     "project-policy-v2.json",
     "project-workspaces-v1.json",
     "task-report-v4.json",
-    "provider-models-v4.json",
+    "provider-models-v5.json",
     "code-task-policy-v1.json",
     "remote-check-evidence-v1.json",
     "measurement-v1.json",
     "measurement-comparison-v1.json",
     "task-input-bindings-v1.json",
     "task-source-origin-v3.json",
-    "provider-status-v6.json",
+    "provider-status-v7.json",
     "provider-disables-v1.json",
-    "provider-setup-v2.json",
+    "provider-setup-v3.json",
     "build-cache-v2.json",
     "worker-notes-v1.json",
     "head-delta-v1.json",
@@ -157,7 +157,7 @@ const SCHEMAS: [&str; 275] = [
     "optimization-adoption-task-evidence-v1.json",
     "optimization-evaluation-v1.json",
     "experimental-slot-v2.json",
-    "task-inspection-v22.json",
+    "task-inspection-v23.json",
     "experiment-execution-plan-v3.json",
     "task-runtime-evidence-v1.json",
     "optimization-sources-v1.json",
@@ -206,7 +206,7 @@ const SCHEMAS: [&str; 275] = [
     "task-planner-settings-v1.json",
     "task-operator-signature-v1.json",
     "pipeline-proposal-v1.json",
-    "task-provider-admission-v4.json",
+    "task-provider-admission-v5.json",
     "task-review-subject-v3.json",
     "task-review-assignment-v1.json",
     "task-review-round-v1.json",
@@ -233,7 +233,7 @@ const SCHEMAS: [&str; 275] = [
     "task-retry-feedback-v1.json",
     "worker-reply-reask-v1.json",
     "artifact-envelope-v1.json",
-    "task-contracts-v4.json",
+    "task-contracts-v5.json",
     "task-transition-v7.json",
     "task-collected-v1.json",
     "task-gate-cleanup-v1.json",
@@ -249,7 +249,7 @@ const SCHEMAS: [&str; 275] = [
     "task-revision-v1.json",
     "task-result-v1.json",
     "task-phase-v1.json",
-    "execution-plan-v4.json",
+    "execution-plan-v5.json",
     "plan-decision-v1.json",
     "review-history-v1.json",
     "review-decisions-v1.json",
@@ -749,7 +749,7 @@ fn provider_admission_contract_requires_exact_model_capability() {
     let id = format!("sha256:{}", "b".repeat(64));
     let value = json!({"plan_id":id,"invocation_policy_id":id,"outcome":"passed","bindings":["root.slots.reviewer"],
         "execution":{"kind":"model","provider":"personal","provider_kind":"claude","principal_id":id,"model":"claude-fixture-1","effort":"high"}});
-    assert_valid("task-provider-admission-v4.json", &value);
+    assert_valid("task-provider-admission-v5.json", &value);
     serde_json::from_value::<TaskProviderAdmission>(value.clone())
         .unwrap()
         .validate()
@@ -762,7 +762,7 @@ fn provider_admission_contract_requires_exact_model_capability() {
         let mut changed = value.clone();
         changed[field] = replacement;
         assert_invalid(
-            "task-provider-admission-v4.json",
+            "task-provider-admission-v5.json",
             &changed,
             "invalid capability proof",
         );
@@ -795,7 +795,7 @@ fn validator(name: &str) -> &'static jsonschema::Validator {
                     .into_iter()
                     .chain([
                         "finding-report-v1.json",
-                        "task-contracts-v4.json",
+                        "task-contracts-v5.json",
                         "task-review-accounting-v1.json",
                         "task-operator-signature-v1.json",
                         "task-kind-v3.json",
@@ -1336,7 +1336,7 @@ fn current_contract_owners_and_retained_observation_schemas_are_explicit() {
         std::collections::BTreeMap::from([
             ("performance-executor-request", vec![1, 2, 3]),
             ("performance-executor-result", vec![2, 3]),
-            ("provider-models", vec![2, 4]),
+            ("provider-models", vec![2, 4, 5]),
         ]),
         "additional coexisting schema versions need a concrete current owner and proof"
     );

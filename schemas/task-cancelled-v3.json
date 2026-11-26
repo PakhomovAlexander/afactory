@@ -16,7 +16,7 @@
       "const": "af/task-cancelled@3"
     },
     "task_id": {
-      "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+      "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
     },
     "request": {
       "$ref": "urn:af:schema:task-cancel-request:1"

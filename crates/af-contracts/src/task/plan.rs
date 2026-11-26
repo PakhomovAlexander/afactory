@@ -160,6 +160,12 @@ impl WorkerExecutionV3 {
                         .all(|id| is_digest(id)),
                     "Pi binding requires exact supported SDK, backend, auth and configuration identities",
                 )?;
+            } else if provider_kind == "antigravity" {
+                require(pi.is_none(), "Only a Pi binding carries Pi SDK authority")?;
+                require(
+                    principal_id.as_deref().is_none_or(is_digest),
+                    "Antigravity binding requires an unavailable or digest principal identity",
+                )?;
             } else {
                 require(pi.is_none(), "Only a Pi binding carries Pi SDK authority")?;
                 require(

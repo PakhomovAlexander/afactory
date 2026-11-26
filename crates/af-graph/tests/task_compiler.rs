@@ -420,7 +420,7 @@ fn provider_admission_groups_exact_executions_and_preserves_reservations() {
         for (name, node) in admissions {
             assert_eq!(
                 node.contract.outputs["result"].artifact_type,
-                "af/TaskProviderAdmission@4"
+                "af/TaskProviderAdmission@5"
             );
             let allowance = &graph.allowances[name];
             assert_eq!(

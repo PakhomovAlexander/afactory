@@ -247,7 +247,7 @@ impl TaskExecutionProjection {
         // A declared child Diff Subject is bound to this admitted parent plan. Read its
         // Task once per complete set, rather than twice per child on every Store replay.
         let diff_task = if template.contract.inputs.contains_key(DIFF_SUBJECT_PORT) {
-            let plan: ExecutionPlan = payload(cas, &parent.plan_id, task::EXECUTION_PLAN_V4)?;
+            let plan: ExecutionPlan = payload(cas, &parent.plan_id, task::EXECUTION_PLAN_V5)?;
             let revision: task::TaskRevisionV1 =
                 payload(cas, &plan.task_revision_id, task::TASK_REVISION_V1)?;
             Some(revision.task_id)

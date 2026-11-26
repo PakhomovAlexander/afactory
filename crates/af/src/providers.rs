@@ -39,6 +39,7 @@ use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 
+mod antigravity;
 pub mod auth_handoff;
 pub mod availability;
 pub(crate) mod compatibility;
@@ -192,6 +193,7 @@ enum ProviderKind {
     Pi,
     Claude,
     Codex,
+    Antigravity,
 }
 
 impl ProviderKind {
@@ -200,6 +202,7 @@ impl ProviderKind {
             "pi" => Ok(Self::Pi),
             "claude" => Ok(Self::Claude),
             "codex" => Ok(Self::Codex),
+            "antigravity" => Ok(Self::Antigravity),
             _ => Err(format!("unsupported provider kind `{value}`")),
         }
     }
@@ -209,14 +212,15 @@ impl ProviderKind {
             Self::Pi => "pi",
             Self::Claude => "claude",
             Self::Codex => "codex",
+            Self::Antigravity => "antigravity",
         }
     }
 
     fn command(self) -> &'static str {
-        if self == Self::Pi {
-            "node"
-        } else {
-            self.name()
+        match self {
+            Self::Pi => "node",
+            Self::Antigravity => "agy",
+            Self::Claude | Self::Codex => self.name(),
         }
     }
 }
@@ -459,10 +463,12 @@ pub(crate) fn status_table_row(provider: &ProviderStatus) -> String {
 
 /// An ambient CLI context `af` discovered but cannot bind: it needs `af provider setup` first.
 pub(crate) fn is_ambient_candidate(provider: &ProviderStatus) -> bool {
-    matches!(provider.id.as_str(), "claude-ambient" | "codex-ambient")
-        && provider
-            .source
-            .starts_with("ambient CLI candidate; unstable local context label")
+    matches!(
+        provider.id.as_str(),
+        "claude-ambient" | "codex-ambient" | "antigravity-ambient"
+    ) && provider
+        .source
+        .starts_with("ambient CLI candidate; unstable local context label")
 }
 
 /// The setup line printed for an ambient `kind`, naming the first free `<kind>-main` ID.
@@ -475,6 +481,10 @@ pub(crate) fn setup_hint(kind: &str, ids: &BTreeSet<String>) -> String {
 pub(crate) fn ambient_selector(kind: &str) -> (&'static str, &'static str) {
     match kind {
         "claude" => ("CLAUDE_CONFIG_DIR", "~/.claude"),
+        "antigravity" => (
+            "AF_ANTIGRAVITY_AUTH_DIR_NOT_AMBIENT",
+            "~/.gemini/antigravity-cli",
+        ),
         _ => ("CODEX_HOME", "~/.codex"),
     }
 }
@@ -532,6 +542,7 @@ pub(crate) fn telemetry_registry() -> (Result<Vec<NamedValue>, String>, Vec<Name
                     ProviderKind::Pi => "<grant:Pi AuthStorage>",
                     ProviderKind::Claude => "<grant:CLAUDE_CONFIG_DIR>",
                     ProviderKind::Codex => "<grant:CODEX_HOME>",
+                    ProviderKind::Antigravity => "<grant:ANTIGRAVITY_DIR>",
                 };
                 (
                     spec.id.clone(),
@@ -742,6 +753,15 @@ fn print_found_but_not_registered(found: &[PathBuf]) {
 /// The official CLI's own login command for exactly the context a row names, as `--verbose`
 /// shows it: what `af provider setup … --login` runs, with the selector spelled out.
 fn harness_login_command(provider: &ProviderStatus) -> String {
+    if provider.kind == "antigravity" {
+        return match provider.auth_context.as_str() {
+            "CLI default" => "agy acp --login".to_string(),
+            context => format!(
+                "agy acp --login --gemini-dir {} --app-data-dir .",
+                shell_words::quote(context)
+            ),
+        };
+    }
     let (selector, login) = match provider.kind.as_str() {
         "claude" => ("CLAUDE_CONFIG_DIR", "claude auth login"),
         _ => ("CODEX_HOME", "codex login"),
@@ -773,7 +793,7 @@ fn status_document(
         .map(|dir| dir.display().to_string())
         .collect();
     serde_json::json!({
-        "schema": "af/provider-status@6",
+        "schema": "af/provider-status@7",
         "exit_code": exit_code,
         "usage_requested": usage == UsageProbe::Probe,
         "registry": {
@@ -840,9 +860,10 @@ fn credential_name(kind: &str, auth_type: &str) -> &'static str {
     match (kind, method) {
         (_, "-" | "") => "none",
         ("claude", "api_key") | ("codex", "API key") => "api_key",
-        ("claude", "claude.ai" | "oauth") | ("codex", "ChatGPT") | ("pi", "OAuth") => {
-            "subscription"
-        }
+        ("claude", "claude.ai" | "oauth")
+        | ("codex", "ChatGPT")
+        | ("pi", "OAuth")
+        | ("antigravity", "OAuth" | "oauth") => "subscription",
         _ => "other",
     }
 }
@@ -1362,7 +1383,7 @@ impl SetupReport<'_> {
         };
         let auth_context = self.auth_dir.display().to_string();
         serde_json::json!({
-            "schema": "af/provider-setup@2",
+            "schema": "af/provider-setup@3",
             "result": outcome.name(),
             "exit_code": code,
             "login_launched": false,
@@ -1523,7 +1544,10 @@ fn canonical_registry_location(path: &Path) -> Result<PathBuf, String> {
 
 fn validate_explicit_id(id: &str) -> Result<(), String> {
     safe_id(id)?;
-    if matches!(id, "claude-ambient" | "codex-ambient") {
+    if matches!(
+        id,
+        "claude-ambient" | "codex-ambient" | "antigravity-ambient"
+    ) {
         return Err(format!(
             "provider id `{id}` is reserved for ambient discovery"
         ));
@@ -1538,6 +1562,7 @@ fn validate_removable_id(id: &str) -> Result<(), String> {
     let (cli, selector, default) = match id {
         "claude-ambient" => ("claude", "CLAUDE_CONFIG_DIR", "~/.claude"),
         "codex-ambient" => ("codex", "CODEX_HOME", "~/.codex"),
+        "antigravity-ambient" => ("agy", "--gemini-dir", "~/.gemini/antigravity-cli"),
         _ => return Ok(()),
     };
     Err(format!(
@@ -2228,6 +2253,47 @@ fn authentication_ready(spec: &ProviderSpec) -> Result<bool, AuthenticationProbe
             CliRefusal::Unchecked(reason) => AuthenticationProbe::Failed(reason),
         },
     )?;
+    if spec.kind == ProviderKind::Antigravity {
+        let mut observed = AppServerProbe::default();
+        let session = antigravity::probe_acp_session(
+            &program,
+            spec,
+            &probe_path,
+            &cancelled,
+            None,
+            None,
+            &mut observed,
+        )
+        .map_err(|error| {
+            if observed.lacks_protocol {
+                match compatibility::protocol_incompatibility(
+                    &program,
+                    spec,
+                    &probe_path,
+                    &cancelled,
+                    None,
+                    &error,
+                ) {
+                    CliRefusal::CannotStart(failure) => {
+                        AuthenticationProbe::CliCannotStart(failure)
+                    }
+                    CliRefusal::Incompatible(incompatibility) => {
+                        AuthenticationProbe::CliIncompatible(incompatibility)
+                    }
+                    CliRefusal::Denied(denied) => AuthenticationProbe::Denied(denied),
+                    CliRefusal::Unchecked(reason) => AuthenticationProbe::Failed(reason),
+                }
+            } else if !observed.answered
+                && !probe_gave_up(&error)
+                && let Some(failure) = diagnose_cli(&program, spec, &probe_path, &cancelled, None)
+            {
+                AuthenticationProbe::CliCannotStart(failure)
+            } else {
+                AuthenticationProbe::Failed(error)
+            }
+        })?;
+        return Ok(session.authenticated);
+    }
     let output = match run_probe(&program, spec, &probe_path, &cancelled) {
         Ok(output) => output,
         Err(error) => {
@@ -2251,6 +2317,7 @@ fn authentication_ready(spec: &ProviderSpec) -> Result<bool, AuthenticationProbe
             "unknown".into(),
             "Pi uses the SDK host".into(),
         ),
+        ProviderKind::Antigravity => unreachable!("Antigravity uses ACP session/new above"),
         ProviderKind::Claude => parse_claude_status(output.status.success(), &output.stdout),
         ProviderKind::Codex => parse_codex_status(output.status.success(), &output.stdout),
     };
@@ -2335,6 +2402,12 @@ fn run_interactive_login(spec: &ProviderSpec) -> Result<(), String> {
             command.arg("login");
             command.env("CODEX_HOME", auth_dir);
         }
+        ProviderKind::Antigravity => {
+            command
+                .args(["acp", "--login", "--gemini-dir"])
+                .arg(auth_dir)
+                .args(["--app-data-dir", "."]);
+        }
     }
     let status = af_process::reap::status(&mut command)
         .map_err(|error| format!("cannot start {} login: {error}", spec.kind.name()))?;
@@ -2352,6 +2425,7 @@ fn default_auth_dir(kind: ProviderKind) -> Result<PathBuf, String> {
         ProviderKind::Pi => "AF_PI_AUTH_DIR_NOT_AMBIENT",
         ProviderKind::Claude => "CLAUDE_CONFIG_DIR",
         ProviderKind::Codex => "CODEX_HOME",
+        ProviderKind::Antigravity => "AF_ANTIGRAVITY_AUTH_DIR_NOT_AMBIENT",
     };
     if let Some(value) = std::env::var_os(variable)
         && !value.is_empty()
@@ -2369,11 +2443,12 @@ fn default_auth_dir(kind: ProviderKind) -> Result<PathBuf, String> {
     if !home.is_absolute() {
         return Err("HOME must be absolute; pass --auth-dir".into());
     }
-    Ok(home.join(match kind {
+    Ok(match kind {
         ProviderKind::Pi => return Err("Pi requires explicit --auth-dir".into()),
-        ProviderKind::Claude => ".claude",
-        ProviderKind::Codex => ".codex",
-    }))
+        ProviderKind::Claude => home.join(".claude"),
+        ProviderKind::Codex => home.join(".codex"),
+        ProviderKind::Antigravity => home.join(".gemini").join("antigravity-cli"),
+    })
 }
 
 #[derive(Debug)]
@@ -2475,7 +2550,7 @@ fn add_to_registry_with_pi(
         }
         None => {
             let mut document = DocumentMut::new();
-            document["version"] = value(4);
+            document["version"] = value(5);
             document
         }
     };
@@ -2571,9 +2646,9 @@ fn remove_from_registry_locked(
     let mut document = existing
         .parse::<DocumentMut>()
         .map_err(|error| format!("provider registry {}: {error}", path.display()))?;
-    if document.get("version").and_then(Item::as_integer) != Some(4) {
+    if document.get("version").and_then(Item::as_integer) != Some(5) {
         return Err(format!(
-            "provider registry {} must declare version = 4",
+            "provider registry {} must declare version = 5",
             path.display()
         ));
     }
@@ -3753,6 +3828,7 @@ fn provider_name(kind: &str) -> &'static str {
     match kind {
         "claude" => "Claude",
         "codex" => "Codex",
+        "antigravity" => "Antigravity",
         _ => "the Provider",
     }
 }
@@ -3794,7 +3870,7 @@ fn load_specs() -> (Vec<ProviderSpec>, Option<PathBuf>, Option<String>) {
                 Err(_) => (
                     Vec::new(),
                     Some(format!(
-                        "provider registry {} is invalid; expected version 4 and [[providers]] entries with id, kind, and auth_dir",
+                        "provider registry {} is invalid; expected version 5 and [[providers]] entries with id, kind, and auth_dir",
                         path.display()
                     )),
                 ),
@@ -4050,9 +4126,22 @@ fn implicit_defaults() -> Vec<ProviderSpec> {
             auth_dir: canonical_if_present(
                 configured_home
                     .clone()
-                    .or_else(|| home.map(|home| home.join(".codex"))),
+                    .or_else(|| home.as_ref().map(|home| home.join(".codex"))),
             ),
             explicit_selector: configured_home.is_some(),
+            registry_declared: false,
+            source: "ambient CLI candidate; unstable local context label".to_string(),
+        });
+    }
+    if resolve_program("agy").is_some() {
+        defaults.push(ProviderSpec {
+            pi: None,
+            id: "antigravity-ambient".to_string(),
+            kind: ProviderKind::Antigravity,
+            auth_dir: canonical_if_present(
+                home.map(|home| home.join(".gemini").join("antigravity-cli")),
+            ),
+            explicit_selector: false,
             registry_declared: false,
             source: "ambient CLI candidate; unstable local context label".to_string(),
         });
@@ -4091,9 +4180,9 @@ fn parse_registry(text: &str, path: &Path) -> Result<Vec<ProviderSpec>, String> 
         &["version", "providers"],
         "registry",
     )?;
-    if root.get("version").and_then(toml::Value::as_integer) != Some(4) {
+    if root.get("version").and_then(toml::Value::as_integer) != Some(5) {
         return Err(format!(
-            "provider registry {} must declare version = 4",
+            "provider registry {} must declare version = 5",
             path.display()
         ));
     }
@@ -4138,7 +4227,10 @@ fn parse_registry(text: &str, path: &Path) -> Result<Vec<ProviderSpec>, String> 
             .and_then(toml::Value::as_str)
             .ok_or_else(|| format!("provider entry {} has no string `id`", index + 1))?;
         safe_id(id)?;
-        if matches!(id, "claude-ambient" | "codex-ambient") {
+        if matches!(
+            id,
+            "claude-ambient" | "codex-ambient" | "antigravity-ambient"
+        ) {
             return Err(format!(
                 "provider id `{id}` is reserved for ambient discovery"
             ));
@@ -4324,6 +4416,74 @@ fn probe_checked(
     cap: Option<Duration>,
 ) -> (ProviderStatus, String) {
     let program = program.to_path_buf();
+    if spec.kind == ProviderKind::Antigravity {
+        let mut observed = AppServerProbe::default();
+        let session = match antigravity::probe_acp_session(
+            &program,
+            &spec,
+            probe_path,
+            cancelled,
+            None,
+            cap,
+            &mut observed,
+        ) {
+            Ok(session) => session,
+            Err(error) if observed.lacks_protocol => {
+                let refusal = compatibility::protocol_incompatibility(
+                    &program, &spec, probe_path, cancelled, None, &error,
+                );
+                return (refused_status(&spec, refusal), String::new());
+            }
+            Err(error) => {
+                if !observed.answered
+                    && !probe_gave_up(&error)
+                    && let Some(failure) =
+                        diagnose_cli(&program, &spec, probe_path, cancelled, None)
+                {
+                    return (installation_failed_status(&spec, &failure), String::new());
+                }
+                return (unavailable_status(&spec, &error), String::new());
+            }
+        };
+        let (status, auth_type, subscription, detail) = if session.authenticated {
+            (
+                "authenticated".to_string(),
+                "OAuth".to_string(),
+                session.tier.unwrap_or_else(|| "Google AI".to_string()),
+                String::new(),
+            )
+        } else {
+            (
+                "not authenticated".to_string(),
+                "-".to_string(),
+                "-".to_string(),
+                logged_out_detail(&spec, setup_id),
+            )
+        };
+        let usage_state = match (status.as_str(), usage) {
+            ("authenticated", UsageProbe::Skip) => UsageState::NotRequested,
+            ("authenticated", UsageProbe::Probe) => UsageState::Unsupported,
+            _ => UsageState::NotApplicable,
+        };
+        let status = ProviderStatus {
+            disabled_until: None,
+            id: spec.id,
+            kind: spec.kind.name().to_string(),
+            auth_context: spec
+                .auth_dir
+                .as_deref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "CLI default".to_string()),
+            source: spec.source,
+            status,
+            auth_type,
+            subscription,
+            limits: Vec::new(),
+            usage: usage_state,
+            detail,
+        };
+        return (status, String::new());
+    }
     let output = match run_probe_capped(&program, &spec, probe_path, cancelled, None, cap) {
         Ok(output) => output,
         Err(error) => {
@@ -4348,6 +4508,7 @@ fn probe_checked(
             "unknown".into(),
             "Pi uses the SDK host".into(),
         ),
+        ProviderKind::Antigravity => unreachable!("Antigravity uses ACP session/new above"),
         ProviderKind::Claude => parse_claude_status(output.status.success(), &output.stdout),
         ProviderKind::Codex => parse_codex_status(output.status.success(), &output.stdout),
     };
@@ -4356,6 +4517,7 @@ fn probe_checked(
     }
     let mut subscription = match spec.kind {
         ProviderKind::Pi => "unsupported".into(),
+        ProviderKind::Antigravity => unreachable!("Antigravity uses ACP session/new above"),
         ProviderKind::Claude => claude_subscription(&output.stdout),
         ProviderKind::Codex if auth_type == "API key" => "API billing".to_string(),
         ProviderKind::Codex if auth_type == "ChatGPT" => "ChatGPT (plan unavailable)".to_string(),
@@ -5034,14 +5196,14 @@ fn configure_probe_environment(
     if spec.explicit_selector
         && let Some(auth_dir) = &spec.auth_dir
     {
-        command.env(
-            match spec.kind {
-                ProviderKind::Pi => "AF_PI_AUTH_DIR_NOT_AMBIENT",
-                ProviderKind::Claude => "CLAUDE_CONFIG_DIR",
-                ProviderKind::Codex => "CODEX_HOME",
-            },
-            auth_dir,
-        );
+        if let Some(var) = match spec.kind {
+            ProviderKind::Pi => Some("AF_PI_AUTH_DIR_NOT_AMBIENT"),
+            ProviderKind::Claude => Some("CLAUDE_CONFIG_DIR"),
+            ProviderKind::Codex => Some("CODEX_HOME"),
+            ProviderKind::Antigravity => None,
+        } {
+            command.env(var, auth_dir);
+        }
     }
 }
 
@@ -5642,10 +5804,25 @@ fn setup_login_command(spec: &ProviderSpec) -> String {
 /// The selector is repeated on the command line so a login started from another shell cannot
 /// land in a different directory than the one `af` reads for this Provider.
 fn login_command(spec: &ProviderSpec) -> String {
+    if spec.kind == ProviderKind::Antigravity {
+        return match spec.auth_dir.as_deref() {
+            Some(auth_dir) => auth_dir.to_str().map_or_else(
+                || "run `agy acp --login --gemini-dir <dir> --app-data-dir .`".to_string(),
+                |auth_dir| {
+                    format!(
+                        "agy acp --login --gemini-dir {} --app-data-dir .",
+                        shell_words::quote(auth_dir)
+                    )
+                },
+            ),
+            None => "agy acp --login".to_string(),
+        };
+    }
     let (selector, login) = match spec.kind {
         ProviderKind::Pi => return "Configure Pi credentials at a private terminal, then run af provider setup --kind pi with explicit --backend and --auth-dir".into(),
         ProviderKind::Claude => ("CLAUDE_CONFIG_DIR", "claude auth login"),
         ProviderKind::Codex => ("CODEX_HOME", "codex login"),
+        ProviderKind::Antigravity => unreachable!(),
     };
     match spec.auth_dir.as_deref() {
         Some(auth_dir) => auth_dir.to_str().map_or_else(
@@ -5671,6 +5848,7 @@ fn logged_out_detail(spec: &ProviderSpec, setup_id: &str) -> String {
         ProviderKind::Pi => "Pi SDK",
         ProviderKind::Claude => "Claude",
         ProviderKind::Codex => "Codex",
+        ProviderKind::Antigravity => "Antigravity",
     };
     let context = spec
         .auth_dir
@@ -5786,6 +5964,7 @@ fn run_probe_capped(
     let mut command = Command::new(program);
     match spec.kind {
         ProviderKind::Pi => return Err("Pi probes require the SDK host".into()),
+        ProviderKind::Antigravity => return Err("Antigravity probes use ACP".into()),
         ProviderKind::Claude => {
             command.args(["auth", "status", "--json"]);
         }
@@ -5814,7 +5993,7 @@ fn run_probe_capped(
     let timeout = probe_timeout(match spec.kind {
         ProviderKind::Pi => PROBE_TIMEOUT,
         ProviderKind::Claude => CLAUDE_STRUCTURAL_TIMEOUT,
-        ProviderKind::Codex => PROBE_TIMEOUT,
+        ProviderKind::Codex | ProviderKind::Antigravity => PROBE_TIMEOUT,
     });
     let timeout = cap.map_or(timeout, |cap| timeout.min(cap));
     let deadline = Instant::now() + timeout;
@@ -5937,7 +6116,7 @@ fn drain_probe_streams(
     exceeded: &mut bool,
 ) -> Result<bool, String> {
     let (stdout_read, stderr_read) = match kind {
-        ProviderKind::Pi | ProviderKind::Claude => (
+        ProviderKind::Pi | ProviderKind::Claude | ProviderKind::Antigravity => (
             drain_available(stdout, captured, exceeded)?,
             drain_available(stderr, discarded, exceeded)?,
         ),
@@ -6233,7 +6412,7 @@ mod tests {
             );
         }
         let registry = config.join("providers.toml");
-        fixture_fs::write(&registry, "version = 4\nproviders = []\n").unwrap();
+        fixture_fs::write(&registry, "version = 5\nproviders = []\n").unwrap();
         assert_eq!(
             fs::metadata(&registry).unwrap().permissions().mode() & 0o777,
             0o600
@@ -6241,7 +6420,7 @@ mod tests {
         add_to_registry_inner(&registry, "codex-main", ProviderKind::Codex, &auth, false).unwrap();
         assert!(read_registry(&registry).unwrap().is_some());
         fs::set_permissions(&registry, fs::Permissions::from_mode(0o664)).unwrap();
-        fixture_fs::write(&registry, "version = 4\nproviders = []\n").unwrap();
+        fixture_fs::write(&registry, "version = 5\nproviders = []\n").unwrap();
         assert_eq!(
             fs::metadata(&registry).unwrap().permissions().mode() & 0o777,
             0o664
@@ -6268,11 +6447,11 @@ mod tests {
             "backend = \"openai-codex\"\n",
         ] {
             let text = format!(
-                "version = 4\n[[providers]]\nid = \"pi-personal\"\nkind = \"pi\"\nauth_dir = \"/nonexistent-pi-profile\"\n{backend}"
+                "version = 5\n[[providers]]\nid = \"pi-personal\"\nkind = \"pi\"\nauth_dir = \"/nonexistent-pi-profile\"\n{backend}"
             );
             assert!(parse_registry(&text, Path::new("providers.toml")).is_err());
         }
-        for version in [1, 2, 3] {
+        for version in [1, 2, 3, 4] {
             assert!(
                 parse_registry(
                     &format!("version = {version}\nproviders = []\n"),
@@ -6329,8 +6508,8 @@ mod tests {
     fn conditional_registry_replace_preserves_a_noncooperating_replacement() {
         let root = crate::providers::fixture_fs::tempdir().unwrap();
         let path = root.path().join("providers.toml");
-        let original = "version = 4\nproviders = []\n";
-        let external = "version = 4\n# external change\nproviders = []\n";
+        let original = "version = 5\nproviders = []\n";
+        let external = "version = 5\n# external change\nproviders = []\n";
         crate::providers::fixture_fs::write(&path, external).unwrap();
         assert!(write_registry(&path, b"version = 1\n", Some(original)).is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), external);
@@ -6366,7 +6545,7 @@ mod tests {
         let root = crate::providers::fixture_fs::tempdir().unwrap();
         let path = root.path().join("providers.toml");
         let transaction = registry_transaction_path(&path);
-        crate::providers::fixture_fs::write(&path, "version = 4\nproviders = []\n").unwrap();
+        crate::providers::fixture_fs::write(&path, "version = 5\nproviders = []\n").unwrap();
 
         ensure_no_registry_transaction(&path).unwrap();
         let tentative = read_registry_unchecked(&path).unwrap();
@@ -6384,7 +6563,7 @@ mod tests {
         let root = crate::providers::fixture_fs::tempdir().unwrap();
         let path = root.path().join("providers.toml");
         let alias = root.path().join("providers-alias.toml");
-        crate::providers::fixture_fs::write(&path, "version = 4\nproviders = []\n").unwrap();
+        crate::providers::fixture_fs::write(&path, "version = 5\nproviders = []\n").unwrap();
         symlink(&path, &alias).unwrap();
         crate::providers::fixture_fs::write(registry_transaction_path(&path), "version = 1\n")
             .unwrap();
@@ -6405,9 +6584,9 @@ mod tests {
         let first = root.path().join("providers-first.toml");
         let second = root.path().join("providers-second.toml");
         let alias = root.path().join("providers-alias.toml");
-        crate::providers::fixture_fs::write(&first, "version = 4\n# first\nproviders = []\n")
+        crate::providers::fixture_fs::write(&first, "version = 5\n# first\nproviders = []\n")
             .unwrap();
-        crate::providers::fixture_fs::write(&second, "version = 4\n# second\nproviders = []\n")
+        crate::providers::fixture_fs::write(&second, "version = 5\n# second\nproviders = []\n")
             .unwrap();
         symlink(&first, &alias).unwrap();
         let second_transaction = registry_transaction_path(&second);
@@ -6439,9 +6618,9 @@ mod tests {
         let path = root.path().join("providers.toml");
         let stage = root.path().join("stage");
         let transaction = registry_transaction_path(&path);
-        crate::providers::fixture_fs::write(&path, "version = 4\n# original\nproviders = []\n")
+        crate::providers::fixture_fs::write(&path, "version = 5\n# original\nproviders = []\n")
             .unwrap();
-        crate::providers::fixture_fs::write(&stage, "version = 4\n# candidate\nproviders = []\n")
+        crate::providers::fixture_fs::write(&stage, "version = 5\n# candidate\nproviders = []\n")
             .unwrap();
 
         let result = read_registry_with_hooks(
@@ -6500,8 +6679,8 @@ mod tests {
 
         let root = crate::providers::fixture_fs::tempdir().unwrap();
         let path = root.path().join("providers.toml");
-        let original = "version = 4\nproviders = []\n";
-        let candidate = "version = 4\n# candidate\nproviders = []\n";
+        let original = "version = 5\nproviders = []\n";
+        let candidate = "version = 5\n# candidate\nproviders = []\n";
         crate::providers::fixture_fs::write(&path, original).unwrap();
         let mut displaced = OpenOptions::new()
             .read(true)
@@ -6517,7 +6696,7 @@ mod tests {
                 .unwrap();
 
         renameat_with(CWD, &stage_path, CWD, &path, RenameFlags::EXCHANGE).unwrap();
-        let external = "version = 4\n# second replacement\nproviders = []\n";
+        let external = "version = 5\n# second replacement\nproviders = []\n";
         let second = root.path().join("second");
         crate::providers::fixture_fs::write(&second, external).unwrap();
         fs::rename(&second, &stage_path).unwrap();
@@ -6534,8 +6713,8 @@ mod tests {
     fn successful_replace_records_and_preserves_recovery_versions() {
         let root = crate::providers::fixture_fs::tempdir().unwrap();
         let path = root.path().join("providers.toml");
-        let original = "version = 4\nproviders = []\n";
-        let candidate = "version = 4\n# candidate\nproviders = []\n";
+        let original = "version = 5\nproviders = []\n";
+        let candidate = "version = 5\n# candidate\nproviders = []\n";
         crate::providers::fixture_fs::write(&path, original).unwrap();
 
         let preserved = write_registry(&path, candidate.as_bytes(), Some(original))
@@ -6559,8 +6738,8 @@ mod tests {
     fn recovery_archives_only_a_hash_validated_precommit_marker() {
         let root = crate::providers::fixture_fs::tempdir().unwrap();
         let path = root.path().join("providers.toml");
-        let original = "version = 4\nproviders = []\n";
-        let candidate = "version = 4\n# candidate\nproviders = []\n";
+        let original = "version = 5\nproviders = []\n";
+        let candidate = "version = 5\n# candidate\nproviders = []\n";
         crate::providers::fixture_fs::write(&path, original).unwrap();
         let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
         stage.write_all(candidate.as_bytes()).unwrap();
@@ -6594,8 +6773,8 @@ mod tests {
 
         let root = crate::providers::fixture_fs::tempdir().unwrap();
         let path = root.path().join("providers.toml");
-        let original = "version = 4\nproviders = []\n";
-        let candidate = "version = 4\n# candidate\nproviders = []\n";
+        let original = "version = 5\nproviders = []\n";
+        let candidate = "version = 5\n# candidate\nproviders = []\n";
         crate::providers::fixture_fs::write(&path, original).unwrap();
         let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
         stage.write_all(candidate.as_bytes()).unwrap();
@@ -6619,8 +6798,8 @@ mod tests {
     fn recovery_revalidates_held_files_immediately_before_archival() {
         let root = crate::providers::fixture_fs::tempdir().unwrap();
         let path = root.path().join("providers.toml");
-        let original = "version = 4\nproviders = []\n";
-        let candidate = "version = 4\n# candidate\nproviders = []\n";
+        let original = "version = 5\nproviders = []\n";
+        let candidate = "version = 5\n# candidate\nproviders = []\n";
         crate::providers::fixture_fs::write(&path, original).unwrap();
         let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
         stage.write_all(candidate.as_bytes()).unwrap();
@@ -6650,8 +6829,8 @@ mod tests {
     fn recovery_revalidates_marker_bytes_immediately_before_archival() {
         let root = crate::providers::fixture_fs::tempdir().unwrap();
         let path = root.path().join("providers.toml");
-        let original = "version = 4\nproviders = []\n";
-        let candidate = "version = 4\n# candidate\nproviders = []\n";
+        let original = "version = 5\nproviders = []\n";
+        let candidate = "version = 5\n# candidate\nproviders = []\n";
         crate::providers::fixture_fs::write(&path, original).unwrap();
         let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
         stage.write_all(candidate.as_bytes()).unwrap();
@@ -6683,8 +6862,8 @@ mod tests {
         let displaced_parent = root.path().join("registry-held");
         crate::providers::fixture_fs::create_dir(&parent).unwrap();
         let path = parent.join("providers.toml");
-        let original = "version = 4\nproviders = []\n";
-        let candidate = "version = 4\n# candidate\nproviders = []\n";
+        let original = "version = 5\nproviders = []\n";
+        let candidate = "version = 5\n# candidate\nproviders = []\n";
         crate::providers::fixture_fs::write(&path, original).unwrap();
         let mut stage = tempfile::NamedTempFile::new_in(&parent).unwrap();
         stage.write_all(candidate.as_bytes()).unwrap();
@@ -6713,8 +6892,8 @@ mod tests {
         let root = crate::providers::fixture_fs::tempdir().unwrap();
         let path = root.path().join("providers.toml");
         let alias = root.path().join("providers-alias.toml");
-        let original = "version = 4\nproviders = []\n";
-        let candidate = "version = 4\n# candidate\nproviders = []\n";
+        let original = "version = 5\nproviders = []\n";
+        let candidate = "version = 5\n# candidate\nproviders = []\n";
         crate::providers::fixture_fs::write(&path, original).unwrap();
         symlink(&path, &alias).unwrap();
         let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
@@ -6747,8 +6926,8 @@ mod tests {
         symlink(&directory, &alias_directory).unwrap();
         let path = directory.join("providers.toml");
         let alias = alias_directory.join("providers.toml");
-        let original = "version = 4\nproviders = []\n";
-        let candidate = "version = 4\n# candidate\nproviders = []\n";
+        let original = "version = 5\nproviders = []\n";
+        let candidate = "version = 5\n# candidate\nproviders = []\n";
         crate::providers::fixture_fs::write(&path, original).unwrap();
         let mut stage = tempfile::NamedTempFile::new_in(&directory).unwrap();
         stage.write_all(candidate.as_bytes()).unwrap();
@@ -6804,7 +6983,7 @@ mod tests {
         let root = crate::providers::fixture_fs::tempdir().unwrap();
         let path = root.path().join("providers.toml");
         let alias = root.path().join("providers-alias.toml");
-        crate::providers::fixture_fs::write(&path, "version = 4\nproviders = []\n").unwrap();
+        crate::providers::fixture_fs::write(&path, "version = 5\nproviders = []\n").unwrap();
         symlink(&path, &alias).unwrap();
         crate::providers::fixture_fs::write(registry_transaction_path(&path), "version = 1\n")
             .unwrap();
@@ -6824,8 +7003,8 @@ mod tests {
         for tamper in [false, true] {
             let root = crate::providers::fixture_fs::tempdir().unwrap();
             let path = root.path().join("providers.toml");
-            let original = "version = 4\nproviders = []\n";
-            let candidate = "version = 4\n# candidate\nproviders = []\n";
+            let original = "version = 5\nproviders = []\n";
+            let candidate = "version = 5\n# candidate\nproviders = []\n";
             crate::providers::fixture_fs::write(&path, original).unwrap();
             let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
             stage.write_all(candidate.as_bytes()).unwrap();
@@ -6847,7 +7026,7 @@ mod tests {
             if tamper {
                 crate::providers::fixture_fs::write(
                     &path,
-                    "version = 4\n# unknown\nproviders = []\n",
+                    "version = 5\n# unknown\nproviders = []\n",
                 )
                 .unwrap();
                 let error = recover_registry(&path).unwrap_err();
@@ -6901,7 +7080,7 @@ mod tests {
     fn first_registry_publication_never_clobbers_an_external_file() {
         let root = crate::providers::fixture_fs::tempdir().unwrap();
         let path = root.path().join("providers.toml");
-        let external = "version = 4\n# external creation\nproviders = []\n";
+        let external = "version = 5\n# external creation\nproviders = []\n";
         crate::providers::fixture_fs::write(&path, external).unwrap();
         assert!(write_registry(&path, b"version = 1\n", None).is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), external);
@@ -7024,7 +7203,7 @@ mod tests {
 
     #[test]
     fn registry_allows_multiple_accounts_of_one_kind() {
-        let registry = r#"version = 4
+        let registry = r#"version = 5
 [[providers]]
 id = "claude-work"
 kind = "claude"
@@ -7056,7 +7235,7 @@ auth_dir = "/profiles/claude-personal"
         let root = crate::providers::fixture_fs::tempdir().unwrap();
         for (id, kind) in [("claude-ambient", "claude"), ("codex-ambient", "codex")] {
             let registry = format!(
-                "version = 4\n[[providers]]\nid = {id:?}\nkind = {kind:?}\nauth_dir = {:?}\n",
+                "version = 5\n[[providers]]\nid = {id:?}\nkind = {kind:?}\nauth_dir = {:?}\n",
                 root.path().to_str().unwrap()
             );
             let error = match parse_registry(&registry, Path::new("/registry.toml")) {
@@ -7077,7 +7256,7 @@ auth_dir = "/profiles/claude-personal"
         crate::providers::fixture_fs::create_dir(&target).unwrap();
         symlink(&target, &linked).unwrap();
         let registry = format!(
-            "version = 4\n[[providers]]\nid = \"codex-main\"\nkind = \"codex\"\nauth_dir = {:?}\n",
+            "version = 5\n[[providers]]\nid = \"codex-main\"\nkind = \"codex\"\nauth_dir = {:?}\n",
             linked.to_str().unwrap()
         );
 
@@ -7090,7 +7269,7 @@ auth_dir = "/profiles/claude-personal"
 
     #[test]
     fn registry_rejects_duplicate_ids_and_contexts() {
-        let duplicate_id = r#"version = 4
+        let duplicate_id = r#"version = 5
 [[providers]]
 id = "work"
 kind = "claude"
@@ -7105,7 +7284,7 @@ auth_dir = "/profiles/two"
         let shared = root.path().join("shared");
         crate::providers::fixture_fs::create_dir_all(&shared).unwrap();
         let duplicate_context = format!(
-            r#"version = 4
+            r#"version = 5
 [[providers]]
 id = "one"
 kind = "codex"

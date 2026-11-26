@@ -81,7 +81,7 @@ pub(super) fn doctor(args: crate::cli::DoctorArgs) -> Result<i32, String> {
     )
     .map_err(|e| e.to_string())?;
     let mut compiler = planning::restore(&cas, &projection, &authority)?;
-    let plan: ExecutionPlan = artifact(&cas, &args.confirm_plan, EXECUTION_PLAN_V4)?;
+    let plan: ExecutionPlan = artifact(&cas, &args.confirm_plan, EXECUTION_PLAN_V5)?;
     if plan.preparation.is_some() {
         return Err("Provider doctor requires an executable native Task plan".into());
     }

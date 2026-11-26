@@ -36,7 +36,7 @@
     "inputs": {
       "type": "object",
       "additionalProperties": {
-        "$ref": "urn:af:schema:task-contracts:4#/$defs/artifactInput"
+        "$ref": "urn:af:schema:task-contracts:5#/$defs/artifactInput"
       }
     },
     "outputs": {
@@ -123,7 +123,7 @@
         ],
         "properties": {
           "slot_id": {
-            "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+            "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
           },
           "max_concurrency": {
             "type": "integer",
@@ -281,7 +281,7 @@
           "else": {
             "properties": {
               "contract": {
-                "$ref": "urn:af:schema:task-contracts:4#/$defs/contract"
+                "$ref": "urn:af:schema:task-contracts:5#/$defs/contract"
               }
             }
           }
@@ -403,16 +403,16 @@
       ],
       "properties": {
         "worker": {
-          "$ref": "urn:af:schema:task-contracts:4#/$defs/package"
+          "$ref": "urn:af:schema:task-contracts:5#/$defs/package"
         },
         "role": {
-          "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+          "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
         },
         "input_type": {
-          "$ref": "urn:af:schema:task-contracts:4#/$defs/artifactType"
+          "$ref": "urn:af:schema:task-contracts:5#/$defs/artifactType"
         },
         "output_type": {
-          "$ref": "urn:af:schema:task-contracts:4#/$defs/artifactType"
+          "$ref": "urn:af:schema:task-contracts:5#/$defs/artifactType"
         },
         "min_attempts": {
           "type": "integer",
@@ -449,7 +449,7 @@
         {
           "allOf": [
             {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/operator"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/operator"
             },
             {
               "not": {
@@ -537,20 +537,20 @@
         "inputs": {
           "type": "object",
           "propertyNames": {
-            "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+            "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
           },
           "additionalProperties": {
-            "$ref": "urn:af:schema:task-contracts:4#/$defs/inputPort"
+            "$ref": "urn:af:schema:task-contracts:5#/$defs/inputPort"
           },
           "minProperties": 0
         },
         "outputs": {
           "type": "object",
           "propertyNames": {
-            "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+            "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
           },
           "additionalProperties": {
-            "$ref": "urn:af:schema:task-contracts:4#/$defs/outputPort"
+            "$ref": "urn:af:schema:task-contracts:5#/$defs/outputPort"
           },
           "minProperties": 0
         }
@@ -584,18 +584,18 @@
           "maximum": 4294967295
         },
         "source_input": {
-          "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+          "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
         },
         "item_input": {
-          "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+          "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
         },
         "inherited_inputs": {
           "type": "object",
           "propertyNames": {
-            "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+            "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
           },
           "additionalProperties": {
-            "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+            "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
           }
         }
       }

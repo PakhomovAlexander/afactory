@@ -72,7 +72,7 @@ print(json.dumps({'type':'turn.completed','usage':usage}))
             }
         };
         std::fs::write(home.join("usage.json"), serde_json::to_vec(&usage).unwrap()).unwrap();
-        std::fs::write(home.join("providers.toml"), toml::to_string(&json!({"version":4,"providers":[{"id":"codex-personal","kind":"codex","auth_dir":home}]})).unwrap()).unwrap();
+        std::fs::write(home.join("providers.toml"), toml::to_string(&json!({"version":5,"providers":[{"id":"codex-personal","kind":"codex","auth_dir":home}]})).unwrap()).unwrap();
         let catalog_path = repo.join(".af/task-catalog.toml");
         let mut catalog: Value =
             toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
@@ -389,7 +389,7 @@ fn admission_tokens_and_wall_exceeding_original_task_limits_refuse_paid_dispatch
 
 fn catalog_schema(schema: &Value) -> jsonschema::Validator {
     let contracts: Value = serde_json::from_str(include_str!(
-        "../../../../../schemas/task-contracts-v4.json"
+        "../../../../../schemas/task-contracts-v5.json"
     ))
     .unwrap();
     let planner: Value = serde_json::from_str(include_str!(
@@ -398,7 +398,7 @@ fn catalog_schema(schema: &Value) -> jsonschema::Validator {
     .unwrap();
     let registry = jsonschema::Registry::new()
         .add(
-            "urn:af:schema:task-contracts:4",
+            "urn:af:schema:task-contracts:5",
             jsonschema::Resource::from_contents(contracts),
         )
         .unwrap()
@@ -674,7 +674,7 @@ fn pi_task_case(mode: &str) {
         f.catalog["independence"] = json!({"command_workers_by_package":true,
                 "distinct_principals":false,"distinct_providers":false,"distinct_models":false});
     }
-    std::fs::write(f.home.join("providers.toml"),toml::to_string(&json!({"version":4,"providers":[{"id":"pi-personal","kind":"pi","backend":backend,"auth_dir":f.home,"sdk_entrypoint":sdk}]})).unwrap()).unwrap();
+    std::fs::write(f.home.join("providers.toml"),toml::to_string(&json!({"version":5,"providers":[{"id":"pi-personal","kind":"pi","backend":backend,"auth_dir":f.home,"sdk_entrypoint":sdk}]})).unwrap()).unwrap();
     f.catalog["providers"] = json!({"builtin/document-author":"pi-personal"});
     let package = f.repo.join(
         f.catalog["packages"]["builtin/document-author"]["path"]

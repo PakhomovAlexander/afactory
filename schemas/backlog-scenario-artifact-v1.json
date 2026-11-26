@@ -25,9 +25,9 @@
           "additionalProperties": false,
           "required": ["kind", "kind_package", "pipeline", "goal", "limits"],
           "properties": {
-            "kind": { "$ref": "urn:af:schema:task-contracts:4#/$defs/package" },
-            "kind_package": { "$ref": "urn:af:schema:task-contracts:4#/$defs/package" },
-            "pipeline": { "$ref": "urn:af:schema:task-contracts:4#/$defs/package" },
+            "kind": { "$ref": "urn:af:schema:task-contracts:5#/$defs/package" },
+            "kind_package": { "$ref": "urn:af:schema:task-contracts:5#/$defs/package" },
+            "pipeline": { "$ref": "urn:af:schema:task-contracts:5#/$defs/package" },
             "goal": { "type": "string", "minLength": 1 },
             "limits": { "$ref": "urn:af:schema:task-file:1#/properties/limits" }
           }
@@ -39,14 +39,14 @@
       "type": "object",
       "minProperties": 1,
       "maxProperties": 128,
-      "propertyNames": { "$ref": "urn:af:schema:task-contracts:4#/$defs/package" },
+      "propertyNames": { "$ref": "urn:af:schema:task-contracts:5#/$defs/package" },
       "additionalProperties": {
         "type": "object",
         "additionalProperties": false,
         "required": ["path", "digest", "version"],
         "properties": {
           "path": { "$ref": "#/$defs/path" },
-          "digest": { "$ref": "urn:af:schema:task-contracts:4#/$defs/digest" },
+          "digest": { "$ref": "urn:af:schema:task-contracts:5#/$defs/digest" },
           "version": { "type": "string", "minLength": 1 }
         }
       }
@@ -61,7 +61,7 @@
         "required": ["path", "digest"],
         "properties": {
           "path": { "$ref": "#/$defs/path" },
-          "digest": { "$ref": "urn:af:schema:task-contracts:4#/$defs/digest" }
+          "digest": { "$ref": "urn:af:schema:task-contracts:5#/$defs/digest" }
         }
       }
     }

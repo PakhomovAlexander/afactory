@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:provider-registry:4",
+  "$id": "urn:af:schema:provider-registry:5",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -8,7 +8,7 @@
   ],
   "properties": {
     "version": {
-      "const": 4
+      "const": 5
     },
     "providers": {
       "type": "array",
@@ -31,7 +31,8 @@
               "kind": {
                 "enum": [
                   "claude",
-                  "codex"
+                  "codex",
+                  "antigravity"
                 ]
               },
               "auth_dir": {

@@ -843,7 +843,7 @@ the kind prefix (~/.config/claude-work is claude-work, ~/.codex-gridgain is code
 the env directory follows the sibling rule when its name is a sibling name, else claude-env or \
 codex-env; --dir follows the sibling rule, and needs one --id per --dir when \
 more than one names the same kind; a taken ID gets -2, -3; *-ambient is never generated.\n\n\
---json prints one af/provider-detect@4 document; its `install` names the install command and \
+--json prints one af/provider-detect@5 document; its `install` names the install command and \
 documentation of each kind whose CLI was not found, and `next_action` the scan to run again once \
 one is installed (null when a CLI was found). Exit codes: 0 the scan completed, 1 \
 unclassified failure, 2 usage error, 4 a found CLI cannot start or is incompatible, or a login \
@@ -868,7 +868,7 @@ could be established.",
         /// Register every authenticated, unregistered directory found
         #[arg(long)]
         apply: bool,
-        /// Emit the versioned `af/provider-detect@4` document instead of the table
+        /// Emit the versioned `af/provider-detect@5` document instead of the table
         #[arg(long)]
         json: bool,
         /// Add the account label each CLI reported (terminal only, never with --json)
@@ -918,7 +918,7 @@ unavailable, 8 a host-denied probe.",
         after_long_help = "Examples:\n  af provider status\n  af provider status --json\n  af provider status --usage\n  af provider status --verbose"
     )]
     Status {
-        /// Emit the versioned `af/provider-status@6` document instead of the table
+        /// Emit the versioned `af/provider-status@7` document instead of the table
         #[arg(long)]
         json: bool,
         /// Also probe subscription and quota windows (slower, and may be unavailable)
@@ -964,7 +964,7 @@ catalog is unavailable (the static rules are printed and nothing is invented).",
         /// Pi catalog page (zero-based, at most 64 models per page)
         #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u16).range(0..64))]
         page: u16,
-        /// Emit the versioned `af/provider-models@4` document instead of the table
+        /// Emit the versioned `af/provider-models@5` document instead of the table
         #[arg(long)]
         json: bool,
         /// Resolve a human model spelling, with an optional /EFFORT, to an exact ID
@@ -1019,7 +1019,7 @@ af provider setup claude-work --kind claude --auth-dir /secure/claude-work \\\n 
         /// Opt in to starting the official Provider CLI login in this private terminal
         #[arg(long)]
         login: bool,
-        /// Emit `af/provider-setup@2` (Pi: `af/pi-provider-setup@4`)
+        /// Emit `af/provider-setup@3` (Pi: `af/pi-provider-setup@4`)
         #[arg(long, conflicts_with = "login")]
         json: bool,
     },
@@ -1157,6 +1157,7 @@ pub(crate) enum ProviderKindArg {
     Pi,
     Claude,
     Codex,
+    Antigravity,
 }
 
 #[derive(Debug, Args, Clone)]

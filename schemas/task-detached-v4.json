@@ -21,7 +21,7 @@
       "const": "af/task-detached@4"
     },
     "task_id": {
-      "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+      "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
     },
     "run": {
       "type": "integer",

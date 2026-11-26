@@ -14,6 +14,6 @@
     "observation_id": { "$ref": "#/$defs/digest" }
   },
   "$defs": {
-    "digest": { "$ref": "urn:af:schema:task-contracts:4#/$defs/digest" }
+    "digest": { "$ref": "urn:af:schema:task-contracts:5#/$defs/digest" }
   }
 }

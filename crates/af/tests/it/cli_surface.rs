@@ -296,10 +296,10 @@ fn task_states_topic_and_the_state_flags_describe_the_commands() {
     let json = out(&af(&["help", "json"]));
     for needle in [
         "af/task-findings@3",
-        "af/task-inspection@22",
+        "af/task-inspection@23",
         "af/task-report@4",
         "af/findings-sarif@1",
-        "af/task-inspection@22",
+        "af/task-inspection@23",
         "af/task-checks@4",
         "af/task-list@5",
         "af/task-list-entry@5",
@@ -546,7 +546,7 @@ fn provider_models_help_and_man_page_describe_the_command() {
             "Usage: af provider models [OPTIONS] [ID]...",
             "--json",
             "--resolve <SPELLING[/EFFORT]>",
-            "af/provider-models@4",
+            "af/provider-models@5",
             "`list_models` control request",
             "`model/list` on a bare `codex app-server`",
             "Pi's AF host reads the effective SDK/profile chat catalog without model networking.",
@@ -609,7 +609,7 @@ fn provider_detect_help_and_the_providers_topic_describe_the_commands() {
             "A registry conflict stops it at that row with exit 5; the rows before it stay registered",
             "~/.config/claude-work is claude-work, ~/.codex-gridgain is codex-gridgain",
             "*-ambient is never generated",
-            "af/provider-detect@4",
+            "af/provider-detect@5",
             "its `install` names the install command and documentation of each kind whose CLI was not found",
             "`next_action` the scan to run again once one is installed",
             "the default ~/.claude may instead have a ~/.claude.json file beside it",
@@ -656,7 +656,7 @@ fn provider_detect_help_and_the_providers_topic_describe_the_commands() {
     ] {
         assert!(text.contains(needle), "`{needle}` missing:\n{text}");
     }
-    assert!(out(&af(&["help", "json"])).contains("af/provider-detect@4"));
+    assert!(out(&af(&["help", "json"])).contains("af/provider-detect@5"));
     assert!(out(&af(&["help"])).contains("providers"));
 
     let add = out(&af(&["provider", "add", "--help"]))

@@ -61,7 +61,7 @@ def pilot(name):
         artifacts[task + '-revision'] = {'type': 'af/TaskRevision@1', 'payload': {
             'task_id': task, 'goal': 'issue goal' if task != 'research' else 'research goal',
             'inputs': inputs, 'provenance': {'input_artifact_ids': []}}}
-        values[task] = {'schema': 'af/task-inspection@22', 'task_id': task, 'revision_id': task + '-revision',
+        values[task] = {'schema': 'af/task-inspection@23', 'task_id': task, 'revision_id': task + '-revision',
                         'plan_id': 'plan-' + task, 'chargeable_tokens': '10', 'state': {},
                         'unknown_usage_attempts': 1 if task in ('repair', 'research') else 0,
                         'selection': {'assessment': {'decision': {'kind': 'selected', 'pipeline': pipeline}}},
@@ -217,7 +217,7 @@ class Workflows(unittest.TestCase):
         row = dict(id='pi-personal', kind='pi', state='listed', skipped_entries=0,
                    models=[dict(id='k3.1-pro', effort_levels=['high'])],
                    catalog_page=dict(number=0, next=None, total=1))
-        value = dict(schema='af/provider-models@4', exit_code=0, token_free=True, providers=[row])
+        value = dict(schema='af/provider-models@5', exit_code=0, token_free=True, providers=[row])
         def response(v, code=0):
             return mock.Mock(returncode=code, stdout=json.dumps(v).encode())
         with mock.patch.object(w.subprocess, 'run', return_value=response(value)) as run:

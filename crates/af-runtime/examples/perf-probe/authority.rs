@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use af_contracts::task::execution::{TaskInvocationV1, TaskOutputV1};
 use af_contracts::task::plan::{ExecutionPlan, IndependencePolicyV1, WorkerExecutionV3};
-use af_contracts::task::{EXECUTION_PLAN_V4, TASK_REVISION_V1, TaskResultV1, TaskRevisionV1};
+use af_contracts::task::{EXECUTION_PLAN_V5, TASK_REVISION_V1, TaskResultV1, TaskRevisionV1};
 use af_graph::task::{CompiledNode, CompiledTask};
 use af_pipeline_config::lock::package_digest_from_files;
 use af_pipeline_config::task::catalog::{AdmittedWorkerSettings, TaskPackagePin, TaskPlanCompiler};
@@ -447,7 +447,7 @@ fn build_configured<T>(
         .map_err(fixture)?;
     let (plan_id, _) = cas
         .put_artifact(
-            EXECUTION_PLAN_V4,
+            EXECUTION_PLAN_V5,
             fixtures::producer(),
             vec![revision_id.clone()],
             None,

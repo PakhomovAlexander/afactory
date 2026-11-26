@@ -17,7 +17,7 @@ identities. Telemetry observes committed Task publication and never decides acce
 | Review Subject | `af.task-review-subject/3`, `af/TaskReviewSubject@3` | `af-contracts/src/task/review_context.rs`, runtime Review context validators; exact Base/head, complete Change Set, rename linkage, scope and prior history remain checked. |
 | Source origin | `af.task-source-origin/3` | `af-source-git/src/task.rs`; `captured` retains commit or dirty-tree provenance, while `bound` requires admitted artifact/Snapshot and optional producing Task/output. No older DTO is constructed. |
 | Review history and Round | `af/ReviewHistory@1`, `af/TaskReviewRound@1` | `af-runtime/src/task/review/`, checked original plans and native publication; complete required siblings and exact cumulative accounting precede authoritative Ledger publication. |
-| Store events and inspection | `review.kernel/RunEvent@5`, `af/TaskTransition@7`, `af/task-inspection@22` | Closed current Store and Task contracts, their writers/readers and schema parity. Retired Campaign bootstrap and execution unions fail closed. |
+| Store events and inspection | `review.kernel/RunEvent@5`, `af/TaskTransition@7`, `af/task-inspection@23` | Closed current Store and Task contracts, their writers/readers and schema parity. Retired Campaign bootstrap and execution unions fail closed. |
 | Project authority and model display | `.af/af.toml` version 2, `af/provider-models@4` | Native Task defaults, onboarding and doctor; model output exposes current Worker and binding templates. Release pins remain separate. |
 | Benchmark output and registry | `af/telemetry-overhead@3`, `af/telemetry-invocation-cost@3`, `af.perf-telemetry-lab/4` | Python bench writers/readers, current schemas and `test_telemetry_bench_contracts`, `test_contracts.TelemetryLabVersion`; earlier output and registry shapes are refused. |
 
@@ -144,7 +144,7 @@ descriptive annotations do not establish capability. Equal Cargo.lock release
 strings cannot establish capability. The authority already captures the schemas directory.
 
 Before timing, each binary must reproduce every committed package pin with `af catalog digest` and
-plan the exact workload as `af/task-inspection@22` with zero Attempts. Invocation planning uses the
+plan the exact workload as `af/task-inspection@23` with zero Attempts. Invocation planning uses the
 same private scripted Provider as its measured runs. Smoke provenance names the canonically
 re-pinned package actually planned and executed, not the pristine full-scale digest. A missing/malformed contract, incompatible
 binary, changed schema or mismatched package pin refuses with its original diagnostic; no alternate

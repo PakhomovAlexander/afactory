@@ -841,7 +841,7 @@ pub(super) fn current_marked(
         .plan_id
         .as_deref()
         .ok_or("Task has no captured plan")?;
-    let plan: ExecutionPlan = artifact(cas, id, EXECUTION_PLAN_V4)?;
+    let plan: ExecutionPlan = artifact(cas, id, EXECUTION_PLAN_V5)?;
     let graph: CompiledTask = artifact(cas, &plan.compiled_graph_id, COMPILED_TASK_V4)?;
     let status = if matches!(state.phase, TaskPhaseV1::Finished { .. }) {
         "finished"

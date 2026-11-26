@@ -120,7 +120,7 @@ fn document(output: &Output) -> Value {
     let document: Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|error| panic!("stdout is not one document: {error}\n{stdout}"));
     crate::schemas::valid(
-        &crate::schemas::validator("provider-status-v6.json"),
+        &crate::schemas::validator("provider-status-v7.json"),
         &document,
     );
     document
@@ -277,7 +277,7 @@ fn setup_refuses_a_cli_that_cannot_start_as_a_missing_provider_cli() {
     let stdout = out(&setup);
     let reported: Value = serde_json::from_str(stdout.trim()).unwrap();
     crate::schemas::valid(
-        &crate::schemas::validator("provider-setup-v2.json"),
+        &crate::schemas::validator("provider-setup-v3.json"),
         &reported,
     );
     assert_eq!(reported["result"], "provider_cli_missing");
@@ -598,7 +598,7 @@ fn a_codex_whose_app_server_exits_before_initialize_is_incompatible_on_status_an
     let stdout = out(&setup);
     let reported: Value = serde_json::from_str(stdout.trim()).unwrap();
     crate::schemas::valid(
-        &crate::schemas::validator("provider-setup-v2.json"),
+        &crate::schemas::validator("provider-setup-v3.json"),
         &reported,
     );
     assert_eq!(reported["result"], "provider_cli_missing");
@@ -649,13 +649,13 @@ fn denied_codex_probe_is_distinct_on_status_and_detect_with_or_without_sandbox_m
             let value: Value = serde_json::from_slice(&output.stdout).unwrap();
             if args[1] == "status" {
                 crate::schemas::valid(
-                    &crate::schemas::validator("provider-status-v6.json"),
+                    &crate::schemas::validator("provider-status-v7.json"),
                     &value,
                 );
                 assert_eq!(only_provider(&value)["auth"], "probe_denied");
             } else {
                 crate::schemas::valid(
-                    &crate::schemas::validator("provider-detect-v4.json"),
+                    &crate::schemas::validator("provider-detect-v5.json"),
                     &value,
                 );
                 assert_eq!(value["binaries"][0]["probe"], "denied");
@@ -700,7 +700,7 @@ fn denied_codex_probe_is_distinct_on_status_and_detect_with_or_without_sandbox_m
     assert_eq!(code(&setup), 8, "{}", err(&setup));
     let setup_doc: Value = serde_json::from_slice(&setup.stdout).unwrap();
     crate::schemas::valid(
-        &crate::schemas::validator("provider-setup-v2.json"),
+        &crate::schemas::validator("provider-setup-v3.json"),
         &setup_doc,
     );
     assert_eq!(setup_doc["result"], "probe_denied");
@@ -1092,7 +1092,7 @@ fn setup_refuses_an_incompatible_cli_before_any_login() {
     let stdout = out(&setup);
     let reported: Value = serde_json::from_str(stdout.trim()).unwrap();
     crate::schemas::valid(
-        &crate::schemas::validator("provider-setup-v2.json"),
+        &crate::schemas::validator("provider-setup-v3.json"),
         &reported,
     );
     assert_eq!(reported["result"], "provider_cli_missing");

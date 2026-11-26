@@ -2,13 +2,13 @@
  "files": [
   {
    "path": "Cargo.lock",
-   "sha256": "sha256:5d53de3eef043877ceb6d04af410513579b27d7ec14bba1435b168d9ffb83103",
-   "size": 63024
+   "sha256": "sha256:0f003e553a9538782b2901b89bea32aaac810d2193e3cc79782d46b3e55dabe8",
+   "size": 63253
   },
   {
    "path": "Cargo.toml",
-   "sha256": "sha256:a205e83cfb1a938ca8973716b30cc36c1f91659307b0bb5877dbf0e9bdd1fca6",
-   "size": 2046
+   "sha256": "sha256:4c032afc9dbd58da7836aa33b9e68b427f408b7acd94fcb7b5b7abe59ab9eace",
+   "size": 2078
   },
   {
    "path": "crates/af-attempt/Cargo.toml",
@@ -76,6 +76,11 @@
    "size": 1109
   },
   {
+   "path": "crates/af-runner-antigravity/Cargo.toml",
+   "sha256": "sha256:624a981ead33f6d9051b12dd18e9fcce28ec233e45606ad96dec810f4ce79f97",
+   "size": 890
+  },
+  {
    "path": "crates/af-runner-claude/Cargo.toml",
    "sha256": "sha256:6294c9d0fae0ea5b6e794af08d045edace06694e35416fb0be9f520edff0a988",
    "size": 1463
@@ -112,7 +117,7 @@
   },
   {
    "path": "crates/af-runtime/examples/perf-probe/authority.rs",
-   "sha256": "sha256:60ef2a743d511afa041eb43debf892dab05ca78e675e263f973d69cd387b863d",
+   "sha256": "sha256:0d4c1396362e5cda31c40f5f995002e889ad26499e4157b4c74950546cbb73c6",
    "size": 36157
   },
   {
@@ -167,8 +172,8 @@
   },
   {
    "path": "crates/af/Cargo.toml",
-   "sha256": "sha256:d505bfbb89548fbccf9d2367c0d9dd7ceb3ccd380d414122ac4891e1006d3497",
-   "size": 3493
+   "sha256": "sha256:a5bdd27c3c4505c6e6b945495ab406f9db3b10ac73163685d739284efb3b84c2",
+   "size": 3555
   },
   {
    "path": "crates/af/build.rs",
@@ -217,7 +222,7 @@
   },
   {
    "path": "fixtures/performance/cli/default-light-smoke/driver.py",
-   "sha256": "sha256:f0157ed48739b9844b164a91b0f36fd62e763d23aa076cc05730cc79d72d25c0",
+   "sha256": "sha256:cba836ca31a58e2749c6302554eb13e9fd9a0a258fed525c5982b3908c775ff8",
    "size": 24428
   },
   {
@@ -3502,7 +3507,7 @@
   },
   {
    "path": "scripts/performance/perflab/dev_flow.py",
-   "sha256": "sha256:028cdf73b1087dd5c912763adbadeb605ab35b92f7d8dfe24dac05e3872fbf28",
+   "sha256": "sha256:9ed73565478f32c85fc4e9ed42b3f7822f2968893b65e9c93a287d92b74ecec0",
    "size": 21259
   },
   {
@@ -3922,7 +3927,7 @@
   },
   {
    "path": "scripts/performance/tests/dev_flow_fixture.py",
-   "sha256": "sha256:5591091f835d50de65c8953f6b59ce14973c49743a012f0e25a761afcce6c4db",
+   "sha256": "sha256:f09e743309ac0897efba3e097f888fd21e3aa104b85cf573dfb9864e8ef9f774",
    "size": 5880
   },
   {
@@ -4197,7 +4202,7 @@
   },
   {
    "path": "scripts/performance/tests/test_telemetry_bench_contracts.py",
-   "sha256": "sha256:fc33014e86b48ed4d5d48581b4f4bc6b7363e7bf9016a38a12ffa32b68cd03af",
+   "sha256": "sha256:b102ea59f75b3a1f623efddd25781febc2482eab38311aa4028679fe7d06d838",
    "size": 40433
   },
   {
@@ -4306,7 +4311,7 @@
    "size": 6781
   }
  ],
- "harness_digest": "sha256:a43a2b3a59a897ab72f443fb066596bfb2e85591f7e65408f0786a6719914753",
+ "harness_digest": "sha256:04ed12ec898d5a1357ecf98c39bc2287e10f001fe1b5ae5b8fa82e775a3cb65f",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",

@@ -24,7 +24,7 @@
       "const": "af/task-status@3"
     },
     "task_id": {
-      "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+      "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
     },
     "state": {
       "$ref": "urn:af:schema:task-state:3#/$defs/state"

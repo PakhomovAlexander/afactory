@@ -7,7 +7,7 @@
   "required": ["schema", "batch_id", "source_revision", "decisions"],
   "properties": {
     "schema": { "const": "af/backlog-assessment@2" },
-    "batch_id": { "$ref": "urn:af:schema:task-contracts:4#/$defs/digest" },
+    "batch_id": { "$ref": "urn:af:schema:task-contracts:5#/$defs/digest" },
     "source_revision": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
     "decisions": {
       "type": "array",
@@ -27,7 +27,7 @@
           "evidence_ids": {
             "type": "array",
             "uniqueItems": true,
-            "items": { "$ref": "urn:af:schema:task-contracts:4#/$defs/digest" }
+            "items": { "$ref": "urn:af:schema:task-contracts:5#/$defs/digest" }
           },
           "citations": {
             "type": "array",
@@ -46,7 +46,7 @@
           "reason": { "type": "string", "minLength": 1, "maxLength": 8192 },
           "tracked_id": {
             "anyOf": [
-              { "$ref": "urn:af:schema:task-contracts:4#/$defs/digest" },
+              { "$ref": "urn:af:schema:task-contracts:5#/$defs/digest" },
               { "type": "null" }
             ]
           },

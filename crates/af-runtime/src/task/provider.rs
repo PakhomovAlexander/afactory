@@ -198,7 +198,7 @@ impl ProviderTaskDomain<'_> {
             ];
             let id = cas
                 .put_artifact(
-                    TASK_PROVIDER_ADMISSION_V4,
+                    TASK_PROVIDER_ADMISSION_V5,
                     invocation_producer(cas, input, attempt)?,
                     refs,
                     None,
@@ -210,7 +210,7 @@ impl ProviderTaskDomain<'_> {
                 "result".into(),
                 ArtifactInputV1 {
                     artifact_ids: vec![id],
-                    artifact_type: TASK_PROVIDER_ADMISSION_V4.into(),
+                    artifact_type: TASK_PROVIDER_ADMISSION_V5.into(),
                     cardinality: af_contracts::PortCardinality::One,
                     snapshot_id: None,
                 },
@@ -606,7 +606,7 @@ impl TaskDomain for ProviderTaskDomain<'_> {
             .ok_or("Provider admission lacks a result")?;
         let artifact = envelope(cas, id)?;
         let receipt = self.receipt(cas, input)?;
-        if artifact.artifact_type != TASK_PROVIDER_ADMISSION_V4
+        if artifact.artifact_type != TASK_PROVIDER_ADMISSION_V5
             || artifact.payload != serde_json::to_value(&receipt).map_err(|e| e.to_string())?
         {
             return Err("Provider receipt changed its exact capability".into());

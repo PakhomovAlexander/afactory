@@ -73,7 +73,7 @@ def configure(root, name, binary, common_env, url, token):
     registry = home / "providers.toml"
     env["AF_PROVIDERS_FILE"] = str(registry)
     registry.write_text(
-        'version = 4\n[[providers]]\nid = "codex-personal"\nkind = "codex"\n'
+        'version = 5\n[[providers]]\nid = "codex-personal"\nkind = "codex"\n'
         f"auth_dir = {json.dumps(str(home))}\n"
     )
     write_json(home / "fixture.json", {"task": name, "url": url})
