@@ -116,7 +116,8 @@ if "--model" in args:
 settings_path = args[args.index("--settings") + 1] if "--settings" in args else None
 assert settings_path and os.path.isfile(settings_path), "adapter must pass --settings"
 settings = json.load(open(settings_path))
-assert settings["sandbox"]["enabled"] is True
+assert "--sandbox" in args, "adapter must pass --sandbox"
+assert "sandbox" not in settings, "agy --settings rejects unknown top-level sandbox key"
 assert "mcp(*)" in settings["permissions"]["deny"]
 
 raw_turn = sys.stdin.readline()

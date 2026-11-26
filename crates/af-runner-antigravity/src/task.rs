@@ -53,10 +53,6 @@ pub fn task_settings(access: WorkerAccess) -> Value {
         ),
     };
     json!({
-        "sandbox": {
-            "enabled": true,
-            "preset": "Default",
-        },
         "permissions": {
             "allow": allow,
             "deny": deny,
@@ -826,7 +822,7 @@ mod tests {
     #[test]
     fn settings_enforce_confinement_for_every_worker_access() {
         let ro = task_settings(WorkerAccess::ReadOnly);
-        assert_eq!(ro["sandbox"]["enabled"], true);
+        assert!(ro.get("sandbox").is_none());
         let ro_deny = ro["permissions"]["deny"].as_array().unwrap();
         assert!(ro_deny.contains(&json!("command(*)")));
         assert!(ro_deny.contains(&json!("write_file(*)")));
