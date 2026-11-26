@@ -156,6 +156,8 @@ generation 2, retaining captured local Worker authority without reopening origin
 on restart. Required schemas are parsed and their `properties.schema.const` must equal the
 required contract identity; retaining that identity elsewhere in the JSON does not satisfy
 preflight. Additional source tokens cover captured authority fields and native authority restoration.
+Preflight batches small required-feature blobs from the exact fetched commit in the release
+mirror. The plan receipt hashes the same normalized text that passed feature admission.
 Finish/discard older runs and state before upgrade. There is no
 migration or old-state replay promise. Authority lock refresh and pin adoption remain explicit.
 

@@ -129,11 +129,11 @@ def remaining():
     return min(14400, seconds)
 
 
-def run(argv, cwd=None, accepted=(0,), git_env=None, stdout=None):
+def run(argv, cwd=None, accepted=(0,), git_env=None, stdout=None, binary_input=None):
     try:
         result = subprocess.run([str(x) for x in argv], cwd=cwd,
                                 stdout=subprocess.PIPE if stdout is None else stdout,
-                                stderr=subprocess.PIPE, text=True,
+                                stderr=subprocess.PIPE, input=binary_input, text=binary_input is None,
                                 env={**{k: v for k, v in os.environ.items() if not k.startswith('GIT_')},
                                      **(git_env or {}), 'GIT_TERMINAL_PROMPT': '0',
                                      'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1'},
@@ -148,7 +148,8 @@ def run(argv, cwd=None, accepted=(0,), git_env=None, stdout=None):
                           {'fetch', 'push', 'add', 'worktree', 'update-ref', 'commit-tree', 'api'}), str(argv[1]))
         raise Refusal('command_failed: %s %s (exit %s); inspect credentials/checks independently' %
                       (argv[0], operation, result.returncode))
-    return result.stdout.strip() if stdout is None else None
+    if stdout is None:
+        return result.stdout.strip() if binary_input is None else result.stdout
 
 
 def check_gh_capabilities():
@@ -496,8 +497,54 @@ class Controller:
         finally:
             shutil.rmtree(scratch)
 
-    def blob(self, source, path):
+    def blob(self, source, path, prefetched=None):
+        if prefetched is not None and path in prefetched:
+            with io.TextIOWrapper(io.BytesIO(prefetched[path])) as stream:
+                return stream.read().strip()
         return self.git('show', source + ':' + path)
+
+    def batch_blobs(self, source, paths):
+        """Prefetch small blobs only. Other objects retain the ordered Git show path."""
+        if len(paths) > 256:
+            return {}
+        queries = {}
+        for path in paths:
+            if any(char in path for char in '\0\r\n'):
+                continue
+            try:
+                queries[path] = os.fsencode(source + ':' + path)
+            except UnicodeError:
+                continue
+        if not queries or sum(len(query) + 1 for query in queries.values()) > 64 * 1024:
+            return {}
+        try:
+            metadata = self.git('cat-file', '--batch-check',
+                                binary_input=b'\n'.join(queries.values()) + b'\n').splitlines()
+            if len(metadata) != len(queries):
+                return {}
+            objects = {}
+            for path, header in zip(queries, metadata):
+                blob = re.fullmatch(rb'([0-9a-f]{40}|[0-9a-f]{64}) blob ([0-9]{1,10})', header)
+                if blob:
+                    objects[path] = (header, blob[1], int(blob[2]))
+            if not objects or sum(size for _, _, size in objects.values()) > 8 * 1024 * 1024:
+                return {}
+            # Request only size-checked object IDs. Keep binary framing intact and defer
+            # decoding to admission order so malformed text cannot mask an earlier refusal.
+            data = self.git('cat-file', '--batch',
+                            binary_input=b'\n'.join(oid for _, oid, _ in objects.values()) + b'\n')
+        except Refusal:
+            return {}
+        offset = 0
+        blobs = {}
+        for path, (header, _, size) in objects.items():
+            start = offset + len(header) + 1
+            end = start + size
+            if data[offset:start] != header + b'\n' or data[end:end + 1] != b'\n':
+                return {}
+            blobs[path] = data[start:end]
+            offset = end + 1
+        return blobs if offset == len(data) else {}
 
     def receipt(self, stage, status, **details):
         self.state['stage'] = stage
@@ -595,8 +642,11 @@ class Controller:
                      'scripts/release-observation.py', 'rust-toolchain.toml'):
             if self.blob(source, name) != (ROOT / name).read_text().strip():
                 raise Refusal('authority_source_mismatch: fetched source must contain reviewed ' + name)
-        for path, tokens in policy['required_features'].items():
-            content = self.blob(source, path)
+        rules = policy['required_features'].items()
+        blobs = self.batch_blobs(source, policy['required_features'])
+        feature_digests = {}
+        for path, tokens in rules:
+            content = self.blob(source, path, blobs)
             if path.startswith('schemas/') and path.endswith('.json'):
                 identities = [token for token in tokens if token.startswith(('af/', 'af.perf-'))]
                 try:
@@ -607,6 +657,7 @@ class Controller:
                     raise Refusal('source_inclusion: foreign required schema identity ' + path)
             if any(token not in content for token in tokens):
                 raise Refusal('source_inclusion: missing required feature ' + path)
+            feature_digests[path] = digest(content)
         if not policy['compatibility'].strip():
             raise Refusal('compatibility_metadata: review scripts/release-policy.json')
         if policy.get('schema') != 'af.dev-release-policy/3':
@@ -639,7 +690,7 @@ class Controller:
         profile = self.state['plan']['profile'] if self.state else (self.args.profile or 'fast')
         if 'release:' + profile not in {item['name'] for item in labels}:
             raise Refusal('release_label: provision release:' + profile + ' with make test-labels APPLY=1')
-        return policy
+        return policy, feature_digests
 
     def pages(self, endpoint, key=None):
         rows = []
@@ -1013,7 +1064,7 @@ class Controller:
         source = self.fetch(acquisition=True)
         if self.args.source and self.args.source != source:
             raise Refusal('authority_source_mismatch: --source must equal fetched main')
-        policy = self.preflight(source)
+        policy, feature_digests = self.preflight(source)
         version = self.select_version(source, self.args.version)
         self.source_checks(source, version)
         branch = 'release/v' + version
@@ -1034,7 +1085,7 @@ class Controller:
         self.state['pin'] = {'state': self.pin_readiness, 'url': None}
         self.state['identity'] = digest(self.state['plan'])
         self.receipt('preflight', 'planned', source=source, checks=['release-contract', 'harness-digest'],
-                     features={path: digest(self.blob(source, path)) for path in policy['required_features']},
+                     features=feature_digests,
                      planned_paths=list(ALLOWED) + ['changelog.d/*', 'fixtures/performance/kernel-measure/*'])
 
     def unchanged_main(self):
