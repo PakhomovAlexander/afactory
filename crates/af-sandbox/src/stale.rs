@@ -57,7 +57,10 @@ pub(crate) const CHECK_PREFIX: &str = "af-check-";
 /// The name prefix of the directory a Tree Digest spills its manifest runs into.
 const TREE_DIGEST_PREFIX: &str = af_source_git::digest::SPILL_PREFIX;
 
-/// Every kind of directory the crash sweep removes for a dead owner.
+/// The name of an origin reader's private runtime below the per-account root.
+const OBSERVATION_PREFIX: &str = "af-observation-";
+
+/// The directory prefixes the crash sweep looks for directly below the temporary root.
 const SWEPT: [&str; 3] = [PREFIX, CHECK_PREFIX, TREE_DIGEST_PREFIX];
 
 /// The marker a provider writes beside a sandbox tree (never inside it, where a container bind
@@ -88,6 +91,44 @@ pub(crate) fn check_tempdir() -> std::io::Result<tempfile::TempDir> {
 }
 
 fn private_tempdir(prefix: &str) -> std::io::Result<tempfile::TempDir> {
+    private_tempdir_in(prefix, &sandbox_root())
+}
+
+/// The account's observation runtime root on the same volume as its other runtimes.
+#[cfg(unix)]
+pub fn observation_root(temporary: &Path) -> PathBuf {
+    temporary.join(format!("af-observations-{}", nix::unistd::geteuid()))
+}
+
+/// A private runtime for the origin reader, with the same crash ownership as a check runtime.
+pub fn observation_directory(root: &Path) -> std::io::Result<tempfile::TempDir> {
+    private_tempdir_in(
+        &format!("{OBSERVATION_PREFIX}{}-", std::process::id()),
+        root,
+    )
+}
+
+/// Sweep only abandoned observation runtimes, without inspecting Task or sandbox state.
+#[cfg(unix)]
+pub fn sweep_stale_observations_in(root: &Path) -> SweepReport {
+    use std::os::unix::fs::MetadataExt;
+
+    let mut report = SweepReport::default();
+    if !std::fs::symlink_metadata(root).is_ok_and(|metadata| {
+        metadata.is_dir()
+            && metadata.uid() == nix::unistd::geteuid().as_raw()
+            && metadata.mode() & 0o077 == 0
+    }) {
+        return report;
+    }
+    let (removed, left) = crate::finish_abandoned_claims(root);
+    report.removed += removed.len();
+    report.failed += left.len();
+    sweep_owned(root, &[OBSERVATION_PREFIX], None, &mut report);
+    report
+}
+
+fn private_tempdir_in(prefix: &str, root: &Path) -> std::io::Result<tempfile::TempDir> {
     let mut builder = tempfile::Builder::new();
     builder.prefix(prefix);
     #[cfg(unix)]
@@ -95,7 +136,7 @@ fn private_tempdir(prefix: &str) -> std::io::Result<tempfile::TempDir> {
         use std::os::unix::fs::PermissionsExt;
         builder.permissions(std::fs::Permissions::from_mode(0o700));
     }
-    builder.tempdir_in(sandbox_root())
+    builder.tempdir_in(root)
 }
 
 /// Whether `name` is the name af gives a sandbox or a check runtime directory: either prefix,
@@ -194,6 +235,14 @@ pub fn sweep_stale_sandboxes_in(root: &Path) -> SweepReport {
         report.failed += left.len();
     }
     sweep_owned(root, &SWEPT, None, &mut report);
+    #[cfg(unix)]
+    {
+        let observations = sweep_stale_observations_in(&observation_root(root));
+        report.removed += observations.removed;
+        report.failed += observations.failed;
+        report.live += observations.live;
+        report.preserved += observations.preserved;
+    }
     report
 }
 
@@ -253,6 +302,17 @@ fn sweep_owned(
         if !metadata.is_dir() || metadata.file_type().is_symlink() {
             continue;
         }
+        let observation = entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(OBSERVATION_PREFIX);
+        #[cfg(unix)]
+        if observation {
+            use std::os::unix::fs::MetadataExt;
+            if metadata.uid() != nix::unistd::geteuid().as_raw() || metadata.mode() & 0o077 != 0 {
+                continue;
+            }
+        }
         if pid == own_pid || process_exists(pid) {
             report.live += 1;
             continue;
@@ -261,7 +321,7 @@ fn sweep_owned(
             report.preserved += 1;
             continue;
         }
-        if crate::container::recover_worker_storage(&path).is_err() {
+        if !observation && crate::container::recover_worker_storage(&path).is_err() {
             // Keep the intent; an unconfirmed cleanup is preserved for the operator.
             report.failed += 1;
             continue;

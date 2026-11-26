@@ -437,12 +437,12 @@ impl ProjectStore {
 
     /// Open a native Project for the dedicated origin command. The shared Project lock
     /// also protects the Workspace path bindings while it observes the Task Store.
-    pub fn open_origin_snapshot(state_home: &Path, project_id: &str) -> Result<Self, String> {
-        Self::open_project_reader(
-            state_home,
-            project_id,
-            EventStore::open_observation_snapshot,
-        )
+    pub fn open_origin_snapshot(
+        state_home: &Path,
+        project_id: &str,
+        snapshot: impl FnOnce(&Path) -> Result<EventStore, af_store::StoreError>,
+    ) -> Result<Self, String> {
+        Self::open_project_reader(state_home, project_id, snapshot)
     }
 
     fn open_project_reader(

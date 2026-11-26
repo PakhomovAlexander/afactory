@@ -1,5 +1,5 @@
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use af_contracts::fleet::{
@@ -8,7 +8,9 @@ use af_contracts::fleet::{
 use af_contracts::is_digest;
 use af_contracts::task::{TaskWaitingReasonV1, is_name};
 use af_project::ProjectStore;
+use af_store::{EventStore, StoreError};
 use clap::Args;
+use nix::fcntl::{Flock, FlockArg};
 
 use super::context::{Config, Origin};
 use super::transport::{ORIGIN, ReadFailure};
@@ -52,7 +54,10 @@ pub(super) fn serve(args: ReaderArgs) -> Result<i32, String> {
     {
         return Err("Invalid Project reader configuration".into());
     }
-    let project = ProjectStore::open_origin_snapshot(&args.state_home, &args.project)?;
+    let runtime = ObservationRuntime::create()?;
+    let project = ProjectStore::open_origin_snapshot(&args.state_home, &args.project, |path| {
+        runtime.snapshot(path)
+    })?;
     let log = project.log()?;
     if log.project.as_ref().map(|p| p.project_id.as_str()) != Some(&args.project) {
         return Err("Project reader identity mismatch".into());
@@ -73,10 +78,13 @@ pub(super) fn serve(args: ReaderArgs) -> Result<i32, String> {
     let now = now_ms()?;
     let tasks = crate::task_commands::fleet_waiting_tasks(
         &state,
+        |path| runtime.snapshot(path),
         &args.origin,
         args.allow_plan_decisions.then_some(args.principal.as_str()),
         now,
     )?;
+    #[cfg(debug_assertions)]
+    pause_with_snapshot();
     let response = OriginObservationV1 {
         schema: ORIGIN_OBSERVATION_V1.into(),
         scope: args.scope,
@@ -93,8 +101,72 @@ pub(super) fn serve(args: ReaderArgs) -> Result<i32, String> {
     if bytes.len() >= super::transport::MAX_REPLY_BYTES {
         return Err("Project observation exceeds its output bound".into());
     }
+    drop(project);
+    drop(runtime);
     println!("{bytes}");
     Ok(0)
+}
+
+struct ObservationRuntime {
+    policy: crate::config::StoragePolicy,
+    root: PathBuf,
+    directory: tempfile::TempDir,
+}
+
+impl ObservationRuntime {
+    fn create() -> Result<Self, String> {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let policy = crate::storage::policy()?;
+        let root = af_sandbox::stale::observation_root(&crate::storage::sandbox_root(&policy));
+        af_store::local_fs::create_private_dir_all(&root).map_err(|error| error.to_string())?;
+        let metadata = std::fs::symlink_metadata(&root).map_err(|error| error.to_string())?;
+        if !metadata.is_dir()
+            || metadata.uid() != nix::unistd::geteuid().as_raw()
+            || metadata.mode() & 0o077 != 0
+        {
+            return Err(
+                "Observation runtime root must be a private directory owned by the reader".into(),
+            );
+        }
+        let directory =
+            af_sandbox::stale::observation_directory(&root).map_err(|e| e.to_string())?;
+        Ok(Self {
+            policy,
+            root,
+            directory,
+        })
+    }
+
+    fn snapshot(&self, path: &Path) -> Result<EventStore, StoreError> {
+        // Admission and copying share the lock across origins. Replay and Project locks
+        // do not hold this lock, so one authorization or query cannot stall its siblings.
+        let invalid = |error: std::io::Error| StoreError::Conflict(error.to_string());
+        let directory = af_sandbox::open_anchor(&self.root).map_err(invalid)?;
+        let _copy = Flock::lock(directory, FlockArg::LockExclusive)
+            .map_err(|(_, error)| invalid(error.into()))?;
+        af_sandbox::stale::sweep_stale_observations_in(&self.root);
+        let retained = loop {
+            match af_sandbox::storage::allocated_bytes(&self.root) {
+                // A live reader may finish and remove a directory during the walk.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                result => break result.map_err(invalid)?,
+            }
+        };
+        let max_bytes = crate::storage::observation_allowance(&self.root, &self.policy, retained)
+            .map_err(StoreError::Conflict)?;
+        EventStore::open_observation_snapshot(path, self.directory.path(), max_bytes)
+    }
+}
+
+/// Pause with the live Project snapshot so the crash regression can kill a real reader.
+#[cfg(debug_assertions)]
+fn pause_with_snapshot() {
+    let Some(marker) = std::env::var_os("AF_TEST_FLEET_SNAPSHOT_PAUSE") else {
+        return;
+    };
+    let _ = std::fs::write(marker, []);
+    std::thread::sleep(std::time::Duration::from_secs(30));
 }
 
 pub(super) fn read(

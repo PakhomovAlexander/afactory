@@ -42,8 +42,11 @@ The broker's `static` and `dynamic` lists contain VM names from resource pool me
 It reports SSD headroom at the host level and leaves storage pool inventory unknown. Static
 availability is a separate view of the same host capacity and is excluded from the host's
 headroom total. Physical totals, reservations and desired footprint are unknown. A stopped
-allocation remains visible with unknown charges and executor. The infrastructure view withholds
-any Task hint in the management response.
+allocation remains visible and can still carry a disk charge. For example, a broker-reported
+`charged.ssd_gib` of `74.50580596923828` is displayed as `80 GB disk` on the stopped VM's row.
+JSON retains the charge in GiB. If the broker omits the charge, the row says “charges unknown”
+and the JSON field is null. The executor remains unknown. The infrastructure view withholds any
+Task hint in the management response.
 
 ### Project access
 
@@ -90,14 +93,24 @@ Text and JSON render the same [briefing](../schemas/fleet-briefing-v2.json), inc
 action, its reason and its success condition. JSON reports unknown storage pool inventory as
 `inventory.data.pools: null` and a known empty inventory as `inventory.data.pools: []`. Text
 displays “Storage pool inventory unknown” and “No storage pools” respectively. Host-level SSD
-availability is reported independently. The infrastructure cache lives under
-`${XDG_STATE_HOME:-$HOME/.local/state}/af/fleet-cache`. A successful management read refreshes its
-per-context observation. An authenticated management command can return exit 75 to carry forward
+availability is reported independently. The two `af infra` management reads run concurrently
+under one deadline. A timeout on one reader can leave a fresh observation from the other.
+
+The infrastructure cache lives under `${XDG_STATE_HOME:-$HOME/.local/state}/af/fleet-cache`.
+A successful management read can refresh its per-context observation if it fits the
+machine's `[storage] max_bytes` budget. `af storage` reports these directories as fleet
+cache entries and `af storage prune --apply` can reclaim them. A live observation still prints
+when there is no room to cache it. An authenticated management command can return exit 75 to carry forward
 a stale observation from the exact binding for up to 24 hours. A failed connection, refused
 credential, host-key mismatch or invalid response cannot disclose a cached observation. Only
 current [version 2 cache records](../schemas/fleet-cache-v2.json) are eligible. If the management
 reader is temporarily unavailable after upgrade and only an obsolete record exists, the
 observation is unavailable until a successful read refreshes it.
+
+An origin reader replays private SQLite copies under the sandbox runtime root
+(`[storage] sandbox_root` or the system temporary directory). It checks the storage limit and
+free-space floor before copying. The reader removes its copies when it closes them. A subsequent
+origin read or Task startup removes abandoned runtimes and leaves live readers' copies alone.
 
 The [fleet integration tests](../crates/af/tests/it/fleet.rs) exercise the six public commands with
 local OpenSSH endpoints, disposable keys, the management wire formats and a native Task whose
@@ -106,8 +119,14 @@ and directories, concurrent writes, and a fresh offline standalone Task workflow
 The [Store snapshot regression](../crates/af-store/src/store/observation_snapshot.rs) checks
 permissions on the live snapshot under umasks `000` and `022` while replaying committed WAL frames.
 
-Run the Fleet tests from an ordinary macOS user shell with `cargo test --locked -p af --test it
-fleet::`. The native SSH test hands accepted loopback sockets to Apple's inetd-mode `sshd` so it
-can create audit sessions for the forced commands. It requires a shell where the daemon can
-initialize its own sandbox. The Linux fixture uses stdio so it can authenticate in gates that
+Run the Fleet tests from an ordinary user shell.
+
+```sh
+cargo nextest run --workspace --locked --profile ci -E 'binary_id(af::it) & test(/^fleet::/)'
+```
+
+The authenticated test requires `/usr/bin/ssh`, `/usr/sbin/sshd`, and `ssh-keygen`. The native SSH
+test hands accepted loopback sockets to Apple's inetd-mode `sshd` so it can create audit sessions
+for the forced commands. It requires a shell where the daemon can initialize its own sandbox.
+The Linux fixture uses stdio so it can authenticate in gates that
 forbid TCP listeners. Both use isolated per-test configuration and require no running SSH service.

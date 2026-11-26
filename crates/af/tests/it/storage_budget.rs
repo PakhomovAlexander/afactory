@@ -138,7 +138,7 @@ fn af_storage_reports_what_af_holds_and_prune_previews_before_it_removes() {
     // 50 GiB free: `max_bytes = "auto"` is 20 GiB on every host.
     let modest = [("AF_TEST_FREE_BYTES", "53687091200")];
     let shown = json(&machine.af(&machine.root, &modest, &["storage", "--json"]));
-    schemas::valid(&schemas::validator("storage-v5.json"), &shown);
+    schemas::valid(&schemas::validator("storage-v6.json"), &shown);
     assert_eq!(shown["max_bytes"], 20_u64 << 30);
     assert_eq!(shown["min_free_bytes"], 10_u64 << 30);
     let warm = shown["kinds"]
@@ -159,7 +159,7 @@ fn af_storage_reports_what_af_holds_and_prune_previews_before_it_removes() {
     // 1 MiB of budget: the two older keys go, least recently used first; the fresh one stays.
     let budget = [("AF_STORAGE__MAX_BYTES", "1MiB")];
     let preview = json(&machine.af(&machine.root, &budget, &["storage", "prune", "--json"]));
-    schemas::valid(&schemas::validator("storage-prune-v4.json"), &preview);
+    schemas::valid(&schemas::validator("storage-prune-v5.json"), &preview);
     assert_eq!(preview["applied"], false);
     let paths = |document: &Value| -> Vec<String> {
         document["removals"]
@@ -179,7 +179,7 @@ fn af_storage_reports_what_af_holds_and_prune_previews_before_it_removes() {
         &budget,
         &["storage", "prune", "--apply", "--json"],
     ));
-    schemas::valid(&schemas::validator("storage-prune-v4.json"), &applied);
+    schemas::valid(&schemas::validator("storage-prune-v5.json"), &applied);
     assert_eq!(applied["applied"], true);
     assert_eq!(paths(&applied), paths(&preview));
     assert_eq!(applied["stop"], "fits");
@@ -1262,7 +1262,7 @@ fn a_registered_store_keeps_the_users_files_through_prune_and_the_sweep_after_a_
         &budget,
         &["storage", "prune", "--apply", "--json"],
     ));
-    schemas::valid(&schemas::validator("storage-prune-v4.json"), &pruned);
+    schemas::valid(&schemas::validator("storage-prune-v5.json"), &pruned);
     let removal = pruned["removals"]
         .as_array()
         .unwrap()
@@ -1743,8 +1743,8 @@ fn storage_json_names_each_volume_below_the_floor() {
         ("AF_STORAGE__SANDBOX_ROOT", sandboxes.to_str().unwrap()),
     ];
     let shown = json(&machine.af(&machine.root, &env, &["storage", "--json"]));
-    schemas::valid(&schemas::validator("storage-v5.json"), &shown);
-    assert_eq!(shown["schema"], "af/storage@5");
+    schemas::valid(&schemas::validator("storage-v6.json"), &shown);
+    assert_eq!(shown["schema"], "af/storage@6");
     let volumes = shown["volumes"].as_array().unwrap();
     let roles: Vec<&str> = volumes
         .iter()

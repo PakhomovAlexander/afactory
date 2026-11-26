@@ -1,5 +1,5 @@
 use std::fs::{self, File, Metadata, OpenOptions};
-use std::io::{self, ErrorKind};
+use std::io::{self, ErrorKind, Read};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -24,14 +24,18 @@ impl EventStore {
     /// Use from a dedicated observation process with no other handles to the source
     /// database or its sidecars. POSIX locks are process-owned: closing another handle
     /// could drop these locks, and a writer in the same process would not conflict.
-    pub fn open_observation_snapshot(path: &Path) -> Result<Self, StoreError> {
+    pub fn open_observation_snapshot(
+        path: &Path,
+        runtime: &Path,
+        max_bytes: u64,
+    ) -> Result<Self, StoreError> {
         let result = (|| {
             let directory = tempfile::Builder::new()
-                .prefix("af-observation-")
+                .prefix("snapshot-")
                 .permissions(fs::Permissions::from_mode(PRIVATE_DIR_MODE))
-                .tempdir()?;
+                .tempdir_in(runtime)?;
             let database = directory.path().join("events.sqlite");
-            let has_wal = copy_snapshot(path, &database)?;
+            let has_wal = copy_snapshot(path, &database, max_bytes)?;
             Ok::<_, io::Error>((directory, database, has_wal))
         })();
         let (directory, database, has_wal) = result.map_err(|error| {
@@ -47,7 +51,7 @@ impl EventStore {
     }
 }
 
-fn copy_snapshot(path: &Path, destination: &Path) -> io::Result<bool> {
+fn copy_snapshot(path: &Path, destination: &Path, max_bytes: u64) -> io::Result<bool> {
     let mut database = open_source(path)?;
     // Prevent rollback-mode writes to the main file and SQLite's last-close removal of
     // the WAL. A writer can still start WAL mode, so absence must be checked again.
@@ -68,11 +72,32 @@ fn copy_snapshot(path: &Path, destination: &Path) -> io::Result<bool> {
         require_same_file(&shm_path, &file.metadata()?)?;
     }
 
+    // WAL index regions have far smaller entries than the corresponding WAL frames.
+    // Reserve another WAL's length and one index region for SQLite to rebuild the index.
+    let wal_bytes = wal
+        .as_ref()
+        .map(|file| file.metadata().map(|meta| meta.len()))
+        .transpose()?;
+    let wal_overhead = wal_bytes.map_or(0, |len| len.saturating_mul(2).saturating_add(32_768));
+    if original.len().saturating_add(wal_overhead) > max_bytes {
+        return Err(io::Error::other(
+            "observation snapshot exceeds the available storage budget",
+        ));
+    }
+
     let mut copy_options = private_file_options();
     copy_options.write(true).create_new(true);
-    io::copy(&mut database, &mut copy_options.open(destination)?)?;
-    if let Some(wal) = &mut wal {
-        io::copy(wal, &mut copy_options.open(sidecar(destination, "-wal"))?)?;
+    copy_exact(
+        &mut database,
+        &mut copy_options.open(destination)?,
+        original.len(),
+    )?;
+    if let Some((wal, bytes)) = wal.as_mut().zip(wal_bytes) {
+        copy_exact(
+            wal,
+            &mut copy_options.open(sidecar(destination, "-wal"))?,
+            bytes,
+        )?;
         require_same_file(&wal_path, &wal.metadata()?)?;
     } else {
         require_absent(&wal_path)?;
@@ -87,6 +112,16 @@ fn copy_snapshot(path: &Path, destination: &Path) -> io::Result<bool> {
     require_absent(&journal)?;
     require_same_file(path, &original)?;
     Ok(wal.is_some())
+}
+
+fn copy_exact(source: &mut File, destination: &mut File, bytes: u64) -> io::Result<()> {
+    if io::copy(&mut source.take(bytes), destination)? != bytes || source.metadata()?.len() != bytes
+    {
+        return Err(io::Error::other(
+            "observation source changed size during the copy",
+        ));
+    }
+    Ok(())
 }
 
 fn open_source(path: &Path) -> io::Result<File> {
@@ -172,7 +207,9 @@ mod tests {
                     .map(|path| (fs::metadata(path).unwrap().mode(), fs::read(path).unwrap()))
             };
             let before = source_state();
-            let reader = EventStore::open_observation_snapshot(&source).unwrap();
+            let reader =
+                EventStore::open_observation_snapshot(&source, source.parent().unwrap(), u64::MAX)
+                    .unwrap();
             assert_eq!(reader.replay("run").unwrap().len(), 1);
             let database = reader.database_path().unwrap();
             let directory = database.parent().unwrap();

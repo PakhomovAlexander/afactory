@@ -15,7 +15,7 @@ struct Machine {
 impl Machine {
     fn new() -> Self {
         let root = tempfile::tempdir().unwrap();
-        for name in ["config", "state", "home", "bin"] {
+        for name in ["config", "state", "home", "bin", "tmp"] {
             fs::create_dir(root.path().join(name)).unwrap();
         }
         Self { root }
@@ -37,6 +37,7 @@ impl Machine {
             .env("HOME", self.path("home"))
             .env("XDG_CONFIG_HOME", self.path("config"))
             .env("XDG_STATE_HOME", self.path("state"))
+            .env("TMPDIR", self.path("tmp"))
             .env("PATH", path)
             .args(args);
         command
@@ -183,28 +184,26 @@ fn native_origin_observes_clean_and_live_stores_without_writing_sidecars() {
     let workspace = &project["workspaces"][0];
     let state = Path::new(workspace["state"].as_str().unwrap());
     let database = state.join("events.sqlite");
-    let reader = || {
-        machine
-            .af(&[
-                "cluster",
-                "origin-read",
-                "--scope",
-                "fleet-fixture",
-                "--origin",
-                "project",
-                "--project",
-                project["project_id"].as_str().unwrap(),
-                "--workspace",
-                workspace["label"].as_str().unwrap(),
-                "--principal",
-                "owner",
-                "--allow-plan-decisions",
-                "--state-home",
-                path(&machine.path("state")),
-            ])
-            .output()
-            .unwrap()
+    let command = || {
+        machine.af(&[
+            "cluster",
+            "origin-read",
+            "--scope",
+            "fleet-fixture",
+            "--origin",
+            "project",
+            "--project",
+            project["project_id"].as_str().unwrap(),
+            "--workspace",
+            workspace["label"].as_str().unwrap(),
+            "--principal",
+            "owner",
+            "--allow-plan-decisions",
+            "--state-home",
+            path(&machine.path("state")),
+        ])
     };
+    let reader = || command().output().unwrap();
     let anchor = pin_planned_database(&database);
     let planned_database = sqlite_bytes(&database);
     assert_eq!(as_json(reader())["origin"]["tasks"], json!([]));
@@ -240,6 +239,75 @@ fn native_origin_observes_clean_and_live_stores_without_writing_sidecars() {
     assert_eq!(decision["plan_id"], waiting["plan_id"]);
     assert_eq!(decision["task_revision_id"], waiting["revision_id"]);
     assert_eq!(sqlite_files(state), live_files);
+
+    let over_budget = command()
+        .env("AF_STORAGE__MAX_BYTES", "1B")
+        .output()
+        .unwrap();
+    require_failure(
+        over_budget,
+        "observation snapshot exceeds the available storage budget",
+    );
+    assert_eq!(sqlite_files(state), live_files);
+    let snapshots = af_sandbox::stale::observation_root(&machine.path("tmp"));
+    assert_eq!(fs::read_dir(&snapshots).unwrap().count(), 0);
+
+    #[cfg(debug_assertions)]
+    {
+        use std::time::{Duration, Instant};
+
+        let marker = machine.path("snapshot-ready");
+        let mut live_reader = command()
+            .env("AF_TEST_FLEET_SNAPSHOT_PAUSE", &marker)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let wait_for = |condition: &dyn Fn() -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !condition() {
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        wait_for(&|| marker.exists());
+        let runtime = fs::read_dir(&snapshots)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(&format!("af-observation-{}-", live_reader.id()))
+            })
+            .unwrap();
+        assert_eq!(
+            fs::metadata(&runtime).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        let snapshot = fs::read_dir(&runtime)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path()
+            .join("events.sqlite");
+        let captured = fs::read(&snapshot).unwrap();
+
+        // A sibling can authenticate its Project and replay while the first reader is
+        // paused, and its startup sweep leaves the live copy intact.
+        let sibling = as_json(reader());
+        assert_eq!(sibling["origin"]["tasks"][0]["decision"], *decision);
+        assert_eq!(fs::read(&snapshot).unwrap(), captured);
+        live_reader.kill().unwrap();
+        live_reader.wait().unwrap();
+        assert!(runtime.exists());
+        assert_eq!(
+            as_json(reader())["origin"]["tasks"][0]["decision"],
+            *decision
+        );
+        assert!(!runtime.exists());
+        assert_eq!(sqlite_files(state), live_files);
+    }
 
     // A writer holding SQLite's WAL write lock makes this observation explicitly
     // unavailable. Its uncommitted update must never be projected.
@@ -436,6 +504,92 @@ esac
     let refreshed: Value = serde_json::from_slice(&fs::read(machine.path(cache)).unwrap()).unwrap();
     schemas::valid(&cache_schema, &refreshed);
     assert_eq!(refreshed["data"], recovered["inventory"]["data"]);
+
+    // Drop the existing record so simultaneous processes compete for space for one
+    // observation. The broker reads themselves must all still succeed.
+    let stored = machine.json(&["storage", "--json"]);
+    let storage_schema = schemas::validator("storage-v6.json");
+    schemas::valid(&storage_schema, &stored);
+    let cache_bytes = stored["kinds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|kind| kind["kind"] == "fleet_cache")
+        .unwrap()["bytes"]
+        .as_u64()
+        .unwrap();
+    let budget = stored["total_bytes"].as_u64().unwrap();
+    assert!(cache_bytes > 0);
+    fs::remove_file(machine.path(cache)).unwrap();
+    let children: Vec<_> = (0..6)
+        .map(|index| {
+            let alias = format!("reader-{index}");
+            success(
+                machine
+                    .af(&[
+                        "infra",
+                        "connect",
+                        "--context",
+                        &alias,
+                        "--from",
+                        "lab.afcontext",
+                        "--credential-ref",
+                        "operator",
+                    ])
+                    .output()
+                    .unwrap(),
+            );
+            alias
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(|alias| {
+            machine
+                .af(&["infra", "status", "--context", &alias, "--json"])
+                .env("AF_STORAGE__MAX_BYTES", format!("{budget}B"))
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    for child in children {
+        let brief = as_json(child.wait_with_output().unwrap());
+        assert_eq!(brief["inventory"]["observation"]["freshness"], "fresh");
+    }
+    let retained = machine.json(&["storage", "--json"]);
+    schemas::valid(&storage_schema, &retained);
+    assert_eq!(retained["total_bytes"], budget);
+    let actual: Vec<_> = retained["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["kind"] == "fleet_cache" && entry["bytes"] == cache_bytes)
+        .collect();
+    assert_eq!(actual.len(), 1);
+    let dir = Path::new(actual[0]["path"].as_str().unwrap());
+    let expired = std::time::SystemTime::now() - std::time::Duration::from_secs(25 * 60 * 60);
+    fs::File::open(dir.join("pools.json"))
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(expired))
+        .unwrap();
+    let pruned = machine.json(&["storage", "prune", "--apply", "--json"]);
+    schemas::valid(&schemas::validator("storage-prune-v5.json"), &pruned);
+    assert!(
+        pruned["removals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|removal| {
+                removal["kind"] == "fleet_cache"
+                    && removal["bytes"] == cache_bytes
+                    && removal["path"] == dir.to_str().unwrap()
+            })
+    );
+    assert!(!dir.exists());
+    assert_eq!(
+        machine.json(&["storage", "--json"])["total_bytes"],
+        budget - cache_bytes
+    );
 }
 
 fn key(machine: &Machine, name: &str) -> String {
@@ -636,10 +790,10 @@ mod loopback {
 #[test]
 fn pinned_ssh_broker_and_project_origin_keep_independent_read_authority() {
     let sshd = Path::new("/usr/sbin/sshd");
-    if !sshd.is_file() || !Path::new("/usr/bin/ssh").is_file() {
-        eprintln!("OpenSSH integration fixture requires /usr/sbin/sshd and /usr/bin/ssh");
-        return;
-    }
+    assert!(
+        sshd.is_file() && Path::new("/usr/bin/ssh").is_file(),
+        "OpenSSH integration fixture requires /usr/sbin/sshd and /usr/bin/ssh"
+    );
     let machine = Machine::new();
     let (repo, _, _) = crate::task_planning::setup(machine.root.path(), false, false);
     let plan = machine
@@ -691,7 +845,8 @@ fn pinned_ssh_broker_and_project_origin_keep_independent_read_authority() {
         }),
     );
     machine.write("allocations.json", &json!([
-        {"vmid":101,"name":"dynamic-worker","node":"host-a","power":"stopped","state":"reserved","task":"private-native-task"},
+        {"vmid":101,"name":"dynamic-worker","node":"host-a","power":"stopped","state":"reserved","task":"private-native-task",
+         "charged":{"cpu_ids":[],"ram_gib":0,"ssd_gib":80_000_000_000_f64 / 1_073_741_824.0}},
         {"vmid":102,"name":null,"node":null,"power":null,"state":null,"task":null}
     ]));
     executable(
@@ -702,6 +857,7 @@ printf '%s\n' "$SSH_ORIGINAL_COMMAND" >> {requests}
 case "$SSH_ORIGINAL_COMMAND" in
   'control-api http://localhost/pools')
     [ ! -e {temporary} ] || exit 75
+    if [ -e {stall} ]; then exec /bin/sleep 22; fi
     exec /bin/cat {pools} ;;
   'control-api http://localhost/dynamic/allocations') exec /bin/cat {allocations} ;;
   *) exit 77 ;;
@@ -709,14 +865,16 @@ esac
 "#,
             requests = quoted(&machine.path("requests")),
             temporary = quoted(&machine.path("temporary")),
+            stall = quoted(&machine.path("stall-pools")),
             pools = quoted(&machine.path("pools.json")),
             allocations = quoted(&machine.path("allocations.json"))
         ),
     );
     let reader = format!(
-        "exec env HOME={} XDG_CONFIG_HOME={} {} cluster origin-read --scope fleet-fixture --origin project --project {} --workspace {} --principal owner --allow-plan-decisions --state-home {}",
+        "exec env HOME={} XDG_CONFIG_HOME={} TMPDIR={} {} cluster origin-read --scope fleet-fixture --origin project --project {} --workspace {} --principal owner --allow-plan-decisions --state-home {}",
         quoted(&machine.path("home")),
         quoted(&machine.path("config")),
+        quoted(&machine.path("tmp")),
         quoted(common::af_binary()),
         project_id,
         shell_words::quote(workspace["label"].as_str().unwrap()),
@@ -863,8 +1021,30 @@ if [ -e {} ]; then exec /bin/cat {}; fi
     let vms = &allocations["allocations"]["data"];
     assert_eq!(vms[0]["name"], "dynamic-worker");
     assert_eq!(vms[0]["power"], "stopped");
+    schemas::valid(&validator, &allocations);
+    assert_eq!(
+        vms[0]["charged"]["ssd_gib"],
+        json!(80_000_000_000_f64 / 1_073_741_824.0)
+    );
+    assert!(vms[0]["executor"].is_null() && vms[1]["node"].is_null());
+    assert!(vms[1]["charged"].is_null());
+    let text = success(
+        machine
+            .af(&["infra", "allocations", "--context", "lab"])
+            .output()
+            .unwrap(),
+    );
     assert!(
-        vms[0]["charged"].is_null() && vms[0]["executor"].is_null() && vms[1]["node"].is_null()
+        text.lines().any(|line| line.contains("VM 101")
+            && line.contains("power stopped")
+            && line.contains("80 GB disk")),
+        "{text}"
+    );
+    assert!(
+        text.lines().any(|line| line.contains("VM 102")
+            && line.contains("host unknown")
+            && line.contains("charges unknown")),
+        "{text}"
     );
     assert!(!allocations.to_string().contains("private-native-task"));
 
@@ -877,10 +1057,23 @@ if [ -e {} ]; then exec /bin/cat {}; fi
     assert_eq!(stale["inventory"]["data"], *inventory);
     assert_eq!(stale["next_action"]["action"], "wait");
     record["observed_unix_ms"] = json!(1);
-    fs::write(cache, record.to_string()).unwrap();
+    fs::write(&cache, record.to_string()).unwrap();
     let expired = machine.json(&["infra", "status", "--context", "lab", "--json"]);
     assert!(expired["inventory"]["data"].is_null());
+    assert!(!cache.exists());
     fs::remove_file(machine.path("temporary")).unwrap();
+
+    fs::write(machine.path("stall-pools"), "").unwrap();
+    let partial = machine.json(&["infra", "--context", "lab", "--json"]);
+    assert_eq!(partial["discovery"], "partial");
+    assert_eq!(
+        partial["inventory"]["observation"]["freshness"],
+        "unavailable"
+    );
+    assert!(partial["inventory"]["data"].is_null());
+    assert_eq!(partial["allocations"]["observation"]["freshness"], "fresh");
+    assert_eq!(partial["allocations"]["data"], *vms);
+    fs::remove_file(machine.path("stall-pools")).unwrap();
 
     let denied = machine.json(&["cluster", "inbox", "--context", "lab", "--json"]);
     assert_eq!(denied["origins"][0]["observation"]["freshness"], "denied");

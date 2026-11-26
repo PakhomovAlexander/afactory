@@ -4387,6 +4387,7 @@ pub(super) fn list_common(state: &Path) -> Result<Vec<serde_json::Value>, String
 /// Project-reader projection over the same validated native Task streams as local inspection.
 pub(super) fn fleet_waiting_tasks(
     state: &Path,
+    snapshot: impl FnOnce(&Path) -> Result<EventStore, af_store::StoreError>,
     origin: &str,
     developer: Option<&str>,
     now: u64,
@@ -4396,8 +4397,7 @@ pub(super) fn fleet_waiting_tasks(
 
     require_store(state)?;
     let cas = Cas::open_existing(state.join("cas")).map_err(|error| error.to_string())?;
-    let store = EventStore::open_observation_snapshot(&state.join("events.sqlite"))
-        .map_err(|error| error.to_string())?;
+    let store = snapshot(&state.join("events.sqlite")).map_err(|error| error.to_string())?;
     store
         .map_tasks(&cas, |task| -> Result<Option<WaitingTask>, String> {
             let TaskPhaseV1::Waiting { reason } = task.phase else {

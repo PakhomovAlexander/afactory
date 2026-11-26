@@ -395,7 +395,7 @@ repository's `.af/af.toml` cannot change it. See `af help storage`.",
         after_long_help = "Examples:\n  af storage\n  af storage --verbose\n  af storage --json | jq .total_bytes\n  af storage prune\n  af storage prune --apply\n  AF_STORAGE__MAX_BYTES=10GiB af storage prune --apply"
     )]
     Storage {
-        /// Machine-readable af/storage@5
+        /// Machine-readable af/storage@6
         #[arg(long)]
         json: bool,
         /// Also name every path that could not be measured and every Store left alone, and why
@@ -2466,7 +2466,7 @@ Finished Tasks go through the Store's own collection, so each keeps its tombston
         /// Remove what the preview names (default: preview only)
         #[arg(long)]
         apply: bool,
-        /// Machine-readable af/storage-prune@4
+        /// Machine-readable af/storage-prune@5
         #[arg(long)]
         json: bool,
     },

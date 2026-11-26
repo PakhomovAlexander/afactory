@@ -1,6 +1,6 @@
 //! Machine-local clients for read-only infrastructure and Project discovery.
 
-mod cache;
+pub(crate) mod cache;
 mod context;
 mod inventory;
 pub(crate) mod origin;
@@ -211,20 +211,37 @@ fn brief(config: Config, view: View, read: ReadArgs) -> Result<i32, String> {
     if matches!(view, View::Infra | View::Status | View::Allocations) {
         let key = config.management_key(&binding.credential_ref);
         let cache = Cache::new(&alias, &binding);
-        if matches!(view, View::Infra | View::Status) {
-            let result = descriptor
-                .management
+        let management = &descriptor.management;
+        let read_pools = || {
+            management
                 .read(&key, POOLS, deadline)
-                .and_then(inventory::Pools::normalize);
+                .and_then(inventory::Pools::normalize)
+        };
+        let read_allocations = || {
+            management
+                .read(&key, ALLOCATIONS, deadline)
+                .and_then(inventory::allocations)
+        };
+        let (pools, allocations) = std::thread::scope(|threads| {
+            let pools =
+                matches!(view, View::Infra | View::Status).then(|| threads.spawn(read_pools));
+            let allocations =
+                matches!(view, View::Infra | View::Allocations).then(read_allocations);
+            let pools = pools
+                .map(|reader| {
+                    reader
+                        .join()
+                        .map_err(|_| "Management pools reader terminated")
+                })
+                .transpose()?;
+            Ok::<_, &str>((pools, allocations))
+        })?;
+        if let Some(result) = pools {
             let reading = observe(&descriptor.scope, "pools", cache.as_ref(), result)?;
             readings.push(reading.observation.freshness);
             briefing.inventory = Some(reading);
         }
-        if matches!(view, View::Infra | View::Allocations) {
-            let result = descriptor
-                .management
-                .read(&key, ALLOCATIONS, deadline)
-                .and_then(inventory::allocations);
+        if let Some(result) = allocations {
             let reading = observe(&descriptor.scope, "allocations", cache.as_ref(), result)?;
             readings.push(reading.observation.freshness);
             briefing.allocations = Some(reading);
@@ -402,7 +419,7 @@ fn now_ms() -> Result<u64, String> {
         .map_err(|error| error.to_string())
 }
 
-fn is_label(label: &str) -> bool {
+pub(crate) fn is_label(label: &str) -> bool {
     label.len() <= 64
         && label
             .as_bytes()
@@ -523,13 +540,25 @@ fn render(briefing: &BriefingV2) {
                 let field = |value: &Option<String>| {
                     crate::terminal_text(value.as_deref().unwrap_or("unknown"))
                 };
+                let charges = allocation.charged.as_ref().map_or_else(
+                    || "charges unknown".to_string(),
+                    |charged| {
+                        format!(
+                            "charged {} vCPUs · {} GiB RAM · {} GB disk",
+                            charged.cpu_ids.len(),
+                            charged.ram_gib,
+                            charged.ssd_gib * 1_073_741_824.0 / 1_000_000_000.0
+                        )
+                    },
+                );
                 println!(
-                    "    VM {} · {} · host {} · power {} · state {} · charges unknown · executor unknown",
+                    "    VM {} · {} · host {} · power {} · state {} · {charges} · executor {}",
                     allocation.vmid,
                     field(&allocation.name),
                     field(&allocation.node),
                     field(&allocation.power),
-                    field(&allocation.state)
+                    field(&allocation.state),
+                    field(&allocation.executor)
                 );
             }
         }

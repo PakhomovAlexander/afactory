@@ -9,3 +9,8 @@
   committed Task events remain in the WAL, without creating sidecars in the Stores.
 - Keep fleet observation snapshots private to the origin reader, including the copied
   database and WAL, even under a permissive umask.
+- Show reported disk charges for stopped VMs, preserve unknown broker values, and let each
+  management read finish independently under the shared deadline.
+- Count retained infrastructure observations against the machine storage budget and reclaim
+  expired caches and abandoned private origin snapshots.
+- Require the pinned OpenSSH fixture in fleet acceptance.

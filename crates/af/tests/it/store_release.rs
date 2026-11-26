@@ -176,7 +176,7 @@ fn storage_lists_other_releases_stores_in_one_row_and_retains_review_registratio
 
     // The document keeps its shape: one entry each, its reason naming the writer.
     let document: Value = serde_json::from_slice(&af(&["storage", "--json"]).stdout).unwrap();
-    assert_eq!(document["schema"], "af/storage@5");
+    assert_eq!(document["schema"], "af/storage@6");
     let reasons: Vec<&str> = document["entries"]
         .as_array()
         .unwrap()
@@ -192,7 +192,7 @@ fn storage_lists_other_releases_stores_in_one_row_and_retains_review_registratio
         "{reasons:?}"
     );
     // The writer and the next command are fields of their own, from the Store's provenance.
-    crate::schemas::valid(&crate::schemas::validator("storage-v5.json"), &document);
+    crate::schemas::valid(&crate::schemas::validator("storage-v6.json"), &document);
     let mut fixes: Vec<(Value, Value)> = document["entries"]
         .as_array()
         .unwrap()
@@ -237,7 +237,7 @@ fn storage_lists_other_releases_stores_in_one_row_and_retains_review_registratio
     let listed = af(&["storage", "--json"]);
     assert!(listed.status.success(), "{}", err(&listed));
     let document: Value = serde_json::from_slice(&listed.stdout).unwrap();
-    crate::schemas::valid(&crate::schemas::validator("storage-v5.json"), &document);
+    crate::schemas::valid(&crate::schemas::validator("storage-v6.json"), &document);
     let entries = document["entries"].as_array().unwrap();
     assert_eq!(
         entries

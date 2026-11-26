@@ -995,7 +995,7 @@ the lock `af self` holds while it changes the default or a pin, so one that beca
 stays.
 
 `af storage` prints what af holds, per kind, against the budget, and the free bytes against
-`[storage] min_free_bytes` (10 GiB by default); `--json` prints one `af/storage@5` document,
+`[storage] min_free_bytes` (10 GiB by default); `--json` prints one `af/storage@6` document,
 whose `volumes` name each root the floor measures (`sandbox`, `cache`, `build_cache`) with its
 volume, free bytes, `below_floor` and `next_action`, and whose `unreadable_store` entries carry
 the `writer_release` their markers name and the `next_action` that reads them. While a Project
@@ -1027,7 +1027,7 @@ segment it removed is counted there among the omitted removals, never listed und
 Telemetry is the kind `telemetry`: every registered telemetry directory, evicted segment by
 segment under the same rules and past its own `[telemetry] max_bytes`, with every applied sweep
 reclaiming its temporary files, unreferenced blobs and free index pages; `--json` of
-`af storage prune` (`af/storage-prune@4`) carries that part as `telemetry`
+`af storage prune` (`af/storage-prune@5`) carries that part as `telemetry`
 ([docs/telemetry.md](telemetry.md)).
 
 Below the free-disk floor af does not start a check, a measurement repetition or a Worker

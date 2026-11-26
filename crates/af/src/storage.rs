@@ -81,6 +81,7 @@ pub(crate) fn policy() -> Result<StoragePolicy, String> {
 /// Where every kind of entry lives on this machine.
 pub(crate) struct Roots {
     pub(crate) warm: PathBuf,
+    pub(crate) fleet_cache: PathBuf,
     pub(crate) workspaces: PathBuf,
     pub(crate) campaigns: PathBuf,
     pub(crate) local_reviews: PathBuf,
@@ -125,6 +126,7 @@ impl Roots {
             warm: build_cache_root.unwrap_or_else(|| {
                 cache.join(af_sandbox::task_build_cache::TASK_BUILD_CACHE_DIRECTORY)
             }),
+            fleet_cache: state.join("fleet-cache"),
             workspaces: cache.join("workspaces"),
             campaigns: state.join("review").join("campaigns"),
             local_reviews: state.join("review").join("local"),
@@ -148,9 +150,10 @@ impl Roots {
 
     /// The trusted anchors every removal starts from, as configured: an entry below one is
     /// opened from it, every component below without following a link.
-    fn anchors(&self) -> [&Path; 6] {
+    fn anchors(&self) -> [&Path; 7] {
         [
             &self.warm,
+            &self.fleet_cache,
             &self.workspaces,
             &self.campaigns,
             &self.local_reviews,
@@ -186,6 +189,7 @@ impl Roots {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Kind {
     WarmKey,
+    FleetCache,
     Workspace,
     Campaign,
     Task,
@@ -211,8 +215,9 @@ pub(crate) enum Kind {
 }
 
 impl Kind {
-    const ALL: [Kind; 11] = [
+    const ALL: [Kind; 12] = [
         Kind::WarmKey,
+        Kind::FleetCache,
         Kind::Workspace,
         Kind::Campaign,
         Kind::Task,
@@ -228,6 +233,7 @@ impl Kind {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Kind::WarmKey => "warm_key",
+            Kind::FleetCache => "fleet_cache",
             Kind::Workspace => "workspace",
             Kind::Campaign => "campaign",
             Kind::Task => "task",
@@ -244,6 +250,7 @@ impl Kind {
     const fn label(self) -> &'static str {
         match self {
             Kind::WarmKey => "warm keys",
+            Kind::FleetCache => "fleet cache",
             Kind::Workspace => "warm Workspaces",
             Kind::Campaign => "review campaigns",
             Kind::Task => "finished Tasks",
@@ -512,6 +519,44 @@ fn reader_artifact(path: &Path) -> bool {
             && std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.len() == 0))
 }
 
+fn fleet_cache_inventory(roots: &Roots, inventory: &mut Inventory) {
+    let root = &roots.fleet_cache;
+    if let Err(error) = std::fs::symlink_metadata(root) {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            return;
+        }
+    }
+    let state_home = roots.telemetry.state_root.parent().expect("state home");
+    if let Err(reason) = plain_path(state_home, root) {
+        inventory.problems.push(Problem {
+            path: root.clone(),
+            reason,
+        });
+        return;
+    }
+    for path in listed(inventory, root) {
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| {
+                crate::fleet::is_label(name) || name == crate::fleet::cache::STAGING
+            })
+        {
+            measure_into(inventory, roots, Kind::FleetCache, &path, |path| {
+                (fleet_cache_last_write(path), None)
+            });
+        }
+    }
+}
+
+fn fleet_cache_last_write(path: &Path) -> u64 {
+    ["pools.json", "allocations.json"]
+        .iter()
+        .filter_map(|name| modified_ms(&path.join(name)))
+        .max()
+        .unwrap_or(0)
+}
+
 /// The newest write to a Store's event log, falling back to its directory.
 fn newest_store_write(state: &Path) -> u64 {
     ["events.sqlite", "events.sqlite-wal"]
@@ -707,6 +752,7 @@ pub(crate) enum Detail {
 pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
     let mut inventory = Inventory::default();
     warm_keys(roots, &mut inventory);
+    fleet_cache_inventory(roots, &mut inventory);
     for path in listed(&mut inventory, &roots.workspaces) {
         if path
             .file_name()
@@ -893,6 +939,7 @@ pub(crate) fn accounted(roots: &Roots) -> (Vec<Accounted>, Option<String>) {
         Accounted::new(&roots.tasks, "the Task Store root"),
         Accounted::new(&roots.campaigns, "the review campaign root"),
         Accounted::new(&roots.local_reviews, "the local review root"),
+        Accounted::new(&roots.fleet_cache, "the fleet cache"),
         Accounted::new(&roots.warm, "the warm check cache"),
         Accounted::new(&roots.workspaces, "the warm Workspaces"),
         Accounted::new(&roots.installs.versions, "the release installations"),
@@ -1070,7 +1117,11 @@ fn measure_into(
             let (last_use_unix_ms, in_use) = judge(path);
             let too_deep = matches!(
                 kind,
-                Kind::Workspace | Kind::Campaign | Kind::UnreadableStore | Kind::Version
+                Kind::Workspace
+                    | Kind::Campaign
+                    | Kind::UnreadableStore
+                    | Kind::Version
+                    | Kind::FleetCache
             ) && af_sandbox::deeper_than_removal_walk(depth);
             inventory.entries.push(Entry {
                 kind,
@@ -2271,6 +2322,7 @@ fn abandoned_claims(roots: &Roots, registered: &[registry::Registered], inventor
     let mut parents: Vec<PathBuf> = real_directories(&roots.warm);
     parents.extend([
         roots.workspaces.clone(),
+        roots.fleet_cache.clone(),
         roots.campaigns.clone(),
         roots.local_reviews.clone(),
         roots.tasks.clone(),
@@ -2625,6 +2677,17 @@ fn evict(
                 None => Err(failed("a check holds it now".into()).into()),
             }
         }
+        Kind::FleetCache => {
+            let _held = crate::fleet::cache::lock_root(&roots.fleet_cache)
+                .map_err(|error| failed(error.to_string()))?;
+            still_measured(entry).map_err(failed)?;
+            if fleet_cache_last_write(&entry.path) != entry.last_use_unix_ms
+                || entry.last_use_unix_ms.saturating_add(HOUR_MS) > now_unix_ms()
+            {
+                return Err(failed("the observation cache was refreshed".into()).into());
+            }
+            remove_entry(roots, entry).map_err(partly)
+        }
         Kind::Workspace => {
             // Not even its lock file is touched unless it is still the measured directory.
             still_measured(entry).map_err(failed)?;
@@ -2974,6 +3037,7 @@ fn summary_line(tally: &Tally) -> Option<String> {
 fn count_of(kind: Kind, count: u64) -> String {
     let (one, many) = match kind {
         Kind::WarmKey => ("warm key", "warm keys"),
+        Kind::FleetCache => ("fleet cache", "fleet caches"),
         Kind::Workspace => ("warm Workspace", "warm Workspaces"),
         Kind::Campaign => ("review campaign", "review campaigns"),
         Kind::Task => ("finished Task", "finished Tasks"),
@@ -3114,9 +3178,12 @@ pub(crate) fn observation(
                 Kind::UnreadableStore => StorageSweepKindV1::UnreadableStore,
                 Kind::Version => StorageSweepKindV1::Version,
                 Kind::Claim => StorageSweepKindV1::Claim,
-                // A telemetry removal and a Survey's have no kind in `af/TaskStorageSweep@2`:
-                // each is counted among the omitted removals, never listed under another kind.
-                Kind::TaskStore | Kind::ProjectStore | Kind::Survey | Kind::Telemetry => {
+                // These removals have no kind in `af/TaskStorageSweep@2` and count as omitted.
+                Kind::TaskStore
+                | Kind::ProjectStore
+                | Kind::Survey
+                | Kind::Telemetry
+                | Kind::FleetCache => {
                     return None;
                 }
             };
@@ -3349,7 +3416,7 @@ pub(crate) enum Role {
 }
 
 impl Role {
-    /// Its name in `af/storage@5`.
+    /// Its name in `af/storage@6`.
     const fn as_str(self) -> &'static str {
         match self {
             Role::Sandbox => "sandbox",
@@ -3419,6 +3486,19 @@ pub(crate) fn judge_floor(volumes: &[Volume], floor: u64) -> Result<(), String> 
         return Err(unmeasured_refusal(floor, &unmeasured));
     }
     Ok(())
+}
+
+/// The smaller of the remaining observation budget and free bytes above the floor.
+pub(crate) fn observation_allowance(
+    root: &Path,
+    policy: &StoragePolicy,
+    retained: u64,
+) -> Result<u64, String> {
+    let free = measure_volume(root).free?;
+    Ok(policy
+        .max_bytes
+        .saturating_sub(retained)
+        .min(free.saturating_sub(policy.min_free_bytes)))
 }
 
 /// The directory sandboxes and check runtimes are made in under `policy`.
@@ -3859,7 +3939,7 @@ pub(crate) fn show(json_output: bool, verbose: bool) -> Result<i32, String> {
             entries.push(value);
         }
         let document = json!({
-            "schema": "af/storage@5",
+            "schema": "af/storage@6",
             "max_bytes": policy.max_bytes,
             "total_bytes": total,
             "min_free_bytes": policy.min_free_bytes,
@@ -4019,7 +4099,7 @@ pub(crate) fn show(json_output: bool, verbose: bool) -> Result<i32, String> {
     Ok(0)
 }
 
-/// One volume the floor measures, as `af/storage@5` carries it: its role, root and volume, its
+/// One volume the floor measures, as `af/storage@6` carries it: its role, root and volume, its
 /// free bytes, whether it is below `floor`, and what to do when it is or cannot be measured.
 fn volume_document(volume: &Volume, floor: u64) -> serde_json::Value {
     let below = volume.free.as_ref().ok().map(|free| *free < floor);
@@ -4089,7 +4169,7 @@ pub(crate) fn prune(apply: bool, json_output: bool, verbose: bool) -> Result<i32
     let report = sweep(&roots, &policy, true, apply);
     if json_output {
         let mut document = serde_json::to_value(&report).map_err(|e| e.to_string())?;
-        document["schema"] = json!("af/storage-prune@4");
+        document["schema"] = json!("af/storage-prune@5");
         println!(
             "{}",
             serde_json::to_string_pretty(&document).map_err(|e| e.to_string())?

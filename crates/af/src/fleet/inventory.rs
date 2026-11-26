@@ -77,6 +77,7 @@ pub(super) struct BrokerAllocation {
     node: Option<String>,
     power: Option<String>,
     state: Option<String>,
+    charged: Option<Capacity>,
     #[serde(rename = "task")]
     _task: Option<String>,
 }
@@ -95,7 +96,7 @@ pub(super) fn allocations(rows: Vec<BrokerAllocation>) -> Result<Vec<Allocation>
                 node: row.node,
                 power: row.power,
                 state: row.state,
-                charged: None,
+                charged: row.charged.map(capacity).transpose()?,
                 executor: None,
             },
         );
