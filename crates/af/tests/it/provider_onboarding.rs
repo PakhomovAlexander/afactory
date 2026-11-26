@@ -812,6 +812,45 @@ fn pi_home_installation_is_authenticated_from_non_repository_home() {
 
 #[test]
 fn pi_node_resolution_and_setup_refuse_repository_owned_path_before_spawn() {
+    // The official-SDK fixture installation and its successful registration are independent of
+    // the repository marker. Pay for them once, then give every marker case a private registry
+    // copy while the external SDK, credentials and executable PATH stay shared and read-only.
+    let fixture = crate::common::provider_fixture_fs::tempdir().unwrap();
+    let fixture_work = fixture.path().join("work");
+    crate::common::provider_fixture_fs::create_dir(&fixture_work).unwrap();
+    let auth = fixture.path().join("auth");
+    let (sdk, external_path, _) = crate::fake_models::install_pi(fixture.path(), &auth, "review");
+    let setup_args = [
+        "provider",
+        "setup",
+        "pi-safe",
+        "--kind",
+        "pi",
+        "--backend",
+        "openai-codex",
+        "--auth-dir",
+        auth.to_str().unwrap(),
+        "--sdk-entrypoint",
+        sdk.to_str().unwrap(),
+        "--json",
+    ];
+    let registered = crate::common::af()
+        .args(setup_args)
+        .current_dir(&fixture_work)
+        .env("HOME", fixture.path())
+        .env("XDG_CONFIG_HOME", fixture.path().join("config"))
+        .env("AF_PROVIDERS_FILE", fixture.path().join("providers.toml"))
+        .env_remove("CODEX_HOME")
+        .env_remove("CLAUDE_CONFIG_DIR")
+        .env("PATH", &external_path)
+        .output()
+        .unwrap();
+    assert!(registered.status.success(), "{}", err(&registered));
+    let registered_document = document(&registered);
+    valid("pi-provider-setup-v4.json", &registered_document);
+    assert_eq!(registered_document["outcome"], "registered");
+    let registration = std::fs::read(fixture.path().join("providers.toml")).unwrap();
+
     for marker in [
         "git-directory",
         "git-worktree-file",
@@ -827,35 +866,21 @@ fn pi_node_resolution_and_setup_refuse_repository_owned_path_before_spawn() {
         });
         let work = repository.join("nested/cwd");
         crate::common::provider_fixture_fs::create_dir_all(&work).unwrap();
-        let auth = root.path().join("auth");
-        let (sdk, external_path, _) = crate::fake_models::install_pi(root.path(), &auth, "review");
+        let providers = root.path().join("providers.toml");
+        crate::common::provider_fixture_fs::write(&providers, &registration).unwrap();
         let invoke = |path: &std::ffi::OsStr, args: &[&str]| {
             crate::common::af()
                 .args(args)
                 .current_dir(&work)
                 .env("HOME", root.path())
                 .env("XDG_CONFIG_HOME", root.path().join("config"))
-                .env("AF_PROVIDERS_FILE", root.path().join("providers.toml"))
+                .env("AF_PROVIDERS_FILE", &providers)
                 .env_remove("CODEX_HOME")
                 .env_remove("CLAUDE_CONFIG_DIR")
                 .env("PATH", path)
                 .output()
                 .unwrap()
         };
-        let setup_args = [
-            "provider",
-            "setup",
-            "pi-safe",
-            "--kind",
-            "pi",
-            "--backend",
-            "openai-codex",
-            "--auth-dir",
-            auth.to_str().unwrap(),
-            "--sdk-entrypoint",
-            sdk.to_str().unwrap(),
-            "--json",
-        ];
         match marker {
             "git-directory" => {
                 crate::common::provider_fixture_fs::create_dir(repository.join(".git")).unwrap()
@@ -884,9 +909,8 @@ fn pi_node_resolution_and_setup_refuse_repository_owned_path_before_spawn() {
             }
             _ => crate::common::provider_fixture_fs::create_dir(repository.join(".af")).unwrap(),
         }
-        // The same nested CWD permits a legitimate external SDK/Node installation.
-        let setup = invoke(external_path.as_ref(), &setup_args);
-        assert!(setup.status.success(), "{}", err(&setup));
+        // Refuse a repository-owned Node from the same nested CWD where the shared legitimate
+        // external SDK/Node installation is already registered.
         let bin = repository.join("bin");
         crate::common::provider_fixture_fs::create_dir(&bin).unwrap();
         std::os::unix::fs::symlink(Path::new(&external_path).join("git"), bin.join("git")).unwrap();
@@ -900,6 +924,27 @@ fn pi_node_resolution_and_setup_refuse_repository_owned_path_before_spawn() {
         std::fs::set_permissions(&trap, std::fs::Permissions::from_mode(0o700)).unwrap();
         let absolute_path = bin.canonicalize().unwrap();
         let git_executed = root.path().join("git-executed");
+
+        // The copied registry must still support the legitimate external SDK from each nested,
+        // marked repository CWD. Setup is an idempotent reuse of the one shared registration;
+        // status independently exercises external Node without executing the repository trap.
+        for args in [&["provider", "status", "--json"][..], &setup_args[..]] {
+            let output = invoke(external_path.as_os_str(), args);
+            assert_eq!(code(&output), 0, "{marker}: {}", err(&output));
+            assert!(
+                !executed.exists(),
+                "executed repository Node instead of external Node for {marker}"
+            );
+            let value = document(&output);
+            if args[1] == "setup" {
+                valid("pi-provider-setup-v4.json", &value);
+                assert_eq!(value["outcome"], "already_registered");
+            } else {
+                valid("provider-status-v6.json", &value);
+                assert_eq!(value["providers"][0]["auth"], "authenticated");
+            }
+        }
+
         for git in ["external", "trap", "node-symlink"] {
             let git_path = bin.join("git");
             if git != "external" {
