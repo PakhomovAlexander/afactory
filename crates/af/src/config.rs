@@ -549,7 +549,11 @@ pub(crate) fn wake_session_store_path() -> Result<Option<PathBuf>, String> {
     {
         // Missing/unsuitable account identity is an unavailable optional capability.
         // Lookup I/O errors still propagate; HOME/XDG never substitute for authority.
-        let Some(home) = machine_account_home()? else {
+        let Some(home) = lookup_account_home().map_err(|error| match error {
+            AccountLookupError::Read(error) => format!("Reading wake OS account: {error}"),
+            AccountLookupError::IdentityMismatch => "Wake OS account identity mismatch".into(),
+        })?
+        else {
             return Ok(None);
         };
         wake_session_store_at(&home).map(Some)
@@ -558,6 +562,19 @@ pub(crate) fn wake_session_store_path() -> Result<Option<PathBuf>, String> {
 
 /// Machine-local authorities share the OS account even under different process environments.
 pub(crate) fn machine_account_home() -> Result<Option<PathBuf>, String> {
+    lookup_account_home().map_err(|error| match error {
+        AccountLookupError::Read(error) => format!("Reading OS account: {error}"),
+        AccountLookupError::IdentityMismatch => "OS account identity mismatch".into(),
+    })
+}
+
+#[derive(Debug)]
+enum AccountLookupError {
+    Read(nix::errno::Errno),
+    IdentityMismatch,
+}
+
+fn lookup_account_home() -> Result<Option<PathBuf>, AccountLookupError> {
     #[cfg(debug_assertions)]
     if let Some(home) = std::env::var_os("AF_TEST_WAKE_ACCOUNT_HOME") {
         return Ok(suitable_account_home(PathBuf::from(home)));
@@ -569,15 +586,13 @@ fn suitable_account_home(home: PathBuf) -> Option<PathBuf> {
     (home.is_absolute() && home != Path::new("/")).then_some(home)
 }
 
-fn os_account_home() -> Result<Option<PathBuf>, String> {
+fn os_account_home() -> Result<Option<PathBuf>, AccountLookupError> {
     let uid = nix::unistd::geteuid();
-    let Some(user) =
-        nix::unistd::User::from_uid(uid).map_err(|e| format!("Reading OS account: {e}"))?
-    else {
+    let Some(user) = nix::unistd::User::from_uid(uid).map_err(AccountLookupError::Read)? else {
         return Ok(None);
     };
     if user.uid != uid {
-        return Err("OS account identity mismatch".into());
+        return Err(AccountLookupError::IdentityMismatch);
     }
     Ok(Some(user.dir))
 }

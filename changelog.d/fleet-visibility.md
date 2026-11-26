@@ -13,4 +13,6 @@
   management read finish independently under the shared deadline.
 - Count retained infrastructure observations against the machine storage budget and reclaim
   expired caches and abandoned private origin snapshots.
+- Preserve the standalone wake account lookup and identity mismatch diagnostics when sharing
+  OS account resolution with Project origin readers.
 - Require the pinned OpenSSH fixture in fleet acceptance.

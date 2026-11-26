@@ -6266,6 +6266,26 @@ fn wake_cli_optional_account_capability_preserves_ordinary_tasks_and_lookup_erro
 
 #[test]
 #[cfg(target_os = "linux")]
+fn wake_cli_account_identity_mismatch_retains_diagnostic() {
+    let f = WakePiFixture::new();
+    let output = crate::common::af()
+        .env_remove("AF_TEST_WAKE_ACCOUNT_HOME")
+        .env("LD_PRELOAD", crate::common::account_resolver(&f.owner))
+        .env("WAKE_FIXTURE_ACCOUNT_MODE", "uid_mismatch")
+        .env("WAKE_FIXTURE_ACCOUNT_HOME", &f.owner)
+        .args(["storage", "--json"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        err(&output).contains("Wake OS account identity mismatch"),
+        "{}",
+        err(&output)
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
 fn wake_cli_purge_retains_cross_root_uncertainty_and_reserved_first_grant_ancestry() {
     for concurrent in [false, true] {
         let f = WakePiFixture::new();
