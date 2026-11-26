@@ -187,11 +187,11 @@ class Release(unittest.TestCase):
 
     def test_prior_contract_versions_fail_closed(self):
         binding = self.binding([])
-        binding['schema'] = 'af.release-tests/1'
+        binding['schema'] = 'af.release-tests/2'
         with self.assertRaisesRegex(ValueError, 'invalid release selection annotation'):
             tc.release_plan(json.dumps(binding), self.sha, '1.2.3')
         plan = tc.resolve()
-        plan['schema'] = 'af.test-plan/1'
+        plan['schema'] = 'af.test-plan/2'
         with self.assertRaisesRegex(ValueError, 'unsupported test plan'):
             tc.validate_plan(plan)
 
@@ -216,6 +216,18 @@ class Release(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('bound release plan does not name this version', result.stderr)
             self.assertFalse(output.exists())
+
+    def test_tagged_e2e_rule_takes_precedence_over_release_pr_labels(self):
+        for labels, version, expected in (
+                (['no-e2e'], '1.2.3', tc.FAST),
+                (['test:uix'], '1.2.3', ['e2e', 'uix']),
+                (['release:full'], '1.2.3-rc.1', ['functional', 'uix', 'perf']),
+                (['test:e2e', 'test:uix'], '1.2.3-rc.1', ['uix'])):
+            with self.subTest(labels=labels, version=version):
+                plan = tc.resolve(labels, 'tagged_release_pr', self.sha, version)
+                self.assertEqual(tc.validate_plan(plan)['selected'], expected)
+        with self.assertRaisesRegex(ValueError, 'empty test selection'):
+            tc.resolve(['test:e2e'], 'tagged_release_pr', self.sha, '1.2.3-rc.1')
 
     def test_stale_annotation_and_tampered_plan_fail_closed(self):
         binding = self.binding()
@@ -446,6 +458,46 @@ class LabelSetup(unittest.TestCase):
         self.assertNotIn('pull-requests: write', text)
         self.assertNotIn('freeze-release-policy', (ROOT / 'scripts/release.sh').read_text())
         self.assertNotIn('release-test-policy:', (ROOT / 'Makefile').read_text())
+
+    def test_shared_resolver_accepts_release_prs_and_requires_plans_for_publication(self):
+        workflow = (ROOT / '.github/workflows/validate.yml').read_text()
+        step = workflow.split('      - name: Resolve exact class selection\n', 1)[1]
+        step = step.split('\n      - name:', 1)[0]
+        recipe = '\n'.join(line[10:] for line in step.split('        run: |\n', 1)[1].splitlines())
+        version = tc.re.search(r'^version = "([^"]+)"$', (ROOT / 'Cargo.toml').read_text(), tc.re.M).group(1)
+        for event_name, bound_plan, error in (
+            ('pull_request', '', None),
+            ('push', '', 'Release validation requires a bound plan'),
+            ('pull_request', '{}', 'unsupported test plan'),
+        ):
+            with self.subTest(event_name=event_name, bound_plan=bound_plan), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / 'scripts').symlink_to(ROOT / 'scripts', target_is_directory=True)
+                event = root / 'event.json'
+                event.write_text(json.dumps({'pull_request': {'labels': [{'name': 'release:fast'}],
+                                 'head': {'ref': 'release/v' + version}, 'base': {'ref': 'main'}}}))
+                output = root / 'github-output'
+                output.touch()
+                result = subprocess.run(['bash', '-c', recipe], cwd=root, capture_output=True, text=True,
+                                        env={**os.environ, 'EVENT_NAME': event_name, 'RELEASE': 'true',
+                                             'BOUND_PLAN': bound_plan, 'GITHUB_EVENT_PATH': str(event),
+                                             'GITHUB_OUTPUT': str(output)})
+                plan = root / 'target/test-classes/plan.json'
+                if error:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(error, result.stderr)
+                    self.assertFalse(plan.exists())
+                    self.assertEqual(output.read_text(), '')
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    retained = tc.read(plan)
+                    self.assertEqual(retained['context'], 'release_pr')
+                    self.assertEqual(retained['version'], version)
+                    outputs = dict(line.split('=', 1) for line in output.read_text().splitlines())
+                    self.assertEqual(json.loads(outputs['plan']), retained)
+                    self.assertEqual(json.loads(outputs['selected']), ['functional', 'e2e', 'uix'])
+                    self.assertEqual(outputs['e2e'], 'true')
+                    self.assertEqual(outputs['perf'], 'false')
 
     def test_label_only_release_pr_events_select_ci_without_a_metadata_commit(self):
         version = tc.re.search(r'^version = "([^"]+)"$', (ROOT / 'Cargo.toml').read_text(), tc.re.M).group(1)
@@ -1568,18 +1620,54 @@ class Gates(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     tc.aggregate(plan, needs)
 
+    def test_tagged_fast_gates_use_the_e2e_selection_on_both_platforms(self):
+        platforms = ['Linux', 'macOS']
+        for version, e2e in [('1.2.3-rc.1', False), ('1.2.3', True)]:
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                plan = tc.resolve(['release:fast'], 'tagged_release_pr', Release.sha, version)
+                output = root / 'outputs'
+                subprocess.run([sys.executable, str(ROOT / 'scripts/test-classes.py'), 'plan',
+                                '--bound', json.dumps(plan), '--sha', Release.sha,
+                                '--output', str(root / 'plan.json'), '--github-output', str(output)],
+                               check=True, capture_output=True)
+                self.assertIn(f'e2e={str(e2e).lower()}', output.read_text().splitlines())
+                needs = self.good(plan)
+                tc.aggregate(plan, needs)
+                if e2e:
+                    for state in ({}, {'result': 'failure'}, {'result': 'skipped'}):
+                        with self.assertRaisesRegex(ValueError, 'container-probes must be success'):
+                            tc.aggregate(plan, dict(needs, **{'container-probes': state}))
+                for platform in platforms:
+                    for kind in plan['selected']:
+                        tc.write(root / platform / kind / 'receipt.json', {
+                            'schema': tc.RECEIPT, 'plan': plan, 'platform': platform,
+                            'class': kind, 'status': 'success'})
+                tc.receipts(plan, root, platforms)
+                if e2e:
+                    for platform in platforms:
+                        path = root / platform / 'e2e/receipt.json'
+                        receipt = tc.read(path)
+                        path.unlink()
+                        with self.assertRaisesRegex(ValueError, 'missing class receipts'):
+                            tc.receipts(plan, root, platforms)
+                        tc.write(path, dict(receipt, status='failure'))
+                        with self.assertRaisesRegex(ValueError, 'invalid/duplicate class receipt'):
+                            tc.receipts(plan, root, platforms)
+                        tc.write(path, receipt)
+
     def test_selected_platform_receipts_are_exact_and_complete(self):
         plan = tc.resolve(['test:uix'])
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             with self.assertRaises(ValueError):
                 tc.receipts(plan, root, ['Linux', 'macOS'])
-            receipt = {'schema': 'af.test-class-receipt/2', 'plan': plan,
+            receipt = {'schema': tc.RECEIPT, 'plan': plan,
                        'platform': 'Linux', 'class': 'uix', 'status': 'success'}
             tc.write(root / 'linux/receipt.json', receipt)
             tc.receipts(plan, root, ['Linux'])
             for mutation in [{'status': 'cancelled'}, {'class': 'perf'}, {'unexpected': 1},
-                             {'schema': 'af.test-class-receipt/1'},
+                             {'schema': 'af.test-class-receipt/2'},
                              {'plan': tc.resolve(['test:perf'])}]:
                 bad = dict(receipt, **mutation)
                 tc.write(root / 'linux/receipt.json', bad)
@@ -1626,7 +1714,7 @@ class Metrics(unittest.TestCase):
             for kind, seconds in zip(tc.CLASSES, (5, 0, 7, 11)):
                 artifact = root / 'artifacts' / ('validation-class-Linux-' + kind)
                 evidence = artifact / 'class-evidence'
-                tc.write(evidence / 'receipt.json', {'schema': 'af.test-class-receipt/2',
+                tc.write(evidence / 'receipt.json', {'schema': tc.RECEIPT,
                          'plan': plan, 'platform': 'Linux', 'class': kind, 'status': 'success'})
                 path = artifact / 'class-metrics.jsonl'
                 output = evidence / 'report.json'
@@ -1730,7 +1818,7 @@ class Metrics(unittest.TestCase):
             for kind, seconds in [('functional', 10), ('uix', 5)]:
                 artifact = root / ('validation-class-Linux-' + kind)
                 evidence = artifact / 'class-evidence'
-                tc.write(evidence / 'receipt.json', {'schema': 'af.test-class-receipt/2', 'plan': plan,
+                tc.write(evidence / 'receipt.json', {'schema': tc.RECEIPT, 'plan': plan,
                          'platform': 'Linux', 'class': kind, 'status': 'success'})
                 tc.write(evidence / 'report.json', {'plan': plan, 'classes': {kind: {'passed': 1}}})
                 metric(artifact / 'class-metrics.jsonl', {'label': 'class-' + kind,

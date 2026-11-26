@@ -44,12 +44,16 @@ jobs:
         env:
           BOUND_PLAN: ${{ inputs.test_plan }}
           EVENT_NAME: ${{ github.event_name }}
+          RELEASE: ${{ inputs.release }}
         run: |
           set -eu
           if [ -n "$BOUND_PLAN" ]; then
             python3 scripts/test-classes.py plan --bound "$BOUND_PLAN" --output target/test-classes/plan.json --github-output "$GITHUB_OUTPUT"
           elif [ "$EVENT_NAME" = pull_request ]; then
             python3 scripts/test-classes.py plan --context pr --event "$GITHUB_EVENT_PATH" --output target/test-classes/plan.json --github-output "$GITHUB_OUTPUT"
+          elif [ "$RELEASE" = true ]; then
+            echo 'Release validation requires a bound plan' >&2
+            exit 1
           else
             python3 scripts/test-classes.py plan --context local --output target/test-classes/plan.json --github-output "$GITHUB_OUTPUT"
           fi
@@ -334,8 +338,8 @@ jobs:
           python3 -c 'import os,pathlib; pathlib.Path("target/test-classes/plan.json").write_text(os.environ["PLAN"]); pathlib.Path("target/test-classes/needs.json").write_text(os.environ["JOB_RESULTS"])'
           set -- Linux
           if [ "$RELEASE" = true ]; then set -- Linux macOS; fi
-          python3 scripts/test-classes.py aggregate --plan target/test-classes/plan.json             --needs target/test-classes/needs.json --evidence target/class-receipts --platforms "$@"
           python3 -c 'import json; p=json.load(open("target/test-classes/plan.json")); print("\n".join(c+": "+p["classes"][c]["state"]+" ("+p["classes"][c]["reason"]+")" for c in p["classes"]))' >> "$GITHUB_STEP_SUMMARY"
+          python3 scripts/test-classes.py aggregate --plan target/test-classes/plan.json             --needs target/test-classes/needs.json --evidence target/class-receipts --platforms "$@"
 
       - name: Retain aggregate metrics
         if: always() && env.NOBUILD != 'true'
@@ -387,8 +391,8 @@ jobs:
           python3 -c 'import os,pathlib; pathlib.Path("target/test-classes/plan.json").write_text(os.environ["PLAN"]); pathlib.Path("target/test-classes/needs.json").write_text(os.environ["JOB_RESULTS"])'
           set -- Linux
           if [ "$RELEASE" = true ]; then set -- Linux macOS; fi
-          python3 scripts/test-classes.py aggregate --plan target/test-classes/plan.json             --needs target/test-classes/needs.json --evidence target/class-receipts --platforms "$@"
           python3 -c 'import json; p=json.load(open("target/test-classes/plan.json")); print("\n".join(c+": "+p["classes"][c]["state"]+" ("+p["classes"][c]["reason"]+")" for c in p["classes"]))' >> "$GITHUB_STEP_SUMMARY"
+          python3 scripts/test-classes.py aggregate --plan target/test-classes/plan.json             --needs target/test-classes/needs.json --evidence target/class-receipts --platforms "$@"
 
       - name: Retain aggregate metrics
         if: always() && env.NOBUILD != 'true'
