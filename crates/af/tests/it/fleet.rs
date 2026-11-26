@@ -123,14 +123,14 @@ fn pin_planned_database(database: &Path) -> rusqlite::Connection {
 #[test]
 fn fresh_install_and_offline_standalone() {
     let machine = Machine::new();
-    let validator = schemas::validator("fleet-briefing-v2.json");
+    let validator = schemas::validator("fleet-briefing-v3.json");
     let infra = machine.json(&["infra", "--json"]);
     schemas::valid(&validator, &infra);
-    assert!(serde_json::from_value::<af_contracts::fleet::BriefingV2>(infra.clone()).is_ok());
+    assert!(serde_json::from_value::<af_contracts::fleet::BriefingV3>(infra.clone()).is_ok());
     let mut invalid = infra.clone();
     invalid.as_object_mut().unwrap().remove("inventory");
     assert!(!validator.is_valid(&invalid));
-    assert!(serde_json::from_value::<af_contracts::fleet::BriefingV2>(invalid).is_err());
+    assert!(serde_json::from_value::<af_contracts::fleet::BriefingV3>(invalid).is_err());
     assert_eq!(infra["configured_contexts"], json!([]));
     assert_eq!(infra["discovery"], "unconfigured");
     assert_eq!(infra["next_action"]["action"], "ask_owner");
@@ -370,6 +370,211 @@ fn executable(file: &Path, text: &str) {
 }
 
 #[test]
+fn deadline_diagnostics_keep_sibling_outcomes_and_next_actions() {
+    let machine = Machine::new();
+    let host_key = key(&machine, "host-key");
+    key(&machine, "management");
+    link(
+        &machine,
+        "management",
+        "config/af/fleet/credentials/operator",
+    );
+    let target = |host| json!({"host": host, "port": 22, "user": "reader", "host_key": host_key});
+    let digest = format!("sha256:{}", "a".repeat(64));
+    let origin = |host| json!({"target": target(host), "project_id": digest, "store_id": digest});
+    machine.write(
+        "lab.afcontext",
+        &json!({
+            "schema": "af/fleet-context@1",
+            "scope": "fleet-fixture",
+            "management": target("broker.invalid"),
+            "origins": {
+                "denied": origin("denied.invalid"),
+                "offline": origin("offline.invalid"),
+                "stalled": origin("stalled.invalid")
+            }
+        }),
+    );
+    for name in ["denied", "offline", "stalled"] {
+        link(
+            &machine,
+            "management",
+            &format!("config/af/fleet/project-credentials/lab/{name}"),
+        );
+    }
+    // Stub SSH for deterministic scheduling and command outcomes. The pinned OpenSSH test
+    // separately exercises authentication and the same shared-deadline supervisor.
+    executable(
+        &machine.path("bin/ssh"),
+        r#"#!/bin/sh
+for arg do
+  case "$arg" in *.invalid) host=$arg ;; esac
+  operation=$arg
+done
+case "$operation" in
+  'control-api http://localhost/pools') capability=pools ;;
+  'control-api http://localhost/dynamic/allocations') capability=allocations ;;
+esac
+if [ -n "$AF_FIXTURE_FIRST" ]; then
+  if [ "$capability" != "$AF_FIXTURE_FIRST" ]; then
+    while [ ! -e "first-$AF_FIXTURE_FIRST" ]; do /bin/sleep 0.05; done
+  fi
+  echo "$capability" >> "requests-$AF_FIXTURE_FIRST"
+  : > "first-$AF_FIXTURE_FIRST"
+  [ "$capability" != pools ] || exit 75
+else
+  case "$host" in
+    denied.invalid) echo 'private-fixture-detail' >&2; exit 77 ;;
+    offline.invalid) exit 75 ;;
+    broker.invalid)
+      if [ ! -e mixed ]; then
+        case "$capability" in
+          pools) echo '{"static":[],"dynamic":[],"release":"explicit","available":[]}' ;;
+          allocations) echo '[]' ;;
+        esac
+        exit 0
+      fi
+      if [ "$capability" = pools ]; then echo 'private-fixture-detail'; exit 0; fi ;;
+  esac
+fi
+echo 'private-fixture-detail' >&2
+exec /bin/sleep 90
+"#,
+    );
+    let connect = |alias| {
+        machine.af(&[
+            "infra",
+            "connect",
+            "--context",
+            alias,
+            "--from",
+            "lab.afcontext",
+            "--credential-ref",
+            "operator",
+        ])
+    };
+    let started = Instant::now();
+    let failed: Vec<_> = ["pools", "allocations"]
+        .into_iter()
+        .map(|first| {
+            let child = connect(first)
+                .env("AF_FIXTURE_FIRST", first)
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            (first, child)
+        })
+        .collect();
+    for (first, child) in failed {
+        let output = child.wait_with_output().unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{output:?}");
+        assert!(
+            stderr.contains("Management pools capability: reader unavailable"),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains(
+                "Management allocations capability: reader exceeded the command deadline"
+            ),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("private-fixture-detail"), "{stderr}");
+        assert!(
+            !machine
+                .path(&format!("config/af/fleet/contexts/{first}.json"))
+                .exists()
+        );
+        let requests = fs::read_to_string(machine.path(&format!("requests-{first}"))).unwrap();
+        assert_eq!(requests.lines().count(), 2);
+        assert_eq!(requests.lines().next(), Some(first));
+    }
+    assert!(started.elapsed() < Duration::from_secs(45));
+
+    success(connect("lab").output().unwrap());
+    let fresh = machine.json(&["infra", "--json"]);
+    assert_eq!(fresh["allocations"]["data"], json!([]));
+    fs::write(machine.path("mixed"), "").unwrap();
+    let validator = schemas::validator("fleet-briefing-v3.json");
+    let started = Instant::now();
+    let reads: Vec<_> = [&["infra"][..], &["cluster", "inbox"]]
+        .into_iter()
+        .flat_map(|args| {
+            [true, false].map(|json| {
+                let mut command = machine.af(args);
+                if json {
+                    command.arg("--json");
+                }
+                command
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .unwrap()
+            })
+        })
+        .collect();
+    let mut output = reads.into_iter().map(|child| {
+        let output = child.wait_with_output().unwrap();
+        assert!(output.stderr.is_empty(), "{output:?}");
+        output
+    });
+    let infra = as_json(output.next().unwrap());
+    let infra_text = success(output.next().unwrap());
+    let inbox = as_json(output.next().unwrap());
+    let inbox_text = success(output.next().unwrap());
+    assert!(started.elapsed() < Duration::from_secs(35));
+    for brief in [&infra, &inbox] {
+        schemas::valid(&validator, brief);
+        assert!(serde_json::from_value::<af_contracts::fleet::BriefingV3>(brief.clone()).is_ok());
+        assert!(!brief.to_string().contains("private-fixture-detail"));
+    }
+    let assert_read = |read: &Value, freshness, timed_out| {
+        assert_eq!(read["observation"]["freshness"], freshness);
+        assert_eq!(read["timed_out"], timed_out);
+        assert!(read["data"].is_null());
+        assert!(read["observation"]["age_ms"].is_null());
+    };
+    assert_read(&infra["inventory"], "invalid_response", false);
+    assert_read(&infra["allocations"], "unavailable", true);
+    assert_eq!(infra["next_action"]["action"], "repair");
+    assert_read(&inbox["origins"][0], "denied", false);
+    assert_read(&inbox["origins"][1], "unavailable", false);
+    assert_read(&inbox["origins"][2], "unavailable", true);
+    assert_eq!(inbox["next_action"]["action"], "ask_owner");
+    for (text, timeout_row, siblings, next) in [
+        (
+            &infra_text,
+            "fleet-fixture / allocations",
+            &["fleet-fixture / pools · invalid_response"][..],
+            "Next repair",
+        ),
+        (
+            &inbox_text,
+            "stalled / waiting_tasks",
+            &[
+                "denied / waiting_tasks · denied",
+                "offline / waiting_tasks · unavailable",
+            ][..],
+            "Next ask_owner",
+        ),
+    ] {
+        assert!(
+            text.lines().any(|line| line.contains(timeout_row)
+                && line.contains("reader exceeded the command deadline")),
+            "{text}"
+        );
+        assert!(
+            siblings.iter().all(|sibling| text.contains(sibling)),
+            "{text}"
+        );
+        assert!(
+            text.contains(next) && !text.contains("private-fixture-detail"),
+            "{text}"
+        );
+    }
+}
+
+#[test]
 fn storage_pool_inventory_survives_only_current_cache_format() {
     let machine = Machine::new();
     let host_key = key(&machine, "host-key");
@@ -429,12 +634,14 @@ esac
                 .unwrap(),
         )
     };
-    let briefing_schema = schemas::validator("fleet-briefing-v2.json");
+    let briefing_schema = schemas::validator("fleet-briefing-v3.json");
     let cache_schema = schemas::validator("fleet-cache-v2.json");
     let fresh = status();
     schemas::valid(&briefing_schema, &fresh);
-    let typed = serde_json::from_value::<af_contracts::fleet::BriefingV2>(fresh.clone()).unwrap();
-    assert!(typed.inventory.unwrap().data.unwrap().pools.is_none());
+    let typed = serde_json::from_value::<af_contracts::fleet::BriefingV3>(fresh.clone()).unwrap();
+    let inventory = typed.inventory.unwrap();
+    assert!(!inventory.timed_out);
+    assert!(inventory.data.unwrap().pools.is_none());
     assert!(render().contains("Storage pool inventory unknown"));
     let mut missing = fresh.clone();
     missing["inventory"]["data"]
@@ -442,11 +649,18 @@ esac
         .unwrap()
         .remove("pools");
     assert!(!briefing_schema.is_valid(&missing));
-    assert!(serde_json::from_value::<af_contracts::fleet::BriefingV2>(missing).is_err());
+    assert!(serde_json::from_value::<af_contracts::fleet::BriefingV3>(missing).is_err());
+    let mut missing = fresh.clone();
+    missing["inventory"]
+        .as_object_mut()
+        .unwrap()
+        .remove("timed_out");
+    assert!(!briefing_schema.is_valid(&missing));
+    assert!(serde_json::from_value::<af_contracts::fleet::BriefingV3>(missing).is_err());
     let mut old_briefing = fresh.clone();
-    old_briefing["schema"] = json!("af/fleet-briefing@1");
+    old_briefing["schema"] = json!("af/fleet-briefing@2");
     assert!(!briefing_schema.is_valid(&old_briefing));
-    assert!(serde_json::from_value::<af_contracts::fleet::BriefingV2>(old_briefing).is_err());
+    assert!(serde_json::from_value::<af_contracts::fleet::BriefingV3>(old_briefing).is_err());
 
     let cache = "state/af/fleet-cache/lab/pools.json";
     let record: Value = serde_json::from_slice(&fs::read(machine.path(cache)).unwrap()).unwrap();
@@ -984,7 +1198,7 @@ if [ -e {} ]; then exec /bin/cat {}; fi
         "management":target(broker.address,&host_key),
         "origins":{"project":origin(project.address,&store_id)}
     });
-    let validator = schemas::validator("fleet-briefing-v2.json");
+    let validator = schemas::validator("fleet-briefing-v3.json");
     schemas::valid(&schemas::validator("fleet-context-v1.json"), &descriptor);
     machine.write("lab.afcontext", &descriptor);
     let connect = |alias, file| {
@@ -1177,7 +1391,9 @@ if [ -e {} ]; then exec /bin/cat {}; fi
             "unavailable"
         );
         assert!(partial["inventory"]["data"].is_null());
+        assert_eq!(partial["inventory"]["timed_out"], true);
         assert_eq!(partial["allocations"]["observation"]["freshness"], "fresh");
+        assert_eq!(partial["allocations"]["timed_out"], false);
         assert_eq!(partial["allocations"]["data"], *vms);
     }
 

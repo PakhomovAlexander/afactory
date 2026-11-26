@@ -70,6 +70,8 @@ pub struct Observation {
 #[serde(bound(deserialize = "T: Deserialize<'de>"))]
 pub struct Reading<T> {
     pub observation: Observation,
+    /// The reader exhausted the shared command deadline.
+    pub timed_out: bool,
     #[serde(deserialize_with = "Option::deserialize")]
     pub data: Option<T>,
 }
@@ -198,11 +200,11 @@ pub enum ClusterState {
     Unknown,
 }
 
-pub const FLEET_BRIEFING_V2: &str = "af/fleet-briefing@2";
+pub const FLEET_BRIEFING_V3: &str = "af/fleet-briefing@3";
 
 fn briefing_schema<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
     let schema = String::deserialize(deserializer)?;
-    if schema != FLEET_BRIEFING_V2 {
+    if schema != FLEET_BRIEFING_V3 {
         return Err(serde::de::Error::custom(
             "unsupported fleet briefing version",
         ));
@@ -212,7 +214,7 @@ fn briefing_schema<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct BriefingV2 {
+pub struct BriefingV3 {
     #[serde(deserialize_with = "briefing_schema")]
     pub schema: String,
     pub view: View,

@@ -683,7 +683,7 @@ beside af, not an af command, prints and reads:
 
 Fleet visibility:
 
-  af infra [status|allocations] --json  af/fleet-briefing@2 (schemas/fleet-briefing-v2.json)
+  af infra [status|allocations] --json  af/fleet-briefing@3 (schemas/fleet-briefing-v3.json)
   af cluster [inbox] --json              the same briefing for authorized Project origins
 
 The command catalog, the help pages and the schemas:

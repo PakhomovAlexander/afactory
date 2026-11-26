@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use af_contracts::fleet::{
-    Action, Allocation, BriefingV2, ClusterState, FLEET_BRIEFING_V2, Freshness, Inventory,
+    Action, Allocation, BriefingV3, ClusterState, FLEET_BRIEFING_V3, Freshness, Inventory,
     NextAction, Observation, Readiness, Reading, View,
 };
 use clap::{Args, Subcommand};
@@ -170,9 +170,15 @@ fn connect(
         deadline: Instant::now() + CONNECT_WALL,
     }
     .both()?;
-    pools.map_err(|error| format!("Management pools capability: {}", error.reason()))?;
-    allocations
-        .map_err(|error| format!("Management allocations capability: {}", error.reason()))?;
+    let failures: Vec<_> = [("pools", pools.err()), ("allocations", allocations.err())]
+        .into_iter()
+        .filter_map(|(capability, error)| {
+            error.map(|error| format!("Management {capability} capability: {}", error.reason()))
+        })
+        .collect();
+    if !failures.is_empty() {
+        return Err(failures.join("\n"));
+    }
     if previous.is_none() {
         config.publish(&context, &binding)?;
     }
@@ -188,9 +194,9 @@ fn connect(
     print(&briefing, false)
 }
 
-fn initial(view: View, context: Option<String>, configured_contexts: Vec<String>) -> BriefingV2 {
-    BriefingV2 {
-        schema: FLEET_BRIEFING_V2.into(),
+fn initial(view: View, context: Option<String>, configured_contexts: Vec<String>) -> BriefingV3 {
+    BriefingV3 {
+        schema: FLEET_BRIEFING_V3.into(),
         view,
         context,
         scope: None,
@@ -241,7 +247,6 @@ fn brief(config: Config, view: View, read: ReadArgs) -> Result<i32, String> {
     briefing.cluster = descriptor.cluster;
     let deadline = Instant::now() + COMMAND_WALL;
     let mut readings = Vec::new();
-    let mut timed_out = false;
     if matches!(view, View::Infra | View::Status | View::Allocations) {
         let cache = Cache::new(&alias, &binding);
         let reader = ManagementReader {
@@ -259,13 +264,11 @@ fn brief(config: Config, view: View, read: ReadArgs) -> Result<i32, String> {
             _ => unreachable!(),
         };
         if let Some(result) = pools {
-            timed_out |= matches!(result, Err(ReadFailure::TimedOut));
             let reading = observe(&descriptor.scope, "pools", cache.as_ref(), result)?;
             readings.push(reading.observation.freshness);
             briefing.inventory = Some(reading);
         }
         if let Some(result) = allocations {
-            timed_out |= matches!(result, Err(ReadFailure::TimedOut));
             let reading = observe(&descriptor.scope, "allocations", cache.as_ref(), result)?;
             readings.push(reading.observation.freshness);
             briefing.allocations = Some(reading);
@@ -300,7 +303,16 @@ fn brief(config: Config, view: View, read: ReadArgs) -> Result<i32, String> {
         );
     }
     (briefing.discovery, briefing.next_action) = readiness(&readings, view);
-    if timed_out && matches!(briefing.next_action.action, Action::Wait) {
+    if matches!(briefing.next_action.action, Action::Wait)
+        && (briefing
+            .inventory
+            .as_ref()
+            .is_some_and(|read| read.timed_out)
+            || briefing
+                .allocations
+                .as_ref()
+                .is_some_and(|read| read.timed_out))
+    {
         briefing.next_action.reason = "A management reader exceeded the command deadline".into();
     }
     print(&briefing, read.json)
@@ -389,6 +401,7 @@ fn observe<T: Serialize + DeserializeOwned>(
             }
             Reading {
                 observation: observation(scope, subject, Some((now, 0)), Freshness::Fresh),
+                timed_out: false,
                 data: Some(data),
             }
         }
@@ -400,6 +413,7 @@ fn observe<T: Serialize + DeserializeOwned>(
                     Some((record.observed_unix_ms, now - record.observed_unix_ms)),
                     Freshness::Stale,
                 ),
+                timed_out: false,
                 data: Some(record.data),
             },
             None => unavailable(scope, subject, ReadFailure::Temporary),
@@ -427,6 +441,7 @@ fn observation(
 fn unavailable<T>(source: &str, subject: &str, error: ReadFailure) -> Reading<T> {
     Reading {
         observation: observation(source, subject, None, error.freshness()),
+        timed_out: matches!(error, ReadFailure::TimedOut),
         data: None,
     }
 }
@@ -465,7 +480,7 @@ fn validate_label(label: &str) -> Result<(), String> {
     }
 }
 
-fn print(briefing: &BriefingV2, json: bool) -> Result<i32, String> {
+fn print(briefing: &BriefingV3, json: bool) -> Result<i32, String> {
     if json {
         println!(
             "{}",
@@ -484,19 +499,24 @@ fn word(value: impl Serialize) -> String {
     }
 }
 
-fn describe(observation: &Observation) {
+fn describe(observation: &Observation, timed_out: bool) {
     let age = observation
         .age_ms
         .map_or_else(|| "unknown age".into(), |age| format!("{age} ms old"));
+    let deadline = if timed_out {
+        format!(" · {}", ReadFailure::TimedOut.reason())
+    } else {
+        String::new()
+    };
     println!(
-        "  {} / {} · {} · {age}",
+        "  {} / {} · {} · {age}{deadline}",
         crate::terminal_text(&observation.source),
         crate::terminal_text(&observation.subject),
         word(observation.freshness)
     );
 }
 
-fn render(briefing: &BriefingV2) {
+fn render(briefing: &BriefingV3) {
     let context = briefing.context.as_deref().unwrap_or("no context");
     println!("{context} · discovery {}", word(briefing.discovery));
     if let Some(scope) = &briefing.scope {
@@ -518,7 +538,7 @@ fn render(briefing: &BriefingV2) {
         println!("Desired footprint unknown");
     }
     if let Some(reading) = &briefing.inventory {
-        describe(&reading.observation);
+        describe(&reading.observation, reading.timed_out);
         if let Some(inventory) = &reading.data {
             for host in &inventory.hosts {
                 println!(
@@ -561,7 +581,7 @@ fn render(briefing: &BriefingV2) {
         }
     }
     if let Some(reading) = &briefing.allocations {
-        describe(&reading.observation);
+        describe(&reading.observation, reading.timed_out);
         if let Some(allocations) = &reading.data {
             for allocation in allocations {
                 let field = |value: &Option<String>| {
@@ -591,7 +611,7 @@ fn render(briefing: &BriefingV2) {
         }
     }
     for reading in &briefing.origins {
-        describe(&reading.observation);
+        describe(&reading.observation, reading.timed_out);
         if let Some(origin) = &reading.data {
             println!(
                 "    Project {} · Store {} · principal {}",
@@ -608,7 +628,7 @@ fn render(briefing: &BriefingV2) {
                     word(task.reason),
                     crate::terminal_text(task.placement.as_deref().unwrap_or("unknown"))
                 );
-                describe(&task.observation);
+                describe(&task.observation, false);
                 if let Some(decision) = &task.decision {
                     println!(
                         "      {} may approve or reject plan {} for revision {}",

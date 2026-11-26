@@ -31,7 +31,7 @@
       "tests": ["crates/af/tests/it/fleet.rs"],
       "schemas": [
         "schemas/fleet-binding-v1.json",
-        "schemas/fleet-briefing-v2.json",
+        "schemas/fleet-briefing-v3.json",
         "schemas/fleet-cache-v2.json",
         "schemas/fleet-context-v1.json",
         "schemas/fleet-origin-v1.json"

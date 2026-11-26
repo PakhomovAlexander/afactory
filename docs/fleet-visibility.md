@@ -18,7 +18,8 @@ af cluster inbox --context lab --json
 
 A sole context is selected automatically. With multiple contexts, select one explicitly.
 Connecting checks the pinned host and reads both management capabilities concurrently under one
-30-second deadline. It saves a private binding only after both reads succeed. Repeat the same
+30-second deadline. It reports the cause for each failed capability and saves a private binding
+only after both reads succeed. Repeat the same
 command to verify it again. A different descriptor or credential
 reference requires a different alias. Fleet commands use the running release independently of
 the current checkout. Ordinary Task and Review commands continue to use local selection.
@@ -90,12 +91,15 @@ stale and its Decisions are withheld. Discovery readiness does not indicate exec
 
 ## Reading the briefing
 
-Text and JSON render the same [briefing](../schemas/fleet-briefing-v2.json), including the next
+Text and JSON render the same [briefing](../schemas/fleet-briefing-v3.json), including the next
 action, its reason and its success condition. JSON reports unknown storage pool inventory as
 `inventory.data.pools: null` and a known empty inventory as `inventory.data.pools: []`. Text
 displays “Storage pool inventory unknown” and “No storage pools” respectively. Host-level SSD
-availability is reported independently. The two `af infra` management reads run concurrently
-under one 20-second deadline. A timeout on one reader can leave a fresh observation from the other.
+availability is reported independently. Infrastructure and Project reads run concurrently under
+one 20-second deadline per invocation. A reading whose command exceeds this deadline has
+`timed_out: true` in JSON and a deadline message on its text row. Its freshness is `unavailable`
+and its data is null. Other readings retain their own outcomes, and identity, protocol or access
+failures still determine the next action when present.
 
 The infrastructure cache lives under `${XDG_STATE_HOME:-$HOME/.local/state}/af/fleet-cache`.
 A successful management read can refresh its per-context observation if it fits the

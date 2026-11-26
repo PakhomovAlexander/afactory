@@ -18,7 +18,7 @@
     {
       "properties": {
         "subject": {"const": "pools"},
-        "data": {"$ref": "urn:af:schema:fleet-briefing:2#/$defs/inventory"}
+        "data": {"$ref": "urn:af:schema:fleet-briefing:3#/$defs/inventory"}
       }
     },
     {
@@ -26,7 +26,7 @@
         "subject": {"const": "allocations"},
         "data": {
           "type": "array",
-          "items": {"$ref": "urn:af:schema:fleet-briefing:2#/$defs/allocation"}
+          "items": {"$ref": "urn:af:schema:fleet-briefing:3#/$defs/allocation"}
         }
       }
     }

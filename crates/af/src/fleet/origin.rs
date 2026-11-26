@@ -256,6 +256,7 @@ fn validate(
             Some((response.observed_unix_ms, age)),
             freshness,
         ),
+        timed_out: false,
         data: Some(view),
     })
 }
