@@ -19,6 +19,98 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
+## [0.15.3-rc.1] - 2026-11-26
+
+### Authority compatibility
+
+Breaking combined Scenario/Ant and publication shapes: Scenario definitions/bundles 11, policy 8, pins/runs/list 12, Store 18 with retained driver 2 and typed bounded preflight waits; Ant definition 12, pin/tick 13, state/list 14, inspection 9; adapter request 8/response 3, workspace config 3/state 6 and GitHub journal 9, native Git candidate request/export 2. Nightly config/publish 2 and native nightly service/job/completion 1 retain separate release scope and external signing permission. Implementation startup scope 2 retains exact native scoped publication, finite progress and bounded repairs. Builtin backlog Actions settle native verified Documents and dispatch to receiver-owned native, GitHub, Markdown or Jira destinations. Markdown configuration and configured publication observations use version 2. Generic signed and performance authority stay separate. Finish or discard prior-release state; no migration or replay of retired shapes. Review and commit authority and refresh its lock before adoption. Performance executor 5, history 2, equivalence 2 and schedule 3 remain required. Native Task kernel failures are execution_failed/kernel_execution (exit 8); Task state/status/findings 3, inspection 21 and report/checks 4 replace their earlier public formats. Scenario terminal outcome 2 carries that failure without repair or publication authority. CI Health Phase 1 retains typed accepted/refused diagnosis, exact-head evidence and report-only remedies. Its watchdog remains inactive.
+
+### Changes
+
+- Release of reviewed source `80a2721fff22f779ddad5294d414d8ae181cc1b4`; collected change notes follow.
+
+- The GitHub Scenario adapter now observes required Actions checks from multiple workflows at
+  the approved head. It waits for the current run and attempt of each producing workflow.
+  Tokens used to observe Actions checks need Actions read access.
+  [Decision](../docs/adr/2026-11-25-resolve-required-checks-by-workflow.md).
+
+- Reduced Pi validation test startup overhead by running mutation matrices against the production
+  verifier in-process while retaining representative real CLI output, stderr and exit coverage.
+
+- Version prepared Task opening output as `af/task-inspection@22`, `af/task-event@4` and
+  `review.kernel/RunEvent@5`. New journals use SQLite layout 5. Earlier layouts must be read
+  with their pinned Afactory releases.
+
+- A Scenario preparing a fresh Task now waits for space when its Task artifact Store returns
+  ENOSPC. Resume keeps the prepared intent, Task ID, budget reservation and deadline and retains
+  the original storage diagnostic.
+
+- Scenario recovery respects an operator's durable cancellation of the bound child Task run.
+  Cancellation recorded before settlement takes precedence over a result already read by the
+  coordinator or a failure at a step deadline or driver reservation limit. Recovery records the
+  exact cancelling run and writer epoch. The original intent ends without acceptance and retains
+  its accounting.
+  Ordinary lost-writer recovery and direct Task resume remain available.
+  A missing Task in a readable Store settles its admission failure. An unavailable Store
+  or a permission-denied read of a required Task artifact keeps the original intent and
+  unresolved charges visible while blocking dispatch and acceptance. Deadlines, driver
+  reservation limits and Scenario cancellation still settle.
+
+- Fresh Scenario Tasks accept a durable logical step start ahead of the host clock. Their
+  execution deadline is the first native plan admission plus the captured wall duration.
+  Retries preserve the plan identity and the Scenario intent deadline.
+
+- A replay waiting for a fresh Scenario Task's opening lease can reuse the exact plan the
+  opening writer proposed before releasing its lease, even after the original Task has
+  taken its execution lease. The original Scenario intent and deadline carry through to
+  normal Task admission.
+
+- Keep a fresh Scenario Task's exact plan and referenced objects reachable from its opening
+  through Task Store collection. Resume verifies and proposes the plan under a newer lease.
+  Native Task journal capacity failures leave the same Scenario intent waiting within its
+  original deadline. Task lifecycle transitions now use `TaskTransition@7`.
+
+- Failed Scenario Runs durably settle unfinished steps, including enclosing child Scenario
+  invocations, while retaining earlier receipts and unresolved effect and charge records.
+
+- Select end-to-end validation from the resolved release tag. RCs skip e2e and its Linux container
+  probes. Stable releases require e2e on Linux and macOS and require the Linux probes, including
+  with `release:fast`. Release PRs continue to select checks from their labels on Linux and macOS.
+  The tagged validation plan, check summary and release notes record the e2e decision.
+  See the [decision](../docs/adr/2026-11-25-select-tagged-release-e2e-by-version.md).
+
+- Normalize only macOS's `/var` compatibility prefix before the no-follow
+  occurrence-directory walk, keeping all later symlink components refused.
+
+- Align current Sol 6.2 and Astra 6.2 Worker bindings, catalog digests, model observations and
+  size-S guidance, restoring the catalog and issue-workflow regression suites.
+- Update the Providers pane regression to expect nine exact IDs from the recorded Codex model list.
+- Document the November 23 Codex observation files and capture command. Validate each dated
+  projection and reject version 0 of its provenance schema on the ports that carry it.
+- Repair the product-profile Worker audit so both generations of Sol and Astra table IDs resolve to
+  the selected profile's exact IDs and are checked against its dated Codex observation.
+- Check the backlog triage author's fixed pin for each source baseline and exercise the complete
+  installed Worker audit against the product profile's November 7 observation.
+- Run both generations of model mapping assertions on product main without the November 23
+  files. The operator port also checks the mapped 6.2 IDs against its November 23 observation.
+
+- Accept DocumentDraft@3 output schemas for native design Tasks constrained by Codex: infer
+  `string` for the draft's untyped schema constant in the strict provider projection instead of
+  emitting a schema Codex rejects.
+
+- Count each confirmed functional quarantine load spawn once, even during shutdown. Require the
+  supervisor to acknowledge revoked launches. Missing status, launch failures and cleanup
+  failures prevent a report. Bounded macOS signal retries leave time for reaping and group
+  disappearance.
+
+- Keep disposable release CLI repositories free of automatic Git maintenance during
+  teardown, preventing multi-pack-index writes from racing fixture cleanup.
+
+- Use Codex Sol 6.2 for new performance Scenario implementation plans and in the current
+  native catalog, Report, and self-optimizer Worker packages that select Sol.
+  The maintenance CI-health diagnosis Worker and the daily Project backlog author
+  also pin Sol 6.2 at medium effort.
+
 ## [0.15.2] - 2026-11-25
 
 ### Authority compatibility
