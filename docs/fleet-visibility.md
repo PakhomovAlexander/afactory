@@ -114,12 +114,16 @@ observation is unavailable until a successful read refreshes it.
 
 An origin reader replays private SQLite copies under the sandbox runtime root
 (`[storage] sandbox_root` or the system temporary directory). It checks the storage limit and
-free-space floor on the destination volume before copying. Readers under the same OS account
-serialize admission and copying through a private registry in the account's state directory,
+free-space floor on the destination volume before copying. The reservation rounds the database,
+any copied WAL and its rebuilt SQLite index separately to the destination allocation unit.
+Readers under the same OS account serialize admission and copying through a private registry
+in the account's state directory,
 including when they use different sandbox roots or temporary directories. The lock is released
 for replay. Admission uses the machine Storage Budget inventory, counts retained copies and
 overlapping telemetry and cache directories once, and measures Store files without opening
-their databases. An incomplete inventory or insufficient space makes the origin unavailable.
+their databases. For a registered external Task Store, admission counts its owned entries.
+Telemetry inside one of those entries shares that entry's charge. An incomplete inventory or
+insufficient space makes the origin unavailable.
 Readers remove their copies on close. A subsequent origin read can reclaim abandoned copies
 across registered roots and leaves live readers' copies alone.
 

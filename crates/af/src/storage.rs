@@ -334,6 +334,9 @@ pub(crate) struct Problem {
 pub(crate) struct Inventory {
     pub(crate) entries: Vec<Entry>,
     pub(crate) problems: Vec<Problem>,
+    /// Admission measures external Stores by owned entry so it can union their actual
+    /// coverage with other counted trees, without charging the rest of the Store directory.
+    admission_store_entries: BTreeMap<PathBuf, u64>,
     /// Readable Task Stores, for collection.
     pub(crate) task_stores: Vec<PathBuf>,
     /// Each Store's directory identity as inventory reached it, opened from `/` without
@@ -958,10 +961,26 @@ fn measure_admission_stores(
         {
             continue;
         }
-        measure_into(inventory, roots, kind, &path, |_| (0, None));
-        // External Task and review Stores count only AF-owned paths.
         if kind == Kind::ProjectStore || !roots.outside_af_state(&path) {
+            measure_into(inventory, roots, kind, &path, |_| (0, None));
             measured.insert(path);
+        } else {
+            let entries = owned::af_entries(&path).and_then(|entries| {
+                entries
+                    .map(|entry| {
+                        let entry = entry?.path();
+                        let bytes = af_sandbox::storage::allocated_bytes(&entry)?;
+                        Ok((entry, bytes))
+                    })
+                    .collect::<std::io::Result<Vec<_>>>()
+            });
+            match entries {
+                Ok(entries) => inventory.admission_store_entries.extend(entries),
+                Err(error) => inventory.problems.push(Problem {
+                    path,
+                    reason: format!("cannot be measured: {error}"),
+                }),
+            }
         }
     }
 }
@@ -3611,17 +3630,12 @@ pub(crate) fn observation_allowance(
             claim.path.display()
         ));
     }
-    let mut whole = BTreeMap::new();
-    let mut partial = Vec::new();
+    // The Store root was canonicalized before listing its owned entries. Keep those child
+    // paths as listed so the accounting never treats a symlink target as an owned tree.
+    let mut whole = std::mem::take(&mut stock.admission_store_entries);
     for entry in stock.entries.iter().chain(stock.counted_claims()) {
         let path = config::canonical_root(&entry.path);
-        if matches!(entry.kind, Kind::TaskStore | Kind::Campaign)
-            && roots.outside_af_state(&entry.path)
-        {
-            partial.push((path, entry.bytes));
-        } else {
-            whole.insert(path, entry.bytes);
-        }
+        whole.insert(path, entry.bytes);
     }
     for path in runtimes.iter().chain(&telemetry) {
         let bytes = af_sandbox::open_anchor(path)
@@ -3647,23 +3661,16 @@ pub(crate) fn observation_allowance(
             Err(error) => return Err(observation_measurement_error(&path, &error)),
         }
     }
-    // A measured parent already includes every contained tree and partially measured Store.
-    let covered = |path: &Path| {
-        path.ancestors()
-            .any(|ancestor| whole.contains_key(ancestor))
-    };
+    // Each entry covers a whole tree or a single file. Charge only the outermost roots.
     let used = whole
         .iter()
         .filter_map(|(path, bytes)| {
-            path.parent()
-                .is_none_or(|parent| !covered(parent))
-                .then_some(*bytes)
+            (!path
+                .ancestors()
+                .skip(1)
+                .any(|parent| whole.contains_key(parent)))
+            .then_some(*bytes)
         })
-        .chain(
-            partial
-                .into_iter()
-                .filter_map(|(path, bytes)| (!covered(&path)).then_some(bytes)),
-        )
         .fold(0, u64::saturating_add);
     let free = measure_volume(root).free?;
     Ok(policy

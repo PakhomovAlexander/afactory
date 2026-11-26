@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use nix::fcntl::{FcntlArg, fcntl};
 use nix::libc;
+use nix::sys::statvfs::statvfs;
 
 use super::{EventStore, StoreError};
 use crate::local_fs::{PRIVATE_DIR_MODE, private_file_options};
@@ -72,14 +73,23 @@ fn copy_snapshot(path: &Path, destination: &Path, max_bytes: u64) -> io::Result<
         require_same_file(&shm_path, &file.metadata()?)?;
     }
 
-    // WAL index regions have far smaller entries than the corresponding WAL frames.
-    // Reserve another WAL's length and one index region for SQLite to rebuild the index.
     let wal_bytes = wal
         .as_ref()
         .map(|file| file.metadata().map(|meta| meta.len()))
         .transpose()?;
-    let wal_overhead = wal_bytes.map_or(0, |len| len.saturating_mul(2).saturating_add(32_768));
-    if original.len().saturating_add(wal_overhead) > max_bytes {
+    let volume = statvfs(
+        destination
+            .parent()
+            .expect("snapshot has a private directory"),
+    )?;
+    #[allow(clippy::useless_conversion)]
+    let unit = u64::from(volume.fragment_size());
+    if unit == 0 {
+        return Err(io::Error::other(
+            "cannot measure the observation snapshot allocation unit",
+        ));
+    }
+    if snapshot_allocation(original.len(), wal_bytes, unit).is_none_or(|bytes| bytes > max_bytes) {
         return Err(io::Error::other(
             "observation snapshot exceeds the available storage budget",
         ));
@@ -112,6 +122,19 @@ fn copy_snapshot(path: &Path, destination: &Path, max_bytes: u64) -> io::Result<
     require_absent(&journal)?;
     require_same_file(path, &original)?;
     Ok(wal.is_some())
+}
+
+fn snapshot_allocation(database: u64, wal: Option<u64>, unit: u64) -> Option<u64> {
+    let database = database.checked_next_multiple_of(unit)?;
+    let Some(wal) = wal else {
+        return Some(database);
+    };
+    // WAL index entries are smaller than their corresponding WAL frames. Allow one WAL
+    // length plus a region for SQLite to rebuild the index. Each file rounds independently.
+    let index = wal.checked_add(32_768)?.checked_next_multiple_of(unit)?;
+    database
+        .checked_add(wal.checked_next_multiple_of(unit)?)?
+        .checked_add(index)
 }
 
 fn copy_exact(source: &mut File, destination: &mut File, bytes: u64) -> io::Result<()> {
@@ -189,6 +212,17 @@ mod tests {
     use super::super::{EventType, NewEvent};
     use super::*;
     use crate::Cas;
+
+    #[test]
+    fn observation_snapshot_reserves_each_file_and_refuses_overflow() {
+        let unit = 4096;
+        assert_eq!(snapshot_allocation(1025, None, unit), Some(unit));
+        assert_eq!(snapshot_allocation(1025, Some(0), unit), Some(9 * unit));
+        assert_eq!(snapshot_allocation(1025, Some(1025), unit), Some(11 * unit));
+        assert_eq!(snapshot_allocation(u64::MAX, None, unit), None);
+        assert_eq!(snapshot_allocation(0, Some(u64::MAX), unit), None);
+        assert_eq!(snapshot_allocation(u64::MAX - 4095, Some(1), unit), None);
+    }
 
     #[test]
     fn observation_snapshot_is_private_under_permissive_umasks() {

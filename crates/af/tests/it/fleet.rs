@@ -1,6 +1,6 @@
 //! Exercise the public CLI against the broker wire format and an authorized native Task Store.
 use std::fs;
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
@@ -208,6 +208,216 @@ fn planned_origin(machine: &Machine) -> (Value, PathBuf) {
         project["project_id"].as_str().unwrap(),
     );
     (project, directory.join("events.sqlite"))
+}
+
+fn origin_workspace_state(project: &Value) -> &Path {
+    Path::new(project["workspaces"][0]["state"].as_str().unwrap())
+}
+
+fn origin_inventory_bytes(project: &Value, database: &Path) -> u64 {
+    let store = database.parent().unwrap();
+    let workspace = origin_workspace_state(project);
+    let project_bytes = af_sandbox::storage::allocated_bytes(store).unwrap();
+    let workspace_bytes = if workspace.starts_with(store) {
+        0
+    } else {
+        af_sandbox::storage::allocated_bytes(workspace).unwrap()
+    };
+    project_bytes + workspace_bytes
+}
+
+fn origin_copy_sizes(machine: &Machine, project: &Value, database: &Path) -> (u64, u64) {
+    let workspace = origin_workspace_state(project);
+    let allocation_unit = destination_allocation_unit(machine);
+    let allocated = |file: &Path| {
+        let metadata = fs::metadata(file).unwrap();
+        assert!(!file.with_file_name("events.sqlite-wal").exists());
+        let rounded = metadata.len().next_multiple_of(allocation_unit);
+        assert_eq!(metadata.blocks() * 512, rounded, "{}", file.display());
+        rounded
+    };
+    (
+        allocated(database),
+        allocated(&workspace.join("events.sqlite")),
+    )
+}
+
+fn destination_allocation_unit(machine: &Machine) -> u64 {
+    let volume = nix::sys::statvfs::statvfs(&machine.path("tmp")).unwrap();
+    #[allow(clippy::useless_conversion)]
+    let unit = u64::from(volume.fragment_size());
+    unit
+}
+
+fn require_snapshot_budget_refusal(output: Output, database: &Path) {
+    assert!(output.stdout.is_empty(), "{output:?}");
+    require_failure(
+        output,
+        &format!(
+            "cannot observe {}: observation snapshot exceeds the available storage budget",
+            database.display()
+        ),
+    );
+}
+
+#[test]
+fn origin_reserves_destination_allocation_before_copying_small_sqlite_pages() {
+    let machine = Machine::new();
+    let (project, database) = planned_origin(&machine);
+    let unit = destination_allocation_unit(&machine);
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    connection
+        .execute_batch(
+            "PRAGMA journal_mode=DELETE; PRAGMA page_size=1024; VACUUM;
+             CREATE TABLE fixture_padding (bytes BLOB);",
+        )
+        .unwrap();
+    let page_size: i64 = connection
+        .pragma_query_value(None, "page_size", |row| row.get(0))
+        .unwrap();
+    assert_eq!(page_size, 1024);
+    if fs::metadata(&database).unwrap().len() % unit == 0 {
+        connection
+            .execute_batch("CREATE TABLE fixture_extra_page (value INTEGER);")
+            .unwrap();
+    }
+    drop(connection);
+
+    let logical = fs::metadata(&database).unwrap().len();
+    let (allocated, task_copy) = origin_copy_sizes(&machine, &project, &database);
+    let used = origin_inventory_bytes(&project, &database);
+    let between = logical + (allocated - logical) / 2;
+    assert!(logical < between && between < allocated);
+    eprintln!(
+        "Project logical={logical} allocated={allocated} unit={unit} inventory={used} \
+         Workspace copy={task_copy} boundary={between}"
+    );
+
+    let command = |max: u64| {
+        let mut reader = machine.origin_reader(&project);
+        reader
+            .env("AF_STORAGE__MAX_BYTES", format!("{max}B"))
+            .env("AF_STORAGE__MIN_FREE_BYTES", "0B");
+        reader
+    };
+    assert_eq!(
+        as_json(command(used + allocated + task_copy).output().unwrap())["origin"]["tasks"],
+        json!([])
+    );
+    let snapshots = af_sandbox::stale::observation_root(&machine.path("tmp"));
+    let refused_by_max = command(used + between).output().unwrap();
+    #[cfg(debug_assertions)]
+    {
+        let marker = machine.path("rounding-snapshot-ready");
+        let mut reader = paused_reader(command(used + allocated + task_copy), &marker);
+        assert_eq!(
+            af_sandbox::storage::allocated_bytes(&snapshots).unwrap(),
+            allocated
+        );
+        fs::remove_file(marker).unwrap();
+        assert!(reader.0.take().unwrap().wait().unwrap().success());
+
+        let free = allocated + task_copy + unit;
+        let above_floor = |available| {
+            command(u64::MAX)
+                .env("AF_TEST_FREE_BYTES", free.to_string())
+                .env(
+                    "AF_STORAGE__MIN_FREE_BYTES",
+                    format!("{}B", free - available),
+                )
+                .output()
+                .unwrap()
+        };
+        assert_eq!(
+            as_json(above_floor(allocated + task_copy))["origin"]["tasks"],
+            json!([])
+        );
+        let refused_by_floor = above_floor(between);
+        eprintln!(
+            "max boundary status={} stderr={}\nfloor boundary status={} stderr={}",
+            refused_by_max.status,
+            String::from_utf8_lossy(&refused_by_max.stderr),
+            refused_by_floor.status,
+            String::from_utf8_lossy(&refused_by_floor.stderr)
+        );
+        require_snapshot_budget_refusal(refused_by_floor, &database);
+    }
+    require_snapshot_budget_refusal(refused_by_max, &database);
+    assert_eq!(fs::read_dir(snapshots).unwrap().count(), 0);
+}
+
+#[test]
+fn origin_counts_telemetry_inside_a_registered_external_store_once() {
+    let machine = Machine::new();
+    let (project, database) = planned_origin(&machine);
+    let external = machine.path("external-store");
+    as_json(
+        machine
+            .af(&[
+                "task",
+                "plan",
+                "--file",
+                "ticket.json",
+                "--state",
+                path(&external),
+                "--json",
+            ])
+            .current_dir(machine.path("repo"))
+            .output()
+            .unwrap(),
+    );
+    assert!(
+        fs::read_to_string(machine.path("state/af/stores.toml"))
+            .unwrap()
+            .contains(path(&fs::canonicalize(&external).unwrap()))
+    );
+    let telemetry = external.join("cas/telemetry");
+    fs::create_dir_all(&telemetry).unwrap();
+    fs::write(telemetry.join("retained"), vec![1_u8; 1024 * 1024]).unwrap();
+
+    let project_bytes = origin_inventory_bytes(&project, &database);
+    let store_bytes = af_sandbox::storage::allocated_bytes(&external).unwrap();
+    let telemetry_bytes = af_sandbox::storage::allocated_bytes(&telemetry).unwrap();
+    let (project_copy, task_copy) = origin_copy_sizes(&machine, &project, &database);
+    let exact = project_bytes + store_bytes + project_copy + task_copy;
+    eprintln!(
+        "Project and Workspace inventory={project_bytes} external Store inventory={store_bytes} \
+         included telemetry={telemetry_bytes} Project copy={project_copy} \
+         Workspace copy={task_copy} exact budget={exact}"
+    );
+    let foreign = external.join("unowned");
+    fs::create_dir(&foreign).unwrap();
+    fs::write(foreign.join("retained"), vec![2_u8; 1024 * 1024]).unwrap();
+    let command = |root: &Path, max: u64| {
+        let mut reader = machine.origin_reader(&project);
+        reader
+            .env("AF_TELEMETRY__DIR", root)
+            .env("AF_STORAGE__MAX_BYTES", format!("{max}B"))
+            .env("AF_STORAGE__MIN_FREE_BYTES", "0B");
+        reader.output().unwrap()
+    };
+
+    assert_eq!(
+        as_json(command(&telemetry, exact + telemetry_bytes))["origin"]["tasks"],
+        json!([])
+    );
+    assert_eq!(
+        as_json(command(&telemetry, exact))["origin"]["tasks"],
+        json!([])
+    );
+    let workspace = origin_workspace_state(&project);
+    require_snapshot_budget_refusal(
+        command(&telemetry, exact - 1),
+        &workspace.join("events.sqlite"),
+    );
+
+    // A telemetry subtree below an unowned Store entry still needs its own charge.
+    require_snapshot_budget_refusal(command(&foreign, exact), &database);
+    let foreign_bytes = af_sandbox::storage::allocated_bytes(&foreign).unwrap();
+    assert_eq!(
+        as_json(command(&foreign, exact + foreign_bytes))["origin"]["tasks"],
+        json!([])
+    );
 }
 
 #[test]
