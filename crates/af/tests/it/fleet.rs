@@ -36,6 +36,7 @@ impl Machine {
         command
             .current_dir(self.root.path())
             .env("HOME", self.path("home"))
+            .env("AF_TEST_WAKE_ACCOUNT_HOME", self.path("home"))
             .env("XDG_CONFIG_HOME", self.path("config"))
             .env("XDG_STATE_HOME", self.path("state"))
             .env("XDG_CACHE_HOME", self.path("cache"))
@@ -192,10 +193,7 @@ fn fresh_install_and_offline_standalone() {
     assert!(shown["plan_id"].is_string());
 }
 
-#[test]
-fn origin_snapshots_share_the_machine_storage_budget() {
-    const MIB: u64 = 1024 * 1024;
-    let machine = Machine::new();
+fn planned_origin(machine: &Machine) -> (Value, PathBuf) {
     let (repo, _, _) = crate::task_planning::setup(machine.root.path(), false, false);
     as_json(
         machine
@@ -204,12 +202,19 @@ fn origin_snapshots_share_the_machine_storage_budget() {
             .output()
             .unwrap(),
     );
-    let project = project_for(&machine, &repo);
-    let project_directory = af_project::store_directory(
+    let project = project_for(machine, &repo);
+    let directory = af_project::store_directory(
         &machine.path("state"),
         project["project_id"].as_str().unwrap(),
     );
-    let database = project_directory.join("events.sqlite");
+    (project, directory.join("events.sqlite"))
+}
+
+#[test]
+fn origin_snapshots_share_the_machine_storage_budget() {
+    const MIB: u64 = 1024 * 1024;
+    let machine = Machine::new();
+    let (project, database) = planned_origin(&machine);
     // Make the Project copy large enough to distinguish one live reader from two, with
     // slack for allocation rounding and for the much smaller Workspace Task snapshot.
     rusqlite::Connection::open(&database)
@@ -270,30 +275,135 @@ fn origin_snapshots_share_the_machine_storage_budget() {
 
     #[cfg(debug_assertions)]
     {
+        let runtime = machine.path("another-tmp");
+        fs::create_dir(&runtime).unwrap();
+        let other_snapshots = af_sandbox::stale::observation_root(&runtime);
+        let second = || {
+            command()
+                .env("TMPDIR", &runtime)
+                .env("AF_STORAGE__SANDBOX_ROOT", &runtime)
+                .output()
+                .unwrap()
+        };
         let marker = machine.path("budget-snapshot-ready");
-        let mut first = command()
-            .env("AF_TEST_FLEET_SNAPSHOT_PAUSE", &marker)
-            .stdout(std::process::Stdio::null())
-            .spawn()
-            .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while !marker.exists() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
+        for kill in [false, true] {
+            let mut first = paused_reader(command(), &marker);
+            let competing = second();
+            assert!(competing.stdout.is_empty());
+            require_failure(
+                competing,
+                &format!(
+                    "cannot observe {}: observation snapshot exceeds the available storage budget",
+                    database.display()
+                ),
+            );
+            assert_eq!(fs::read_dir(&other_snapshots).unwrap().count(), 0);
+            let mut child = first.0.take().unwrap();
+            if kill {
+                child.kill().unwrap();
+                assert!(!child.wait().unwrap().success());
+                assert_eq!(fs::read_dir(&snapshots).unwrap().count(), 1);
+            } else {
+                fs::remove_file(&marker).unwrap();
+                assert!(child.wait().unwrap().success());
+                assert_eq!(fs::read_dir(&snapshots).unwrap().count(), 0);
+            }
+            assert_eq!(as_json(second())["origin"]["tasks"], json!([]));
+            assert_eq!(fs::read_dir(&snapshots).unwrap().count(), 0);
         }
-        let competing = command().output().unwrap();
-        first.kill().unwrap();
-        first.wait().unwrap();
-        assert!(marker.exists(), "first observation never held a snapshot");
-        require_failure(
-            competing,
-            "observation snapshot exceeds the available storage budget",
-        );
+
+        // The first runtime is also inside the configured telemetry tree. The two copies
+        // fit with one charge for that retained allocation, but not with two charges.
+        fs::remove_file(&marker).unwrap();
+        let wider_budget = format!("{}B", baseline + 7 * MIB);
+        let wider = || {
+            let mut reader = command();
+            reader
+                .env("AF_TELEMETRY__DIR", machine.path("tmp"))
+                .env("AF_STORAGE__MAX_BYTES", &wider_budget);
+            reader
+        };
+        let mut first = paused_reader(wider(), &marker);
         assert_eq!(
-            as_json(command().output().unwrap())["origin"]["tasks"],
+            as_json(wider().env("TMPDIR", &runtime).output().unwrap())["origin"]["tasks"],
             json!([])
         );
-        assert_eq!(fs::read_dir(snapshots).unwrap().count(), 0);
+        fs::remove_file(marker).unwrap();
+        assert!(first.0.take().unwrap().wait().unwrap().success());
     }
+}
+
+#[cfg(debug_assertions)]
+fn paused_reader(mut command: Command, marker: &Path) -> crate::task_interrupt::ChildGuard {
+    let child = command
+        .env("AF_TEST_FLEET_SNAPSHOT_PAUSE", marker)
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut guard = crate::task_interrupt::ChildGuard(Some(child));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !marker.exists() {
+        assert!(
+            Instant::now() < deadline && guard.0.as_mut().unwrap().try_wait().unwrap().is_none(),
+            "first observation never held a snapshot"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    guard
+}
+
+#[test]
+fn origin_refuses_unmeasurable_overlapping_telemetry() {
+    const MIB: u64 = 1024 * 1024;
+    let machine = Machine::new();
+    let (project, database) = planned_origin(&machine);
+    let telemetry = machine.path("telemetry");
+    let warm = telemetry.join("warm");
+    let key = warm.join("a".repeat(64)).join("b".repeat(64));
+    fs::create_dir_all(&key).unwrap();
+    fs::write(key.join("build"), vec![1_u8; (3 * MIB) as usize]).unwrap();
+    fs::write(telemetry.join("retained"), vec![1_u8; MIB as usize]).unwrap();
+    let baseline = af_sandbox::storage::allocated_bytes(&machine.path("state/af")).unwrap();
+    let telemetry_bytes = af_sandbox::storage::allocated_bytes(&telemetry).unwrap();
+    let command = |max_bytes| {
+        let mut reader = machine.origin_reader(&project);
+        reader
+            .env("AF_STORAGE__BUILD_CACHE_ROOT", &warm)
+            .env("AF_TELEMETRY__DIR", &telemetry)
+            .env("AF_STORAGE__MAX_BYTES", format!("{max_bytes}B"))
+            .env("AF_STORAGE__MIN_FREE_BYTES", "0B");
+        reader
+    };
+    let enough = baseline + telemetry_bytes + MIB;
+    assert_eq!(
+        as_json(command(enough).output().unwrap())["origin"]["tasks"],
+        json!([])
+    );
+    let denied = command(telemetry_bytes).output().unwrap();
+    require_failure(
+        denied,
+        &format!(
+            "cannot observe {}: observation snapshot exceeds the available storage budget",
+            database.display()
+        ),
+    );
+
+    // A nested entry outside the warm cache exceeds the storage walk's depth bound.
+    // This makes part of the overlapping telemetry tree unmeasurable under any uid.
+    let outside_cache = telemetry.join("outside-cache");
+    let too_deep = (0..257).fold(outside_cache.clone(), |path, _| path.join("d"));
+    fs::create_dir_all(&too_deep).unwrap();
+    fs::write(too_deep.join("retained"), b"unmeasurable data").unwrap();
+    let refused = command(enough).output().unwrap();
+    assert!(refused.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        stderr.contains(&telemetry.display().to_string()) && stderr.contains("nested deeper"),
+        "{stderr}"
+    );
+    require_failure(refused, "cannot determine the observation storage budget");
+    let snapshots = af_sandbox::stale::observation_root(&machine.path("tmp"));
+    assert_eq!(fs::read_dir(snapshots).unwrap().count(), 0);
 }
 
 #[test]
@@ -1253,7 +1363,8 @@ esac
         ),
     );
     let reader = format!(
-        "exec env HOME={} XDG_CONFIG_HOME={} TMPDIR={} {} cluster origin-read --scope fleet-fixture --origin project --project {} --workspace {} --principal owner --allow-plan-decisions --state-home {}",
+        "exec env HOME={} AF_TEST_WAKE_ACCOUNT_HOME={} XDG_CONFIG_HOME={} TMPDIR={} {} cluster origin-read --scope fleet-fixture --origin project --project {} --workspace {} --principal owner --allow-plan-decisions --state-home {}",
+        quoted(&machine.path("home")),
         quoted(&machine.path("home")),
         quoted(&machine.path("config")),
         quoted(&machine.path("tmp")),

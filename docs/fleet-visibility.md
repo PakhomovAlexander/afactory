@@ -114,12 +114,14 @@ observation is unavailable until a successful read refreshes it.
 
 An origin reader replays private SQLite copies under the sandbox runtime root
 (`[storage] sandbox_root` or the system temporary directory). It checks the storage limit and
-free-space floor before copying. Admission uses the machine Storage Budget inventory and
-includes private copies still held by other readers. Inventory measures Store files without
-opening their databases. An incomplete inventory or insufficient space makes the origin
-unavailable. Readers sharing the runtime root serialize admission and copying, then release the
-lock for replay. The reader removes its copies when it closes them. A subsequent origin read or
-Task startup removes abandoned runtimes and leaves live readers' copies alone.
+free-space floor on the destination volume before copying. Readers under the same OS account
+serialize admission and copying through a private registry in the account's state directory,
+including when they use different sandbox roots or temporary directories. The lock is released
+for replay. Admission uses the machine Storage Budget inventory, counts retained copies and
+overlapping telemetry and cache directories once, and measures Store files without opening
+their databases. An incomplete inventory or insufficient space makes the origin unavailable.
+Readers remove their copies on close. A subsequent origin read can reclaim abandoned copies
+across registered roots and leaves live readers' copies alone.
 
 The [fleet integration tests](../crates/af/tests/it/fleet.rs) exercise the six public commands with
 local OpenSSH endpoints, disposable keys, the management wire formats and a native Task whose

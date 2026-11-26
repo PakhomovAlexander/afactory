@@ -154,6 +154,25 @@ pub(crate) struct SelfPolicy {
 }
 
 impl Config {
+    /// The telemetry storage location is inventory input even when the telemetry writer's
+    /// own byte cap is incompatible with the current machine budget.
+    pub(crate) fn telemetry_storage_dir(&self) -> Result<Option<PathBuf>, String> {
+        let directory = self
+            .effective
+            .get("telemetry")
+            .and_then(|table| table.get("dir"))
+            .and_then(Value::as_str)
+            .ok_or("[telemetry] dir must be an absolute path or an empty string")?;
+        if directory.is_empty() {
+            return Ok(None);
+        }
+        let path = PathBuf::from(directory);
+        if !path.is_absolute() {
+            return Err("[telemetry] dir must be an absolute path or an empty string".into());
+        }
+        Ok(Some(path))
+    }
+
     pub(crate) fn self_policy(&self) -> Result<SelfPolicy, String> {
         if !self.machine_scope {
             return Err("[self] policy must come from a machine-scope load (built-in, system, user, environment)".into());
@@ -528,32 +547,37 @@ pub(crate) fn wake_session_store_path() -> Result<Option<PathBuf>, String> {
     }
     #[cfg(not(test))]
     {
-        #[cfg(debug_assertions)]
-        let fixture = std::env::var_os("AF_TEST_WAKE_ACCOUNT_HOME").map(PathBuf::from);
-        #[cfg(not(debug_assertions))]
-        let fixture: Option<PathBuf> = None;
-        let home = match fixture {
-            Some(home) => Some(home),
-            None => os_account_home()?,
-        };
         // Missing/unsuitable account identity is an unavailable optional capability.
         // Lookup I/O errors still propagate; HOME/XDG never substitute for authority.
-        let Some(home) = home.filter(|home| home.is_absolute() && home != Path::new("/")) else {
+        let Some(home) = machine_account_home()? else {
             return Ok(None);
         };
         wake_session_store_at(&home).map(Some)
     }
 }
 
+/// Machine-local authorities share the OS account even under different process environments.
+pub(crate) fn machine_account_home() -> Result<Option<PathBuf>, String> {
+    #[cfg(debug_assertions)]
+    if let Some(home) = std::env::var_os("AF_TEST_WAKE_ACCOUNT_HOME") {
+        return Ok(suitable_account_home(PathBuf::from(home)));
+    }
+    Ok(os_account_home()?.and_then(suitable_account_home))
+}
+
+fn suitable_account_home(home: PathBuf) -> Option<PathBuf> {
+    (home.is_absolute() && home != Path::new("/")).then_some(home)
+}
+
 fn os_account_home() -> Result<Option<PathBuf>, String> {
     let uid = nix::unistd::geteuid();
     let Some(user) =
-        nix::unistd::User::from_uid(uid).map_err(|e| format!("Reading wake OS account: {e}"))?
+        nix::unistd::User::from_uid(uid).map_err(|e| format!("Reading OS account: {e}"))?
     else {
         return Ok(None);
     };
     if user.uid != uid {
-        return Err("Wake OS account identity mismatch".into());
+        return Err("OS account identity mismatch".into());
     }
     Ok(Some(user.dir))
 }

@@ -1,4 +1,8 @@
 use std::collections::BTreeSet;
+use std::fs;
+use std::io;
+use std::os::fd::OwnedFd;
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -109,6 +113,7 @@ pub(super) fn serve(args: ReaderArgs) -> Result<i32, String> {
 
 struct ObservationRuntime<'a> {
     policy: crate::config::StoragePolicy,
+    admission: PathBuf,
     root: PathBuf,
     origin_state_home: &'a Path,
     directory: tempfile::TempDir,
@@ -116,24 +121,34 @@ struct ObservationRuntime<'a> {
 
 impl<'a> ObservationRuntime<'a> {
     fn create(origin_state_home: &'a Path) -> Result<Self, String> {
-        use std::os::unix::fs::MetadataExt as _;
-
         let policy = crate::storage::policy()?;
-        let root = af_sandbox::stale::observation_root(&crate::storage::sandbox_root(&policy));
-        af_store::local_fs::create_private_dir_all(&root).map_err(|error| error.to_string())?;
-        let metadata = std::fs::symlink_metadata(&root).map_err(|error| error.to_string())?;
-        if !metadata.is_dir()
-            || metadata.uid() != nix::unistd::geteuid().as_raw()
-            || metadata.mode() & 0o077 != 0
-        {
-            return Err(
-                "Observation runtime root must be a private directory owned by the reader".into(),
-            );
-        }
+        let account_home = crate::config::machine_account_home()?
+            .ok_or("Cannot determine the OS account home for observation admission")?;
+        let admission = crate::config::canonical_root(&account_home.join(".local/state"))
+            .join("af-observation-admission");
+        let root = af_sandbox::stale::observation_root(&crate::config::canonical_root(
+            &crate::storage::sandbox_root(&policy),
+        ));
+        let prepare = || {
+            af_store::local_fs::create_private_dir_all(&admission)?;
+            let _lock = admission_lock(&admission)?;
+            af_store::local_fs::create_private_dir_all(&root)?;
+            open_private_directory(&root)?;
+            let link = admission.join(runtime_key(&root));
+            match symlink(&root, &link) {
+                Ok(()) => {}
+                Err(error)
+                    if error.kind() == io::ErrorKind::AlreadyExists
+                        && fs::read_link(&link).is_ok_and(|target| target == root) => {}
+                Err(error) => return Err(error),
+            }
+            af_sandbox::stale::observation_directory(&root)
+        };
         let directory =
-            af_sandbox::stale::observation_directory(&root).map_err(|e| e.to_string())?;
+            prepare().map_err(|e| format!("Cannot register observation runtime: {e}"))?;
         Ok(Self {
             policy,
+            admission,
             root,
             origin_state_home,
             directory,
@@ -141,18 +156,75 @@ impl<'a> ObservationRuntime<'a> {
     }
 
     fn snapshot(&self, path: &Path) -> Result<EventStore, StoreError> {
-        // Admission and copying share the lock across origins. Replay and Project locks
-        // do not hold this lock, so one authorization or query cannot stall its siblings.
-        let invalid = |error: std::io::Error| StoreError::Conflict(error.to_string());
-        let directory = af_sandbox::open_anchor(&self.root).map_err(invalid)?;
-        let _copy = Flock::lock(directory, FlockArg::LockExclusive)
-            .map_err(|(_, error)| invalid(error.into()))?;
-        af_sandbox::stale::sweep_stale_observations_in(&self.root);
-        let max_bytes =
-            crate::storage::observation_allowance(&self.root, &self.policy, self.origin_state_home)
-                .map_err(StoreError::Conflict)?;
+        // Hold one account-wide lock through measurement and the copy. Once released, the
+        // registered root exposes the actual allocated bytes throughout replay.
+        let invalid = |error: io::Error| StoreError::Conflict(error.to_string());
+        let _copy = admission_lock(&self.admission).map_err(invalid)?;
+        let runtimes = retained_roots(&self.admission).map_err(invalid)?;
+        let max_bytes = crate::storage::observation_allowance(
+            &self.root,
+            &runtimes,
+            &self.policy,
+            self.origin_state_home,
+        )
+        .map_err(StoreError::Conflict)?;
         EventStore::open_observation_snapshot(path, self.directory.path(), max_bytes)
     }
+}
+
+fn admission_lock(path: &Path) -> io::Result<Flock<OwnedFd>> {
+    Flock::lock(open_private_directory(path)?, FlockArg::LockExclusive)
+        .map_err(|(_, error)| error.into())
+}
+
+fn open_private_directory(path: &Path) -> io::Result<OwnedFd> {
+    use nix::sys::stat::fstat;
+
+    let relative = path.strip_prefix("/").map_err(io::Error::other)?;
+    let directory = af_sandbox::open_beneath(af_sandbox::open_anchor(Path::new("/"))?, relative)?;
+    let metadata = fstat(&directory)?;
+    if metadata.st_uid != nix::unistd::geteuid().as_raw() || metadata.st_mode & 0o077 != 0 {
+        return Err(io::Error::other(format!(
+            "{} must be a private directory owned by the reader",
+            path.display()
+        )));
+    }
+    Ok(directory)
+}
+
+fn runtime_key(root: &Path) -> String {
+    af_store::canonical::blob_content_id(root.as_os_str().as_encoded_bytes())
+}
+
+/// The private registry stores only runtime roots. Each registration is an atomic link, written
+/// before the runtime can hold a copy. Failed crash cleanup stays registered and accounted.
+fn retained_roots(admission: &Path) -> io::Result<Vec<PathBuf>> {
+    let mut roots = Vec::new();
+    for entry in fs::read_dir(admission)? {
+        let entry = entry?;
+        let root = fs::read_link(entry.path())?;
+        if !root.is_absolute()
+            || root
+                .parent()
+                .is_none_or(|parent| af_sandbox::stale::observation_root(parent) != root)
+            || entry.file_name() != std::ffi::OsStr::new(&runtime_key(&root))
+        {
+            return Err(io::Error::other("Invalid observation runtime registration"));
+        }
+        match open_private_directory(&root) {
+            Ok(_) => {
+                af_sandbox::stale::sweep_stale_observations_in(&root);
+                if fs::read_dir(&root)?.next().transpose()?.is_some() {
+                    roots.push(root);
+                    continue;
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        fs::remove_file(entry.path())?;
+    }
+    Ok(roots)
 }
 
 /// Pause with the live Project snapshot so the crash regression can kill a real reader.
@@ -161,8 +233,13 @@ fn pause_with_snapshot() {
     let Some(marker) = std::env::var_os("AF_TEST_FLEET_SNAPSHOT_PAUSE") else {
         return;
     };
-    let _ = std::fs::write(marker, []);
-    std::thread::sleep(std::time::Duration::from_secs(30));
+    let marker = PathBuf::from(marker);
+    if fs::write(&marker, []).is_ok() {
+        let deadline = Instant::now() + std::time::Duration::from_secs(30);
+        while marker.exists() && Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
 }
 
 pub(super) fn read(

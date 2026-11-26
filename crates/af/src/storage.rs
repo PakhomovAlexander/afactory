@@ -109,6 +109,10 @@ pub(crate) struct TelemetryRoots {
 
 impl Roots {
     pub(crate) fn current() -> Result<Self, String> {
+        Self::current_for(false)
+    }
+
+    fn current_for(admission: bool) -> Result<Self, String> {
         let cache = config::cache_home()?.join("af");
         let state_home = config::state_home()?;
         let state = state_home.join("af");
@@ -117,6 +121,14 @@ impl Roots {
             .as_ref()
             .ok()
             .and_then(|config| config.telemetry_policy().ok());
+        let telemetry_dir = if admission {
+            machine
+                .as_ref()
+                .map_err(Clone::clone)?
+                .telemetry_storage_dir()?
+        } else {
+            telemetry.as_ref().and_then(|settings| settings.dir.clone())
+        };
         let build_cache_root = machine
             .as_ref()
             .ok()
@@ -136,12 +148,7 @@ impl Roots {
             installs: crate::self_management::paths()?,
             telemetry: TelemetryRoots {
                 registry: telemetry_dirs::location(&state_home),
-                current: Some(
-                    telemetry
-                        .as_ref()
-                        .and_then(|settings| settings.dir.clone())
-                        .unwrap_or_else(|| state.join("telemetry")),
-                ),
+                current: Some(telemetry_dir.unwrap_or_else(|| state.join("telemetry"))),
                 max_bytes: telemetry.as_ref().map(|settings| settings.max_bytes),
                 state_root: state,
             },
@@ -893,7 +900,9 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail<'_>) -> Inventory {
             reason,
         }),
     }
-    telemetry_inventory(roots, &mut inventory);
+    if !admission {
+        telemetry_inventory(roots, &mut inventory);
+    }
     abandoned_claims(roots, &registered, &mut inventory);
     inventory
 }
@@ -1038,7 +1047,7 @@ pub(crate) fn accounted(roots: &Roots) -> (Vec<Accounted>, Option<String>) {
 
 /// Every telemetry directory to inventory: each one registered, and the configured one when it
 /// exists, by canonical path.
-fn telemetry_roots(roots: &Roots, inventory: &mut Inventory) -> Vec<PathBuf> {
+fn telemetry_roots(roots: &Roots, inventory: &mut Inventory, admission: bool) -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = match telemetry_dirs::read(&roots.telemetry.registry) {
         Ok(registered) => registered.into_iter().map(|entry| entry.path).collect(),
         Err(reason) => {
@@ -1051,7 +1060,16 @@ fn telemetry_roots(roots: &Roots, inventory: &mut Inventory) -> Vec<PathBuf> {
     };
     if let Some(current) = &roots.telemetry.current {
         let current = telemetry_dirs::canonical(current);
-        if current.is_dir() && !paths.contains(&current) {
+        if admission {
+            match std::fs::symlink_metadata(&current) {
+                Ok(_) => paths.push(current),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => inventory.problems.push(Problem {
+                    path: current,
+                    reason: format!("the telemetry directory cannot be inspected: {error}"),
+                }),
+            }
+        } else if current.is_dir() {
             paths.push(current);
         }
     }
@@ -1062,7 +1080,7 @@ fn telemetry_roots(roots: &Roots, inventory: &mut Inventory) -> Vec<PathBuf> {
 
 /// The telemetry kind: every registered directory, its overlap rechecked now (ADR-0153).
 fn telemetry_inventory(roots: &Roots, inventory: &mut Inventory) {
-    let paths = telemetry_roots(roots, inventory);
+    let paths = telemetry_roots(roots, inventory, false);
     let (accounted, accounted_unknown) = accounted(roots);
     for path in &paths {
         if !path.is_dir() {
@@ -2144,7 +2162,7 @@ fn pause_before_telemetry_eviction(segment_id: &str) {
 /// sweep measures or collects anything, whatever the current level.
 fn recover_telemetry(roots: &Roots) {
     let mut scratch = Inventory::default();
-    let paths = telemetry_roots(roots, &mut scratch);
+    let paths = telemetry_roots(roots, &mut scratch, false);
     let (accounted, unknown) = accounted(roots);
     if unknown.is_some() {
         return;
@@ -3570,11 +3588,13 @@ pub(crate) fn judge_floor(volumes: &[Volume], floor: u64) -> Result<(), String> 
 /// Remaining machine budget and free bytes above the floor, under the observation copy lock.
 pub(crate) fn observation_allowance(
     root: &Path,
+    runtimes: &[PathBuf],
     policy: &StoragePolicy,
     origin_state_home: &Path,
 ) -> Result<u64, String> {
-    let roots = Roots::current()?;
-    let stock = inventory(&roots, Detail::Admission { origin_state_home });
+    let roots = Roots::current_for(true)?;
+    let mut stock = inventory(&roots, Detail::Admission { origin_state_home });
+    let telemetry = telemetry_roots(&roots, &mut stock, true);
     if let Some(problem) = stock.problems.first() {
         return Err(format!(
             "cannot determine the observation storage budget: {}: {}",
@@ -3591,36 +3611,72 @@ pub(crate) fn observation_allowance(
             claim.path.display()
         ));
     }
-    let runtime = config::canonical_root(root);
-    let already_counted = stock.entries.iter().any(|entry| {
-        runtime.starts_with(config::canonical_root(&entry.path))
-            && match entry.kind {
-                Kind::TaskStore | Kind::Campaign => !roots.outside_af_state(&entry.path),
-                Kind::ProjectStore
-                | Kind::FleetCache
-                | Kind::WarmKey
-                | Kind::Workspace
-                | Kind::Version => true,
-                _ => false,
-            }
-    });
-    let retained = if already_counted {
-        0
-    } else {
-        loop {
-            match af_sandbox::storage::allocated_bytes(root) {
-                // A reader can close its snapshot while inventory walks the runtime.
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                result => break result.map_err(|error| error.to_string())?,
-            }
+    let mut whole = BTreeMap::new();
+    let mut partial = Vec::new();
+    for entry in stock.entries.iter().chain(stock.counted_claims()) {
+        let path = config::canonical_root(&entry.path);
+        if matches!(entry.kind, Kind::TaskStore | Kind::Campaign)
+            && roots.outside_af_state(&entry.path)
+        {
+            partial.push((path, entry.bytes));
+        } else {
+            whole.insert(path, entry.bytes);
         }
+    }
+    for path in runtimes.iter().chain(&telemetry) {
+        let bytes = af_sandbox::open_anchor(path)
+            .and_then(|directory| af_sandbox::removal::checked_allocated_bytes(&directory))
+            .map_err(|error| observation_measurement_error(path, &error.to_string()))?;
+        whole.insert(path.clone(), bytes);
+    }
+    for path in telemetry {
+        // The strict byte walk above catches failures in arbitrary descendants. Check
+        // telemetry's structural inventory too, including errors on an overlapping root.
+        match budget::Directory::measure(&path, false) {
+            Ok(Some(directory)) => {
+                if let Some(problem) = directory.problems.first() {
+                    return Err(observation_measurement_error(&path, problem));
+                }
+            }
+            Ok(None) => {
+                return Err(observation_measurement_error(
+                    &path,
+                    "directory disappeared",
+                ));
+            }
+            Err(error) => return Err(observation_measurement_error(&path, &error)),
+        }
+    }
+    // A measured parent already includes every contained tree and partially measured Store.
+    let covered = |path: &Path| {
+        path.ancestors()
+            .any(|ancestor| whole.contains_key(ancestor))
     };
-    let used = stock.total().saturating_add(retained);
+    let used = whole
+        .iter()
+        .filter_map(|(path, bytes)| {
+            path.parent()
+                .is_none_or(|parent| !covered(parent))
+                .then_some(*bytes)
+        })
+        .chain(
+            partial
+                .into_iter()
+                .filter_map(|(path, bytes)| (!covered(&path)).then_some(bytes)),
+        )
+        .fold(0, u64::saturating_add);
     let free = measure_volume(root).free?;
     Ok(policy
         .max_bytes
         .saturating_sub(used)
         .min(free.saturating_sub(policy.min_free_bytes)))
+}
+
+fn observation_measurement_error(path: &Path, reason: &str) -> String {
+    format!(
+        "cannot determine the observation storage budget: {}: {reason}",
+        path.display()
+    )
 }
 
 /// The directory sandboxes and check runtimes are made in under `policy`.
