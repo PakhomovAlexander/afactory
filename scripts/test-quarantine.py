@@ -29,7 +29,7 @@ file and, into --issues DIR, one issue body per flaky and always-failing entry; 
 nothing changes. It never runs gh.
 """
 import argparse
-from contextlib import contextmanager, ExitStack
+from contextlib import closing, contextmanager, ExitStack
 import datetime as dt
 import errno
 import fcntl
@@ -39,13 +39,16 @@ import os
 from pathlib import Path
 import platform
 import re
+import select
 import shutil
 import signal
+import socket
 import stat
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import xml.etree.ElementTree as ET
 
 sys.dont_write_bytecode = True
@@ -283,51 +286,273 @@ def git_commit():
     return commit
 
 
+LOAD_POLL_SECONDS = 0.01
+LOAD_START_SECONDS = 10
+LOAD_STOP_SECONDS = 5
+LOAD_CLEANUP_SECONDS = 5
+LOAD_STATUS_SECONDS = 1
+LOAD_SIGNAL_RETRY_SECONDS = 0.1
+
+# The supervisor acknowledges authorization EOF with C. After spawning it reports R
+# and stays alive to wait for the command in its session.
+LOAD_WRAPPER = """
+import os, subprocess, sys
+authorization, status = map(int, sys.argv[1:3])
+command = sys.argv[3:]
+try:
+    token = os.read(authorization, 1)
+    os.close(authorization)
+    if token == b'':
+        os.write(status, b'C')
+        sys.exit(0)
+    if token != b'1':
+        raise ValueError('invalid functional load authorization')
+    child = subprocess.Popen(command)
+except Exception as error:
+    os.write(status, b'E' + str(error).encode(errors='replace')[:511])
+    sys.exit(1)
+os.write(status, b'R')
+os.close(status)
+sys.exit(child.wait())
+"""
+
+
+class LoadChild:
+    """One wrapper and its session leader, held unreaped until group cleanup."""
+
+    def __init__(self, channel, status_reader, process):
+        self.channel = channel
+        self.status_reader = status_reader
+        self.process = process
+        self.status = bytearray()
+        self.confirmed = False
+
+    def read_spawn_status(self):
+        """Return None while pending, or the wrapper's complete status at EOF."""
+        while True:
+            try:
+                message = os.read(self.status_reader.fileno(), 1024)
+            except BlockingIOError:
+                return None
+            if not message:
+                break
+            self.status.extend(message)
+        if self.status in (b'R', b'C'):
+            return bytes(self.status)
+        if not self.status:
+            raise ValueError('confirm: functional load wrapper exited before confirming spawn '
+                             'or acknowledging cancellation')
+        if self.status.startswith(b'E') and len(self.status) > 1:
+            error = self.status[1:].decode(errors='replace')
+            raise ValueError(f'confirm: cannot execute functional load: {error}')
+        raise ValueError('confirm: invalid functional load wrapper status')
+
+    def wait_spawn_status(self, deadline):
+        while True:
+            status = self.read_spawn_status()
+            remaining = deadline - time.monotonic()
+            if status is not None or remaining <= 0:
+                return status
+            time.sleep(min(LOAD_POLL_SECONDS, remaining))
+
+    def exited(self):
+        pid = self.process.pid
+        if sys.platform == 'darwin':
+            # Register and sample without consuming the child's status.
+            with closing(select.kqueue()) as queue:
+                event = select.kevent(pid, filter=select.KQ_FILTER_PROC, flags=select.KQ_EV_ADD,
+                                      fflags=select.KQ_NOTE_EXIT)
+                try:
+                    queue.control([event], 0, 0)
+                except ProcessLookupError:
+                    return True  # The unreaped child exited before registration.
+                return bool(queue.control(None, 1, 0))
+        return os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+
+    def settle(self, deadline=None):
+        """Kill before reaping, then check disappearance without sending any more signals."""
+        now = time.monotonic()
+        if deadline is None:
+            deadline = now + LOAD_CLEANUP_SECONDS
+        signal_deadline = min(deadline, now + LOAD_SIGNAL_RETRY_SECONDS)
+        pid = self.process.pid
+        while True:
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                # macOS can refuse a signal to an exited group. Verify disappearance
+                # after reaping regardless of this result.
+                break
+            remaining = signal_deadline - time.monotonic()
+            if sys.platform != 'darwin' or remaining <= 0:
+                break
+            # On macOS a member forking during a group kill can escape that signal.
+            # Retry while the unreaped leader still reserves the group's identity.
+            # Keep the rest of the cleanup budget for reaping and disappearance.
+            time.sleep(min(LOAD_POLL_SECONDS, remaining))
+            if time.monotonic() >= signal_deadline:
+                break
+        try:
+            self.process.wait(timeout=max(0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired as error:
+            raise ValueError(
+                f'confirm: functional load leader {pid} did not exit after SIGKILL') from error
+        while True:
+            try:
+                os.killpg(pid, 0)
+            except ProcessLookupError:
+                return
+            except PermissionError:
+                pass  # The group may still exist.
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ValueError(f'confirm: functional load group {pid} did not disappear')
+            time.sleep(min(LOAD_POLL_SECONDS, remaining))
+
+
 class Load:
-    """The functional class's selection, run in a loop beside the confirmation runs until they
-    end. Its results are never read: its own failures do not count."""
+    """Run the functional selection beside confirmation and ignore its test results."""
 
     def __init__(self, command, directory):
         self.command, self.directory = command, directory
-        self.lock, self.stopping, self.started = threading.Lock(), False, threading.Event()
-        self.process, self.runs = None, 0
+        self.lock = threading.Lock()
+        self.stopping = threading.Event()
+        self.started = threading.Event()
+        self.ready = threading.Event()
+        self.child, self.runs, self.error = None, 0, None
         self.thread = threading.Thread(target=self.loop, daemon=True)
 
-    def loop(self):
-        config = self.directory / 'store.toml'
-        config.write_text('[store]' + chr(10) + 'dir = ' + json.dumps(str(self.directory / 'store'))
-                          + chr(10))
+    def authorize(self, child):
         try:
-            with (self.directory / 'load.log').open('ab') as log:
-                while True:
-                    with self.lock:
-                        if self.stopping:
-                            return
-                        self.process = subprocess.Popen(
-                            self.command + ['--tool-config-file', f'af-gate:{config}'],
-                            stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-                        self.runs += 1
-                    self.started.set()
-                    self.process.wait()
-        finally:
+            # This unbuffered one-byte send and stop's write shutdown are serialized
+            # by the socket. Even a worker suspended here holds no cleanup lock.
+            child.channel.sendall(b'1')
+        except (BrokenPipeError, ConnectionResetError):
+            # The parent may have revoked authorization or the wrapper may have
+            # exited already. The status reader distinguishes stop from spawn failure.
+            pass
+
+    def confirm_spawn(self, child):
+        if not child.confirmed:
+            child.confirmed = True
+            self.runs += 1
             self.started.set()
+            self.ready.set()
+
+    def settle(self):
+        """Called with the lock held. Exactly one caller settles each published child."""
+        child = self.child
+        if child is not None:
+            self.child = None
+            now = time.monotonic()
+            deadline = now + LOAD_CLEANUP_SECONDS
+            try:
+                child.channel.shutdown(socket.SHUT_WR)
+            except OSError as error:
+                if error.errno not in (errno.ENOTCONN, errno.EPIPE):
+                    self.error = self.error or error
+            status = None
+            if self.stopping.is_set() and not child.confirmed:
+                # Give the wrapper time to acknowledge EOF before killing it. Reserve
+                # the rest of the cleanup budget for signals, reaping and disappearance.
+                try:
+                    status = child.wait_spawn_status(min(deadline, now + LOAD_STATUS_SECONDS))
+                except (OSError, ValueError) as error:
+                    self.error = self.error or error
+            try:
+                child.settle(deadline)
+            except (OSError, ValueError) as error:
+                self.error = self.error or error
+            try:
+                status = status or child.read_spawn_status()
+                if status == b'R':
+                    self.confirm_spawn(child)
+                elif status != b'C' or not self.stopping.is_set():
+                    raise ValueError('confirm: functional load shutdown was not acknowledged')
+            except (OSError, ValueError) as error:
+                self.error = self.error or error
+
+    def run_child(self, command, log):
+        channel, peer = socket.socketpair()
+        with channel, peer:
+            reader, writer = os.pipe()
+            with os.fdopen(reader, 'rb') as status_reader, os.fdopen(writer, 'wb') as status_writer:
+                channel.setblocking(False)
+                os.set_blocking(reader, False)
+                with self.lock:
+                    if self.stopping.is_set():
+                        return
+                    fd = peer.fileno()
+                    process = subprocess.Popen(
+                        [sys.executable, '-I', '-S', '-c', LOAD_WRAPPER, str(fd), str(writer),
+                         *command], stdin=subprocess.DEVNULL, stdout=log,
+                        stderr=subprocess.STDOUT, start_new_session=True, pass_fds=(fd, writer))
+                    child = self.child = LoadChild(channel, status_reader, process)
+                    status_writer.close()
+                    peer.close()
+                self.monitor(child)
+
+    def monitor(self, child):
+        try:
+            self.authorize(child)
+            deadline = time.monotonic() + LOAD_START_SECONDS
+            while not self.stopping.is_set():
+                with self.lock:
+                    if self.stopping.is_set():
+                        return
+                    if child.confirmed:
+                        if child.exited():
+                            return
+                    else:
+                        status = child.read_spawn_status()
+                        if status == b'C':
+                            raise ValueError('confirm: unexpected functional load cancellation')
+                        if status == b'R':
+                            self.confirm_spawn(child)
+                        elif time.monotonic() >= deadline:
+                            raise ValueError('confirm: timed out waiting for functional load spawn')
+                self.stopping.wait(LOAD_POLL_SECONDS)
+        except Exception as error:
+            with self.lock:
+                self.error = self.error or error
+        finally:
+            with self.lock:
+                self.settle()
+
+    def loop(self):
+        try:
+            config = self.directory / 'store.toml'
+            config.write_text('[store]\n' + 'dir = ' + json.dumps(str(self.directory / 'store'))
+                              + '\n')
+            command = [*self.command, '--tool-config-file', f'af-gate:{config}']
+            with (self.directory / 'load.log').open('ab') as log:
+                while not self.stopping.is_set() and self.error is None:
+                    self.run_child(command, log)
+        except Exception as error:
+            with self.lock:
+                self.error = self.error or ValueError(f'confirm: functional load: {error}')
+        finally:
+            self.ready.set()
 
     def start(self):
-        """Start the loop and return once its first run is alive, so every confirmation run has
-        the load beside it."""
         self.thread.start()
-        self.started.wait()
+        if not self.ready.wait(LOAD_START_SECONDS):
+            raise ValueError('confirm: timed out starting functional load')
+        if self.error is not None:
+            raise self.error
+        if not self.started.is_set():
+            raise ValueError('confirm: functional load stopped before confirming spawn')
 
     def stop(self):
         with self.lock:
-            self.stopping = True
-            process = self.process
-        if process is not None and process.poll() is None:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        self.thread.join()
+            self.stopping.set()
+            self.settle()
+        if self.thread.ident is not None:
+            self.thread.join(LOAD_STOP_SECONDS)
+        if self.error is not None:
+            raise self.error
+        if self.thread.is_alive():
+            raise ValueError('confirm: timed out stopping functional load')
 
 
 def confirm(identities, runs, threads, cargo, load_expression, work):
@@ -340,9 +565,10 @@ def confirm(identities, runs, threads, cargo, load_expression, work):
     if load_expression is not None:
         (work / 'load').mkdir(parents=True)
         load = Load([*base, '-E', load_expression], work / 'load')
-        load.start()
     results = {identity: {'failed_runs': [], 'first_failure': None} for identity in identities}
     try:
+        if load is not None:
+            load.start()
         for index in range(1, runs + 1):
             print(f'confirm: run {index} of {runs}', flush=True)
             code, _, junit = ng.run_nextest([*base, '-E', exact_filter(identities)], work,

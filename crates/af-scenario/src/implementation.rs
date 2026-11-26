@@ -461,7 +461,7 @@ mod tests {
                             ModelBinding {
                                 provider: "codex-personal".into(),
                                 provider_kind: "codex".into(),
-                                model: "gpt-6.1-sol".into(),
+                                model: "gpt-6.2-sol".into(),
                                 effort: "medium".into(),
                             },
                         )]),

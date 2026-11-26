@@ -22,8 +22,16 @@ python3 scripts/test-quarantine.py confirm --report FILE [--runs N] [--only IDEN
   nothing and is never rerun alone.
 - With `--load functional`, the default, the functional class's own selection (the filter
   `scripts/test-classes.py` generates for the gate, which leaves every quarantined identity out)
-  runs in a loop beside the runs until they end. Its own failures never count. `--load none`
-  turns it off. The default inventory is
+  runs in a loop beside the runs until they end. A load run counts when its supervisor confirms
+  that it spawned the command in the same session. Test failures in that command do not affect
+  confirmation. A load launch or cleanup failure stops confirmation without a report. Shutdown
+  revokes pending launch authorization and briefly waits for the supervisor to report its
+  decision. Only an explicit cancellation acknowledgement after authorization EOF makes a
+  cancelled launch successful. Missing or invalid status prevents a report. A spawn confirmation
+  received during shutdown still counts once. Shutdown signals the owned group before reaping its
+  leader and waits for the group to disappear. On macOS, signal retries use a short part of the
+  cleanup budget, leaving time to reap the supervisor and wait for remaining members to disappear.
+  `--load none` turns the load off. The default inventory is
   `cargo nextest list --workspace --locked --message-format json`, which builds every
   default-feature test binary before the first run.
 - Each identity is `flaky` when it failed in some runs but not all, `always_fails` when it failed
@@ -102,7 +110,8 @@ importing only the host-only copy. It never runs checkout filters or filesystem-
 cleanliness. Archive links and paths outside the package refuse. Its temporary directory is
 removed without following links on exit. Python
 binds the installed root-owned anchor's exact identity to the checked `MachineLock`, held in the
-parent through Docker execution and confirmed container removal:
+parent through Docker execution and confirmed container removal. Docker's `--init` reaps
+orphaned load descendants so the confirmation can verify that the process group disappeared.
 
 ```sh
 ssh claw-3 COMMIT="$COMMIT" bash -s <<'CLAW'
@@ -185,7 +194,7 @@ with tempfile.TemporaryDirectory(prefix="host-authority-", dir=work) as authorit
         with host_lock.MachineLock(expected_identity=identity) as lock:
             lock.guard()
             result = subprocess.run([
-                "docker", "run", "--rm", "--name", "afq-confirm",
+                "docker", "run", "--rm", "--init", "--name", "afq-confirm",
                 "-v", os.path.join(work, "run") + ":/work", "-w", "/work/src",
                 "af-quarantine-confirm:1.88.0", "python3", "scripts/test-quarantine.py",
                 "confirm", "--report", "/work/confirm.json",

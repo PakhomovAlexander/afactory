@@ -1651,7 +1651,7 @@ fn development_flow_fixture_compiles_current_native_packages_and_independent_wor
     }
     compiler.validate_dependency_closure().unwrap();
     for (worker, model) in [
-        ("implementer", "gpt-6.1-sol"),
+        ("implementer", "gpt-6.2-sol"),
         ("correctness", "gpt-6.1-terra"),
         ("evaluator", "gpt-6.1-terra"),
     ] {

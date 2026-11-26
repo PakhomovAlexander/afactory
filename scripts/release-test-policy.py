@@ -77,7 +77,7 @@ def resolve(sha, version, tag, output):
                 raise ValueError('release tag does not name the triggering commit')
             if git('cat-file', '-t', ref) == 'tag':
                 annotation = git('for-each-ref', '--format=%(contents)', ref)
-    plan = tc.release_plan(annotation, sha, version)
+    plan = tc.release_plan(annotation, sha, version) if tag else tc.resolve([], 'release', sha, version)
     tc.write(output, plan)
     with Path(os.environ['GITHUB_OUTPUT']).open('a') as stream:
         stream.write('test_plan=' + json.dumps(plan, separators=(',', ':')) + '\n')

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:codex-model-catalog-observation:1",
   "title": "Codex model catalog observation provenance@1",
-  "$comment": "Credential-free provenance for a captured token-free harness catalog projection. The coordinator writes this observation; it proves advertised IDs and efforts, never inference/account access. The original response bytes are in crates/af/tests/fixtures/provider-models/codex-provider-models-raw-20261107.json, identified by raw_response_sha256. Filter only its models array to gpt-6.1-sol and gpt-6.1-terra to reproduce the recorded projection, retaining selected objects, their order and every other field unchanged. Other raw model entries are observations, not pipeline selections.",
+  "$comment": "Credential-free provenance for a captured token-free harness catalog projection. The coordinator records advertised IDs and efforts. Inference access requires separate evidence. In crates/af/tests/fixtures/provider-models/, reproduce the preserved 20261107 projection from codex-provider-models-raw-20261107.json by retaining gpt-6.1-sol and gpt-6.1-terra. Reproduce the current 20261123 projection from codex-provider-models-raw-20261123.json by retaining gpt-6.2-sol and gpt-6.2-astra. In each case, filter only providers[0].models, preserving the selected model objects, their order and every other field. The provenance fields raw_response_sha256 and recorded_projection_sha256 identify the exact bytes of the raw file and the matching codex-provider-models-recorded-YYYYMMDD.json, respectively. Other raw model entries are observational data only.",
   "type": "object",
   "additionalProperties": false,
   "required": [

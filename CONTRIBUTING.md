@@ -388,8 +388,8 @@ Either is fine; the prefixes are used but not required. Domain terms keep their 
   quarantined test is added; the same `--diff` run checks it locally.
 - One topic per PR. Split unrelated fixes even when they are small.
 - Run full `make check` before the PR and say so in the PR template checklist. The local Task
-  gate and every pull request run the fast profile; `make check`, main validation and unbound
-  releases provide full validation.
+  gate and every pull request default to the fast profile. `make check` and ordinary main
+  validation provide full validation.
 - A user-visible change adds its own note, `changelog.d/<topic>.md` (see
   [`changelog.d/README.md`](changelog.d/README.md)), and never edits `CHANGELOG.md`: a note per
   pull request means two open pull requests never conflict on the changelog. The release
@@ -466,7 +466,7 @@ manual measurement: run `make perf-kernel-measure` before a pull request changin
 and opens a normal release PR with `release:fast` by default. A published stable on main starts
 the next patch line. After publication and the separate pin PR merge, use `make release NEW=1` to
 cut another RC or `make release NEW=1 VERSION=X.Y.Z` to promote the matching published RC.
-`PROFILE=full` selects all classes. Provision the ten canonical labels with `make test-labels` (dry-run),
+`PROFILE=full` selects all classes for the release PR. Provision the ten canonical labels with `make test-labels` (dry-run),
 then explicitly `make test-labels APPLY=1`; no PR labels are assigned by that setup command.
 Release preparation checks the profile label exists before changing source, committing or pushing.
 Changing release PR labels directly reruns selected CI; no policy file or metadata commit is required.
@@ -475,9 +475,11 @@ associated with that commit (matching SHA, main base and release/version head). 
 PR provenance and plan in the annotated tag, bound to commit/version/catalog. First creation captures
 then-current labels; an unlabeled matching release PR retains the fast default. Every later
 retry/tag run uses the annotation and ignores moving labels.
-`release:full` forces all classes and rejects partial/excluded
-selections. Direct unbound tags run full. All selected Linux/macOS gates and packaged binary, archive,
-architecture and signature smoke remain mandatory. Fast/custom release notes state their scope.
+`release:full` rejects partial/excluded selections. Direct unbound tags start with all classes.
+For all tagged publication, the resolved RC version omits e2e and its Linux container probes.
+A stable version requires e2e on Linux and macOS and requires the Linux container probes.
+All selected gates and packaged binary, archive, architecture and signature smoke remain mandatory.
+Release notes state the final selection and the e2e decision. See [release binding](docs/test-classes.md#release-binding).
 The post-publication Performance measurement is asynchronous, not a publication gate.
 
 Every ordinary validation profile, including fast and `no-perf`, runs the cheap offline

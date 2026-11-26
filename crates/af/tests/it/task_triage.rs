@@ -180,24 +180,22 @@ fn the_staged_triage_packages_install_pass_their_catalog_test_and_plan_the_examp
         .iter()
         .map(|node| &graph["nodes"][node.as_str().unwrap()]["operator"])
         .collect();
-    assert_eq!(
-        operators,
-        [
-            &json!({"kind": "root_inputs"}),
-            &json!({"kind": "provider_admission", "bindings": ["root.slots.author"]}),
-            &json!({"kind": "primitive", "operator": {"op": "worker", "slot": "root.slots.author"},
+    let expected = [
+        &json!({"kind": "root_inputs"}),
+        &json!({"kind": "provider_admission", "bindings": ["root.slots.verifier"]}),
+        &json!({"kind": "provider_admission", "bindings": ["root.slots.author"]}),
+        &json!({"kind": "primitive", "operator": {"op": "worker", "slot": "root.slots.author"},
                     "signature": "worker/backlog/triage-author"}),
-            &json!({"kind": "primitive", "operator": {"op": "report_seal"},
+        &json!({"kind": "primitive", "operator": {"op": "report_seal"},
                     "signature": "operator/report-seal"}),
-            &json!({"kind": "primitive", "operator": {"op": "report_check"},
+        &json!({"kind": "primitive", "operator": {"op": "report_check"},
                     "signature": "operator/report-check"}),
-            &json!({"kind": "provider_admission", "bindings": ["root.slots.verifier"]}),
-            &json!({"kind": "primitive", "operator": {"op": "verify", "slot": "root.slots.verifier"},
+        &json!({"kind": "primitive", "operator": {"op": "verify", "slot": "root.slots.verifier"},
                     "signature": "worker/backlog/triage-verifier"}),
-            &json!({"kind": "primitive", "operator": {"op": "report_accept"},
+        &json!({"kind": "primitive", "operator": {"op": "report_accept"},
                     "signature": "operator/report-accept"}),
-        ]
-    );
+    ];
+    assert_eq!(operators, expected);
     assert_eq!(
         graph["slots"]["root.slots.verifier"]["independent_from"],
         json!(["root.slots.author"])
@@ -207,7 +205,7 @@ fn the_staged_triage_packages_install_pass_their_catalog_test_and_plan_the_examp
         toml::from_str(&std::fs::read_to_string(repo.join(STAGED).join("catalog.toml")).unwrap())
             .unwrap();
     for (slot, worker, provider_kind, model) in [
-        ("author", "backlog/triage-author", "codex", "gpt-6.1-sol"),
+        ("author", "backlog/triage-author", "codex", "gpt-6.2-sol"),
         (
             "verifier",
             "backlog/triage-verifier",

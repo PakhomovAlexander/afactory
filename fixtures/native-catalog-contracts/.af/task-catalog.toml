@@ -39,7 +39,7 @@
 ["packages"."kernel/implementer"]
 "path" = ".af/task-packages/kernel/implementer"
 "version" = "1.8.3"
-"digest" = "sha256:325df992bec17f691a52e80f758ff1879285613fac077b9006435b7401ba7648"
+"digest" = "sha256:bb71e90b24f399d65e518886c49a54c73bb77a13d28c3a38f37102f85c675937"
 
 ["packages"."kernel/bugs"]
 "path" = ".af/task-packages/kernel/bugs"
@@ -59,7 +59,7 @@
 ["packages"."kernel/analyst"]
 "path" = ".af/task-packages/kernel/analyst"
 "version" = "1.0.1"
-"digest" = "sha256:f26fdb07ae6ecbbe6d4e79ef9f4c6286334d8ce8d56a5bfab8c3b1bcfb508e30"
+"digest" = "sha256:85fede162a580df8d260d7312e8968df4d094869103a53c9e3fd05f682ee217b"
 
 ["packages"."kernel/report-verifier"]
 "path" = ".af/task-packages/kernel/report-verifier"
@@ -69,7 +69,7 @@
 ["packages"."owner-default/implementer"]
 "path" = ".af/task-packages/owner-default/implementer"
 "version" = "1.0.0"
-"digest" = "sha256:9aed8b01432ad4abc2e895af45832b7c96954ab9cd528cd8213645547edc6911"
+"digest" = "sha256:c2fe4f75a2da9f6fe5ae8a975bad74eb36127c8ca4be46185061c97e77c6ae91"
 
 ["packages"."owner-default/bugs"]
 "path" = ".af/task-packages/owner-default/bugs"
@@ -89,7 +89,7 @@
 ["packages"."owner-default/report-author"]
 "path" = ".af/task-packages/owner-default/report-author"
 "version" = "1.0.0"
-"digest" = "sha256:2c5e211826d8a47a1cd627d293e8046d03d4dea2b99ebc175cc25e2487b06906"
+"digest" = "sha256:e5225c22f90cc6b136d7026cd3efb0ced7ccba323fe3e96760da5f9c1b7adc5d"
 
 ["packages"."warm/verification-kind"]
 "path" = ".af/task-packages/warm/verification-kind"

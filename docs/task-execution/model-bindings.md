@@ -245,21 +245,22 @@ fallback. These checks preserve observed usage on refusal.
 Deterministic native-CLI fixtures prove token-free planning, shared admission, account-change
 refusal, typed output and replay. Their usage figures are synthetic stub evidence, not live-model measurements.
 
-The shipped Codex Worker support audits use the real token-free harness observation in
-[`codex-provider-models-recorded-20261107.json`](../../crates/af/tests/fixtures/provider-models/codex-provider-models-recorded-20261107.json).
-Its [versioned provenance](../../crates/af/tests/fixtures/provider-models/codex-provider-models-recorded-20261107.provenance.json)
-records the observation date, Codex 0.167.0, `codex app-server model/list`, cache freshness and both
+The shipped Codex Worker support audits use the current real token-free harness observation in
+[`codex-provider-models-recorded-20261123.json`](../../crates/af/tests/fixtures/provider-models/codex-provider-models-recorded-20261123.json).
+Its [versioned provenance](../../crates/af/tests/fixtures/provider-models/codex-provider-models-recorded-20261123.provenance.json)
+records the observation date, Codex 0.171.0, `codex app-server model/list`, cache freshness and both
 response digests. The original credential-free, token-free CLI response is included byte for byte in
-[`codex-provider-models-raw-20261107.json`](../../crates/af/tests/fixtures/provider-models/codex-provider-models-raw-20261107.json).
-The audit schema-validates both responses and checks their SHA-256 digests against provenance.
-To reproduce the projection, parse the raw JSON and filter `providers[0].models` to entries whose
-`id` is `gpt-6.1-sol` or `gpt-6.1-terra`, preserving order and leaving selected objects and every
-other field unchanged. The audit asserts equality with the recorded JSON and rejects mutations to
-selected objects or unrelated fields. Other raw catalog entries are observational data, not
-configured Pipeline selections.
-It advertises `gpt-6.1-sol` and `gpt-6.1-terra` with `low medium high xhigh max ultra`; it proves
-harness-advertised support, never inference or account access. The synthetic `codex-model-list.json`
-and `codex-models-cache.json` fixtures remain parser and fake-harness inputs, separate from this
-observation. Catalog audits check actual model/effort bindings against the observation, and the
-size/S rubric regression checks selected slot roles and Worker signature roles before comparing
-model/effort guidance across all six copies and the staged example.
+[`codex-provider-models-raw-20261123.json`](../../crates/af/tests/fixtures/provider-models/codex-provider-models-raw-20261123.json).
+The audit schema-validates both responses as `af/provider-models@4` and checks their SHA-256 digests
+against provenance. To reproduce the projection, parse the raw JSON and filter
+`providers[0].models` to entries whose `id` is `gpt-6.2-sol` or `gpt-6.2-astra`, preserving order
+and leaving selected objects and every other field unchanged. The audit asserts equality with the
+recorded JSON and rejects mutations to selected objects or unrelated fields. Other raw catalog
+entries are observational data, not configured Pipeline selections. It advertises Sol 6.2 and
+Astra 6.2 with `low medium high xhigh max ultra`; this proves harness-advertised support, never
+inference or account access. The synthetic `codex-model-list.json` and `codex-models-cache.json`
+fixtures remain parser and fake-harness inputs, separate from this observation. Catalog audits
+check actual model/effort bindings against the observation, and the size/S rubric regression
+checks selected slot roles and Worker signature roles before comparing model/effort guidance
+across all six copies and the staged example. The 20261107 observation files remain historical
+evidence and are not inputs to the current audit.

@@ -12,10 +12,14 @@ import re
 import select
 import shlex
 import shutil
+import signal
+import socket
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -475,6 +479,15 @@ class Confirm(QuarantineFiles):
         with self.assertRaisesRegex(ValueError, 'expired on 2026-10-15'):
             tc.quarantine(tc.catalog(), dt.date.fromisoformat(TODAY), tc.read(self.file))
 
+    def test_load_exec_failure_prevents_a_confirmation_report(self):
+        self.cargo.unlink()
+        result = self.confirm(self.plan(1), load='functional')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('cannot execute functional load', result.stderr)
+        self.assertIn('No such file or directory', result.stderr)
+        self.assertEqual(result.stdout, '')
+        self.assertFalse(self.report.exists())
+
     def test_recovery_rejects_invalid_inputs_before_running_or_writing_a_report(self):
         for value, needle in self.invalid_recovery_inputs():
             with self.subTest(needle=needle):
@@ -672,6 +685,328 @@ os.link, os.rename, os.replace, Path.lstat = publish_body, move, publish_catalog
 fcntl.flock, shutil.rmtree = acquire, clean
 runpy.run_path(sys.argv[0], run_name='__main__')
 """
+
+
+class Load(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.dir = Path(directory.name)
+
+    def test_stop_timeout_settles_a_wrapper_paused_before_authorization(self):
+        self.check_stop_timeout(authorized=False)
+
+    def test_stop_counts_confirmed_spawn_once_while_monitor_is_paused(self):
+        self.check_stop_timeout(authorized=True)
+
+    def check_stop_timeout(self, authorized):
+        marker = self.dir / 'entered'
+        command = [sys.executable, '-I', '-c',
+                   f'from pathlib import Path; import time; '
+                   f'Path({str(marker)!r}).touch(); time.sleep(60)']
+        load = tq.Load(command, self.dir)
+        authorize = load.authorize
+        paused, resume = threading.Event(), threading.Event()
+
+        def pause(child):
+            if authorized:
+                authorize(child)
+            paused.set()
+            if not resume.wait(10):
+                raise AssertionError('test failed to resume authorization')
+            if not authorized:
+                authorize(child)
+
+        with mock.patch.object(load, 'authorize', side_effect=pause) as attempts:
+            load.thread.start()
+            try:
+                self.assertTrue(paused.wait(5))
+                child = load.child
+                pid = child.process.pid
+                if authorized:
+                    deadline = time.monotonic() + 5
+                    while not marker.exists() and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    self.assertTrue(marker.exists())
+                with mock.patch.object(tq, 'LOAD_STOP_SECONDS', 0):
+                    with self.assertRaisesRegex(ValueError, 'timed out stopping functional load'):
+                        load.stop()
+                self.assertTrue(load.thread.is_alive())
+                self.assertIsNone(load.child)
+                self.assertIsNotNone(child.process.returncode)
+                with self.assertRaises(ProcessLookupError):
+                    os.killpg(pid, 0)
+                # The worker is still paused with the same socket open.
+                with self.assertRaises((BrokenPipeError, ConnectionResetError)):
+                    child.channel.sendall(b'1')
+            finally:
+                resume.set()
+                load.stop()
+            attempts.assert_called_once()
+        self.assertEqual(marker.exists(), authorized)
+        self.assertEqual(load.runs, int(authorized))
+        self.assertEqual(load.started.is_set(), authorized)
+
+    def test_wrapper_requires_the_authorization_byte(self):
+        parent, peer = socket.socketpair()
+        with parent, peer:
+            reader, writer = os.pipe()
+            with os.fdopen(reader, 'rb') as status, os.fdopen(writer, 'wb') as status_writer:
+                fd = peer.fileno()
+                with subprocess.Popen(
+                        [sys.executable, '-I', '-S', '-c', tq.LOAD_WRAPPER, str(fd),
+                         str(writer), '/bin/echo', 'unexpected exec'],
+                        stdout=subprocess.PIPE, pass_fds=(fd, writer)) as wrapper:
+                    try:
+                        peer.close()
+                        status_writer.close()
+                        parent.shutdown(socket.SHUT_WR)
+                        stdout, _ = wrapper.communicate(timeout=5)
+                    finally:
+                        if wrapper.returncode is None:
+                            wrapper.kill()
+                    self.assertEqual(wrapper.returncode, 0)
+                    self.assertEqual(stdout, b'')
+                    self.assertEqual(status.read(), b'C')
+
+    def test_stop_accepts_acknowledged_cancellation_without_counting_a_run(self):
+        load = tq.Load([sys.executable, '-I', '-S', '-c', 'pass'], self.dir)
+        with mock.patch.object(load, 'monitor', side_effect=lambda child: load.stop()), \
+                (self.dir / 'load.log').open('wb') as log:
+            load.run_child(load.command, log)
+        self.assertEqual(load.runs, 0)
+        self.assertFalse(load.started.is_set())
+        self.assertIsNone(load.error)
+        self.assertIsNone(load.child)
+
+    def test_stop_rejects_death_after_live_sample_and_pending_status_before_revocation(self):
+        load = tq.Load([sys.executable, '-I', '-S', '-c', 'pass'], self.dir)
+        shutdown = socket.socket.shutdown
+
+        def stop_after_sample(child):
+            def die_before_shutdown(channel, how):
+                os.kill(child.process.pid, signal.SIGKILL)
+                deadline = time.monotonic() + 5
+                while not child.exited() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(child.exited())
+                shutdown(channel, how)
+
+            self.assertFalse(child.exited())
+            self.assertIsNone(child.read_spawn_status())
+            with mock.patch.object(socket.socket, 'shutdown', die_before_shutdown):
+                with self.assertRaisesRegex(ValueError, 'before confirming spawn or acknowledging'):
+                    load.stop()
+            self.assertEqual(child.process.returncode, -signal.SIGKILL)
+
+        with (self.dir / 'load.log').open('wb') as log:
+            load.run_child(load.command, log)
+            self.assertEqual(load.runs, 1)
+            with mock.patch.object(load, 'monitor', side_effect=stop_after_sample):
+                load.run_child(load.command, log)
+        self.assertEqual(load.runs, 1)
+        self.assertIsNotNone(load.error)
+        self.assertIsNone(load.child)
+
+    def test_stop_rejects_an_undeliverable_cancellation_acknowledgement(self):
+        attempted = self.dir / 'acknowledgement-attempted'
+        wrapper = f"""
+import os
+write = os.write
+def lose_status_pipe(fd, message):
+    if message == b'C':
+        with open({str(attempted)!r}, 'w'):
+            pass
+        os.close(fd)
+    return write(fd, message)
+os.write = lose_status_pipe
+""" + tq.LOAD_WRAPPER
+        load = tq.Load([sys.executable, '-I', '-S', '-c', 'pass'], self.dir)
+        with mock.patch.object(tq, 'LOAD_WRAPPER', wrapper), \
+                mock.patch.object(load, 'monitor', side_effect=lambda child: load.stop()), \
+                (self.dir / 'load.log').open('wb') as log:
+            with self.assertRaisesRegex(ValueError, 'before confirming spawn or acknowledging'):
+                load.run_child(load.command, log)
+        self.assertTrue(attempted.exists())
+        self.assertEqual(load.runs, 0)
+        self.assertFalse(load.started.is_set())
+        self.assertIsNone(load.child)
+
+    def test_cancellation_status_requires_a_complete_acknowledgement(self):
+        reader, writer = os.pipe()
+        with os.fdopen(reader, 'rb') as status, os.fdopen(writer, 'wb', buffering=0) as reply:
+            os.set_blocking(reader, False)
+            child = tq.LoadChild(None, status, None)
+            reply.write(b'C')
+            self.assertIsNone(child.read_spawn_status())
+            reply.write(b'R')
+            reply.close()
+            with self.assertRaisesRegex(ValueError, 'invalid functional load wrapper status'):
+                child.read_spawn_status()
+
+    def test_exec_failure_does_not_start_or_count_a_run(self):
+        load = tq.Load([str(self.dir / 'missing-cargo')], self.dir)
+        with self.assertRaisesRegex(ValueError, 'cannot execute functional load'):
+            load.start()
+        with self.assertRaisesRegex(ValueError, 'cannot execute functional load'):
+            load.stop()
+        self.assertEqual(load.runs, 0)
+        self.assertFalse(load.started.is_set())
+        self.assertIsNotNone(load.error)
+        self.assertIsNone(load.child)
+
+    def test_wrapper_death_at_spawn_boundary_does_not_start_or_count_a_run(self):
+        boundary = self.dir / 'at-spawn'
+        executed = self.dir / 'executed'
+        wrapper = f"""
+import os, signal, sys
+def die_before_spawn(event, args):
+    if event in ('os.exec', 'subprocess.Popen'):
+        with open({str(boundary)!r}, 'w'):
+            pass
+        os.kill(os.getpid(), signal.SIGKILL)
+sys.addaudithook(die_before_spawn)
+""" + tq.LOAD_WRAPPER
+        load = tq.Load([sys.executable, '-I', '-c',
+                        f'from pathlib import Path; Path({str(executed)!r}).touch()'], self.dir)
+        with mock.patch.object(tq, 'LOAD_WRAPPER', wrapper):
+            try:
+                with self.assertRaisesRegex(ValueError, 'wrapper exited before confirming spawn'):
+                    load.start()
+            finally:
+                with self.assertRaisesRegex(ValueError, 'wrapper exited before confirming spawn'):
+                    load.stop()
+        self.assertTrue(boundary.exists())
+        self.assertFalse(executed.exists())
+        self.assertEqual(load.runs, 0)
+        self.assertFalse(load.started.is_set())
+        self.assertIsNone(load.child)
+
+    def test_failed_command_exit_is_counted_and_load_retries(self):
+        command = self.dir / 'fail-once'
+        command.write_text(f'#!{sys.executable} -I\nimport os, sys\n'
+                           'os.unlink(sys.argv[0])\nsys.exit(101)\n')
+        command.chmod(0o755)
+        load = tq.Load([str(command)], self.dir)
+        load.thread.start()
+        load.thread.join(5)
+        with self.assertRaisesRegex(ValueError, 'cannot execute functional load'):
+            load.stop()
+        self.assertEqual(load.runs, 1)
+        self.assertTrue(load.started.is_set())
+        self.assertFalse(command.exists())
+
+    def test_exit_observation_keeps_the_leader_unreaped(self):
+        child = tq.LoadChild(None, None, mock.Mock(pid=4321))
+        with mock.patch.object(tq.sys, 'platform', 'linux'), \
+                mock.patch.object(tq.os, 'waitid', create=True) as waitid, \
+                mock.patch.multiple(tq.os, P_PID=1, WEXITED=2, WNOHANG=4, WNOWAIT=8,
+                                    create=True):
+            self.assertTrue(child.exited())
+            waitid.assert_called_once_with(1, 4321, 2 | 4 | 8)
+        with mock.patch.object(tq.sys, 'platform', 'darwin'), \
+                mock.patch.object(tq.select, 'kevent', create=True) as kevent, \
+                mock.patch.object(tq.select, 'kqueue', create=True) as make_queue, \
+                mock.patch.multiple(tq.select, KQ_FILTER_PROC=1, KQ_EV_ADD=2, KQ_NOTE_EXIT=4,
+                                    create=True):
+            queue = make_queue.return_value
+            queue.control.side_effect = [[], [object()]]
+            self.assertTrue(child.exited())
+            kevent.assert_called_once_with(4321, filter=1, flags=2, fflags=4)
+            self.assertEqual(queue.control.call_args_list,
+                             [mock.call([kevent.return_value], 0, 0), mock.call(None, 1, 0)])
+            queue.close.assert_called_once()
+        self.assertEqual(child.process.mock_calls, [])
+
+    def test_settlement_kills_before_wait_and_checks_delayed_group_disappearance(self):
+        calls = mock.Mock()
+        child = tq.LoadChild(None, None, calls.process)
+        child.process.pid = 4321
+        # A surviving member keeps the group present after the leader is reaped.
+        calls.killpg.side_effect = [None, None, PermissionError(), ProcessLookupError()]
+        with mock.patch.object(tq.sys, 'platform', 'linux'), \
+                mock.patch.object(tq.os, 'killpg', calls.killpg):
+            child.settle()
+        self.assertEqual(calls.mock_calls, [
+            mock.call.killpg(4321, signal.SIGKILL), mock.call.process.wait(timeout=mock.ANY),
+            mock.call.killpg(4321, 0), mock.call.killpg(4321, 0), mock.call.killpg(4321, 0)])
+
+    def test_macos_repeats_group_kill_while_the_leader_still_reserves_its_identity(self):
+        calls = mock.Mock()
+        child = tq.LoadChild(None, None, calls.process)
+        child.process.pid = 4321
+        calls.killpg.side_effect = [None, None, PermissionError(), ProcessLookupError()]
+        with mock.patch.object(tq.sys, 'platform', 'darwin'), \
+                mock.patch.object(tq.os, 'killpg', calls.killpg), \
+                mock.patch.object(tq.time, 'monotonic', return_value=0), \
+                mock.patch.object(tq.time, 'sleep'):
+            child.settle()
+        self.assertEqual(calls.mock_calls, [
+            mock.call.killpg(4321, signal.SIGKILL), mock.call.killpg(4321, signal.SIGKILL),
+            mock.call.killpg(4321, signal.SIGKILL), mock.call.process.wait(timeout=mock.ANY),
+            mock.call.killpg(4321, 0)])
+
+    def test_macos_successful_signals_leave_time_for_reap_and_group_disappearance(self):
+        for disappearance_delay in (0, 0.25):
+            with self.subTest(disappearance_delay=disappearance_delay):
+                now = 0
+                reaped_at = None
+                signals = []
+
+                def sleep(seconds):
+                    nonlocal now
+                    now += seconds
+
+                def reap(timeout):
+                    nonlocal reaped_at
+                    self.assertGreater(timeout, disappearance_delay)
+                    reaped_at = now
+
+                def killpg(pid, sig):
+                    self.assertEqual(pid, 4321)
+                    if sig == signal.SIGKILL:
+                        self.assertIsNone(reaped_at)
+                        signals.append(now)
+                    else:
+                        self.assertEqual(sig, 0)
+                        self.assertIsNotNone(reaped_at)
+                        if now >= reaped_at + disappearance_delay:
+                            raise ProcessLookupError
+
+                process = mock.Mock(pid=4321)
+                process.wait.side_effect = reap
+                child = tq.LoadChild(None, None, process)
+                with mock.patch.object(tq.sys, 'platform', 'darwin'), \
+                        mock.patch.object(tq.os, 'killpg', side_effect=killpg), \
+                        mock.patch.object(tq.time, 'monotonic', side_effect=lambda: now), \
+                        mock.patch.object(tq.time, 'sleep', side_effect=sleep):
+                    child.settle()
+                self.assertGreater(len(signals), 1)
+                self.assertLessEqual(reaped_at, tq.LOAD_SIGNAL_RETRY_SECONDS)
+                self.assertGreaterEqual(now, reaped_at + disappearance_delay)
+                self.assertLessEqual(now, reaped_at + disappearance_delay + tq.LOAD_POLL_SECONDS)
+
+    def test_signal_eperm_does_not_prove_group_disappearance(self):
+        process = mock.Mock(pid=4321)
+        child = tq.LoadChild(None, None, process)
+        with mock.patch.object(tq, 'LOAD_CLEANUP_SECONDS', 0), \
+                mock.patch.object(tq.os, 'killpg', side_effect=PermissionError) as killpg:
+            with self.assertRaisesRegex(ValueError, 'group 4321 did not disappear'):
+                child.settle()
+        process.wait.assert_called_once_with(timeout=0)
+        self.assertEqual(killpg.call_args_list, [mock.call(4321, signal.SIGKILL),
+                                                mock.call(4321, 0)])
+
+    def test_leader_reap_timeout_never_probes_the_group(self):
+        process = mock.Mock(pid=4321)
+        process.wait.side_effect = subprocess.TimeoutExpired(['fake-cargo'], 0)
+        child = tq.LoadChild(None, None, process)
+        with mock.patch.object(tq, 'LOAD_CLEANUP_SECONDS', 0), \
+                mock.patch.object(tq.os, 'killpg') as killpg:
+            with self.assertRaisesRegex(ValueError, 'leader 4321 did not exit after SIGKILL'):
+                child.settle()
+        process.wait.assert_called_once_with(timeout=0)
+        killpg.assert_called_once_with(4321, signal.SIGKILL)
 
 
 class Apply(QuarantineFiles):
@@ -1396,7 +1731,8 @@ elif name == 'docker':
         sys.exit(0)
     assert args[:2] == ['run', '--rm']
     if '--name' in args:
-        assert args == ['run', '--rm', '--name', 'afq-confirm', '-v', str(work / 'run') + ':/work',
+        assert args == ['run', '--rm', '--init', '--name', 'afq-confirm',
+                        '-v', str(work / 'run') + ':/work',
                         '-w', '/work/src', 'af-quarantine-confirm:1.88.0', 'python3',
                         'scripts/test-quarantine.py', 'confirm', '--report', '/work/confirm.json']
         check_exclusion()

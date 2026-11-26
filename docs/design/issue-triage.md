@@ -11,7 +11,7 @@ already on GitHub and submissions from external reporters.
 ## Current staged single-model flow
 
 On 2026-11-03 the owner selected a reusable custom structured Task capability for the next
-business flow: one captured issue input, one `gpt-6.1-sol` medium Worker on `codex-personal`,
+business flow: one captured issue input, one `gpt-6.2-sol` medium Worker on `codex-personal`,
 and a typed triage proposal, without a mandatory semantic verifier. The implementation and
 installation recipes are staged under [custom Tasks](../../fixtures/custom-tasks/README.md),
 with the [structural acceptance decision](../adr/2026-11-03-accept-package-defined-structured-tasks.md).
@@ -177,8 +177,8 @@ produces `needs-info`, never an invented size.
 |---|---|---|---|
 | `XL` | Needs a design document and owner decisions before any code. | `design` (`design/astra-kimi`) | Astra medium design challenged independently by Terra high and Kimi high, accepted by Sol medium; no implementation Task until the design is accepted |
 | `L` | Changes a contract, schema version, budget or sandbox boundary, or needs several Tasks. | `design` (`design/astra-kimi`) | A workstream: accepted Astra medium design challenged independently by Terra high and Kimi high, accepted by Sol medium before the first implementing Task, then `default` per Task |
-| `M` | Everything understood well enough to implement that is not `L` or `S`: two or three crates, a new fixture or test class, an additive field under an existing document version, a new or amended ADR that records a bounded change. | `default` (`bugfix/default-codex` or `impl/default-codex`) | GPT-6.1 Sol medium implementer; GPT-6.1 Terra high bugs and correctness reviewers; GPT-6 Astra medium evaluator. Every bound result is required for closure |
-| `S` | All of: one module; repro present or derivable from the evidence; no schema, contract or budget change; no new fixture or test class; no ADR. | `light` (`bugfix/light-kimi-terra-sol`) | Implementer: Pi `kimi-coding/k3.1-pro` high; correctness reviewer: `gpt-6.1-terra` high; evaluator: `gpt-6.1-sol` medium |
+| `M` | Everything understood well enough to implement that is not `L` or `S`: two or three crates, a new fixture or test class, an additive field under an existing document version, a new or amended ADR that records a bounded change. | `default` (`bugfix/default-codex` or `impl/default-codex`) | GPT-6.2 Sol medium implementer; GPT-6.1 Terra high bugs and correctness reviewers; GPT-6.2 Astra medium evaluator. Every bound result is required for closure |
+| `S` | All of: one module; repro present or derivable from the evidence; no schema, contract or budget change; no new fixture or test class; no ADR. | `light` (`bugfix/light-kimi-terra-sol`) | Implementer: Pi `kimi-coding/k3.1-pro` high; correctness reviewer: `gpt-6.1-terra` high; evaluator: `gpt-6.2-sol` medium |
 
 Two rules the check enforces mechanically (§6.3):
 
@@ -210,7 +210,7 @@ check, and one independent verifier reading the same Snapshot (ADR-0133, decisio
 
 - The business kind is `triage`, an `af.task-kind/3` package with `profile = "report"`, so Task
   files and `af task list` say what the Task is while the kernel runs the installed operators.
-- The **author** slot is the first triager: Codex `gpt-6.1-sol`, `model_reasoning_effort =
+- The **author** slot is the first triager: Codex `gpt-6.2-sol`, `model_reasoning_effort =
   "medium"`, Provider `codex-personal`, `read-source` only (no `execute-checks`, so no shell).
   It returns an `af/DocumentDraft@3` with two required sections, `Triage` (the
   `af/issue-triage@1` document in one fenced `json` block, §6.3) and `Rationale`, beside the

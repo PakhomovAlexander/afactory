@@ -14,7 +14,7 @@ correctness = "required"
 
 [packages."default-light/implementer"]
 version = "1.7.0"
-digest = "sha256:fd47bff4445ac3195add809628d2e31187b4ca3047b8c821c92a45bd60049fc4"
+digest = "sha256:51bbf8449f7e8f68ce1ca883ada1413fd34def8d5392d4d749d6018c4118d1ca"
 path = ".af/task-packages/default-light/implementer"
 
 [packages."default-light/correctness"]
