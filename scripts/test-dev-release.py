@@ -2622,6 +2622,51 @@ class ReleaseCLI(unittest.TestCase):
         (self.source / 'scripts/release-policy.json').write_text('{}')
         self.assertIn('authority_source_mismatch', self.cli('plan', ok=False).stderr)
 
+    def test_fetched_feature_receipts_and_ordered_refusals(self):
+        policy = json.loads((ROOT / 'scripts/release-policy.json').read_text())
+        first, second, *_ = policy['required_features']
+        feature = self.source / 'crates/af-contracts/src/backlog.rs'
+        feature.write_bytes(b' \t\r\n' + feature.read_bytes().replace(b'\n', b'\r\n') + b'\r\n\t ')
+        self.commit('whitespace in fetched feature')
+        self.git('-C', self.source, 'push', str(self.remote), 'main')
+        state = json.loads(self.cli('plan').stdout)
+        source = state['plan']['source']
+        self.assertNotEqual(source, self.initial)
+        expected = {name: hashlib.sha256(json.dumps(self.git(
+            '--git-dir', self.remote, 'show', source + ':' + name), sort_keys=True).encode()).hexdigest()
+                    for name in policy['required_features']}
+        self.assertEqual(state['receipts']['preflight']['features'], expected)
+
+        # A fresh plan using the same mirror must observe each changed main.
+        (self.state / 'run.json').unlink()
+        path = self.source / first
+        original = path.read_bytes()
+        later = self.source / second
+        later_original = later.read_bytes()
+        later.write_bytes(b'\xff')
+        path.write_text('{malformed')
+        self.commit('malformed schema before invalid text')
+        self.git('-C', self.source, 'push', str(self.remote), 'main')
+        self.assertIn('source_inclusion: invalid required schema ' + first,
+                      self.cli('plan', ok=False).stderr)
+
+        later.write_bytes(later_original)
+        path.unlink()
+        self.commit('missing schema')
+        self.git('-C', self.source, 'push', str(self.remote), 'main')
+        self.assertIn('command_failed: git -c (exit',
+                      self.cli('plan', ok=False).stderr)
+
+        path.mkdir()
+        (path / 'child').write_bytes(original)
+        self.commit('tree in place of required schema')
+        self.git('-C', self.source, 'push', str(self.remote), 'main')
+        self.assertIn('source_inclusion: invalid required schema ' + first,
+                      self.cli('plan', ok=False).stderr)
+        self.assertFalse((self.state / 'run.json').exists())
+        self.assertFalse((self.state / 'candidate').exists())
+        self.assertFalse(self.data().get('effects'))
+
     def test_read_only_source_keeps_contract_mutations_in_owned_fixture(self):
         sealed = self.base / 'sealed'
         shutil.copytree(self.source, sealed, ignore=shutil.ignore_patterns('.git'))
