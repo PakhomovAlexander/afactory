@@ -14,7 +14,7 @@ staged here because a Task Worker may not edit `.af/`. Installing them is a revi
    `"kernel/analyst" = "codex-main"` and `"kernel/report-verifier" = "codex-main"`, so the
    verifier uses a model distinct from the analyst's on the same admitted Codex Provider.
 
-`kernel/analyst` is Codex GPT-6.1 Sol at high effort with `read-source` and `execute-checks`
+`kernel/analyst` is Codex GPT-6.2 Sol at high effort with `read-source` and `execute-checks`
 (a shell in a clone that seals nothing back), 1.5M tokens and 3 hours per Attempt.
 `kernel/report-verifier` is GPT-6.1 Terra at high effort with `read-source` only. The built-in kind
 `report` needs no kind package.

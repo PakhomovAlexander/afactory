@@ -62,7 +62,7 @@ fn light_optimizer_ships_role_scoped_model_workers_with_captured_instructions() 
             worker.runner,
             TaskWorkerRunner::Model {
                 provider_kind: "codex".into(),
-                model: "gpt-6.1-sol".into(),
+                model: "gpt-6.2-sol".into(),
                 effort: "high".into(),
             }
         );

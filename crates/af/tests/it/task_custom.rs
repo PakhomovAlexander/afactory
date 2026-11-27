@@ -266,7 +266,7 @@ fn two_custom_kinds_use_the_real_model_adapter_and_structural_acceptance() {
         )
         .unwrap();
         let binding = &planned["plan"]["bindings"];
-        assert!(binding.to_string().contains("gpt-6.1-sol"), "{binding}");
+        assert!(binding.to_string().contains("gpt-6.2-sol"), "{binding}");
         assert!(binding.to_string().contains("medium"), "{binding}");
         assert!(binding.to_string().contains("codex-personal"), "{binding}");
         assert_eq!(binding.as_object().unwrap().len(), 1);
@@ -2426,6 +2426,8 @@ fn ci_health_malformed_snapshot_identity_is_refused_before_provider_admission() 
 
 #[test]
 fn ci_health_fixture_catalog_pins_the_exact_native_package_digest_output() {
+    use af_pipeline_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
+
     let root = crate::task_report::workspace();
     let fixture = root.join("fixtures/scenarios/maintenance-ci-health/task");
     let catalog: Value =
@@ -2452,6 +2454,23 @@ fn ci_health_fixture_catalog_pins_the_exact_native_package_digest_output() {
         );
     }
     assert_eq!(catalog["kinds"]["ci-diagnosis"], "ci/diagnosis-kind");
+    let worker_path = root
+        .join(
+            catalog["packages"]["ci/diagnosis-worker"]["path"]
+                .as_str()
+                .unwrap(),
+        )
+        .join("worker.toml");
+    let worker: TaskWorkerManifest =
+        toml::from_str(&std::fs::read_to_string(worker_path).unwrap()).unwrap();
+    assert_eq!(
+        worker.runner,
+        TaskWorkerRunner::Model {
+            provider_kind: "codex".into(),
+            model: "gpt-6.2-sol".into(),
+            effort: "medium".into(),
+        }
+    );
 }
 
 #[test]

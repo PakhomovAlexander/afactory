@@ -1,6 +1,6 @@
 "schema" = "af.worker/1"
 "name" = "issue-internal/investigator"
-"version" = "1.0.1"
+"version" = "1.0.2"
 
 ["signature"]
 "effects" = ["read-source"]
@@ -90,5 +90,5 @@
 ["runner"]
 "kind" = "model"
 "provider_kind" = "codex"
-"model" = "gpt-6.1-sol"
+"model" = "gpt-6.2-sol"
 "effort" = "high"

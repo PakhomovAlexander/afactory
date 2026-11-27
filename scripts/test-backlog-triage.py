@@ -376,6 +376,23 @@ class Fixture(unittest.TestCase):
         return R.assemble(self.manifest, row or issue(), [], [dict(number=433, title='Task waits')])
 
 
+class PathLineReferenceParser(unittest.TestCase):
+    def test_unsafe_quoted_numeric_colon_filename_is_one_refusal_without_suffix_entry(self):
+        entries = {'src/code.rs': None, 'docs/a:12 b.md': None}
+        with mock.patch.object(subprocess, 'Popen',
+                               side_effect=AssertionError('parser ran a process')) as processes:
+            for prefix in ('/etc/', '../'):
+                for opening, closing in (('`', '`'), ('<', '>'), ('"', '"')):
+                    reference = prefix + opening + 'docs/a:12 b.md:1'
+                    body = 'src/code.rs:3.' + reference + closing
+                    with self.subTest(body=body):
+                        self.assertEqual(list(R.path_line_references(body, entries)), [
+                            ('src/code.rs:3', 'src/code.rs', 3, False),
+                            (reference, 'docs/a:12 b.md', 1, True),
+                        ])
+        self.assertEqual(processes.call_count, 0)
+
+
 class GitFixture(Fixture):
     real_git = True
 
@@ -802,19 +819,6 @@ class Sources(GitFixture):
                             # traversal authority rather than consume it as prose.
                             retained = '..' if punctuation == '...' and prefix == '/etc/' else ''
                             self.assertEqual(result['missing_evidence'][0]['reference'], retained + reference[:-1])
-
-    def test_unsafe_quoted_numeric_colon_filename_is_one_refusal_without_suffix_entry(self):
-        entries = {path: value for path, value in self.manifest.entries.items() if path != 'b.md'}
-        with mock.patch.object(self.manifest, 'entries', entries):
-            for opening, closing in (('`', '`'), ('<', '>'), ('"', '"')):
-                reference = '/etc/' + opening + 'docs/a:12 b.md:1'
-                body = 'src/code.rs:3.' + reference + closing
-                with self.subTest(body=body):
-                    result = json.loads(self.bundle(issue(body=body))['sources']['excerpts']['text'])
-                    self.assertEqual([(e['path'], e['line']) for e in result['excerpts']], [('src/code.rs', 3)])
-                    self.assertIn('line 3', result['excerpts'][0]['text'])
-                    self.assertEqual(result['missing_evidence'], [dict(
-                        reference=reference, reason='unsafe bracket prefix refused')])
 
     def test_punctuation_directly_before_quoted_reference_preserves_both_excerpts(self):
         for punctuation in ('.', '...', ',', ';'):

@@ -870,7 +870,7 @@ fn performance_executions<'a>(
         };
         let role = slot.rsplit('.').next().ok_or("Missing performance role")?;
         let (expected_model, expected_effort) = match role {
-            "implementer" => ("gpt-6.1-sol", "medium"),
+            "implementer" => ("gpt-6.2-sol", "medium"),
             "bugs" => ("gpt-6.1-terra", "high"),
             "correctness" => ("gpt-6.1-terra", "high"),
             "evaluator" => ("gpt-6.1-terra", "medium"),
@@ -1066,7 +1066,7 @@ mod tests {
     }
     fn team() -> BTreeMap<String, WorkerExecutionV3> {
         [
-            ("implementer", "gpt-6.1-sol", "medium"),
+            ("implementer", "gpt-6.2-sol", "medium"),
             ("bugs", "gpt-6.1-terra", "high"),
             ("correctness", "gpt-6.1-terra", "high"),
             ("evaluator", "gpt-6.1-terra", "medium"),
@@ -1104,6 +1104,7 @@ mod tests {
         check(&verification, "verification").unwrap();
         assert!(check(&verification, "implement").is_err());
         for (slot, field, value) in [
+            ("implementer", "model", "gpt-6.1-sol"),
             ("implementer", "effort", "high"),
             ("bugs", "effort", "medium"),
             ("evaluator", "model", "gpt-6-sol"),

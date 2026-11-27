@@ -53,7 +53,7 @@ automatic Integration are outside this path.
   without writing. Default onboarding already emits this authority; use plain `af onboard`
   to validate it. Review the diff and commit `.af/` before planning; local, uncommitted files
   are not authority.
-  The generated implementer uses Codex `gpt-6.1-sol` at high effort; independent
+  The generated implementer uses Codex `gpt-6.2-sol` at high effort; independent
   evaluator uses `gpt-6.1-terra` at high effort, both on `codex-main`.
   Native Review Workers follow `--runner`; with Codex they use `gpt-6.1-terra` at high effort.
   Default `af onboard` emits the same common catalog and an explicit standalone Review example.
@@ -620,7 +620,7 @@ af task run pagination-3 --from pagination-cli --execute   # starts from the par
 
 `--from` binds the partial tree as the new Task's source when TASK recorded no review round; the
 new Task runs its whole pipeline on it, and its own result is what can be delivered. `af task
-plan` prints each Worker slot's Attempt wall beside its model (`implementer: gpt-6.1-sol/high
+plan` prints each Worker slot's Attempt wall beside its model (`implementer: gpt-6.2-sol/high
 via codex-main, Attempt wall 30 min`), and `--json` lists them as `slots`, so a wall too short for
 the goal is visible before the Task runs.
 
@@ -636,10 +636,10 @@ describes Sol-written default/research implementation, separate from the Kimi li
 
 | Slot | Package | Model | Effort |
 |---|---|---|---|
-| `implementer` | `issue-internal/implementer` | `gpt-6.1-sol` | `medium` |
+| `implementer` | `issue-internal/implementer` | `gpt-6.2-sol` | `medium` |
 | `bugs` | `issue-internal/bugs` | `gpt-6.1-terra` | `high` |
 | `correctness` | `issue-internal/correctness` | `gpt-6.1-terra` | `high` |
-| `evaluator` | `issue-internal/evaluator` | `gpt-6-astra` | `medium` |
+| `evaluator` | `issue-internal/evaluator` | `gpt-6.2-astra` | `medium` |
 
 Research selections use `issue-internal/researched-implementer`, with the same model and effort
 and a required accepted `research_report`. Every bound reviewer must return for closure. The
@@ -655,8 +655,8 @@ charges across manually authorized continuations; existing Tasks retain their ca
 ## The light default pipeline
 
 `bugfix/light-kimi-terra-sol` is the staged default: Pi `kimi-coding/k3.1-pro` high
-implements, Terra6.1 high reviews and Sol6.1 medium evaluates. `bugfix/light-codex` uses Sol6.1
-medium implementation, Terra6.1 high review and Astra6 medium evaluation. Both require known
+implements, Terra6.1 high reviews and Sol6.2 medium evaluates. `bugfix/light-codex` uses Sol6.2
+medium implementation, Terra6.1 high review and Astra6.2 medium evaluation. Both require known
 cause, deterministic regression and narrow non-authority scope. `impl/light-kimi-codex` uses the
 Kimi roles for a specified small implementation with deterministic acceptance checks; it does
 not require an existing bug. Sensitive or uncertain scope requires explicit escalation.

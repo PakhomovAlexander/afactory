@@ -565,6 +565,51 @@ mod tests {
         assert_eq!(port["items"]["$id"], "urn:afactory:worker-output:0");
     }
     #[test]
+    fn document_draft_v3_projects_into_the_real_strict_reply_envelope() {
+        let mut document_schema: Value =
+            serde_json::from_str(include_str!("../../../../schemas/document-draft-v3.json"))
+                .unwrap();
+        assert_eq!(
+            document_schema["properties"]["schema"],
+            json!({"const":"af.document-draft/3"}),
+            "the public schema deliberately leaves the scalar literal untyped"
+        );
+        document_schema.as_object_mut().unwrap().remove("$id");
+        document_schema.as_object_mut().unwrap().remove("$schema");
+        let input = request(BTreeMap::from([("draft".into(), document_schema.clone())]));
+        let projected = strict(&input).unwrap().unwrap();
+        validate_strict(&projected).unwrap();
+        assert_eq!(
+            projected["properties"]["outputs"]["properties"]["draft"]["items"]["properties"]["schema"],
+            json!({"type":"string","enum":["af.document-draft/3"]})
+        );
+
+        let draft = json!({
+            "schema":"af.document-draft/3",
+            "title":"Native schema projection",
+            "sections":[{"heading":"Decision","body":"Infer string for the untyped draft constant."}],
+            "citations":[
+                {"kind":"source","name":"requirements"},
+                {"kind":"repository","location":{
+                    "path":"crates/af-runner/src/task/reply_schema.rs","line":1
+                }}
+            ]
+        });
+        assert!(
+            super::super::schema_validator(&document_schema)
+                .unwrap()
+                .is_valid(&draft)
+        );
+        let reply = json!({"schema":"af.worker-reply/1","outputs":{"draft":[draft]}});
+        assert!(
+            jsonschema::draft202012::options()
+                .build(&projected)
+                .unwrap()
+                .is_valid(&reply)
+        );
+    }
+
+    #[test]
     fn scalar_literal_matrix_keeps_types_values_and_explicit_restrictions() {
         for (payload, expected_type, expected_enum) in [
             (

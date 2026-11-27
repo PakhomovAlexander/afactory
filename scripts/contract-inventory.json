@@ -153,8 +153,8 @@
       ],
       "schemas": [
         "schemas/test-class-catalog-v1.json",
-        "schemas/test-class-plan-v2.json",
-        "schemas/test-class-receipt-v2.json",
+        "schemas/test-class-plan-v3.json",
+        "schemas/test-class-receipt-v3.json",
         "schemas/test-quarantine-confirm-v1.json",
         "schemas/test-quarantine-v1.json"
       ]
@@ -364,7 +364,7 @@
         "schemas/project-workspace-removed-v1.json",
         "schemas/project-workspaces-v1.json",
         "schemas/release-provenance-v1.json",
-        "schemas/release-test-binding-v2.json",
+        "schemas/release-test-binding-v3.json",
         "schemas/remote-check-evidence-v1.json",
         "schemas/repair-allowed-implementation-v1.json",
         "schemas/repair-assessment-v1.json",
