@@ -593,7 +593,7 @@ round the selected Pipeline must declare `findings` (the installed
 [`bugfix/default-codex`](#the-default-pipeline) and
 [`bugfix/light-codex`](#the-light-default-pipeline) do), or the
 plan is refused with the reason. `af task show NEW` prints `continues TASK round N`, `--json`
-carries `continues` (`af/task-inspection@22`), and `af task report` names it in NEW's row.
+carries `continues` (`af/task-inspection@23`), and `af task report` names it in NEW's row.
 
 ### An Attempt wall keeps the edits
 

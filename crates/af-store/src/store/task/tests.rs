@@ -274,7 +274,7 @@ impl Fixture {
         };
         let plan_id = cas
             .put_artifact(
-                task::EXECUTION_PLAN_V4,
+                task::EXECUTION_PLAN_V5,
                 producer(),
                 vec![revision_id.clone()],
                 None,
@@ -406,7 +406,7 @@ impl Fixture {
         self.plan_id = self
             .cas
             .put_artifact(
-                task::EXECUTION_PLAN_V4,
+                task::EXECUTION_PLAN_V5,
                 producer(),
                 vec![self.revision_id.clone()],
                 None,
@@ -690,7 +690,7 @@ fn stripping_generated_origin_is_rejected_against_trusted_dependency_provenance(
     let forged = f
         .cas
         .put_artifact(
-            task::EXECUTION_PLAN_V4,
+            task::EXECUTION_PLAN_V5,
             producer(),
             vec![],
             None,
@@ -2155,7 +2155,7 @@ fn pi_authority_version_bump_refuses_old_execution_plan_artifact_types() {
     let fixture = Fixture::new(false);
     let value = serde_json::to_value(&fixture.plan).unwrap();
     let current: ExecutionPlan =
-        payload(&fixture.cas, &fixture.plan_id, task::EXECUTION_PLAN_V4).unwrap();
+        payload(&fixture.cas, &fixture.plan_id, task::EXECUTION_PLAN_V5).unwrap();
     assert_eq!(serde_json::to_value(current).unwrap(), value);
     for old_type in ["af/ExecutionPlan@1", "af/ExecutionPlan@2"] {
         let old = fixture
@@ -2164,11 +2164,11 @@ fn pi_authority_version_bump_refuses_old_execution_plan_artifact_types() {
             .unwrap()
             .0;
         let error =
-            payload::<ExecutionPlan>(&fixture.cas, &old, task::EXECUTION_PLAN_V4).unwrap_err();
+            payload::<ExecutionPlan>(&fixture.cas, &old, task::EXECUTION_PLAN_V5).unwrap_err();
         assert!(
             error
                 .to_string()
-                .contains("Expected exact af/ExecutionPlan@4")
+                .contains("Expected exact af/ExecutionPlan@5")
         );
     }
 }
@@ -2288,11 +2288,11 @@ fn contract_gate_corrupt_truncated_and_unknown_documents_never_reset_task_budget
             )
             .unwrap()
             .0;
-        let error = payload::<ExecutionPlan>(&f.cas, &unknown, task::EXECUTION_PLAN_V4)
+        let error = payload::<ExecutionPlan>(&f.cas, &unknown, task::EXECUTION_PLAN_V5)
             .unwrap_err()
             .to_string();
         assert!(
-            error.contains("Expected exact af/ExecutionPlan@4"),
+            error.contains("Expected exact af/ExecutionPlan@5"),
             "{error}"
         );
         assert_eq!(f.store.replay(&run).unwrap(), prefix);

@@ -19,6 +19,7 @@ dependencies = [
  "af-process",
  "af-project",
  "af-runner",
+ "af-runner-antigravity",
  "af-runner-claude",
  "af-runner-codex",
  "af-runner-pi",
@@ -169,6 +170,20 @@ dependencies = [
  "af-telemetry",
  "jsonschema",
  "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "af-runner-antigravity"
+version = "0.15.3-rc.1"
+dependencies = [
+ "af-contracts",
+ "af-runner",
+ "af-sandbox",
+ "af-store",
+ "af-telemetry",
  "serde_json",
  "tempfile",
  "tracing",

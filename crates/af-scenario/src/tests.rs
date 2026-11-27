@@ -172,7 +172,7 @@ pub fn schema(name: &str) -> jsonschema::Validator {
         "scenario-ci-diagnosis-v2.json",
         "scenario-task-output-field-v1.json",
         "artifact-envelope-v1.json",
-        "task-contracts-v4.json",
+        "task-contracts-v5.json",
         "scenario-roadmap-proposal-v2.json",
         "scenario-roadmap-v3.json",
     ] {

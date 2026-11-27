@@ -2084,7 +2084,7 @@ pub(super) fn assert_current_plan_schemas(
         assert!(!validator.is_valid(&old));
         if file.starts_with("compiled") {
             for reference in [
-                "urn:af:schema:task-inspection:22#/properties/graph",
+                "urn:af:schema:task-inspection:23#/properties/graph",
                 "urn:af:schema:task-plan-inspection:7#/properties/graph",
             ] {
                 let enclosing = schema_registry::validator(reference);

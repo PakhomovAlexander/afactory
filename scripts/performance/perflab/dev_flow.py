@@ -260,7 +260,7 @@ def validate(document, treatment=None, evidence=None):
         require(isinstance(round_.get("wall_ns"), int) and round_["wall_ns"] >= 0,
                 f"round {index}: invalid wall time")
         result = round_.get("result", {})
-        require(result.get("schema") == "af/task-inspection@22",
+        require(result.get("schema") == "af/task-inspection@23",
                 f"round {index}: unsupported inspection schema")
         require(result.get("state", {}).get("phase") == "finished",
                 f"round {index}: Task is not finished")

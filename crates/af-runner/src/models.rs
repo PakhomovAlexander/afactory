@@ -36,6 +36,9 @@ pub const CLAUDE_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 /// The Codex reasoning-effort levels af passes as `-c model_reasoning_effort="…"`.
 pub const CODEX_EFFORTS: [&str; 6] = ["low", "medium", "high", "xhigh", "max", "ultra"];
 
+/// The Antigravity effort levels `agy --help` documents for `--effort`.
+pub const ANTIGRAVITY_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
 /// The aliases Claude Code's documentation resolves, and the exact ID each resolves to today.
 const CLAUDE_ALIASES: [(&str, &str); 4] = [
     ("fable", "claude-fable-5-1"),
@@ -60,6 +63,7 @@ pub enum Kind {
     Pi,
     Claude,
     Codex,
+    Antigravity,
 }
 
 impl Kind {
@@ -68,6 +72,7 @@ impl Kind {
             "pi" => Some(Kind::Pi),
             "claude" => Some(Kind::Claude),
             "codex" => Some(Kind::Codex),
+            "antigravity" => Some(Kind::Antigravity),
             _ => None,
         }
     }
@@ -77,6 +82,7 @@ impl Kind {
             Kind::Pi => "pi",
             Kind::Claude => "claude",
             Kind::Codex => "codex",
+            Kind::Antigravity => "antigravity",
         }
     }
 
@@ -86,6 +92,7 @@ impl Kind {
             Kind::Pi => af_contracts::task::plan::PI_EFFORTS,
             Kind::Claude => &CLAUDE_EFFORTS,
             Kind::Codex => &CODEX_EFFORTS,
+            Kind::Antigravity => &ANTIGRAVITY_EFFORTS,
         }
     }
 
@@ -93,7 +100,7 @@ impl Kind {
     pub fn documented_aliases(self) -> &'static [(&'static str, &'static str)] {
         match self {
             Kind::Claude => &CLAUDE_ALIASES,
-            Kind::Pi | Kind::Codex => &[],
+            Kind::Pi | Kind::Codex | Kind::Antigravity => &[],
         }
     }
 
@@ -102,6 +109,7 @@ impl Kind {
             Kind::Pi => "Pi SDK",
             Kind::Claude => "Claude Code",
             Kind::Codex => "Codex",
+            Kind::Antigravity => "Antigravity",
         }
     }
 }
@@ -586,7 +594,7 @@ fn known_ids(kind: Kind) -> impl Iterator<Item = &'static str> {
 /// A vendor-prefixed exact ID, whose family-and-version form leaves the vendor out:
 /// `claude-fable-5-1` is `Fable 5.1`.
 fn vendor_prefixed(id: &str) -> bool {
-    id.starts_with("claude-")
+    id.starts_with("claude-") || id.starts_with("gemini-")
 }
 
 /// Lower case, with `.`, `_` and whitespace read as `-`.

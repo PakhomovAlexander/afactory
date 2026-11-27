@@ -1136,7 +1136,7 @@ fn native_models(
 ) -> Result<BTreeMap<(String, String), Option<String>>, String> {
     use af_contracts::task::pipeline::TaskOperatorV1;
     use af_contracts::task::{
-        EXECUTION_PLAN_V4, REVIEW_HISTORY_V1, TASK_REVISION_V1, TaskRevisionV1, plan::*, review::*,
+        EXECUTION_PLAN_V5, REVIEW_HISTORY_V1, TASK_REVISION_V1, TaskRevisionV1, plan::*, review::*,
     };
     use af_graph::task::{CompiledOperator, CompiledTask};
     let mut id = round_id.to_owned();
@@ -1151,7 +1151,7 @@ fn native_models(
         let record = cas
             .get_artifact(&round.invocation.plan_id)
             .map_err(|e| e.to_string())?;
-        if record.artifact_type != EXECUTION_PLAN_V4 {
+        if record.artifact_type != EXECUTION_PLAN_V5 {
             return Err("Attribution lost its original plan".into());
         }
         let plan: ExecutionPlan =

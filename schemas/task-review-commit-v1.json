@@ -17,22 +17,22 @@
       "$ref": "urn:af:schema:task-invocation:1"
     },
     "integration_id": {
-      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
     },
     "snapshot_id": {
-      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
     },
     "prior_history_id": {
-      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
     },
     "pending_claims": {
       "type": "object",
       "maxProperties": 4096,
       "propertyNames": {
-        "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+        "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
       },
       "additionalProperties": {
-        "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+        "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
       }
     },
     "outcome": {

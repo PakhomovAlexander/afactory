@@ -667,7 +667,7 @@ fn plan(cas: &Cas, task: &TaskRevisionV1, revision_id: &str, name: &str) -> Stri
     plan.inputs = task.inputs.clone();
     put_by(
         cas,
-        EXECUTION_PLAN_V4,
+        EXECUTION_PLAN_V5,
         kernel(name),
         vec![revision_id.into()],
         None,

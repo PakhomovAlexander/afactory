@@ -1,4 +1,4 @@
-//! The agent-facing `af/provider-models@4` document (ADR-0148).
+//! The agent-facing `af/provider-models@5` document (ADR-0148).
 //!
 //! Like the onboarding documents it carries no Rust type: `af provider models` builds it from
 //! what each harness's own protocol answered. The schema is the contract, and these cases pin
@@ -9,7 +9,7 @@
 use super::{assert_invalid, assert_valid};
 use serde_json::{Value, json};
 
-const SCHEMA: &str = "provider-models-v4.json";
+const SCHEMA: &str = "provider-models-v5.json";
 
 fn fable() -> Value {
     json!({
@@ -24,7 +24,7 @@ fn fable() -> Value {
 
 fn listed() -> Value {
     json!({
-        "schema": "af/provider-models@4",
+        "schema": "af/provider-models@5",
         "exit_code": 0,
         "token_free": true,
         "proves": "af recognises these spellings for this Provider",
@@ -75,6 +75,22 @@ fn listed_unavailable_and_resolved_documents_are_valid() {
     codex["providers"][0]["models"][0]["id"] = json!("gpt-6.1-sol");
     codex["providers"][0]["models"][0]["default_effort"] = json!("low");
     assert_valid(SCHEMA, &codex);
+
+    let mut antigravity = listed();
+    antigravity["providers"][0]["id"] = json!("antigravity-main");
+    antigravity["providers"][0]["kind"] = json!("antigravity");
+    antigravity["providers"][0]["source"] = json!("agy acp session/new");
+    antigravity["providers"][0]["harness_version"] = json!("1.5.18");
+    antigravity["providers"][0]["models"][0]["id"] = json!("gemini-4-neon-high");
+    antigravity["providers"][0]["models"][0]["display_name"] = json!("Gemini 4 Neon (High)");
+    antigravity["providers"][0]["models"][0]["aliases"] = json!([]);
+    antigravity["providers"][0]["models"][0]["default_effort"] = json!("high");
+    antigravity["providers"][0]["static_rules"]["documented_aliases"] = json!([]);
+    assert_valid(SCHEMA, &antigravity);
+
+    let mut retired_v4 = antigravity.clone();
+    retired_v4["schema"] = json!("af/provider-models@4");
+    assert_invalid(SCHEMA, &retired_v4, "retired v4 provider-models");
 
     let mut unavailable = listed();
     unavailable["exit_code"] = json!(7);

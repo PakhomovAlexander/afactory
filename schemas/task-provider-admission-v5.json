@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:task-provider-admission:4",
-  "title": "TaskProviderAdmission@4",
+  "$id": "urn:af:schema:task-provider-admission:5",
+  "title": "TaskProviderAdmission@5",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -13,10 +13,10 @@
   ],
   "properties": {
     "plan_id": {
-      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
     },
     "invocation_policy_id": {
-      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
     },
     "outcome": {
       "const": "passed"
@@ -36,7 +36,7 @@
     "execution": {
       "allOf": [
         {
-          "$ref": "urn:af:schema:task-contracts:4#/$defs/workerExecution"
+          "$ref": "urn:af:schema:task-contracts:5#/$defs/workerExecution"
         },
         {
           "properties": {

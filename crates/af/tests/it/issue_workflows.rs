@@ -220,7 +220,7 @@ fn catalog_contracts_and_all_nine_native_plans_preserve_roles_gates_and_stage_da
     }
     std::fs::write(
         home.join("providers.toml"),
-        toml::to_string(&json!({"version":4,"providers":[
+        toml::to_string(&json!({"version":5,"providers":[
       {"id":"pi-personal","kind":"pi","backend":"kimi-coding","auth_dir":home,"sdk_entrypoint":sdk},
       {"id":"codex-personal","kind":"codex","auth_dir":auth}]}))
         .unwrap(),
@@ -1507,7 +1507,7 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':10,'cached_inp
     )
     .unwrap();
     let providers = home.join("providers.toml");
-    std::fs::write(&providers, toml::to_string(&json!({"version":4,"providers":[
+    std::fs::write(&providers, toml::to_string(&json!({"version":5,"providers":[
         {"id":"codex-personal","kind":"codex","auth_dir":auth},
         {"id":"pi-personal","kind":"pi","backend":"kimi-coding","auth_dir":home,"sdk_entrypoint":sdk}
     ]})).unwrap()).unwrap();
@@ -1629,7 +1629,7 @@ fn launcher_freshness_uses_native_catalog_and_refuses_stale_or_unavailable_witho
     let providers = home.join("providers.toml");
     std::fs::write(
         &providers,
-        toml::to_string(&json!({"version":4,"providers":[
+        toml::to_string(&json!({"version":5,"providers":[
         {"id":"codex-personal","kind":"codex","auth_dir":auth}]}))
         .unwrap(),
     )

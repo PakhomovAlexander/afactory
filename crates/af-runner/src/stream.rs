@@ -43,6 +43,24 @@ impl HarnessStream {
             tools: vec!["command_execution".into(), "mcp_tool_call".into()],
         }
     }
+
+    /// `agy --input-format stream-json --output-format stream-json`: emits `init`, `step_update`,
+    /// and `result` NDJSON frames.
+    pub fn antigravity() -> Self {
+        Self {
+            harness: Harness::Antigravity,
+            tools: vec![
+                "view_file".into(),
+                "find_by_name".into(),
+                "grep_search".into(),
+                "list_dir".into(),
+                "write_to_file".into(),
+                "replace_file_content".into(),
+                "multi_replace_file_content".into(),
+                "run_command".into(),
+            ],
+        }
+    }
 }
 
 /// Whether Telemetry records harness streams in this process now: a writer at `spans` or

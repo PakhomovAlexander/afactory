@@ -124,7 +124,7 @@ fn task_file_and_catalog_schemas_match_real_fixtures_and_cli_refusals() {
         planned["selection"]["assessment"]["decision"]["kind"],
         "selected"
     );
-    valid(&validator("task-inspection-v22.json"), &planned);
+    valid(&validator("task-inspection-v23.json"), &planned);
     let cases = [
         ("/schema", json!("af.task-file/2")),
         ("/task_id", json!("bad/task")),
@@ -232,7 +232,7 @@ fn compiled_task_schema_matches_real_graph_and_closed_rust_variants() {
         cli(&repo, &state, &["task", "plan", "--file", "ticket.json"]),
         0,
     );
-    valid(&validator("task-inspection-v22.json"), &inspection);
+    valid(&validator("task-inspection-v23.json"), &inspection);
     let schema = validator("compiled-task-v6.json");
     let graph = &inspection["graph"];
     valid(&schema, graph);
@@ -377,7 +377,7 @@ fn prepared_task_opening_uses_current_output_contracts() {
             layout,
         ),
         (
-            Some("af/task-inspection@22"),
+            Some("af/task-inspection@23"),
             Some("af/task-event@4"),
             Some("review.kernel/RunEvent@5"),
             "review.kernel/RunEvent@5",
@@ -416,7 +416,7 @@ fn prepared_task_opening_uses_current_output_contracts() {
     );
 
     for (file, mut document, old) in [
-        ("task-inspection-v22.json", shown, "af/task-inspection@21"),
+        ("task-inspection-v23.json", shown, "af/task-inspection@21"),
         ("task-event-v4.json", line, "af/task-event@3"),
         ("run-event-v5.json", envelope, "review.kernel/RunEvent@4"),
     ] {
@@ -439,7 +439,7 @@ fn prepared_task_opening_uses_current_output_contracts() {
                     .unwrap();
                 assert_eq!(result.status.code(), Some(1));
                 assert!(
-                    String::from_utf8_lossy(&result.stderr).contains("only af/task-inspection@22")
+                    String::from_utf8_lossy(&result.stderr).contains("only af/task-inspection@23")
                 );
             }
         }
@@ -450,14 +450,14 @@ fn prepared_task_opening_uses_current_output_contracts() {
 fn inspection_and_list_schemas_preserve_actual_output_and_exact_record_types() {
     let directory = tempfile::tempdir().unwrap();
     let (repo, state) = task_cli::fixture_named(directory.path(), "pagination");
-    let inspection_schema = validator("task-inspection-v22.json");
+    let inspection_schema = validator("task-inspection-v23.json");
     let list_schema = validator("task-list-entry-v5.json");
     let planned = json_output(
         cli(&repo, &state, &["task", "plan", "--file", "ticket.json"]),
         0,
     );
     valid(&inspection_schema, &planned);
-    assert_eq!(planned["schema"], "af/task-inspection@22");
+    assert_eq!(planned["schema"], "af/task-inspection@23");
     for old in ["af/task-inspection@17", "af/task-inspection@18"] {
         let mut retired = planned.clone();
         retired["schema"] = json!(old);
@@ -506,7 +506,7 @@ fn inspection_and_list_schemas_preserve_actual_output_and_exact_record_types() {
         0,
     );
     valid(&inspection_schema, &finished);
-    assert_eq!(finished["schema"], "af/task-inspection@22");
+    assert_eq!(finished["schema"], "af/task-inspection@23");
     assert!(
         !finished["runtime_observations"]
             .as_array()

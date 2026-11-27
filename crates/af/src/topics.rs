@@ -565,8 +565,8 @@ A command that classifies its own outcomes — `af provider status` and `af prov
 its own versioned document instead, carrying a classified outcome and af-authored detail;
 Pi setup uses `detail`, while the other Provider reports use `diagnostic`. Stderr still gets
 one diagnostic line, so discarding stdout never hides a refusal. The Provider
-documents are af/provider-detect@4 (`af provider detect`), af/provider-status@6,
-af/provider-setup@2, af/pi-provider-setup@4 and af/provider-models@4; none carries an account,
+documents are af/provider-detect@5 (`af provider detect`), af/provider-status@7,
+af/provider-setup@3, af/pi-provider-setup@4 and af/provider-models@5; none carries an account,
 a credential or the Provider CLI's own words.
 
 One command prints JSON lines instead and takes no --json: `af task events ID` writes one
@@ -580,13 +580,13 @@ never under --json.
 
 Native Review commands use current Task and Ledger documents:
 
-  af review inspect TASK_ID --json    af/task-inspection@22
-  af review show TASK_ID --json       af/task-inspection@22
+  af review inspect TASK_ID --json    af/task-inspection@23
+  af review show TASK_ID --json       af/task-inspection@23
   af review ledger TASK_ID --json     af/review-ledger@3
   af review ledger TASK_ID --format sarif   SARIF 2.1.0, af/findings-sarif@1
   af review report TASK_ID --json     af/task-report@4
   af review decision-context ID --json    af/review-decision-context@1
-  af review decide NEW --from ID --file BATCH --json   af/task-inspection@22 or af/task-selection@3
+  af review decide NEW --from ID --file BATCH --json   af/task-inspection@23 or af/task-selection@3
   af review export TASK_ID PROPOSAL_ID      exact patch bytes, no JSON envelope
 
 The Ledger carries the complete selected canonical Finding Set and original Report envelopes,
@@ -642,7 +642,7 @@ Scenario and Ant documents (ADR-0274; `af help scenarios`):
 
 The Task documents, each named by its `schema`:
 
-  af task show --json                  af/task-inspection@22; a collected Task:
+  af task show --json                  af/task-inspection@23; a collected Task:
                                        af/task-collected-inspection@4
   af task show --checks --json         af/task-checks@4
   af task list --json                  af/task-list@5, one af/task-list-entry@5 per Task
@@ -665,7 +665,7 @@ The Task documents, each named by its `schema`:
                                        and `next_action`; an infeasible plan carries
                                        planning_diagnostic.required_limits and .reserves
 
-af/task-inspection@22, af/task-collected-inspection@4, af/task-checks@4, each
+af/task-inspection@23, af/task-collected-inspection@4, af/task-checks@4, each
 af/task-list-entry@5, the groups of af/task-attention@2, af/task-report@4, af/task-findings@3,
 af/task-status@3, af/task-detached@4, af/task-cancelled@3 and the terminal record of
 af/task-event@4 carry the Task's `state` (`af help task-states`), its `next_action` carrying the
@@ -846,9 +846,10 @@ Examples:
   af task run fix-2 --from fix-1 --round 1 --goal goal.md --execute";
 
 const PROVIDERS: &str = "\
-A Provider is a login of an official model CLI, `claude` (Claude Code) or `codex` (Codex CLI),
-held in one auth directory: CLAUDE_CONFIG_DIR or CODEX_HOME for that CLI. The CLI owns the
-credential; af never reads one. The machine-local registry, ~/.config/af/providers.toml, records
+A Provider is a login of an official model CLI — `claude` (Claude Code), `codex` (Codex CLI), or
+`agy` (Antigravity) — or a Pi SDK host, held in one auth directory: CLAUDE_CONFIG_DIR, CODEX_HOME,
+or `--gemini-dir` (~/.gemini/antigravity-cli by default) for that CLI. The CLI owns the credential;
+af never reads one. The machine-local registry, ~/.config/af/providers.toml, records
 only an ID, a kind and an auth directory per Provider, and a review or Task binds a Worker to a
 Provider by that ID (--provider NODE=ID). The registry belongs to this machine, not to a
 repository, so these commands run in the af you invoke, never through a project's pinned one.

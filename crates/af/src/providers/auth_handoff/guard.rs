@@ -173,7 +173,7 @@ pub(crate) fn supervise_early(argv: &[String]) -> Option<i32> {
         super::configure_private_login_environment(&mut command, &spec, &sanitized_path());
         command.env("NO_COLOR", "1").env("TERM", "dumb");
         match kind {
-            ProviderKind::Pi => return Ok(PROVIDER_CLI_MISSING),
+            ProviderKind::Pi | ProviderKind::Antigravity => return Ok(PROVIDER_CLI_MISSING),
             ProviderKind::Codex => {
                 command.args(["login", "--device-auth"]);
             }

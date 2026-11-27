@@ -302,7 +302,7 @@ fn task_inspection_12_pairs_each_execution_record_type_with_its_own_generation()
     // it prints; a binding record rides beside it and is checked by its own schema.
     let record = settled(json!("7"));
     let document = |bindings: Value| {
-        json!({"schema":"af/task-inspection@22","task_id":"chain-history","revision_id":id('1'),
+        json!({"schema":"af/task-inspection@23","task_id":"chain-history","revision_id":id('1'),
             "phase":{"kind":"running"}, "state":{"phase":"running","outcome":null,"cause":null,"next_action":null}, "clock":{"wall_ms":60000,"started_unix_ms":1,"deadline_unix_ms":60001},"plan_id":id('2'),"chargeable_tokens":"7","attempts":1,
             "history":[],"run_reports":[],
             "execution_records":[{"artifact_id":id('3'),
@@ -310,17 +310,17 @@ fn task_inspection_12_pairs_each_execution_record_type_with_its_own_generation()
             "input_bindings":bindings})
     };
     assert_valid(
-        "task-inspection-v22.json",
+        "task-inspection-v23.json",
         &document(json!({"schema":"af.task-input-bindings/1",
             "bindings":{"history":{"artifact_id":id('a')}}})),
     );
     assert_invalid(
-        "task-inspection-v22.json",
+        "task-inspection-v23.json",
         &document(json!({"schema":"af.task-input-bindings/1","bindings":{}})),
         "a binding record with no bindings",
     );
     assert_invalid(
-        "task-inspection-v22.json",
+        "task-inspection-v23.json",
         &document(json!({"schema":"af.task-input-bindings/1",
             "bindings":{"history":{"artifact_id":id('a'),"surprise":true}}})),
         "an unknown binding field",
@@ -786,7 +786,7 @@ fn task_contract_positive_and_negative_fixtures() {
         format!(
             "{contract}-v{}.json",
             match contract {
-                "execution-plan" => 4,
+                "execution-plan" => 5,
                 "pipeline-definition" => 6,
                 _ => 1,
             }
@@ -1387,11 +1387,11 @@ fn fixed_planning_preparation_cannot_claim_business_acceptance_or_generated_auth
     plan.generated_origins.clear();
     plan.validate().unwrap();
     let valid = serde_json::to_value(&plan).unwrap();
-    assert_valid("execution-plan-v4.json", &valid);
+    assert_valid("execution-plan-v5.json", &valid);
     let mut invalid = valid.clone();
     invalid["preparation"] = Value::Null;
     assert_invalid(
-        "execution-plan-v4.json",
+        "execution-plan-v5.json",
         &invalid,
         "Present preparation cannot be null",
     );
@@ -1399,7 +1399,7 @@ fn fixed_planning_preparation_cannot_claim_business_acceptance_or_generated_auth
     let mut invalid = valid;
     invalid["preparation"]["auto_approved"] = json!(true);
     assert_invalid(
-        "execution-plan-v4.json",
+        "execution-plan-v5.json",
         &invalid,
         "Preparation cannot smuggle approval",
     );
@@ -1407,7 +1407,7 @@ fn fixed_planning_preparation_cannot_claim_business_acceptance_or_generated_auth
     plan.acceptance = original_coverage;
     assert!(plan.validate().is_err());
     assert_invalid(
-        "execution-plan-v4.json",
+        "execution-plan-v5.json",
         &serde_json::to_value(&plan).unwrap(),
         "Preparation cannot certify business acceptance",
     );
@@ -1416,7 +1416,7 @@ fn fixed_planning_preparation_cannot_claim_business_acceptance_or_generated_auth
     assert!(!plan.generated_origins.is_empty());
     assert!(plan.validate().is_err());
     assert_invalid(
-        "execution-plan-v4.json",
+        "execution-plan-v5.json",
         &serde_json::to_value(&plan).unwrap(),
         "Bootstrap is fixed, never generated",
     );
@@ -1495,7 +1495,7 @@ fn pi_authority_is_closed_versioned_and_required_only_for_pi_models() {
     execution.validate().unwrap();
     let value = serde_json::to_value(execution).unwrap();
     let valid = |v: &Value| {
-        super::validator("task-provider-admission-v4.json").is_valid(&json!({
+        super::validator("task-provider-admission-v5.json").is_valid(&json!({
         "plan_id":format!("sha256:{}","e".repeat(64)),"invocation_policy_id":format!("sha256:{}","f".repeat(64)),
         "bindings":["root.pi"],"execution":v,"outcome":"passed"}))
     };
@@ -1708,16 +1708,76 @@ fn pi_host_and_setup_protocols_reject_old_shapes_and_secret_fields() {
         ack.as_object_mut().unwrap().remove("prompt_nonce");
         assert_invalid("pi-host-v7.json", &ack, "missing challenge");
     }
-    let registry = json!({"version":4,"providers":[{"id":"pi-personal","kind":"pi","auth_dir":"/private/profile","backend":"openai-codex","sdk_entrypoint":"/installed/sdk/dist/index.js"}]});
-    assert_valid("provider-registry-v4.json", &registry);
-    for version in [1, 2, 3] {
+    let registry = json!({"version":5,"providers":[{"id":"pi-personal","kind":"pi","auth_dir":"/private/profile","backend":"openai-codex","sdk_entrypoint":"/installed/sdk/dist/index.js"}]});
+    assert_valid("provider-registry-v5.json", &registry);
+    for version in [1, 2, 3, 4] {
         let mut old = registry.clone();
         old["version"] = json!(version);
-        assert_invalid("provider-registry-v4.json", &old, "old registry");
+        assert_invalid("provider-registry-v5.json", &old, "old registry");
     }
     let mut kimi_registry = registry;
     kimi_registry["providers"][0]["backend"] = json!("kimi-coding");
-    assert_valid("provider-registry-v4.json", &kimi_registry);
+    assert_valid("provider-registry-v5.json", &kimi_registry);
+
+    let agy_registry = json!({"version":5,"providers":[{"id":"antigravity-main","kind":"antigravity","auth_dir":"/private/antigravity"}]});
+    assert_valid("provider-registry-v5.json", &agy_registry);
+    let mut agy_with_pi_fields = agy_registry;
+    agy_with_pi_fields["providers"][0]["backend"] = json!("google");
+    assert_invalid(
+        "provider-registry-v5.json",
+        &agy_with_pi_fields,
+        "antigravity must not carry Pi backend fields",
+    );
+
+    // Antigravity WorkerExecutionV3 permits principal_id: null and forbids Pi authority fields,
+    // and is refused under distinct_principals = true.
+    let mut agy_plan: ExecutionPlan = serde_json::from_value(fixture("execution-plan")).unwrap();
+    let agy_binding = af_contracts::task::plan::EffectiveWorkerBindingV3 {
+        package_digest: format!("sha256:{}", "d".repeat(64)),
+        package_artifact_id: format!("sha256:{}", "c".repeat(64)),
+        execution: af_contracts::task::plan::WorkerExecutionV3::Model {
+            provider: "antigravity-main".to_string(),
+            provider_kind: "antigravity".to_string(),
+            principal_id: None,
+            model: "gemini-4-neon-high".to_string(),
+            effort: "high".to_string(),
+            pi: None,
+        },
+        invocation_policy_id: format!("sha256:{}", "b".repeat(64)),
+    };
+    agy_plan
+        .bindings
+        .insert("antigravity_slot".to_string(), agy_binding.clone());
+    agy_plan.validate().unwrap();
+    let agy_plan_json = serde_json::to_value(&agy_plan).unwrap();
+    assert_valid("execution-plan-v5.json", &agy_plan_json);
+
+    let mut second_model = agy_binding.clone();
+    second_model.package_digest = format!("sha256:{}", "e".repeat(64));
+    assert!(
+        af_contracts::task::plan::validate_independent_bindings(
+            &agy_binding,
+            &second_model,
+            af_contracts::task::plan::IndependencePolicyV1 {
+                distinct_principals: true,
+                ..Default::default()
+            },
+        )
+        .is_err(),
+        "distinct_principals must refuse antigravity principal_id: null"
+    );
+    assert!(
+        af_contracts::task::plan::validate_independent_bindings(
+            &agy_binding,
+            &second_model,
+            af_contracts::task::plan::IndependencePolicyV1 {
+                distinct_principals: false,
+                ..Default::default()
+            },
+        )
+        .is_ok(),
+        "context-only policy permits antigravity principal_id: null"
+    );
 }
 
 #[test]
@@ -1791,14 +1851,14 @@ fn kimi_identity_unavailable_is_explicit_and_never_proves_principal_independence
     assert_eq!(value["pi"]["identity_mode"], "unavailable");
     let admission = json!({"plan_id":plan.engine_id,"bindings":["root.writer"],
         "execution":value,"invocation_policy_id":plan.engine_id,"outcome":"passed"});
-    assert_valid("task-provider-admission-v4.json", &admission);
+    assert_valid("task-provider-admission-v5.json", &admission);
     for (pointer, wrong) in [
         ("/execution/principal_id", json!(plan.engine_id)),
         ("/execution/pi/identity_mode", json!("account")),
     ] {
         let mut bad = admission.clone();
         *bad.pointer_mut(pointer).unwrap() = wrong;
-        assert_invalid("task-provider-admission-v4.json", &bad, pointer);
+        assert_invalid("task-provider-admission-v5.json", &bad, pointer);
         assert!(
             serde_json::from_value::<af_contracts::task::provider::TaskProviderAdmission>(bad)
                 .unwrap()
@@ -1812,7 +1872,7 @@ fn kimi_identity_unavailable_is_explicit_and_never_proves_principal_independence
         .unwrap()
         .remove("principal_id");
     assert_invalid(
-        "task-provider-admission-v4.json",
+        "task-provider-admission-v5.json",
         &missing,
         "missing principal field",
     );
@@ -1894,7 +1954,7 @@ fn pi_provider_neutral_authority_replays_all_auth_modes_without_inventing_indepe
         binding.validate().unwrap();
         let admission = json!({"plan_id":plan.engine_id,"bindings":["root.writer"],
             "execution":binding.execution,"invocation_policy_id":plan.engine_id,"outcome":"passed"});
-        assert_valid("task-provider-admission-v4.json", &admission);
+        assert_valid("task-provider-admission-v5.json", &admission);
         serde_json::from_value::<af_contracts::task::provider::TaskProviderAdmission>(
             admission.clone(),
         )
@@ -1917,7 +1977,7 @@ fn pi_provider_neutral_authority_replays_all_auth_modes_without_inventing_indepe
         ] {
             let mut bad = admission.clone();
             *bad.pointer_mut(pointer).unwrap() = wrong;
-            assert_invalid("task-provider-admission-v4.json", &bad, pointer);
+            assert_invalid("task-provider-admission-v5.json", &bad, pointer);
             assert!(
                 serde_json::from_value::<af_contracts::task::provider::TaskProviderAdmission>(bad)
                     .unwrap()

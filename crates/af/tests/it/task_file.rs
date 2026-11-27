@@ -581,7 +581,7 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
     .unwrap();
     std::fs::set_permissions(&installed, std::fs::Permissions::from_mode(0o755)).unwrap();
     let registry = home.join("providers.toml");
-    std::fs::write(&registry,toml::to_string(&serde_json::json!({"version":4,"providers":[{"id":provider,"kind":kind,"auth_dir":home}]})).unwrap()).unwrap();
+    std::fs::write(&registry,toml::to_string(&serde_json::json!({"version":5,"providers":[{"id":provider,"kind":kind,"auth_dir":home}]})).unwrap()).unwrap();
     let catalog_path = repo.join(".af/task-catalog.toml");
     let mut catalog: toml::Value =
         toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
@@ -812,7 +812,7 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
             String::from_utf8_lossy(&output.stderr)
         );
         let result: Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(result["schema"], "af/task-inspection@22");
+        assert_eq!(result["schema"], "af/task-inspection@23");
         assert_eq!(result["chargeable_tokens"], exact.to_string());
         assert_eq!(result["result"]["domain_conclusion"], "incomplete");
         assert_eq!(std::fs::read_to_string(&calls).unwrap().lines().count(), 1);
@@ -1360,7 +1360,7 @@ fn plan_then_run_uses_captured_inputs_and_does_not_repeat_finished_attempts() {
     let temp = tempfile::tempdir().unwrap();
     let (repo, state) = fixture(temp.path());
     let planned = af(&repo, &state, &["plan", "--file", "ticket.json"]);
-    assert_eq!(planned["schema"], "af/task-inspection@22");
+    assert_eq!(planned["schema"], "af/task-inspection@23");
     assert_eq!(planned["attempts"], 0);
     assert!(planned["plan"].is_object());
     assert!(planned["graph"].is_object());
@@ -1834,7 +1834,7 @@ fn native_review_preflight_commands_inspect_real_task_documents_and_refuse_empty
     let explained = cli(&["task", "explain", "review-cli", "--json"]);
     assert!(explained.status.success(), "{explained:?}");
     let value: Value = serde_json::from_slice(&explained.stdout).unwrap();
-    assert_eq!(value["schema"], "af/task-inspection@22");
+    assert_eq!(value["schema"], "af/task-inspection@23");
     assert!(value["plan"].is_object() && value["graph"].is_object());
     assert_eq!(value["attempts"], 0);
     let source = value["plan"]["inputs"]["source"]["snapshot_id"]
@@ -1987,7 +1987,7 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':10,'cached_inp
     std::fs::write(
         &registry,
         format!(
-            "version=4\n[[providers]]\nid='proposal-author'\nkind='codex'\nauth_dir={}\n",
+            "version=5\n[[providers]]\nid='proposal-author'\nkind='codex'\nauth_dir={}\n",
             toml::Value::String(auth.display().to_string())
         ),
     )

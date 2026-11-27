@@ -347,7 +347,7 @@ fn validate_child_plan(
     prepared: &ExperimentPreparedV1,
     value: &ExperimentExecutionPlanV3,
 ) -> Result<(), StoreError> {
-    let outer: ExecutionPlan = payload(cas, outer_plan_id, task::EXECUTION_PLAN_V4)?;
+    let outer: ExecutionPlan = payload(cas, outer_plan_id, task::EXECUTION_PLAN_V5)?;
     let graph: CompiledTask = payload(cas, &outer.compiled_graph_id, "af/CompiledTask@4")?;
     if value.schema != "af.experiment-execution-plan/3"
         || value.children.len() != prepared.children.len()
@@ -1044,7 +1044,7 @@ mod derived_package_tests {
             )]);
             let outer_plan_id = cas
                 .put_artifact(
-                    task::EXECUTION_PLAN_V4,
+                    task::EXECUTION_PLAN_V5,
                     producer(),
                     vec![],
                     None,

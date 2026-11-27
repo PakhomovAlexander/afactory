@@ -58,7 +58,7 @@ def invoke(af, repo, state, *args):
     if len(result.stdout) > LIMIT:
         raise ValueError('native inspection exceeds 4 MiB')
     value = json.loads(result.stdout)
-    if result.returncode and (args[0] not in ('explain', 'list') or value.get('schema') not in ('af/task-inspection@22', 'af/task-list@5')):
+    if result.returncode and (args[0] not in ('explain', 'list') or value.get('schema') not in ('af/task-inspection@23', 'af/task-list@5')):
         raise ValueError('native command refused; inspect its recorded Task diagnostics')
     return value
 
@@ -184,7 +184,7 @@ def available_models(af, provider):
         if response.returncode or len(response.stdout) > LIMIT:
             raise ValueError('latest-model catalog unavailable: ' + provider)
         value = json.loads(response.stdout)
-        if (value.get('schema') != 'af/provider-models@4' or value.get('token_free') is not True
+        if (value.get('schema') != 'af/provider-models@5' or value.get('token_free') is not True
                 or value.get('exit_code') != 0 or len(value.get('providers', [])) != 1):
             raise ValueError('ambiguous native model catalog: ' + provider)
         row = value['providers'][0]
@@ -332,9 +332,9 @@ def validate_native_projection(value, state):
 
     This is evidence validation only; native exact-plan approval still owns execution.
     """
-    if value.get('schema') != 'af/task-inspection@22':
+    if value.get('schema') != 'af/task-inspection@23':
         raise ValueError('unsupported native inspection')
-    plan = recorded(state, value['plan_id'], 'af/ExecutionPlan@4')
+    plan = recorded(state, value['plan_id'], 'af/ExecutionPlan@5')
     if canonical(plan) != canonical(value['plan']):
         raise ValueError('inspection plan differs from native stored plan')
     graph = recorded(state, plan['compiled_graph_id'], 'af/CompiledTask@4')
@@ -458,7 +458,7 @@ def reconcile(af, repo, state, manifest):
     values, revisions = {}, {}
     for task in all_tasks:
         value = invoke(af, repo, state, 'explain', task)
-        if value.get('schema') != 'af/task-inspection@22' or value['task_id'] != task:
+        if value.get('schema') != 'af/task-inspection@23' or value['task_id'] != task:
             raise ValueError('native Task identity differs')
         revision = recorded(state, value['revision_id'], 'af/TaskRevision@1')
         if revision['task_id'] != task or revision['inputs'] != value['plan']['inputs']:

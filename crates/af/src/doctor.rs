@@ -2193,6 +2193,7 @@ fn project(
             "claude" => "claude",
             "codex" => "codex",
             "pi" => "pi",
+            "antigravity" => "antigravity",
             _ => continue,
         };
         match registry.ids_of(kind).first() {

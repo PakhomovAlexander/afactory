@@ -42,6 +42,7 @@ pub(super) fn invocation(kind: ProviderKind) -> &'static CliInvocation {
         ProviderKind::Pi => unreachable!("Pi compatibility uses the SDK host"),
         ProviderKind::Claude => &af_runner_claude::CLAUDE_INVOCATION,
         ProviderKind::Codex => &af_runner_codex::CODEX_INVOCATION,
+        ProviderKind::Antigravity => &af_runner_antigravity::ANTIGRAVITY_INVOCATION,
     }
 }
 
@@ -60,7 +61,7 @@ pub(crate) struct DeniedProbe {
 }
 
 impl DeniedProbe {
-    fn new(spec: &ProviderSpec, operation: String) -> Self {
+    pub(super) fn new(spec: &ProviderSpec, operation: String) -> Self {
         Self {
             provider: spec.id.clone(),
             operation,
@@ -129,7 +130,7 @@ impl AgentEnvironment {
 /// Whether a CLI's own error text reports a host permission denial. An errno value matches only
 /// on a word boundary: `os error 1` (EPERM) never matches `os error 11` (EAGAIN) or `os error 111`
 /// (ECONNREFUSED).
-fn permission_denied(error: &str) -> bool {
+pub(super) fn permission_denied(error: &str) -> bool {
     let lower = error.to_ascii_lowercase();
     [
         "operation not permitted",
@@ -251,7 +252,7 @@ pub(super) fn check_invocation(
     let timeout = probe_timeout(match spec.kind {
         ProviderKind::Pi => PROBE_TIMEOUT,
         ProviderKind::Claude => CLAUDE_STRUCTURAL_TIMEOUT,
-        ProviderKind::Codex => PROBE_TIMEOUT,
+        ProviderKind::Codex | ProviderKind::Antigravity => PROBE_TIMEOUT,
     });
     let path = program.display().to_string();
     let run = run_bounded(
@@ -307,6 +308,13 @@ pub(super) fn check_invocation(
                     ProviderKind::Codex => {
                         check_app_server(program, spec, probe_path, cancelled, attempt_deadline)
                     }
+                    ProviderKind::Antigravity => super::antigravity::check_acp_server(
+                        program,
+                        spec,
+                        probe_path,
+                        cancelled,
+                        attempt_deadline,
+                    ),
                 };
             }
             (missing, None)
@@ -438,13 +446,17 @@ pub(super) fn protocol_incompatibility(
         VersionCheck::Reported(version) => version,
         VersionCheck::Undetermined => None,
     };
+    let protocol = match spec.kind {
+        ProviderKind::Antigravity => super::antigravity::ACP_PROTOCOL,
+        _ => APP_SERVER_PROTOCOL,
+    };
     CliRefusal::Incompatible(CliIncompatibility {
         provider: spec.id.clone(),
         kind: spec.kind,
         program: program.display().to_string(),
         lacks: Box::new(Lacks {
             version,
-            missing: vec![APP_SERVER_PROTOCOL.to_string()],
+            missing: vec![protocol.to_string()],
             observed: Some(observed.to_string()),
             fix: format!("upgrade it with `{}`", invocation(spec.kind).upgrade),
         }),

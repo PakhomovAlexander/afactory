@@ -27,7 +27,7 @@ def captured_plan(cas, task_id):
             obj = json.loads(path.read_bytes())
         except (UnicodeError, ValueError):
             continue
-        if not isinstance(obj, dict) or obj.get("type") != "af/ExecutionPlan@4":
+        if not isinstance(obj, dict) or obj.get("type") != "af/ExecutionPlan@5":
             continue
         revision_id = obj["payload"]["task_revision_id"]
         digest = revision_id.removeprefix("sha256:")

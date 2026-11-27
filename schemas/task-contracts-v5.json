@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:task-contracts:4",
+  "$id": "urn:af:schema:task-contracts:5",
   "title": "Additive Task contract definitions; cross-reference invariants require semantic validation",
   "$defs": {
     "name": {
@@ -827,7 +827,7 @@
               "const": "worker"
             },
             "slot": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
             }
           }
         },
@@ -860,7 +860,7 @@
             "checks": {
               "type": "array",
               "items": {
-                "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+                "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
               },
               "uniqueItems": true,
               "minItems": 0,
@@ -869,7 +869,7 @@
             "remote_checks": {
               "type": "array",
               "items": {
-                "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+                "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
               },
               "uniqueItems": true,
               "minItems": 1,
@@ -906,7 +906,7 @@
             "measures": {
               "type": "array",
               "items": {
-                "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+                "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
               },
               "uniqueItems": true,
               "minItems": 1,
@@ -927,7 +927,7 @@
               "const": "compare"
             },
             "objective": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
             }
           }
         },
@@ -943,7 +943,7 @@
               "const": "verify"
             },
             "slot": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
             }
           }
         },
@@ -960,15 +960,15 @@
               "const": "call"
             },
             "pipeline": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/package"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/package"
             },
             "bindings": {
               "type": "object",
               "propertyNames": {
-                "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+                "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
               },
               "additionalProperties": {
-                "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+                "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
               },
               "minProperties": 0
             }
@@ -1010,7 +1010,7 @@
               "const": "fix_verify"
             },
             "slot": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
             }
           }
         },
@@ -1171,10 +1171,10 @@
               "const": "optimization_experiment"
             },
             "baseline_slot": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
             },
             "candidate_slot": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
             }
           }
         },
@@ -1256,7 +1256,7 @@
               "minItems": 1,
               "maxItems": 64,
               "items": {
-                "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+                "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
               }
             },
             "protected_paths": {
@@ -1297,7 +1297,7 @@
               "const": "review_slice"
             },
             "scatter": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
             },
             "max_paths_per_slice": {
               "type": "integer",
@@ -1324,7 +1324,7 @@
               "const": "review_scatter"
             },
             "slot": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
             },
             "max_fanout": {
               "type": "integer",
@@ -1351,11 +1351,11 @@
               "minItems": 1,
               "maxItems": 63,
               "items": {
-                "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+                "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
               }
             },
             "closeout": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
             }
           }
         },
@@ -1572,11 +1572,38 @@
                     "pi"
                   ]
                 },
-                "properties": {
-                  "principal_id": {
-                    "$ref": "#/$defs/text"
+                "allOf": [
+                  {
+                    "if": {
+                      "properties": {
+                        "provider_kind": {
+                          "const": "antigravity"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "principal_id": {
+                          "oneOf": [
+                            {
+                              "type": "null"
+                            },
+                            {
+                              "$ref": "#/$defs/digest"
+                            }
+                          ]
+                        }
+                      }
+                    },
+                    "else": {
+                      "properties": {
+                        "principal_id": {
+                          "$ref": "#/$defs/text"
+                        }
+                      }
+                    }
                   }
-                }
+                ]
               }
             }
           ]

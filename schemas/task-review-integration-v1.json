@@ -17,13 +17,13 @@
       "$ref": "urn:af:schema:task-invocation:1"
     },
     "policy_id": {
-      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
     },
     "review_id": {
-      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
     },
     "base_snapshot_id": {
-      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
     },
     "outcome": {
       "enum": [
@@ -91,17 +91,17 @@
               "const": "prepared"
             },
             "snapshot_id": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
             },
             "manifest_id": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
             },
             "proposals": {
               "type": "object",
               "minProperties": 1,
               "maxProperties": 64,
               "propertyNames": {
-                "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+                "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
               },
               "additionalProperties": {
                 "type": "object",
@@ -114,22 +114,22 @@
                 ],
                 "properties": {
                   "result_id": {
-                    "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+                    "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
                   },
                   "candidate_id": {
-                    "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+                    "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
                   },
                   "declaration_id": {
-                    "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+                    "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
                   },
                   "claims": {
                     "type": "object",
                     "maxProperties": 4096,
                     "propertyNames": {
-                      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+                      "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
                     },
                     "additionalProperties": {
-                      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+                      "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
                     },
                     "minProperties": 1
                   }

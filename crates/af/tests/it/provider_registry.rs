@@ -1122,7 +1122,7 @@ fn add_creates_a_machine_local_registry_and_refuses_ambiguous_duplicates() {
     let path = root.path().join("config/af/providers.toml");
     let registry = std::fs::read_to_string(&path).unwrap();
     let value: toml::Value = toml::from_str(&registry).unwrap();
-    assert_eq!(value["version"].as_integer(), Some(4));
+    assert_eq!(value["version"].as_integer(), Some(5));
     assert_eq!(value["providers"][0]["id"].as_str(), Some("codex-main"));
     assert_eq!(value["providers"][0]["kind"].as_str(), Some("codex"));
     assert_eq!(
@@ -1254,7 +1254,7 @@ fn add_rejects_registry_state_writable_by_other_users() {
         let registry = directory.join("providers.toml");
         crate::common::provider_fixture_fs::create_dir(&auth).unwrap();
         crate::common::provider_fixture_fs::create_dir_all(&directory).unwrap();
-        crate::common::provider_fixture_fs::write(&registry, "version = 4\nproviders = []\n")
+        crate::common::provider_fixture_fs::write(&registry, "version = 5\nproviders = []\n")
             .unwrap();
         let target = if unsafe_target == "directory" {
             &directory
@@ -1440,11 +1440,11 @@ fn add_normalizes_valid_inline_and_empty_provider_arrays() {
         crate::common::provider_fixture_fs::create_dir(&second).unwrap();
         let registry = if existing {
             format!(
-                "version = 4\nproviders = [{{ id = \"codex-first\", kind = \"codex\", auth_dir = {:?} }}]\n",
+                "version = 5\nproviders = [{{ id = \"codex-first\", kind = \"codex\", auth_dir = {:?} }}]\n",
                 first.canonicalize().unwrap().to_str().unwrap()
             )
         } else {
-            "version = 4\nproviders = []\n".to_string()
+            "version = 5\nproviders = []\n".to_string()
         };
         crate::common::provider_fixture_fs::write(config.join("providers.toml"), registry).unwrap();
         let output = af(
@@ -1483,7 +1483,7 @@ fn add_refuses_to_exceed_the_registry_entry_limit() {
     let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let config = root.path().join("config/af");
     crate::common::provider_fixture_fs::create_dir_all(&config).unwrap();
-    let mut registry = "version = 4\n".to_string();
+    let mut registry = "version = 5\n".to_string();
     for index in 0..LIMIT {
         let auth = root.path().join(format!("auth-{index}"));
         crate::common::provider_fixture_fs::create_dir(&auth).unwrap();
@@ -1519,7 +1519,7 @@ fn add_refuses_to_exceed_the_registry_entry_limit() {
 fn commented_registry(root: &Path, ids: &[&str]) -> (std::path::PathBuf, String) {
     let config = root.join("config/af");
     crate::common::provider_fixture_fs::create_dir_all(&config).unwrap();
-    let mut registry = "# machine-local\nversion = 4\n".to_string();
+    let mut registry = "# machine-local\nversion = 5\n".to_string();
     for id in ids {
         let auth = root.join(format!("{id}-auth"));
         crate::common::provider_fixture_fs::create_dir(&auth).unwrap();
@@ -1536,7 +1536,7 @@ fn commented_registry(root: &Path, ids: &[&str]) -> (std::path::PathBuf, String)
 fn registered_ids(path: &Path) -> Vec<String> {
     let registry = std::fs::read_to_string(path).unwrap();
     let value: toml::Value = toml::from_str(&registry).unwrap();
-    assert_eq!(value["version"].as_integer(), Some(4), "{registry}");
+    assert_eq!(value["version"].as_integer(), Some(5), "{registry}");
     let providers = value.get("providers").and_then(toml::Value::as_array);
     let ids = providers.into_iter().flatten();
     ids.map(|provider| provider["id"].as_str().unwrap().to_owned())

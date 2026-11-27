@@ -1002,7 +1002,7 @@ fn run_inner(case: &'static str) -> Option<Outcome> {
     let (plan, graph) = compiler.compile(&cas, &revision, &pipeline.name).unwrap();
     let plan_id = cas
         .put_artifact(
-            EXECUTION_PLAN_V4,
+            EXECUTION_PLAN_V5,
             producer(),
             vec![],
             None,

@@ -51,11 +51,13 @@ fn harness_with(
         provider: match kind {
             Harness::Claude => "anthropic",
             Harness::Codex => "openai",
+            Harness::Antigravity => "google",
         },
         bound_model: Some("claude-fixture-1".into()),
         tools: match kind {
             Harness::Claude => vec!["Read".into(), "Bash".into()],
             Harness::Codex => vec!["command_execution".into(), "mcp_tool_call".into()],
+            Harness::Antigravity => vec!["view_file".into(), "run_command".into()],
         },
         frame_max_bytes: 64 * 1024,
         content_allowance_bytes: 16 << 20,
@@ -709,7 +711,7 @@ fn telemetry_harness_ids_never_published_live() {
     let token = format!("sk-ant-{}", "Ab9".repeat(12));
     let challenge = "https://claude.ai/oauth/authorize?code=1".to_string();
     let plain = "msg_01PlainIdentifier".to_string();
-    for kind in [Harness::Claude, Harness::Codex] {
+    for kind in [Harness::Claude, Harness::Codex, Harness::Antigravity] {
         let dir = tempfile::tempdir().unwrap();
         let (writer, options) = harness(dir.path(), Level::Spans, kind);
         let mut tap = Tap::new(&writer, options);
@@ -732,6 +734,11 @@ fn telemetry_harness_ids_never_published_live() {
                 json!({"type":"item.completed","item":{"id":challenge,"type":"command_execution","exit_code":0,"status":"completed"}}),
                 json!({"type":"item.completed","item":{"id":plain,"type":"agent_message","text":"ok"}}),
                 json!({"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}),
+            ],
+            Harness::Antigravity => vec![
+                json!({"event":"init","conversation_id":token,"init":{"model":"claude-fixture-1"}}),
+                json!({"event":"step_update","step_update":{"conversation_id":challenge,"step_index":1,"state":"DONE","step_type":"agent_response","text_delta":"ok","usage":{"input_tokens":1,"output_tokens":1,"thinking_tokens":0,"cache_read_tokens":0,"total_tokens":2}}}),
+                json!({"event":"result","result":{"conversation_id":plain,"status":"SUCCESS","response":"ok","num_turns":1,"usage":{"input_tokens":1,"output_tokens":1,"thinking_tokens":0,"cache_read_tokens":0,"total_tokens":2}}}),
             ],
         }
         .iter()

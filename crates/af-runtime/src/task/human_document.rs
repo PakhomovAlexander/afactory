@@ -26,7 +26,7 @@ use af_contracts::task::pipeline::ReceiptOutcomeV1;
 use af_contracts::task::plan::ExecutionPlan;
 use af_contracts::task::report_domain::*;
 use af_contracts::task::{
-    ArtifactInputV1, EXECUTION_PLAN_V4, TaskAcceptanceV1, TaskExecutionV1, TaskResultV1,
+    ArtifactInputV1, EXECUTION_PLAN_V5, TaskAcceptanceV1, TaskExecutionV1, TaskResultV1,
     TaskRevisionV1,
 };
 use af_contracts::{ArtifactEnvelope, Producer, is_digest};
@@ -239,7 +239,7 @@ impl<'a> Lineage<'a> {
         inputs: &BTreeMap<String, ArtifactInputV1>,
     ) -> Result<bool, String> {
         let plan = envelope(cas, &invocation.plan_id)?;
-        if plan.artifact_type != EXECUTION_PLAN_V4 {
+        if plan.artifact_type != EXECUTION_PLAN_V5 {
             return Ok(false);
         }
         let plan: ExecutionPlan = payload(&plan)?;

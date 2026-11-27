@@ -10,7 +10,7 @@ use af_contracts::task::plan::*;
 use af_contracts::task::usage::{
     TASK_TOKEN_USAGE_V3, TASK_USAGE_OBSERVATION_V1, TaskTokenUsageV3, TaskUsageObservationV1,
 };
-use af_contracts::task::{self, EXECUTION_PLAN_V4, TaskResultV1, TaskRevisionV1};
+use af_contracts::task::{self, EXECUTION_PLAN_V5, TaskResultV1, TaskRevisionV1};
 use af_graph::task::{
     CompileContext, CompiledOperator, OperatorAttemptCost, OperatorSignature, compile_task,
 };
@@ -315,7 +315,7 @@ impl TaskFixture {
                 artifact_id: pipeline_id,
             },
         )]);
-        let plan_id = put(&cas, EXECUTION_PLAN_V4, &plan);
+        let plan_id = put(&cas, EXECUTION_PLAN_V5, &plan);
         let lease = store
             .open_task(&cas, &revision_id, "fixture", LEASE_MS)
             .unwrap();

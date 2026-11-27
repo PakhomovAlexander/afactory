@@ -162,10 +162,10 @@ class Driver:
         auth = self.home / "codex-home"
         auth.mkdir(mode=0o700)
         registry = {
-            "version": 4,
+            "version": 5,
             "providers": [{"id": "codex-main", "kind": "codex", "auth_dir": str(auth)}],
         }
-        toml = 'version = 4\n[[providers]]\nid = "codex-main"\nkind = "codex"\nauth_dir = %s\n' % (
+        toml = 'version = 5\n[[providers]]\nid = "codex-main"\nkind = "codex"\nauth_dir = %s\n' % (
             json.dumps(str(auth)))
         registry_path = self.home / "config" / "af" / "providers.toml"
         registry_path.write_text(toml, encoding="utf-8")
