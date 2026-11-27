@@ -2,12 +2,12 @@
  "files": [
   {
    "path": "Cargo.lock",
-   "sha256": "sha256:0f003e553a9538782b2901b89bea32aaac810d2193e3cc79782d46b3e55dabe8",
+   "sha256": "sha256:f1acec0d8e8fb102a8ded6c079589f85c7ef1989dcf8cf951f42625af4fc0390",
    "size": 63253
   },
   {
    "path": "Cargo.toml",
-   "sha256": "sha256:4c032afc9dbd58da7836aa33b9e68b427f408b7acd94fcb7b5b7abe59ab9eace",
+   "sha256": "sha256:56463290a207c6d17e929e56cd7f1096d3cbce8e71fc779e0743e2dbf6938654",
    "size": 2078
   },
   {
@@ -4311,7 +4311,7 @@
    "size": 6781
   }
  ],
- "harness_digest": "sha256:6033d1f0ad76b09d7569b51c088ba1ec80013eae790f00c914a3e42259853b56",
+ "harness_digest": "sha256:8d2549dd7afdd957ee7e1cb805b27b25451b845eaad9607369fb060e0a72bf31",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",
