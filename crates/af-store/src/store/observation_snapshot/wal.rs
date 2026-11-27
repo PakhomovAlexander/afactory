@@ -2,6 +2,89 @@ use std::io;
 
 const HEADER_BYTES: usize = 32;
 const FRAME_HEADER_BYTES: usize = 24;
+const FORMAT_VERSION: u32 = 3_007_000;
+const INDEX_HEADER_BYTES: usize = 48;
+pub(super) const INDEX_PREFIX_BYTES: usize = 2 * INDEX_HEADER_BYTES + 4;
+
+/// SQLite's native-endian WalIndexHdr pair followed by WalCkptInfo.nBackfill.
+#[derive(PartialEq, Eq)]
+pub(super) struct LiveIndex([u8; INDEX_PREFIX_BYTES]);
+
+impl LiveIndex {
+    pub(super) fn parse(bytes: &[u8; INDEX_PREFIX_BYTES]) -> io::Result<Self> {
+        let header = &bytes[..INDEX_HEADER_BYTES];
+        let checksum = checksum_words([0, 0], &header[..40], cfg!(target_endian = "big"));
+        if header != &bytes[INDEX_HEADER_BYTES..2 * INDEX_HEADER_BYTES]
+            || native_word(&header[..4]) != FORMAT_VERSION
+            || header[12] != 1
+            || header[13] > 1
+            || checksum != [native_word(&header[40..44]), native_word(&header[44..48])]
+            || native_word(&bytes[96..100]) > native_word(&header[16..20])
+        {
+            return Err(io::Error::other(
+                "invalid live SQLite WAL index; retry after SQLite has recovered the Store",
+            ));
+        }
+        Ok(Self(*bytes))
+    }
+
+    pub(super) fn commit<'a>(
+        &self,
+        wal: &'a [u8],
+        page_size: usize,
+        database_size: u64,
+    ) -> io::Result<Option<Commit<'a>>> {
+        let header = &self.0[..INDEX_HEADER_BYTES];
+        let frames = native_word(&header[16..20]) as usize;
+        if frames == 0 {
+            // A WAL restart publishes an empty index before replacing old WAL bytes.
+            return Ok(None);
+        }
+        let inconsistent = || {
+            io::Error::other(
+                "live SQLite WAL index does not match the committed WAL prefix; retry after SQLite has recovered the Store",
+            )
+        };
+        let encoded_size = u16::from_ne_bytes(header[14..16].try_into().unwrap());
+        let index_page_size = if encoded_size == 1 {
+            65_536
+        } else {
+            usize::from(encoded_size)
+        };
+        let frame_bytes = page_size + FRAME_HEADER_BYTES;
+        let end = frames
+            .checked_mul(frame_bytes)
+            .and_then(|bytes| HEADER_BYTES.checked_add(bytes))
+            .ok_or_else(inconsistent)?;
+        let prefix = wal.get(..end).ok_or_else(inconsistent)?;
+        let last = &prefix[end - frame_bytes..];
+        if index_page_size != page_size
+            || word(&prefix[8..12]) as usize != page_size
+            || header[13] != prefix[3] & 1
+            || header[32..40] != prefix[16..24]
+            || native_word(&header[20..24]) != word(&last[4..8])
+            || [native_word(&header[24..28]), native_word(&header[28..32])]
+                != saved_checksum(&last[16..24])
+        {
+            return Err(inconsistent());
+        }
+        let mut commit = last_commit(prefix, page_size)?
+            .filter(|commit| commit.frames.len() == end - HEADER_BYTES)
+            .ok_or_else(inconsistent)?;
+        let backfilled = native_word(&self.0[96..100]) as usize;
+        if backfilled == frames && commit.image_size() > database_size {
+            return Err(inconsistent());
+        }
+        // SQLite reads checkpointed pages from the database and uses frames after
+        // nBackfill for the overlay. Validation still covers the entire prefix.
+        commit.frames = &commit.frames[backfilled * frame_bytes..];
+        Ok(Some(commit))
+    }
+}
+
+fn native_word(bytes: &[u8]) -> u32 {
+    u32::from_ne_bytes(bytes.try_into().expect("four-byte WAL index word"))
+}
 
 pub(super) struct Commit<'a> {
     frames: &'a [u8],
@@ -52,7 +135,7 @@ pub(super) fn last_commit(wal: &[u8], database_page_size: usize) -> io::Result<O
     if checksum != saved_checksum(&header[24..]) {
         return Ok(None);
     }
-    if word(&header[4..8]) != 3_007_000 {
+    if word(&header[4..8]) != FORMAT_VERSION {
         return Err(io::Error::other("unsupported SQLite WAL format version"));
     }
 
@@ -151,6 +234,91 @@ mod tests {
         wal.extend(salt);
         wal.extend(frame_checksum.map(u32::to_be_bytes).concat());
         wal.extend(data);
+    }
+
+    fn index_prefix(wal: &[u8], frames: u32, backfilled: u32) -> [u8; INDEX_PREFIX_BYTES] {
+        let mut header = [0; INDEX_HEADER_BYTES];
+        header[..4].copy_from_slice(&FORMAT_VERSION.to_ne_bytes());
+        header[12] = 1;
+        header[13] = wal[3] & 1;
+        header[14..16].copy_from_slice(&(PAGE as u16).to_ne_bytes());
+        header[16..20].copy_from_slice(&frames.to_ne_bytes());
+        header[32..40].copy_from_slice(&wal[16..24]);
+        if frames != 0 {
+            let start = HEADER_BYTES + (frames as usize - 1) * (PAGE + FRAME_HEADER_BYTES);
+            let frame = &wal[start..];
+            header[20..24].copy_from_slice(&word(&frame[4..8]).to_ne_bytes());
+            header[24..28].copy_from_slice(&word(&frame[16..20]).to_ne_bytes());
+            header[28..32].copy_from_slice(&word(&frame[20..24]).to_ne_bytes());
+        }
+        seal_index_header(&mut header);
+        let mut bytes = [0; INDEX_PREFIX_BYTES];
+        bytes[..INDEX_HEADER_BYTES].copy_from_slice(&header);
+        bytes[INDEX_HEADER_BYTES..2 * INDEX_HEADER_BYTES].copy_from_slice(&header);
+        bytes[96..].copy_from_slice(&backfilled.to_ne_bytes());
+        bytes
+    }
+
+    fn seal_index_header(header: &mut [u8]) {
+        let sums = checksum_words([0, 0], &header[..40], cfg!(target_endian = "big"));
+        header[40..44].copy_from_slice(&sums[0].to_ne_bytes());
+        header[44..48].copy_from_slice(&sums[1].to_ne_bytes());
+    }
+
+    #[test]
+    fn observation_snapshot_honors_the_live_frame_limit_and_backfill() {
+        for big_endian in [false, true] {
+            let mut wal = wal_header(big_endian, FORMAT_VERSION);
+            append_frame(&mut wal, 1, 2, 1, big_endian);
+            append_frame(&mut wal, 2, 2, 2, big_endian);
+            append_frame(&mut wal, 1, 2, 3, big_endian);
+
+            let index = LiveIndex::parse(&index_prefix(&wal, 2, 1)).unwrap();
+            let mut image = [9; 2 * PAGE];
+            index
+                .commit(&wal, PAGE, image.len() as u64)
+                .unwrap()
+                .unwrap()
+                .apply(&mut image);
+            assert_eq!(image[0], 9);
+            assert_eq!(image[PAGE], 2);
+
+            // A live restart publishes zero frames even if old WAL bytes remain.
+            let empty = LiveIndex::parse(&index_prefix(&wal, 0, 0)).unwrap();
+            assert!(empty.commit(&wal, PAGE, 0).unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn observation_snapshot_refuses_inconsistent_live_headers_and_frames() {
+        let mut wal = wal_header(false, FORMAT_VERSION);
+        append_frame(&mut wal, 1, 1, 1, false);
+        append_frame(&mut wal, 1, 1, 2, false);
+        let valid = index_prefix(&wal, 2, 0);
+
+        let mut torn = valid;
+        torn[INDEX_HEADER_BYTES + 8] ^= 1;
+        seal_index_header(&mut torn[INDEX_HEADER_BYTES..2 * INDEX_HEADER_BYTES]);
+        assert!(LiveIndex::parse(&torn).is_err());
+        let mut checksum = valid;
+        checksum[40] ^= 1;
+        checksum[INDEX_HEADER_BYTES + 40] ^= 1;
+        assert!(LiveIndex::parse(&checksum).is_err());
+        assert!(LiveIndex::parse(&index_prefix(&wal, 2, 3)).is_err());
+
+        let index = LiveIndex::parse(&valid).unwrap();
+        assert!(index.commit(&wal[..wal.len() - 1], PAGE, 0).is_err());
+        assert!(index.commit(&wal, 2 * PAGE, 0).is_err());
+        let mut mixed_salts = wal.clone();
+        mixed_salts[HEADER_BYTES + 8] ^= 1;
+        assert!(index.commit(&mixed_salts, PAGE, 0).is_err());
+        let mut mismatched_generation = valid;
+        mismatched_generation[32] ^= 1;
+        seal_index_header(&mut mismatched_generation[..INDEX_HEADER_BYTES]);
+        let (first, rest) = mismatched_generation.split_at_mut(INDEX_HEADER_BYTES);
+        rest[..INDEX_HEADER_BYTES].copy_from_slice(first);
+        let index = LiveIndex::parse(&mismatched_generation).unwrap();
+        assert!(index.commit(&wal, PAGE, 0).is_err());
     }
 
     #[test]

@@ -841,6 +841,140 @@ fn native_origin_observes_clean_and_live_stores_without_writing_sidecars() {
     assert_eq!(sqlite_files(state), clean_files);
 }
 
+#[test]
+fn native_origin_respects_interrupted_live_wal_publication() {
+    use sha2::{Digest, Sha256};
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let machine = Machine::new();
+    let (repo, _, _) = crate::task_planning::setup(machine.root.path(), false, false);
+    as_json(
+        machine
+            .af(&["task", "plan", "--file", "ticket.json", "--json"])
+            .current_dir(&repo)
+            .output()
+            .unwrap(),
+    );
+    let project = project_for(&machine, &repo);
+    let state = origin_workspace_state(&project);
+    let database = state.join("events.sqlite");
+    let shm = state.join("events.sqlite-shm");
+    let wal = state.join("events.sqlite-wal");
+    let anchor = rusqlite::Connection::open(&database).unwrap();
+    anchor
+        .execute_batch(
+            "PRAGMA wal_autocheckpoint=0; PRAGMA application_id=1; BEGIN; SELECT count(*) FROM events;",
+        )
+        .unwrap();
+    anchor
+        .set_db_config(
+            rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
+            true,
+        )
+        .unwrap();
+    let count = |connection: &rusqlite::Connection| -> i64 {
+        connection
+            .query_row("SELECT count(*) FROM events", [], |row| row.get(0))
+            .unwrap()
+    };
+    let prior_count = count(&anchor);
+    let prior_index = sqlite_bytes(&shm);
+    let mx_frame = |index: &[u8]| u32::from_ne_bytes(index[16..20].try_into().unwrap());
+    assert!(mx_frame(&prior_index) > 0);
+    let prior_wal = sqlite_bytes(&wal);
+    let page_size = u32::from_be_bytes(prior_wal[8..12].try_into().unwrap()) as usize;
+    let prior_end = 32 + mx_frame(&prior_index) as usize * (page_size + 24);
+    assert!(prior_wal.len() >= prior_end);
+
+    let observe = || as_json(machine.origin_reader(&project).output().unwrap());
+    assert_eq!(observe()["origin"]["tasks"], json!([]));
+    let waiting = as_json(
+        machine
+            .af(&["task", "run", "--execute", "pagination-cli", "--json"])
+            .current_dir(&repo)
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(waiting["phase"]["reason"], "needs_plan_review");
+    let published = observe();
+    let decision = &published["origin"]["tasks"][0]["decision"];
+    assert_eq!(decision["plan_id"], waiting["plan_id"]);
+    assert_eq!(decision["task_revision_id"], waiting["revision_id"]);
+
+    let later_index = sqlite_bytes(&shm);
+    assert!(mx_frame(&later_index) > mx_frame(&prior_index));
+    let later_wal = sqlite_bytes(&wal);
+    assert_eq!(later_wal[..prior_end], prior_wal[..prior_end]);
+
+    // Preserve SQLite's own checksum-valid frames and restore the old published pair
+    // to represent a writer stopping before walIndexWriteHdr. A separate process
+    // writes the fixture so closing its descriptor cannot drop the anchor's locks.
+    let mut patch = Command::new("/bin/dd")
+        .arg(format!("of={}", shm.display()))
+        .args(["bs=96", "count=1", "conv=notrunc"])
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    patch
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&prior_index[..96])
+        .unwrap();
+    success(patch.wait_with_output().unwrap());
+    assert_eq!(sqlite_bytes(&shm)[..96], prior_index[..96]);
+    assert_eq!(sqlite_bytes(&wal), later_wal);
+
+    let native_count = || {
+        let reader = rusqlite::Connection::open_with_flags(
+            &database,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        count(&reader)
+    };
+    let witness = || {
+        sqlite_files(state)
+            .into_iter()
+            .map(|(name, bytes)| {
+                let meta = fs::metadata(state.join(&name)).unwrap();
+                (
+                    name,
+                    Sha256::digest(&bytes),
+                    meta.len(),
+                    meta.blocks(),
+                    meta.mode(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = witness();
+    let live = observe();
+    assert_eq!(witness(), before);
+    assert_no_observation_files(&machine);
+    assert_eq!(native_count(), prior_count);
+    assert_eq!(live["origin"]["tasks"], json!([]), "{live}");
+
+    // Closing the last SQLite connection releases the dead-man switch but leaves
+    // the stale index bytes on disk. Cold recovery must ignore that header.
+    drop(anchor);
+    assert_eq!(sqlite_bytes(&shm)[..96], prior_index[..96]);
+    let stale = witness();
+    assert_eq!(observe()["origin"]["tasks"][0]["decision"], *decision);
+    assert_eq!(witness(), stale);
+    fs::remove_file(&shm).unwrap();
+    let cold = witness();
+    assert_eq!(observe()["origin"]["tasks"][0]["decision"], *decision);
+    assert_eq!(witness(), cold);
+    assert_no_observation_files(&machine);
+
+    // Ordinary SQLite can now rebuild the index, recovering the same later commit.
+    let recovered = rusqlite::Connection::open(&database).unwrap();
+    assert!(count(&recovered) > prior_count);
+}
+
 fn executable(file: &Path, text: &str) {
     fs::write(file, text).unwrap();
     fs::set_permissions(file, fs::Permissions::from_mode(0o700)).unwrap();

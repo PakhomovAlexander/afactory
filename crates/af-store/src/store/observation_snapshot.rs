@@ -1,6 +1,6 @@
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{self, ErrorKind, Read};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 use nix::fcntl::{FcntlArg, fcntl};
@@ -17,6 +17,8 @@ const DB_SHARED_FIRST: libc::off_t = 0x4000_0002;
 const DB_SHARED_SIZE: libc::off_t = 510;
 const WAL_WRITE_LOCK: libc::off_t = 120;
 const WAL_MUTATION_LOCKS: libc::off_t = 3;
+// SQLite's Unix VFS keeps a shared dead-man-switch lock while attached to the index.
+const WAL_DMS: libc::off_t = 128;
 
 // Bound the database, WAL and any WAL-driven expansion using logical lengths, including
 // holes. Once capture returns, the WAL is gone and deserialization may duplicate the
@@ -61,10 +63,17 @@ fn capture(path: &Path) -> io::Result<Vec<u8>> {
 
     let mut wal_file = open_sidecar(&wal_path)?;
     let shm = open_sidecar(&shm_path)?;
-    if let Some(file) = &shm {
-        lock_shared(file, WAL_WRITE_LOCK, WAL_MUTATION_LOCKS)?;
+    let index = if let Some(file) = &shm {
+        lock_shared(file, WAL_WRITE_LOCK, WAL_MUTATION_LOCKS).map_err(|error| {
+            io::Error::other(format!(
+                "cannot lock SQLite WAL for observation; retry: {error}"
+            ))
+        })?;
         require_same_file(&shm_path, &file.metadata()?, false)?;
-    }
+        live_index(file)?
+    } else {
+        None
+    };
 
     let wal_meta = wal_file.as_ref().map(File::metadata).transpose()?;
     let wal_size = wal_meta.as_ref().map_or(0, Metadata::len);
@@ -82,7 +91,10 @@ fn capture(path: &Path) -> io::Result<Vec<u8>> {
             "SQLite WAL present for a rollback database",
         ));
     }
-    let commit = wal::last_commit(&wal_bytes, page_size)?;
+    let commit = match &index {
+        Some(index) => index.commit(&wal_bytes, page_size, original.len())?,
+        None => wal::last_commit(&wal_bytes, page_size)?,
+    };
     let final_size = commit
         .as_ref()
         .map_or(original.len(), wal::Commit::image_size);
@@ -99,6 +111,11 @@ fn capture(path: &Path) -> io::Result<Vec<u8>> {
     }
     if let Some(file) = &shm {
         require_same_file(&shm_path, &file.metadata()?, false)?;
+        if live_index(file)? != index {
+            return Err(io::Error::other(
+                "SQLite WAL index changed during capture; retry the observation",
+            ));
+        }
     } else {
         // A cold WAL can survive without an index. A native writer needs to create
         // the index to mutate the WAL, and the shared database lock prevents removal.
@@ -194,6 +211,32 @@ fn lock_shared(file: &File, start: libc::off_t, len: libc::off_t) -> io::Result<
     };
     fcntl(file, FcntlArg::F_SETLK(&lock)).map_err(io::Error::from)?;
     Ok(())
+}
+
+fn live_index(file: &File) -> io::Result<Option<wal::LiveIndex>> {
+    let mut lock = libc::flock {
+        l_type: libc::F_WRLCK as _,
+        l_whence: libc::SEEK_SET as _,
+        l_start: WAL_DMS,
+        l_len: 1,
+        l_pid: 0,
+    };
+    // Observe the DMS without taking it. Holding it ourselves could keep a stale
+    // index alive and stop the next SQLite connection from recovering the WAL.
+    fcntl(file, FcntlArg::F_GETLK(&mut lock)).map_err(io::Error::from)?;
+    match i32::from(lock.l_type) {
+        libc::F_UNLCK => Ok(None),
+        libc::F_RDLCK => {
+            let mut bytes = [0; wal::INDEX_PREFIX_BYTES];
+            file.read_exact_at(&mut bytes, 0).map_err(|error| {
+                io::Error::other(format!("cannot read live SQLite WAL index; retry: {error}"))
+            })?;
+            wal::LiveIndex::parse(&bytes).map(Some)
+        }
+        _ => Err(io::Error::other(
+            "SQLite WAL index is being initialized; retry the observation",
+        )),
+    }
 }
 
 fn require_same_file(path: &Path, original: &Metadata, check_size: bool) -> io::Result<()> {

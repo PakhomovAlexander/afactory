@@ -277,10 +277,40 @@ kernel releases that lock and reclaims the images if the process exits or is kil
 
 The database shared lock and the WAL write, checkpoint and recovery byte ranges exclude
 native mutations during capture. The reader verifies file identities and refuses a rollback
-journal or a newly appeared sidecar. For live and cold WALs it validates header and frame
-checksums, honors salts and applies pages only through the last valid commit. A read-only
+journal or a newly appeared sidecar. For a live WAL, the Unix VFS dead-man switch lock
+identifies an attached index. The reader validates both index header copies and their
+checksums and checks the published frame count, page count, salt and final checksum against
+the WAL. It overlays published frames after the checkpoint's backfill boundary. Once all
+SQLite connections release the dead-man switch, the reader recovers the valid on-disk
+commit prefix, including when stale shared-memory bytes remain. A read-only
 SQLite connection inspects the private image with memory-only temporary storage. The same
 path runs on macOS and Linux.
+
+### Interrupted live WAL publication
+
+Run the public regression with the bundled SQLite:
+
+```sh
+cargo nextest run --workspace --locked --profile ci \
+  -E 'binary_id(af::it) & test(/^fleet::native_origin_respects_interrupted_live_wal_publication$/)'
+```
+
+The fixture creates a prior committed frame and keeps a SQLite read transaction open.
+An ordinary Task transition writes and publishes the later frames. A separate fixture process
+restores the prior pair of index headers while preserving SQLite's WAL bytes, producing the
+state a writer can leave when it stops before publishing its new frame count. A fresh native
+SQLite reader sees the prior event count. The origin must omit the waiting Task during that
+window and expose it after the last SQLite connection closes, both with the stale index bytes
+present and after the fixture removes them. Native SQLite subsequently recovers the later
+event count from the same WAL.
+
+The fixture compares SHA-256, logical lengths, allocated blocks and modes of the source files
+for each observation and checks for observation runtime files. To replay the before case,
+build the inherited `af` executable and substitute it for the candidate CLI in the same
+test, with other tests stopped. On Linux, the inherited executable exited the fixture with
+the waiting `pagination-cli` Task on the live result side of the assertion and an empty
+expected list. The native-reader assertion and source-file checks had passed. Restoring the
+candidate executable passed the live, stale-index and missing-index assertions.
 
 ### External ACL block measurement
 

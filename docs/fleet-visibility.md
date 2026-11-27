@@ -69,10 +69,13 @@ are selected by the server. An example with placeholders follows.
 
 The SSH account needs read access to the Project's registered Workspace and Task Store,
 including existing SQLite WAL and shared-memory files when present. The reader captures a
-private in-memory SQLite image under the native file locks. It replays the last valid commit
-from a live or cold WAL and leaves the source bytes and permissions untouched. An active
-write, checkpoint, rollback journal, or inaccessible Store can make the origin temporarily
-unavailable. Running the command on the origin also shows the precise Project and
+private in-memory SQLite image under the native file locks. For a live WAL it uses the
+commit boundary published in SQLite's shared-memory index. For a cold WAL it recovers
+through the last valid commit on disk, even when a stale index file remains. The reader
+leaves source bytes and permissions untouched. An active write, checkpoint, rollback
+journal, inconsistent live index, or inaccessible Store can make the origin temporarily
+unavailable. Retry after SQLite has finished writing or recovered the Store. Running the
+command on the origin also shows the precise Project and
 Store identities to put in the descriptor. For a principal separately authorized to take native
 plan Decisions, add
 `--allow-plan-decisions` and map `--principal` to their captured native developer identity.
@@ -119,7 +122,7 @@ WAL or shared-memory index on the volume. The check measures available space at 
 Other processes can change available space independently.
 
 Each input is limited to 64 MiB for the combined logical database and WAL lengths, including any
-database expansion declared by the last valid commit. Sparse inputs count by logical length.
+database expansion declared by the selected commit. Sparse inputs count by logical length.
 The reader holds an exclusive lock on its existing OS account home directory across
 admission and replay. Other origin commands under that account wait for the same lock even
 with different runtime roots. Process exit releases both the memory and the lock.
@@ -129,7 +132,8 @@ the public reader comparisons and the Linux filesystem fixtures.
 The [fleet integration tests](../crates/af/tests/it/fleet.rs) exercise the six public commands with
 local OpenSSH endpoints, disposable keys, the management wire formats and a native Task whose
 waiting transition is still in the WAL. They also cover clean shutdown, read-only Store files
-and directories, concurrent writes, and a fresh offline standalone Task workflow.
+and directories, concurrent writes, interrupted WAL publication, and a fresh offline
+standalone Task workflow.
 The [Store snapshot regression](../crates/af-store/src/store/observation_snapshot.rs) checks
 that no snapshot files are visible under umasks `000` and `022` while replaying committed WAL frames.
 
