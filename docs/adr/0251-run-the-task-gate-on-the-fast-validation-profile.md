@@ -1,6 +1,8 @@
 # ADR-0251: Run the Task gate on the fast validation profile
 
-**Status:** accepted (2026-10-27)
+**Status:** accepted (2026-10-27); its fixed `--profile fast` Task gate command superseded by
+[ADR-2026-11-27-configure-the-local-task-gate-profile](2026-11-27-configure-the-local-task-gate-profile.md);
+the shared `test-build` receipt before class tests stands.
 
 ## Context
 

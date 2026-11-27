@@ -688,6 +688,8 @@ if mode == 'malformed':
                     shutil.copy2(source, scripts / source.name)
             (root / '.config').mkdir()
             shutil.copy2(ROOT / '.config/test-classes.json', root / '.config/test-classes.json')
+            # Copy bytes, not sealed 0444 permissions: the reconfiguration cases below rewrite this file.
+            shutil.copyfile(ROOT / '.config/task-gate.json', root / '.config/task-gate.json')
             tc.write(root / '.config/test-quarantine.json', EMPTY_QUARANTINE)
             (root / 'schemas').mkdir()
             for name in tc.schema_documents():
@@ -704,9 +706,12 @@ if mode == 'malformed':
             tools.mkdir()
             make = tools / 'make'
             make.write_text(f'#!{sys.executable}\nimport json, os, pathlib, sys\n'
+                            'sf = os.environ.get("AF_TASK_GATE_SKIP_STEPS_FILE", "")\n'
                             'pathlib.Path(os.environ["CALLS"]).write_text(json.dumps({\n'
                             '"args": sys.argv[1:], "run": os.environ["AF_GATE_NEXTEST_RUN"],\n'
                             '"target": os.environ["AF_GATE_NEXTEST_TARGET"],\n'
+                            '"skip_file": sf,\n'
+                            '"skip_release_steps": pathlib.Path(sf).read_text().strip() if sf else "",\n'
                             '"metrics": os.environ["AF_CI_METRICS"]}))\n'
                             'sys.exit(int(os.environ["STATUS"]))\n')
             make.chmod(0o755)
@@ -739,13 +744,75 @@ if mode == 'malformed':
             fast_plan = Path(observed['run']) / 'test-plan.json'
             self.assertEqual(observed['args'], ['test-build', 'check-classes',
                                                 f'TEST_PLAN={fast_plan}'])
+            self.assertEqual(observed['skip_file'], '')
+            self.assertEqual(observed['skip_release_steps'], '')
             self.assertEqual(observed['metrics'], observed['run'] + '/ci-metrics.jsonl')
             self.assertEqual({key: tc.read(fast_plan)[key]
                               for key in ('profile', 'context', 'selected')},
                              {'profile': 'fast', 'context': 'gate',
                               'selected': ['functional', 'e2e', 'uix']})
+            expected_task_plan, expected_skip = tc.task_gate(
+                path=root / '.config/task-gate.json',
+                makefile=(root / 'Makefile').read_text())
+            result = subprocess.run(['bash', str(scripts / 'verify.sh'), '--profile', 'task'],
+                                    cwd=root, env=env, capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            observed = tc.read(calls)
+            task_plan = Path(observed['run']) / 'test-plan.json'
+            self.assertEqual(observed['args'], ['test-build', 'task-gate-check',
+                                                f'TEST_PLAN={task_plan}'])
+            self.assertEqual(observed['skip_file'], observed['run'] + '/skip-release-steps.txt')
+            self.assertEqual(observed['skip_release_steps'], ' '.join(expected_skip))
+            self.assertEqual({key: tc.read(task_plan)[key]
+                              for key in ('profile', 'context', 'selected')},
+                             {'profile': expected_task_plan['profile'], 'context': 'gate',
+                              'selected': expected_task_plan['selected']})
+            for gate_doc, want_profile, want_selected, want_skip in (
+                ({'schema': 'af.task-gate/1',
+                  'labels': ['release:fast', 'no-e2e'],
+                  'exclude_release_steps': ['dev-release-tests']},
+                 'custom', ['functional', 'uix'], 'dev-release-tests'),
+                ({'schema': 'af.task-gate/1',
+                  'labels': ['release:fast'],
+                  'exclude_release_steps': []},
+                 'fast', ['functional', 'e2e', 'uix'], ''),
+            ):
+                tc.write(root / '.config/task-gate.json', gate_doc)
+                audit = subprocess.run([sys.executable, str(scripts / 'test-classes.py'), 'audit'],
+                                       cwd=root, env=env, capture_output=True, text=True, timeout=10)
+                self.assertEqual(audit.returncode, 0, audit.stdout + audit.stderr)
+                result = subprocess.run(['bash', str(scripts / 'verify.sh'), '--profile', 'task'],
+                                        cwd=root, env=env, capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                observed = tc.read(calls)
+                task_plan = Path(observed['run']) / 'test-plan.json'
+                self.assertEqual(observed['args'], ['test-build', 'task-gate-check',
+                                                    f'TEST_PLAN={task_plan}'])
+                self.assertEqual(observed['skip_release_steps'], want_skip)
+                self.assertEqual({key: tc.read(task_plan)[key]
+                                  for key in ('profile', 'context', 'selected')},
+                                 {'profile': want_profile, 'context': 'gate',
+                                  'selected': want_selected})
+            custom_gate = root / 'custom-gate.json'
+            tc.write(custom_gate, {'schema': 'af.task-gate/1',
+                                   'labels': ['test:functional'],
+                                   'exclude_release_steps': ['dev-release-tests', 'af-pin-tests']})
+            result = subprocess.run(['bash', str(scripts / 'verify.sh'),
+                                     '--gate-config', str(custom_gate),
+                                     '--include-release-step', 'af-pin-tests'],
+                                    cwd=root, env=env, capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            observed = tc.read(calls)
+            custom_plan = Path(observed['run']) / 'test-plan.json'
+            self.assertEqual(observed['args'], ['test-build', 'task-gate-check',
+                                                f'TEST_PLAN={custom_plan}'])
+            self.assertEqual(observed['skip_release_steps'], 'dev-release-tests')
+            self.assertEqual(tc.read(custom_plan)['selected'], ['functional'])
             calls.unlink()
             for args in (['--unknown'], ['--profile'], ['--profile', 'perf'],
+                         ['--gate-config'], ['--gate-config', str(root / 'absent')],
+                         ['--profile', 'task', '--unknown'],
+                         ['--profile', 'task', '--label'],
                          ['--test-plan'], ['--test-plan', str(root / 'absent')]):
                 result = subprocess.run(['bash', str(scripts / 'verify.sh'), *args], cwd=root,
                                         env=env, capture_output=True, timeout=10)
@@ -817,7 +884,7 @@ if mode == 'malformed':
                              'sys.argv[1:] == ["test", "--locked", "--no-run"] else 0)\n')
             cargo.chmod(0o755)
             env = {k: v for k, v in os.environ.items()
-                   if not k.startswith(('AF_', 'GH_', 'GITHUB_', 'CARGO_', 'RUST', 'MAKE'))}
+                   if not k.startswith(('AF_', 'GH_', 'GITHUB_', 'CARGO_', 'RUST', 'MAKE', 'TEST_'))}
             report = root / 'check.jsonl'
             metrics = root / 'metrics.jsonl'
             commands = root / 'commands.jsonl'
@@ -987,7 +1054,7 @@ path.parent.mkdir(parents=True, exist_ok=True)
 ET.ElementTree(root).write(path, encoding='unicode')
 """)
             env = {k: v for k, v in os.environ.items()
-                   if not k.startswith(('AF_', 'GH_', 'GITHUB_', 'CARGO_', 'RUST', 'MAKE'))}
+                   if not k.startswith(('AF_', 'GH_', 'GITHUB_', 'CARGO_', 'RUST', 'MAKE', 'TEST_'))}
             report, builds = root / 'check.jsonl', root / 'builds.jsonl'
             env.update(PATH=str(tools) + os.pathsep + env['PATH'],
                        AF_GATE_TARGET_DIR=str(root / 'output'), AF_CHECK_REPORT=str(report),
@@ -1921,6 +1988,274 @@ class Metrics(unittest.TestCase):
             metrics = tc.report(plan, [junit])
             self.assertGreater(metrics['classes']['functional']['passed'], 0)
             self.assertEqual(metrics['classes']['functional']['failed'], 0)
+
+
+class TaskGateConfig(unittest.TestCase):
+    def test_task_gate_presets_and_checked_in_config_invariants(self):
+        self.assertIn('task-gate-v1.json', tc.schema_documents())
+        # Validate general invariants on the live repo config so operators can reconfigure
+        # .config/task-gate.json (for example re-enabling dev-release-tests) without breaking base-check.
+        live_plan, live_excluded = tc.task_gate()
+        self.assertEqual(live_plan['context'], 'gate')
+        self.assertGreaterEqual(len(live_plan['selected']), 1)
+        self.assertLessEqual(set(live_excluded), set(tc.release_check_steps()))
+
+        preset = {'schema': 'af.task-gate/1',
+                  'labels': ['release:fast', 'no-e2e'],
+                  'exclude_release_steps': ['dev-release-tests']}
+        plan, excluded = tc.task_gate(value=preset)
+        self.assertEqual(plan['context'], 'gate')
+        self.assertEqual(plan['selected'], ['functional', 'uix'])
+        self.assertEqual(plan['classes']['e2e']['state'], 'NOT RUN')
+        self.assertEqual(plan['classes']['perf']['state'], 'NOT RUN')
+        self.assertEqual(excluded, ['dev-release-tests'])
+
+        reenabled = {'schema': 'af.task-gate/1',
+                     'labels': ['release:fast'],
+                     'exclude_release_steps': []}
+        plan2, excluded2 = tc.task_gate(value=reenabled)
+        self.assertEqual(plan2['selected'], ['functional', 'e2e', 'uix'])
+        self.assertEqual(excluded2, [])
+
+    def test_task_gate_schema_and_reader_reject_empty_and_unknown_labels(self):
+        schema = tc.read(ROOT / 'schemas/task-gate-v1.json')
+        allowed = sorted(tc.KNOWN_LABELS)
+        self.assertEqual(schema['properties']['labels']['items'], {'enum': allowed})
+        for bad_label in ('', 'noe2e', 'no-e2ee', 'skip-e2e', 'bug', 'fast'):
+            with self.subTest(bad_label=bad_label):
+                self.assertNotIn(bad_label, allowed)
+                with self.assertRaises(ValueError):
+                    tc.task_gate(value={'schema': 'af.task-gate/1',
+                                        'labels': ['release:fast', bad_label],
+                                        'exclude_release_steps': []})
+                with self.assertRaises(ValueError):
+                    tc.task_gate(value={'schema': 'af.task-gate/1',
+                                        'labels': ['release:fast'],
+                                        'exclude_release_steps': []},
+                                 labels=[bad_label])
+
+    def test_task_gate_overrides_and_refusals(self):
+        base = {'schema': 'af.task-gate/1',
+                'labels': ['release:fast', 'no-e2e'],
+                'exclude_release_steps': ['dev-release-tests']}
+        plan, excluded = tc.task_gate(value=base, labels=['release:fast'],
+                                      include_steps=['dev-release-tests'],
+                                      exclude_steps=['af-pin-tests'])
+        self.assertEqual(plan['selected'], ['functional', 'e2e', 'uix'])
+        self.assertEqual(excluded, ['af-pin-tests'])
+        for bad in (
+            {'schema': 'af.task-gate/0', 'labels': ['release:fast'], 'exclude_release_steps': []},
+            {'schema': 'af.task-gate/1', 'labels': [], 'exclude_release_steps': []},
+            {'schema': 'af.task-gate/1', 'labels': [''], 'exclude_release_steps': []},
+            {'schema': 'af.task-gate/1', 'labels': ['release:fast', 'noe2e'],
+             'exclude_release_steps': []},
+            {'schema': 'af.task-gate/1', 'labels': ['test:functional', 'test:functional'],
+             'exclude_release_steps': []},
+            {'schema': 'af.task-gate/1', 'labels': ['no-functional', 'no-e2e', 'no-uix'],
+             'exclude_release_steps': []},
+            {'schema': 'af.task-gate/1', 'labels': ['release:fast'],
+             'exclude_release_steps': ['unknown-step']},
+            {'schema': 'af.task-gate/1', 'labels': ['release:fast'],
+             'exclude_release_steps': ['dev-release-tests', 'dev-release-tests']},
+        ):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                tc.task_gate(value=bad)
+        with self.assertRaises(ValueError):
+            tc.task_gate(value=base, exclude_steps=['af-pin-tests'], include_steps=['af-pin-tests'])
+        # Valid CLI --label overrides must not mask contradictory or empty configured labels.
+        for bad_cfg_labels in (['release:fast', 'release:full'],
+                               ['test:functional', 'no-functional'],
+                               ['no-functional', 'no-e2e', 'no-uix']):
+            with self.subTest(bad_cfg_labels=bad_cfg_labels), self.assertRaises(ValueError):
+                tc.task_gate(value={'schema': 'af.task-gate/1',
+                                    'labels': bad_cfg_labels,
+                                    'exclude_release_steps': []},
+                             labels=['test:functional'])
+        with tempfile.TemporaryDirectory() as tmp:
+            bad_cfg = Path(tmp) / 'bad-gate.json'
+            tc.write(bad_cfg, {'schema': 'af.task-gate/1',
+                               'labels': ['release:fast', 'release:full'],
+                               'exclude_release_steps': []})
+            cli = subprocess.run([sys.executable, str(ROOT / 'scripts/test-classes.py'),
+                                  'task-gate', '--config', str(bad_cfg),
+                                  '--label', 'test:functional'],
+                                 capture_output=True, text=True)
+            self.assertNotEqual(cli.returncode, 0)
+
+    def test_verify_profiles_and_direct_make_targets_ignore_ambient_exclusions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            scripts = root / 'scripts'
+            scripts.mkdir()
+            shutil.copyfile(ROOT / 'Makefile', root / 'Makefile')
+            for name in ('verify.sh', 'verify-body.sh', 'gate-owner.py', 'ci-step.py',
+                         'test-class-python.py'):
+                shutil.copyfile(ROOT / 'scripts' / name, scripts / name)
+            for shell_name in ('verify.sh', 'verify-body.sh'):
+                (scripts / shell_name).chmod(0o755)
+            shutil.copyfile(ROOT / 'scripts/test-classes.py', scripts / 'real-test-classes.py')
+            (root / '.config').mkdir()
+            shutil.copyfile(ROOT / '.config/test-classes.json', root / '.config/test-classes.json')
+            tc.write(root / '.config/test-quarantine.json', EMPTY_QUARANTINE)
+            tc.write(root / '.config/task-gate.json', {
+                'schema': 'af.task-gate/1',
+                'labels': ['release:fast', 'no-e2e'],
+                'exclude_release_steps': ['dev-release-tests'],
+            })
+            (root / 'schemas').mkdir()
+            for name in tc.schema_documents():
+                shutil.copyfile(ROOT / 'schemas' / name, root / 'schemas' / name)
+            for source in (ROOT / 'crates').glob('*/tests/it/main.rs'):
+                destination = root / source.relative_to(ROOT)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, destination)
+            workflow = root / '.github/workflows/validate.yml'
+            workflow.parent.mkdir(parents=True)
+            shutil.copyfile(ROOT / '.github/workflows/validate.yml', workflow)
+            sample = ('import unittest\nclass Case(unittest.TestCase):\n'
+                      '    def test_recorded(self): self.assertTrue(True)\nunittest.main()\n')
+            unittest_wrapped = {'test-contract-inventory.py', 'test-release-contract.py',
+                                'test-dev-release.py', 'test-release-resolve.py',
+                                'test-changelog-notes.py', 'test-test-quarantine.py',
+                                'test-af-pin.py', 'test-gate-owner.py', 'test-test-classes.py'}
+            payloads = ({p.name for p in (ROOT / 'scripts').glob('test-*.py')}
+                        | {'contract-inventory.py', 'performance/schemas.py',
+                           'performance/cli.py', 'nextest-gate.py', 'changelog-notes.py',
+                           'af-pin.py', 'release-contract.py'}) - {'test-class-python.py',
+                                                                   'test-classes.py'}
+            for name in sorted(payloads):
+                path = scripts / name
+                path.parent.mkdir(exist_ok=True)
+                path.write_text(sample if name in unittest_wrapped else 'pass\n')
+            (scripts / 'test-classes.py').write_text(
+                'import json, pathlib, subprocess, sys\n'
+                'cmd = sys.argv[1]\n'
+                'if cmd in ("plan", "task-gate"):\n'
+                '    raise SystemExit(subprocess.call([sys.executable, "scripts/real-test-classes.py", *sys.argv[1:]]))\n'
+                'if cmd == "execute":\n'
+                '    plan = json.loads(pathlib.Path(sys.argv[sys.argv.index("--plan") + 1]).read_text())\n'
+                '    for kind in plan["selected"]:\n'
+                '        subprocess.run([sys.executable, "scripts/ci-step.py", "--stage",\n'
+                '                        "tests", "class-" + kind, sys.executable, "-c", "pass"],\n'
+                '                       check=True)\n')
+            tools = root / 'bin'
+            tools.mkdir()
+            (tools / 'python3').symlink_to(sys.executable)
+            cargo = tools / 'cargo'
+            cargo.write_text(f'#!{sys.executable}\nimport sys\nsys.exit(0)\n')
+            cargo.chmod(0o755)
+            hostile_skip = root / 'hostile-skip.txt'
+            hostile_skip.write_text('dev-release-tests\naf-pin\n')
+            explicit_plan = root / 'explicit-plan.json'
+            tc.write(explicit_plan, tc.resolve(['test:functional']))
+            base_env = {k: v for k, v in os.environ.items()
+                        if not k.startswith(('AF_', 'GH_', 'GITHUB_', 'CARGO_', 'RUST', 'MAKE', 'TEST_'))}
+            base_env.update(PATH=str(tools) + os.pathsep + base_env['PATH'],
+                            AF_GATE_TARGET_DIR=str(root / 'output'))
+            hostile_flags = ('_ACTIVE_SKIP_RELEASE_STEPS=dev-release-tests '
+                             'AF_GATE_SKIP_RELEASE_STEPS=dev-release-tests')
+            commands = (
+                (['bash', str(scripts / 'verify.sh'), '--profile', 'full'],
+                 True, True, []),
+                (['bash', str(scripts / 'verify.sh'), '--profile', 'fast'],
+                 True, True, ['class-functional', 'class-e2e', 'class-uix']),
+                (['bash', str(scripts / 'verify.sh'), '--profile', 'task'],
+                 False, True, ['class-functional', 'class-uix']),
+                (['make', 'check'], True, True, []),
+                (['make', 'base-check'], True, True, []),
+                (['make', 'release-check'], True, True, []),
+                (['make', 'check-fast'], True, True, ['class-functional', 'class-e2e', 'class-uix']),
+                (['make', 'check-full'], True, True,
+                 ['class-functional', 'class-e2e', 'class-uix', 'class-perf']),
+                (['make', 'check-classes', f'TEST_PLAN={explicit_plan}'],
+                 True, True, ['class-functional']),
+            )
+            for cmd, want_dev_release, want_af_pin, want_classes in commands:
+                with self.subTest(cmd=cmd):
+                    report = root / 'check.jsonl'
+                    metrics = root / 'metrics.jsonl'
+                    report.unlink(missing_ok=True)
+                    metrics.unlink(missing_ok=True)
+                    env = dict(base_env, AF_CHECK_REPORT=str(report), AF_CI_METRICS=str(metrics),
+                               AF_GATE_SKIP_RELEASE_STEPS='dev-release-tests',
+                               _ACTIVE_SKIP_RELEASE_STEPS='dev-release-tests',
+                               AF_TASK_GATE_SKIP_STEPS_FILE=str(hostile_skip),
+                               MAKEFLAGS=hostile_flags, GNUMAKEFLAGS=hostile_flags,
+                               MFLAGS=hostile_flags, MAKEOVERRIDES=hostile_flags)
+                    result = subprocess.run(cmd, cwd=root, env=env, capture_output=True,
+                                            text=True, timeout=20)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    records = [json.loads(line) for line in report.read_text().splitlines()
+                               if 'stage' in json.loads(line)]
+                    release_labels = [r['label'] for r in records if r['stage'] == 'release']
+                    self.assertEqual('dev-release-tests' in release_labels, want_dev_release)
+                    self.assertEqual('af-pin' in release_labels, want_af_pin)
+                    if want_classes:
+                        class_labels = [r['label'] for r in records
+                                        if r['stage'] == 'tests' and r['label'].startswith('class-')]
+                        self.assertEqual(class_labels, want_classes)
+
+    def test_task_gate_check_omits_excluded_step_without_faking_pass_receipt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            scripts = root / 'scripts'
+            scripts.mkdir()
+            shutil.copyfile(ROOT / 'Makefile', root / 'Makefile')
+            for name in ('ci-step.py', 'test-class-python.py'):
+                shutil.copyfile(ROOT / 'scripts' / name, scripts / name)
+            sample = ('import unittest\nclass Case(unittest.TestCase):\n'
+                      '    def test_recorded(self): self.assertTrue(True)\nunittest.main()\n')
+            for name in ('test-release-resolve.py', 'test-af-pin.py',
+                         'test-changelog-notes.py', 'test-test-quarantine.py',
+                         'test-release-contract.py', 'test-contract-inventory.py',
+                         'test-gate-owner.py', 'test-test-classes.py'):
+                (scripts / name).write_text(sample)
+            # Fail loudly if dev-release-tests is actually executed when excluded.
+            (scripts / 'test-dev-release.py').write_text('raise SystemExit(99)\n')
+            for name in ('changelog-notes.py', 'af-pin.py', 'release-contract.py',
+                         'test-performance.py', 'contract-inventory.py', 'test-classes.py'):
+                (scripts / name).write_text('pass\n')
+            (scripts / 'performance').mkdir()
+            (scripts / 'performance/cli.py').write_text('pass\n')
+            tools = root / 'bin'
+            tools.mkdir()
+            cargo = tools / 'cargo'
+            cargo.write_text(f'#!{sys.executable}\nimport sys\nsys.exit(0)\n')
+            cargo.chmod(0o755)
+            skip_file = root / 'skip steps.txt'
+            skip_file.write_text('dev-release-tests\n')
+            metrics = root / 'metrics.jsonl'
+            env = {k: v for k, v in os.environ.items()
+                   if not k.startswith(('AF_', 'GH_', 'GITHUB_', 'CARGO_', 'RUST', 'MAKE', 'TEST_'))}
+            env.update(PATH=str(tools) + os.pathsep + env['PATH'],
+                       AF_CI_METRICS=str(metrics),
+                       AF_TASK_GATE_SKIP_STEPS_FILE=str(skip_file))
+            result = subprocess.run(['make', 'task-gate-check', 'TEST_PLAN=unused'],
+                                    cwd=root, env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('release/dev-release-tests: NOT RUN', result.stdout)
+            labels = [json.loads(line)['label'] for line in metrics.read_text().splitlines()]
+            self.assertNotIn('dev-release-tests', labels)
+            # Direct release-check and base-check must still run dev-release-tests even with the file set.
+            for direct in ('release-check', 'base-check'):
+                failed = subprocess.run(['make', direct], cwd=root, env=env,
+                                        capture_output=True, text=True)
+                self.assertNotEqual(failed.returncode, 0)
+            # Combining task-gate-check with full/fast/base goals is refused before any target runs.
+            for combined in (['make', 'task-gate-check', 'check'],
+                             ['make', 'check', 'task-gate-check'],
+                             ['make', 'task-gate-check', 'base-check'],
+                             ['make', 'task-gate-check', 'check-fast']):
+                refused = subprocess.run(combined, cwd=root, env=env,
+                                         capture_output=True, text=True)
+                self.assertEqual(refused.returncode, 2)
+                self.assertIn('task-gate-check may only be combined with test-build',
+                              refused.stderr)
+            missing_env = dict(env, AF_TASK_GATE_SKIP_STEPS_FILE=str(root / 'missing.txt'))
+            missing = subprocess.run(['make', 'task-gate-check', 'TEST_PLAN=unused'],
+                                     cwd=root, env=missing_env, capture_output=True, text=True)
+            self.assertEqual(missing.returncode, 2)
+            self.assertIn('missing AF_TASK_GATE_SKIP_STEPS_FILE', missing.stderr)
 
 
 if __name__ == '__main__':

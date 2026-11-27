@@ -77,7 +77,7 @@ stress-proof:
 
 # Live containment and native Task check/Review dispatch. Full `check` invokes this target
 # after its prerequisites (including the Rust build/test); the selective executor invokes it
-# when e2e is selected, including the local fast gate. Standalone `test` stays Rust-only.
+# when e2e is selected, such as `check-fast` and `--profile fast`. Standalone `test` stays Rust-only.
 # A missing daemon fails.
 # The existing --repeat 1 mode preserves the live proof's single run, without isolation reruns.
 review-kernel-container-probes:
@@ -102,20 +102,28 @@ telemetry-gate:
 # CHANGELOG.md's [Unreleased] holds only its pointer and every changelog.d/ note only bullets,
 # exercise the test quarantine scan on test-local task lists (ADR-0268),
 # and keep this repository's own .af/af.lock on the newest release (ADR-0138).
+# Only `task-gate-check` (invoked by `scripts/verify.sh --profile task` and `--gate-config`)
+# may skip `release-check` steps, reading the resolved list from `AF_TASK_GATE_SKIP_STEPS_FILE`.
+# Direct `make check`, `make base-check`, `make release-check`, `make check-fast`,
+# `make check-full` and `make check-classes` force `_ACTIVE_SKIP_RELEASE_STEPS :=` so ambient
+# environment variables or MAKEFLAGS can never weaken full, fast or CI validation.
+override _ACTIVE_SKIP_RELEASE_STEPS :=
+
 release-check:
-	$(CI_STEP) --stage release contract-inventory python3 -I scripts/contract-inventory.py
-	$(CI_STEP) --stage release contract-inventory-tests python3 scripts/test-class-python.py test-contract-inventory.py "$(BASE_EVIDENCE)/test-contract-inventory.py.xml"
-	$(CI_STEP) --stage release release-harness python3 scripts/performance/cli.py harness-digest --check
-	$(CI_STEP) --stage release release-contract python3 scripts/release-contract.py
-	$(CI_STEP) --stage release release-contract-tests python3 scripts/test-class-python.py test-release-contract.py "$(BASE_EVIDENCE)/test-release-contract.py.xml"
-	$(CI_STEP) --stage release dev-release-tests python3 scripts/test-class-python.py test-dev-release.py "$(BASE_EVIDENCE)/test-dev-release.py.xml"
-	$(CI_STEP) --stage release release-resolution python3 scripts/test-class-python.py test-release-resolve.py "$(BASE_EVIDENCE)/test-release-resolve.py.xml"
-	$(CI_STEP) --stage release changelog-notes-tests python3 scripts/test-class-python.py test-changelog-notes.py "$(BASE_EVIDENCE)/test-changelog-notes.py.xml"
-	$(CI_STEP) --stage release changelog-notes python3 scripts/changelog-notes.py --check
-	$(CI_STEP) --stage release quarantine-scan-tests python3 scripts/test-class-python.py test-test-quarantine.py "$(BASE_EVIDENCE)/test-test-quarantine.py.xml"
-	$(CI_STEP) --stage release af-pin-tests python3 scripts/test-class-python.py test-af-pin.py "$(BASE_EVIDENCE)/test-af-pin.py.xml"
-	$(CI_STEP) --stage release af-pin python3 scripts/af-pin.py --check
-	$(CI_STEP) --stage release telemetry-contract python3 -I scripts/test-performance.py --module test_telemetry_bench_contracts
+	@if [ "$(_ACTIVE_SKIP_RELEASE_STEPS)" = "__MISSING_SKIP_STEPS_FILE__" ]; then echo "missing AF_TASK_GATE_SKIP_STEPS_FILE: $(AF_TASK_GATE_SKIP_STEPS_FILE)" >&2; exit 2; fi
+	$(if $(filter contract-inventory,$(_ACTIVE_SKIP_RELEASE_STEPS)),@echo "=== release/contract-inventory: NOT RUN ===",$(CI_STEP) --stage release contract-inventory python3 -I scripts/contract-inventory.py)
+	$(if $(filter contract-inventory-tests,$(_ACTIVE_SKIP_RELEASE_STEPS)),@echo "=== release/contract-inventory-tests: NOT RUN ===",$(CI_STEP) --stage release contract-inventory-tests python3 scripts/test-class-python.py test-contract-inventory.py "$(BASE_EVIDENCE)/test-contract-inventory.py.xml")
+	$(if $(filter release-harness,$(_ACTIVE_SKIP_RELEASE_STEPS)),@echo "=== release/release-harness: NOT RUN ===",$(CI_STEP) --stage release release-harness python3 scripts/performance/cli.py harness-digest --check)
+	$(if $(filter release-contract,$(_ACTIVE_SKIP_RELEASE_STEPS)),@echo "=== release/release-contract: NOT RUN ===",$(CI_STEP) --stage release release-contract python3 scripts/release-contract.py)
+	$(if $(filter release-contract-tests,$(_ACTIVE_SKIP_RELEASE_STEPS)),@echo "=== release/release-contract-tests: NOT RUN ===",$(CI_STEP) --stage release release-contract-tests python3 scripts/test-class-python.py test-release-contract.py "$(BASE_EVIDENCE)/test-release-contract.py.xml")
+	$(if $(filter dev-release-tests,$(_ACTIVE_SKIP_RELEASE_STEPS)),@echo "=== release/dev-release-tests: NOT RUN ===",$(CI_STEP) --stage release dev-release-tests python3 scripts/test-class-python.py test-dev-release.py "$(BASE_EVIDENCE)/test-dev-release.py.xml")
+	$(if $(filter release-resolution,$(_ACTIVE_SKIP_RELEASE_STEPS)),@echo "=== release/release-resolution: NOT RUN ===",$(CI_STEP) --stage release release-resolution python3 scripts/test-class-python.py test-release-resolve.py "$(BASE_EVIDENCE)/test-release-resolve.py.xml")
+	$(if $(filter changelog-notes-tests,$(_ACTIVE_SKIP_RELEASE_STEPS)),@echo "=== release/changelog-notes-tests: NOT RUN ===",$(CI_STEP) --stage release changelog-notes-tests python3 scripts/test-class-python.py test-changelog-notes.py "$(BASE_EVIDENCE)/test-changelog-notes.py.xml")
+	$(if $(filter changelog-notes,$(_ACTIVE_SKIP_RELEASE_STEPS)),@echo "=== release/changelog-notes: NOT RUN ===",$(CI_STEP) --stage release changelog-notes python3 scripts/changelog-notes.py --check)
+	$(if $(filter quarantine-scan-tests,$(_ACTIVE_SKIP_RELEASE_STEPS)),@echo "=== release/quarantine-scan-tests: NOT RUN ===",$(CI_STEP) --stage release quarantine-scan-tests python3 scripts/test-class-python.py test-test-quarantine.py "$(BASE_EVIDENCE)/test-test-quarantine.py.xml")
+	$(if $(filter af-pin-tests,$(_ACTIVE_SKIP_RELEASE_STEPS)),@echo "=== release/af-pin-tests: NOT RUN ===",$(CI_STEP) --stage release af-pin-tests python3 scripts/test-class-python.py test-af-pin.py "$(BASE_EVIDENCE)/test-af-pin.py.xml")
+	$(if $(filter af-pin,$(_ACTIVE_SKIP_RELEASE_STEPS)),@echo "=== release/af-pin: NOT RUN ===",$(CI_STEP) --stage release af-pin python3 scripts/af-pin.py --check)
+	$(if $(filter telemetry-contract,$(_ACTIVE_SKIP_RELEASE_STEPS)),@echo "=== release/telemetry-contract: NOT RUN ===",$(CI_STEP) --stage release telemetry-contract python3 -I scripts/test-performance.py --module test_telemetry_bench_contracts)
 
 # Offline advisory orchestration checks against the native inspection fixture, the pull
 # request description check against the `af task report` renderer's fixture (ADR-0142),
@@ -158,10 +166,10 @@ perf-python-tests: test
 	$(CI_STEP) --stage tests workspace-fixture-benchmark python3 scripts/test-workspace-fixture-benchmark.py
 
 # Shared selective entry points. Full `check` above is what main validation, unbound releases
-# and `make check` run; the Task gate runs `scripts/verify.sh --profile fast` (ADR-0251) and
-# every pull request defaults to the same fast selection (ADR-0239). Labels are
+# and `make check` run; the Task gate runs `scripts/verify.sh --profile task` (configured in
+# `.config/task-gate.json`) and every pull request defaults to the fast selection (ADR-0239). Labels are
 # JSON data in a file; no Make/shell expansion of label strings is permitted.
-.PHONY: base-check check-fast check-full check-classes test-plan perf-feature-tests perf-kernel-measure
+.PHONY: base-check check-fast check-full check-classes task-gate-check test-plan perf-feature-tests perf-kernel-measure
 TEST_PLAN ?= target/test-classes/plan.json
 TEST_LABEL_FILE ?=
 base-check: release-check
@@ -191,6 +199,16 @@ check-full:
 	$(MAKE) check-classes
 
 check-classes: base-check fmt lint
+	python3 scripts/test-classes.py execute --plan "$(TEST_PLAN)" --threads $(TEST_THREADS)
+
+ifneq ($(filter task-gate-check,$(MAKECMDGOALS)),)
+ifneq ($(filter-out task-gate-check test-build,$(MAKECMDGOALS)),)
+$(error task-gate-check may only be combined with test-build, got: $(MAKECMDGOALS))
+endif
+endif
+
+task-gate-check: override _ACTIVE_SKIP_RELEASE_STEPS = $(if $(AF_TASK_GATE_SKIP_STEPS_FILE),$(shell test -f "$(AF_TASK_GATE_SKIP_STEPS_FILE)" && tr '\n' ' ' < "$(AF_TASK_GATE_SKIP_STEPS_FILE)" || echo __MISSING_SKIP_STEPS_FILE__),)
+task-gate-check: base-check fmt lint
 	python3 scripts/test-classes.py execute --plan "$(TEST_PLAN)" --threads $(TEST_THREADS)
 
 .PHONY: test-labels
