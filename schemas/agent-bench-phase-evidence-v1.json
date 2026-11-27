@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Checked external benchmark phase evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "phase", "slots", "collected", "resolved", "correct_v1", "correct_v2",
+    "paired_native_token_difference", "paired_wall_difference", "overhead", "ready"
+  ],
+  "properties": {
+    "schema": { "const": "af.agent-bench-phase-evidence/1" },
+    "phase": { "enum": ["smoke", "aa", "ab"] },
+    "slots": { "enum": [4, 72] },
+    "collected": { "$ref": "#/$defs/count" },
+    "resolved": { "$ref": "#/$defs/count" },
+    "correct_v1": { "$ref": "#/$defs/count" },
+    "correct_v2": { "$ref": "#/$defs/count" },
+    "paired_native_token_difference": { "$ref": "#/$defs/difference" },
+    "paired_wall_difference": { "$ref": "#/$defs/difference" },
+    "overhead": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["tokens", "wall_ms"],
+          "properties": {
+            "tokens": { "type": "integer", "minimum": 0 },
+            "wall_ms": { "type": "integer", "minimum": 0 }
+          }
+        }
+      ]
+    },
+    "ready": { "type": "boolean" }
+  },
+  "if": { "properties": { "phase": { "const": "smoke" } } },
+  "then": { "properties": { "slots": { "const": 4 } } },
+  "else": { "properties": { "slots": { "const": 72 } } },
+  "$defs": {
+    "count": { "type": "integer", "minimum": 0, "maximum": 72 },
+    "difference": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["numerator", "denominator", "within_bounds"],
+          "properties": {
+            "numerator": { "type": "string", "pattern": "^(0|-?[1-9][0-9]*)$" },
+            "denominator": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+            "within_bounds": { "type": "boolean" }
+          }
+        }
+      ]
+    }
+  }
+}

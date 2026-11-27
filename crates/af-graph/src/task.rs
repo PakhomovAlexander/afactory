@@ -1326,17 +1326,28 @@ fn compile_structure_mode(
     preparation: bool,
 ) -> Result<(CompiledTask, Vec<String>), String> {
     task.validate()?;
+    let definition = context
+        .pipelines
+        .get(root)
+        .ok_or("Root Pipeline is not installed")?;
+    let max_nodes = if !preparation
+        && context.signatures.len() == 1
+        && context
+            .signatures
+            .contains_key("operator/agent-bench-subject")
+    {
+        let static_limit = definition.static_node_limit();
+        static_limit + usize::from(static_limit > 64)
+    } else {
+        64
+    };
     if context.max_nodes == 0
-        || context.max_nodes > 64
+        || context.max_nodes > max_nodes
         || context.max_depth == 0
         || context.max_depth > 4
     {
         return Err("Compilation requires bounded node and depth limits".into());
     }
-    let definition = context
-        .pipelines
-        .get(root)
-        .ok_or("Root Pipeline is not installed")?;
     definition.validate()?;
     refuse_retired_ports(&definition.contract)?;
     if !definition.accepts.kinds.contains(&task.kind)
@@ -2496,6 +2507,7 @@ impl Compiler<'_> {
                                 | TaskOperatorV1::FixVerify { .. }
                                 | TaskOperatorV1::Check { .. }
                                 | TaskOperatorV1::DocumentCheck {}
+                                | TaskOperatorV1::AgentBenchSubject {}
                                 | TaskOperatorV1::ReportCheck {}
                                 | TaskOperatorV1::Measure { .. }
                         );
@@ -2779,6 +2791,7 @@ fn resolve(
 fn operator_name(operator: &TaskOperatorV1) -> Result<&'static str, String> {
     match operator {
         TaskOperatorV1::OptimizationProject {} => Ok("optimization-project"),
+        TaskOperatorV1::AgentBenchSubject {} => Ok("agent-bench-subject"),
         TaskOperatorV1::OptimizationProfile {} => Ok("optimization-profile"),
         TaskOperatorV1::OptimizationPrepare {} => Ok("optimization-prepare"),
         TaskOperatorV1::OptimizationFinalize {} => Ok("optimization-finalize"),

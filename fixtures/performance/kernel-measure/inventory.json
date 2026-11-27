@@ -2,8 +2,8 @@
  "files": [
   {
    "path": "Cargo.lock",
-   "sha256": "sha256:5d53de3eef043877ceb6d04af410513579b27d7ec14bba1435b168d9ffb83103",
-   "size": 63024
+   "sha256": "sha256:2a8186f81165dff61905bd4e0b430b5b464f3a7b8ba371a4b474237e9d8753a6",
+   "size": 63173
   },
   {
    "path": "Cargo.toml",
@@ -82,8 +82,8 @@
   },
   {
    "path": "crates/af-runner-codex/Cargo.toml",
-   "sha256": "sha256:bfe7667f65cc23d303b2e65b07afff3e16e9282b553713500548d3e890715ee7",
-   "size": 984
+   "sha256": "sha256:90887029e5d5d2e6ed08775b9acd7e6e4ff805c1803d0a20bca8376457c44ac3",
+   "size": 1217
   },
   {
    "path": "crates/af-runner-pi/Cargo.toml",
@@ -137,8 +137,8 @@
   },
   {
    "path": "crates/af-sandbox/Cargo.toml",
-   "sha256": "sha256:ba49f1b8ca5c0a17bca1b6e380934ab3ee57a0279ff565f7b0145abe4def1dc8",
-   "size": 1850
+   "sha256": "sha256:264c61f70bb9f99a335d04d35e7a25281662e3f0a38b8491008d8f4210e8650e",
+   "size": 1983
   },
   {
    "path": "crates/af-scenario/Cargo.toml",
@@ -167,8 +167,8 @@
   },
   {
    "path": "crates/af/Cargo.toml",
-   "sha256": "sha256:d505bfbb89548fbccf9d2367c0d9dd7ceb3ccd380d414122ac4891e1006d3497",
-   "size": 3493
+   "sha256": "sha256:82b7cded7fc575346441d192b7058d6a1594ed5d1f540c2e7106f82b09fcb9f4",
+   "size": 3516
   },
   {
    "path": "crates/af/build.rs",
@@ -4306,7 +4306,7 @@
    "size": 6781
   }
  ],
- "harness_digest": "sha256:a43a2b3a59a897ab72f443fb066596bfb2e85591f7e65408f0786a6719914753",
+ "harness_digest": "sha256:c6c2b994703aa49322ef7a28df7884360567fe8c1dd180162fc2bd59b09b83e9",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",

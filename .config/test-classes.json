@@ -11,6 +11,8 @@
     "test-contract-inventory.py"
   ],
   "binaries": {
+    "af-contracts::agent_bench": "functional",
+    "af-contracts::navigation": "functional",
     "af::bin/af": "functional",
     "af::runtime_fixture_paths": "functional",
     "af-attempt": "functional",
@@ -68,6 +70,18 @@
     "af-runner::contract_inventory": "functional"
   },
   "exact": {
+    "af-runner-codex navigation::tests::installed_app_server_conformance": "e2e",
+    "af-runner-codex navigation::tests::macos_launcher_denies_fork_spawn_and_subprocess": "e2e",
+    "af-runner-codex navigation::tests::docker_broker_transport_unicode_and_pagination_conformance": "e2e",
+    "af-sandbox navigation::tests::docker_binary_entries_are_listed_and_explicitly_non_text": "e2e",
+    "af-sandbox navigation::tests::docker_conformance": "e2e",
+    "af-sandbox navigation::tests::docker_create_collision_does_not_remove_another_container": "e2e",
+    "af-sandbox navigation::tests::docker_deadline_removes_container_and_descendants": "e2e",
+    "af-sandbox navigation::tests::docker_large_source_lists_every_page_and_reads_and_searches_final_file": "e2e",
+    "af-sandbox navigation::tests::docker_search_preserves_controls_and_lf_line_numbers": "e2e",
+    "af-sandbox navigation::tests::docker_search_near_limit_short_lines_uses_bounded_memory": "e2e",
+    "af-sandbox navigation::tests::docker_substrate_conformance": "e2e",
+    "af-sandbox navigation::tests::docker_utf8_byte_boundaries_and_eof": "e2e",
     "af::bin/af self_optimizer::optimization_adapters::tests::codex_continued_range_adopts_its_first_named_session_as_unverified": "functional",
     "af::bin/af self_optimizer::optimization_adapters::tests::codex_cumulative_snapshots_report_exact_session_maxima_and_spans_without_content": "functional",
     "af::bin/af self_optimizer::optimization_adapters::tests::codex_declared_session_usage_with_a_foreign_project_keeps_the_quarantine": "functional",
@@ -115,6 +129,24 @@
     "telemetry-runtime-smoke": "perf"
   },
   "ignored": {
+    "af::it agent_bench::installed_cli_runs_confined_rust_analyzer_for_treatment_only": "live-container",
+    "af::it agent_bench::installed_native_fixture_cli_replays_both_arms_and_dummy_usage": "installed-conformance",
+    "af::it agent_bench::installed_external_smoke_plan_replays_without_original_bindings": "installed-conformance",
+    "af::it agent_bench::installed_external_grading_blinds_native_attempts_and_replays": "installed-conformance",
+    "af::it agent_bench::installed_external_grading_replays_absent_answers": "installed-conformance",
+    "af::it agent_bench::installed_external_smoke_uses_two_turns_and_settles_offline": "installed-conformance",
+    "af::it agent_bench::installed_native_fixture_plan_replays_before_any_endpoint_contact": "installed-conformance",
+    "af-runner-codex navigation::tests::docker_broker_transport_unicode_and_pagination_conformance": "live-container",
+    "af-sandbox navigation::tests::docker_binary_entries_are_listed_and_explicitly_non_text": "live-container",
+    "af-sandbox navigation::tests::docker_conformance": "live-container",
+    "af-sandbox navigation::tests::docker_create_collision_does_not_remove_another_container": "live-container",
+    "af-sandbox navigation::tests::docker_deadline_removes_container_and_descendants": "live-container",
+    "af-sandbox navigation::tests::docker_large_source_lists_every_page_and_reads_and_searches_final_file": "live-container",
+    "af-sandbox navigation::tests::docker_search_preserves_controls_and_lf_line_numbers": "live-container",
+    "af-sandbox navigation::tests::docker_search_near_limit_short_lines_uses_bounded_memory": "live-container",
+    "af-sandbox navigation::tests::docker_substrate_conformance": "live-container",
+    "af-sandbox navigation::tests::docker_utf8_byte_boundaries_and_eof": "live-container",
+    "af-runner-codex navigation::tests::installed_app_server_conformance": "installed-conformance",
     "af-process sample::tests::a_failed_exit_observation_in_a_namespace_keeps_the_deadline": "namespace-child",
     "af-process sample::tests::a_failed_namespace_enumeration_is_never_clean": "namespace-child",
     "af-process sample::tests::a_namespace_init_kills_and_verifies_a_new_session_escape": "namespace-child",
@@ -138,6 +170,7 @@
   },
   "modules": {
     "af::it": {
+      "agent_bench": "e2e",
       "af_layout": "functional",
       "aliases": "uix",
       "build_metadata": "functional",
@@ -342,6 +375,7 @@
   },
   "schema": "af.test-catalog/1",
   "scripts": {
+    "test-agent-bench.py": "functional",
     "test-adr.py": "functional",
     "test-af-pin.py": "functional",
     "test-release-contract.py": "functional",

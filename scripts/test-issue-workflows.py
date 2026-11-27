@@ -198,6 +198,10 @@ class Workflows(unittest.TestCase):
         with mock.patch.object(w, 'available_models', return_value=tied), \
              self.assertRaisesRegex(ValueError, 'ambiguous latest model family'):
             w.check_latest_models('af', 'bugfix/default-codex')
+        older_sol_only = [m for m in models if m['id'] != sol]
+        with mock.patch.object(w, 'available_models', return_value=older_sol_only), \
+             self.assertRaisesRegex(ValueError, 'superseded or unavailable active model pin'):
+            w.check_latest_models('af', 'bugfix/default-codex')
         for omitted, selection in [(None, 'bugfix/default-codex'), (astra, 'bugfix/default-codex'),
                                    ('gpt-6.1-terra', 'bugfix/default-codex'),
                                    ('k3.1-pro', 'bugfix/light-kimi-terra-sol')]:

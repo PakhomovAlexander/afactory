@@ -2086,3 +2086,34 @@ fn structured_contract_and_validation_are_closed_versioned_data_only_shapes() {
         );
     }
 }
+
+#[test]
+fn full_native_benchmark_width_requires_the_serial_installed_shape() {
+    for (kind, count) in [("agent-bench-external", 72), ("agent-bench-grading", 216)] {
+        let mut definition = fixture("pipeline-definition");
+        definition["name"] = json!("af/agent-bench");
+        definition["accepts"]["kinds"] = json!([kind]);
+        definition["slots"] = json!({});
+        definition["max_parallel"] = json!(1);
+        definition["max_attempts"] = json!(count);
+        definition["nodes"] = json!(
+            (0..count)
+                .map(|index| json!({
+                "id": if index == 0 { "write".into() } else { format!("node-{index}") },
+                        "operator": {"op": "agent_bench_subject"},
+                        "inputs": {}
+                    }))
+                .collect::<Vec<_>>()
+        );
+        assert_valid("pipeline-definition-v6.json", &definition);
+        typed("pipeline-definition", definition.clone()).unwrap();
+
+        definition["name"] = json!("fixture/ordinary");
+        assert_invalid(
+            "pipeline-definition-v6.json",
+            &definition,
+            "ordinary static bound",
+        );
+        assert!(typed("pipeline-definition", definition).is_err());
+    }
+}

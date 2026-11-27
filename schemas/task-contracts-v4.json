@@ -1162,6 +1162,18 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "agent_bench_subject"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
             "op",
             "baseline_slot",
             "candidate_slot"

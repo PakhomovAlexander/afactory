@@ -1,0 +1,10 @@
+{
+  "auth_mode": "chatgpt",
+  "tokens": {
+    "id_token": "eyJhbGciOiAibm9uZSJ9.eyJleHAiOiA0MTAyNDQ0ODAwLCAiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjogeyJjaGF0Z3B0X3BsYW5fdHlwZSI6ICJwcm8iLCAiY2hhdGdwdF9hY2NvdW50X2lkIjogImZpeHR1cmUtYWNjb3VudCJ9LCAiZW1haWwiOiAiZml4dHVyZUBleGFtcGxlLmludmFsaWQifQ.fixture",
+    "access_token": "dummy-native-access",
+    "refresh_token": "dummy-nonfunctional-refresh",
+    "account_id": "fixture-account"
+  },
+  "last_refresh": "2099-01-01T00:00:00Z"
+}

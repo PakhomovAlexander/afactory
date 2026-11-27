@@ -271,6 +271,8 @@ pub enum TaskOperatorV1 {
     ReportAccept {},
     /// Deterministic M1 history fold and typed report rendering; never invokes a Provider.
     OptimizationProject {},
+    /// One bounded, credential-free navigation subject.
+    AgentBenchSubject {},
     /// Deterministic aggregate development view and installed light-recipe catalog. The output
     /// is data-only and intentionally omits protected case bodies and a SourceTree handle.
     OptimizationProfile {},
@@ -409,6 +411,31 @@ pub struct PipelineDefinition {
 }
 
 impl PipelineDefinition {
+    /// The installed benchmark is a serial, fixed-width Pipeline of native subject operators.
+    /// Expanding it still requires the trusted operator signature from its installed compiler.
+    pub fn static_node_limit(&self) -> usize {
+        let full_benchmark = match self.nodes.len() {
+            72 => self.accepts.kinds.contains("agent-bench-external"),
+            216 => self.accepts.kinds.contains("agent-bench-grading"),
+            _ => false,
+        };
+        if full_benchmark
+            && self.name == "af/agent-bench"
+            && self.accepts.kinds.len() == 1
+            && self.slots.is_empty()
+            && self.max_parallel == 1
+            && self.max_attempts as usize == self.nodes.len()
+            && self
+                .nodes
+                .iter()
+                .all(|node| matches!(node.operator, TaskOperatorV1::AgentBenchSubject {}))
+        {
+            self.nodes.len()
+        } else {
+            64
+        }
+    }
+
     /// Whether the contract declares a Project Brief port.
     pub fn declares_brief(&self) -> bool {
         self.contract
@@ -448,7 +475,7 @@ impl PipelineDefinition {
             )?;
         }
         require(
-            !self.nodes.is_empty() && self.nodes.len() <= 64,
+            !self.nodes.is_empty() && self.nodes.len() <= self.static_node_limit(),
             "Pipeline must contain one to 64 static nodes",
         )?;
         require(

@@ -32,6 +32,7 @@
 //! budget unit match the Claude adapter instead of charging one repeatedly cached context as
 //! if it were fresh on every agent turn.
 
+pub mod navigation;
 pub mod task;
 
 use std::path::Path;

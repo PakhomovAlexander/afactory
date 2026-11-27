@@ -47,8 +47,7 @@
         "$ref": "#/$defs/node"
       },
       "uniqueItems": true,
-      "minItems": 1,
-      "maxItems": 64
+      "minItems": 1
     },
     "outputs": {
       "type": "object",
@@ -676,6 +675,18 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "agent_bench_subject"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
             "op",
             "baseline_slot",
             "candidate_slot"
@@ -889,6 +900,37 @@
     }
   },
   "allOf": [
+    {
+      "anyOf": [
+        {"properties": {"nodes": {"maxItems": 64}}},
+        {
+          "properties": {
+            "name": {"const": "af/agent-bench"},
+            "slots": {"maxProperties": 0},
+            "max_parallel": {"const": 1},
+            "nodes": {
+              "items": {"properties": {"operator": {"properties": {"op": {"const": "agent_bench_subject"}}}}}
+            }
+          },
+          "oneOf": [
+            {
+              "properties": {
+                "accepts": {"properties": {"kinds": {"const": ["agent-bench-external"]}}},
+                "nodes": {"minItems": 72, "maxItems": 72},
+                "max_attempts": {"const": 72}
+              }
+            },
+            {
+              "properties": {
+                "accepts": {"properties": {"kinds": {"const": ["agent-bench-grading"]}}},
+                "nodes": {"minItems": 216, "maxItems": 216},
+                "max_attempts": {"const": 216}
+              }
+            }
+          ]
+        }
+      ]
+    },
     {
       "if": {
         "properties": {

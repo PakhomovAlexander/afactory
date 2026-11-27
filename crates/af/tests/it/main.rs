@@ -20,6 +20,7 @@ mod sockets;
 mod task_cli;
 
 mod af_layout;
+mod agent_bench;
 mod aliases;
 mod build_metadata;
 mod catalog_digest;

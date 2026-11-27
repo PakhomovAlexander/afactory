@@ -257,6 +257,9 @@ impl PreparedTaskAttempt {
     pub fn reservation(&self) -> &TaskReservation {
         &self.reservation
     }
+    pub fn writer_epoch(&self) -> u64 {
+        self.writer_epoch
+    }
     pub fn context_id(&self) -> &str {
         &self.context_id
     }
@@ -1581,8 +1584,18 @@ impl EventStore {
                     .ledger
                     .attempt(&AttemptId(id.clone()))
                     .map_or(0, |a| a.charged);
-                let observation =
-                    self.task_attempt_usage_observation(&task_run_id(&lease.task_id)?, id)?;
+                let run_id = task_run_id(&lease.task_id)?;
+                let wall = walls.iter().find(|wall| &wall.attempt_id == id);
+                let sends = self.task_attempt_sends(&run_id, id)?;
+                let mut observation = self.task_attempt_usage_observation(&run_id, id)?;
+                if self.task_attempt_has_unknown_send(&run_id, id)? {
+                    observation = Some(task::usage::TaskUsageObservationV1 {
+                        charge_complete: false,
+                        reported_usage: observation
+                            .and_then(|seen| seen.reported_usage)
+                            .or_else(|| wall.and_then(|wall| wall.usage.clone())),
+                    });
+                }
                 // Usage was reported when the lost writer retained counters, an observation
                 // with counters or a recorded usage observation, even one of 0 tokens.
                 // Otherwise it is unknown: the Attempt is charged zero, never its reservation
@@ -1667,6 +1680,11 @@ impl EventStore {
                     })
                     .transpose()?
                     .into_iter()
+                    .chain(
+                        sends
+                            .into_iter()
+                            .flat_map(|(intent, raw)| std::iter::once(intent).chain(raw)),
+                    )
                     .collect::<Vec<_>>();
                 let unknown_usage = (!reported).then_some(task::usage::TaskUnknownUsageV1 {
                     cause: task::usage::TaskUnknownUsageCauseV1::LeaseExpired,

@@ -185,3 +185,40 @@ fn cancellation_retains_prefixes_and_stops_running_stdin_and_each_held_drain() {
         );
     }
 }
+
+#[test]
+fn duplex_ends_descendants_and_records_monotonic_exit_and_drain() {
+    let mut command = Command::new("/bin/sh");
+    command.args(["-c", "sleep 600 & echo $!; exit 0"]);
+    let output = af_process::run_supervised_duplex(
+        &mut command,
+        LOAD_SAFE_WALL,
+        af_process::ExitPolicy::KillDescendants,
+        |_| Ok::<_, String>(()),
+        |stdout| {
+            let mut bytes = Vec::new();
+            stdout.read_to_end(&mut bytes).unwrap();
+            bytes
+        },
+    )
+    .unwrap();
+    assert!(output.status.success());
+    assert!(output.input.is_ok());
+    let child = String::from_utf8(output.output)
+        .unwrap()
+        .trim()
+        .parse::<i32>()
+        .unwrap();
+    let until = Instant::now() + LOAD_SAFE_WALL;
+    while !exited(child) && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        exited(child),
+        "duplex left a live child: {}",
+        proc_stat(child)
+    );
+    assert!(output.timing.spawned <= output.timing.exit_observed);
+    assert!(output.timing.exit_observed <= output.timing.drained);
+    assert!(!output.stderr_held);
+}

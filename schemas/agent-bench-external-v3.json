@@ -1,0 +1,833 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema#",
+  "$id": "urn:af:schema:agent-bench-external:3",
+  "title": "Native external phase bindings and replay",
+  "oneOf": [
+    {"$ref": "#/$defs/summary"},
+    {"$ref": "#/$defs/report"},
+    {"$ref": "#/$defs/bindingsInput"},
+    {"$ref": "#/$defs/configuration"},
+    {"$ref": "#/$defs/receipt"}
+  ],
+  "$defs": {
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "task_id",
+        "plan_id",
+        "phase",
+        "prerequisite",
+        "execution",
+        "slots"
+      ],
+      "properties": {
+        "schema": {"const": "af.agent-bench-external-plan-summary/3"},
+        "task_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$"
+        },
+        "plan_id": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "phase": {"enum": ["smoke", "aa", "ab"]},
+        "prerequisite": {"enum": ["none", "accepted"]},
+        "execution": {
+          "enum": [
+            "codex_personal",
+            "loopback_fixture"
+          ]
+        },
+        "slots": { "enum": [4, 72] }
+      },
+      "if": {"properties": {"phase": {"const": "smoke"}}},
+      "then": {"properties": {"slots": {"const": 4}, "prerequisite": {"const": "none"}}},
+      "else": {"properties": {"slots": {"const": 72}, "prerequisite": {"const": "accepted"}}}
+    },
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "task_id",
+        "plan_id",
+        "phase_plan_id",
+        "phase",
+        "pins",
+        "common_instruction",
+        "prerequisite",
+        "predecessor",
+        "execution",
+        "slots"
+      ],
+      "properties": {
+        "schema": {"const": "af.agent-bench-external-report/3"},
+        "task_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$"
+        },
+        "plan_id": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "phase_plan_id": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "phase": {"enum": ["smoke", "aa", "ab"]},
+        "pins": {"$ref": "#/$defs/pins"},
+        "common_instruction": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536
+        },
+        "prerequisite": {"enum": ["none", "accepted"]},
+        "predecessor": {"oneOf": [{"$ref": "#/$defs/predecessor"}, {"type": "null"}]},
+        "execution": {
+          "enum": [
+            "codex_personal",
+            "loopback_fixture"
+          ]
+        },
+        "slots": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/slot"},
+          "minItems": 4,
+          "maxItems": 72
+        }
+      },
+      "if": {"properties": {"phase": {"const": "smoke"}}},
+      "then": {"properties": {"slots": {"minItems": 4, "maxItems": 4}, "prerequisite": {"const": "none"}, "predecessor": {"type": "null"}}},
+      "else": {"properties": {"slots": {"minItems": 72, "maxItems": 72}, "prerequisite": {"const": "accepted"}, "predecessor": {"type": "object"}}}
+    },
+    "predecessor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task_id", "revision_id", "plan_id", "result_id"],
+      "properties": {
+        "task_id": {"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$"},
+        "revision_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "plan_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "result_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}
+      }
+    },
+    "slot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "pair_id",
+        "case_id",
+        "repetition",
+        "variant",
+        "tool_set_id",
+        "tools",
+        "question",
+        "status",
+        "attempts",
+        "elapsed_ns",
+        "receipt",
+        "grade",
+        "inclusive_native_tokens",
+        "charged_tokens"
+      ],
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 71
+        },
+        "pair_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$"
+        },
+        "case_id": {
+          "type": "string",
+          "pattern": "^N(0[1-9]|1[0-2])$"
+        },
+        "repetition": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "variant": {
+          "enum": [
+            "V1",
+            "V2"
+          ]
+        },
+        "tool_set_id": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "af_list_paths",
+              "af_read_range",
+              "af_search",
+              "af_definition",
+              "af_references",
+              "af_implementation"
+            ]
+          },
+          "minItems": 3,
+          "maxItems": 6
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536
+        },
+        "status": {
+          "enum": [
+            "unstarted",
+            "collected",
+            "failed",
+            "missing"
+          ]
+        },
+        "attempts": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/attempt"},
+          "maxItems": 4
+        },
+        "elapsed_ns": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {"type": "null"}
+          ]
+        },
+        "receipt": {
+          "anyOf": [
+            {"$ref": "#/$defs/receipt"},
+            {"type": "null"}
+          ]
+        },
+        "grade": {"const": null},
+        "inclusive_native_tokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {"type": "null"}
+          ]
+        },
+        "charged_tokens": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            {"type": "null"}
+          ]
+        }
+      }
+    },
+    "attempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attempt_id",
+        "started",
+        "context_id",
+        "reserved_tokens",
+        "af_charged_tokens",
+        "settlement",
+        "abandoned",
+        "usage_id",
+        "unknown_usage",
+        "known_af_chargeable_tokens",
+        "known_inclusive_tokens",
+        "inclusive_native_tokens",
+        "calls"
+      ],
+      "properties": {
+        "attempt_id": {"type": "string"},
+        "started": {"type": "boolean"},
+        "context_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            {"type": "null"}
+          ]
+        },
+        "reserved_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "af_charged_tokens": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            {"type": "null"}
+          ]
+        },
+        "settlement": {
+          "anyOf": [
+            {"type": "object"},
+            {"type": "null"}
+          ]
+        },
+        "abandoned": {
+          "anyOf": [
+            {"type": "string"},
+            {"type": "null"}
+          ]
+        },
+        "usage_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            {"type": "null"}
+          ]
+        },
+        "unknown_usage": {
+          "anyOf": [
+            {"type": "string"},
+            {"type": "null"}
+          ]
+        },
+        "known_af_chargeable_tokens": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            {"type": "null"}
+          ]
+        },
+        "known_inclusive_tokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {"type": "null"}
+          ]
+        },
+        "inclusive_native_tokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {"type": "null"}
+          ]
+        },
+        "calls": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/call"},
+          "maxItems": 8
+        }
+      }
+    },
+    "call": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "intent_artifact_id",
+        "raw_artifact_id",
+        "intent",
+        "raw"
+      ],
+      "properties": {
+        "intent_artifact_id": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "raw_artifact_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            {"type": "null"}
+          ]
+        },
+        "intent": {"$ref": "#/$defs/raw/properties/intent"},
+        "raw": {
+          "anyOf": [
+            {"$ref": "#/$defs/raw"},
+            {"type": "null"}
+          ]
+        }
+      }
+    },
+    "raw": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "intent",
+        "http_status",
+        "response_sha256",
+        "response_bytes",
+        "usage",
+        "drained_mono_ns",
+        "failure"
+      ],
+      "properties": {
+        "schema": {"const": "af/codex-navigation-call/1"},
+        "intent": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "ordinal",
+            "route",
+            "request_sha256",
+            "bindings",
+            "started_mono_ns"
+          ],
+          "properties": {
+            "id": {"type": "string"},
+            "ordinal": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "route": {
+              "enum": [
+                "/models",
+                "/responses"
+              ]
+            },
+            "request_sha256": {"type": "string"},
+            "bindings": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "task_attempt_invocation",
+                "source",
+                "prompt",
+                "tools",
+                "model_catalog",
+                "executable",
+                "account",
+                "protocol",
+                "config"
+              ],
+              "properties": {
+                "task_attempt_invocation": {"type": "string"},
+                "source": {"type": "string"},
+                "prompt": {"type": "string"},
+                "tools": {"type": "string"},
+                "model_catalog": {"type": "string"},
+                "executable": {"type": "string"},
+                "account": {"type": "string"},
+                "protocol": {"type": "string"},
+                "config": {"type": "string"}
+              }
+            },
+            "started_mono_ns": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "http_status": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 599
+            },
+            {"type": "null"}
+          ]
+        },
+        "response_sha256": {"type": "string"},
+        "response_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "observations",
+                "terminal_event",
+                "value",
+                "reconciled",
+                "failure"
+              ],
+              "properties": {
+                "terminal_event": {
+                  "anyOf": [
+                    {"type": "string"},
+                    {"type": "null"}
+                  ]
+                },
+                "value": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "presence"
+                      ],
+                      "properties": {
+                        "presence": {"const": "absent"}
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "presence",
+                        "value"
+                      ],
+                      "properties": {
+                        "presence": {"const": "present"},
+                        "value": {}
+                      }
+                    }
+                  ]
+                },
+                "reconciled": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "input",
+                        "cached_input",
+                        "output",
+                        "reasoning_output",
+                        "inclusive",
+                        "chargeable"
+                      ],
+                      "properties": {
+                        "input": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "cached_input": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "output": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "reasoning_output": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            {"type": "null"}
+                          ]
+                        },
+                        "inclusive": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "chargeable": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      }
+                    },
+                    {"type": "null"}
+                  ]
+                },
+                "failure": {
+                  "anyOf": [
+                    {"type": "string"},
+                    {"type": "null"}
+                  ]
+                },
+                "observations": {
+                  "type": "array",
+                  "items": {}
+                }
+              }
+            },
+            {"type": "null"}
+          ]
+        },
+        "drained_mono_ns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "failure": {
+          "anyOf": [
+            {"type": "string"},
+            {"type": "null"}
+          ]
+        }
+      }
+    },
+    "trace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tool",
+        "request",
+        "response"
+      ],
+      "properties": {
+        "tool": {"type": "string"},
+        "request": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "response": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            {"type": "null"}
+          ]
+        }
+      }
+    },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "answer",
+        "failure",
+        "elapsed_ns",
+        "inclusive_native_tokens",
+        "cumulative_inclusive_tokens",
+        "calls",
+        "trace"
+      ],
+      "properties": {
+        "answer": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 65536
+            },
+            {"type": "null"}
+          ]
+        },
+        "failure": {
+          "anyOf": [
+            {"type": "string"},
+            {"type": "null"}
+          ]
+        },
+        "elapsed_ns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "inclusive_native_tokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {"type": "null"}
+          ]
+        },
+        "cumulative_inclusive_tokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {"type": "null"}
+          ]
+        },
+        "calls": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "maxItems": 16
+        },
+        "trace": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/trace"},
+          "maxItems": 64
+        }
+      }
+    },
+    "pins": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_revision",
+        "source_digest",
+        "bundle",
+        "schedule",
+        "project_graph"
+      ],
+      "properties": {
+        "source_revision": {
+          "type": "string",
+          "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$"
+        },
+        "source_digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "bundle": {"$ref": "#/$defs/inputPin"},
+        "schedule": {"$ref": "#/$defs/inputPin"},
+        "project_graph": {"$ref": "#/$defs/inputPin"}
+      }
+    },
+    "inputPin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sha256",
+        "object_id"
+      ],
+      "properties": {
+        "sha256": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "object_id": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      }
+    },
+    "bindingsInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "executable",
+        "executable_sha256",
+        "backend"
+      ],
+      "properties": {
+        "executable": {"type": "string"},
+        "executable_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "backend": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "account_binding",
+                "auth_homes",
+                "catalog",
+                "catalog_sha256"
+              ],
+              "properties": {
+                "kind": {"const": "codex_personal"},
+                "account_binding": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                },
+                "auth_homes": {
+                  "type": "array",
+                  "items": {"type": "string"},
+                  "minItems": 4,
+                  "maxItems": 72,
+                  "uniqueItems": true,
+                  "oneOf": [{"maxItems": 4}, {"minItems": 72}]
+                },
+                "catalog": {"type": "string"},
+                "catalog_sha256": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "endpoint"
+              ],
+              "properties": {
+                "kind": {"const": "loopback_fixture"},
+                "endpoint": {
+                  "type": "string",
+                  "pattern": "^127\\.0\\.0\\.1:[0-9]+$"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "input",
+        "declaration",
+        "engine",
+        "catalog",
+        "catalog_sha256",
+        "analyzer",
+        "libraries",
+        "transport",
+        "broker",
+        "semantic"
+      ],
+      "properties": {
+        "input": {"$ref": "#/$defs/bindingsInput"},
+        "declaration": {"$ref": "#/$defs/inputPin"},
+        "engine": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "catalog": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "catalog_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "analyzer": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "libraries": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "transport": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "broker": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "semantic": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      }
+    }
+  }
+}

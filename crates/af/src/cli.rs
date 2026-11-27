@@ -122,6 +122,12 @@ pub(crate) fn usage_error(error: clap::Error) -> clap::Error {
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum Command {
+    /// Capture and report a credential-free paired source navigation benchmark
+    #[command(display_order = 32)]
+    AgentBench {
+        #[command(subcommand)]
+        command: crate::task_commands::agent_bench::BenchmarkCommand,
+    },
     /// Orchestrate Tasks, decisions, waits and bounded actions
     #[command(display_order = 30)]
     Scenario {

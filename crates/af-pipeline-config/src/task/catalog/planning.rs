@@ -439,6 +439,21 @@ impl TaskPlanCompiler {
         root: &str,
     ) -> Result<CompiledTask, String> {
         let preparation = self.preparation_roots.contains(root);
+        // The installed benchmark has one serial native operator per frozen slot.
+        // Project packages and generated plans continue to use the ordinary bound.
+        let native_benchmark = !preparation
+            && root == "af/agent-bench"
+            && self.signatures.len() == 1
+            && self.signatures.contains_key("operator/agent-bench-subject");
+        let max_nodes = if native_benchmark {
+            let static_limit = self
+                .pipelines
+                .get(root)
+                .map_or(64, PipelineDefinition::static_node_limit);
+            static_limit + usize::from(static_limit > 64)
+        } else {
+            64
+        };
         let context = CompileContext {
             pipelines: &self.pipelines,
             signatures: &self.signatures,
@@ -448,7 +463,7 @@ impl TaskPlanCompiler {
                 self.slot_workers.clone()
             },
             acceptance_outputs: self.acceptance_outputs.clone(),
-            max_nodes: 64,
+            max_nodes,
             max_depth: 4,
         };
         if preparation {

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "af/AgentBenchGradingReceipt@3 payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["index", "status", "judgment", "decision", "cumulative_tokens", "admission_stopped", "elapsed_ns", "calls"],
+  "properties": {
+    "index": { "type": "integer", "minimum": 0, "maximum": 215 },
+    "status": { "enum": ["graded", "unavailable", "not_required", "failed"] },
+    "judgment": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["verdict", "rationale"],
+          "properties": {
+            "verdict": { "$ref": "#/$defs/verdict" },
+            "rationale": { "type": "string", "minLength": 1, "maxLength": 8192 }
+          }
+        }
+      ]
+    },
+    "decision": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/verdict" }] },
+    "cumulative_tokens": { "type": ["null", "integer"], "minimum": 0 },
+    "admission_stopped": { "type": "boolean" },
+    "elapsed_ns": { "type": "integer", "minimum": 0 },
+    "calls": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+    }
+  },
+  "$defs": {
+    "verdict": { "enum": ["correct", "incorrect", "disqualified", "unresolved"] }
+  }
+}

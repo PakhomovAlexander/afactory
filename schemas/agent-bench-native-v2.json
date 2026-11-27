@@ -1,0 +1,884 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:agent-bench-native:2",
+  "title": "Native paired navigation benchmark contracts",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/cases"
+    },
+    {
+      "$ref": "#/$defs/oracle"
+    },
+    {
+      "$ref": "#/$defs/scheduleSlot"
+    },
+    {
+      "$ref": "#/$defs/policy"
+    },
+    {
+      "$ref": "#/$defs/receipt"
+    },
+    {
+      "$ref": "#/$defs/plan"
+    },
+    {
+      "$ref": "#/$defs/report"
+    }
+  ],
+  "$defs": {
+    "position": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "line",
+        "character"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240,
+          "pattern": "^[A-Za-z0-9._/-]+$"
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "character": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        }
+      }
+    },
+    "anchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "line"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240,
+          "pattern": "^[A-Za-z0-9._/-]+$"
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        }
+      }
+    },
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "question",
+        "literal",
+        "position",
+        "operation"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$"
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "literal": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "position": {
+          "$ref": "#/$defs/position"
+        },
+        "operation": {
+          "enum": [
+            "definition",
+            "references",
+            "implementation"
+          ]
+        }
+      }
+    },
+    "dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "index"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-zA-Z_][a-zA-Z0-9_]{0,63}$"
+        },
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 63
+        }
+      }
+    },
+    "crate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "root",
+        "edition",
+        "dependencies"
+      ],
+      "properties": {
+        "root": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240,
+          "pattern": "^[A-Za-z0-9._/-]+$"
+        },
+        "edition": {
+          "enum": [
+            "2018",
+            "2021",
+            "2024"
+          ]
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/dependency"
+          },
+          "maxItems": 64
+        }
+      }
+    },
+    "cases": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "source_digest",
+        "project",
+        "cases",
+        "repetitions"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af.agent-bench-native-cases/1"
+        },
+        "source_digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "project": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/crate"
+          },
+          "maxItems": 64,
+          "minItems": 1
+        },
+        "cases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/case"
+          },
+          "maxItems": 10,
+          "minItems": 1
+        },
+        "repetitions": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        }
+      }
+    },
+    "oracle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "source_digest",
+        "expected"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af.agent-bench-oracle/1"
+        },
+        "source_digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "expected": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 10,
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$"
+          },
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/anchor"
+            },
+            "maxItems": 64,
+            "minItems": 1
+          }
+        }
+      }
+    },
+    "scheduleSlot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "repetition",
+        "arm",
+        "case"
+      ],
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 59
+        },
+        "repetition": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "arm": {
+          "enum": [
+            "baseline",
+            "treatment"
+          ]
+        },
+        "case": {
+          "$ref": "#/$defs/case"
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "engine",
+        "source_digest",
+        "analyzer",
+        "semantic_config",
+        "common_config",
+        "cases",
+        "oracle",
+        "project",
+        "slots",
+        "analyzer_sha256",
+        "analyzer_libraries",
+        "native_fixture"
+      ],
+      "properties": {
+        "engine": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "source_digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "analyzer": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "semantic_config": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "common_config": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "cases": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "oracle": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "project": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/crate"
+          },
+          "maxItems": 64,
+          "minItems": 1
+        },
+        "slots": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/scheduleSlot"
+          },
+          "maxItems": 60,
+          "minItems": 2
+        },
+        "native_fixture": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["executable", "endpoint", "catalog_sha256", "config"],
+              "properties": {
+                "executable": {"type": "string", "pattern": "^/"},
+                "endpoint": {"type": "string", "pattern": "^127[.]0[.]0[.]1:[1-9][0-9]{0,4}$"},
+                "catalog_sha256": {"$ref": "#/$defs/digest"},
+                "config": {"$ref": "#/$defs/digest"}
+              }
+            }
+          ]
+        },
+        "analyzer_libraries": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "array",
+              "items": {"$ref": "#/$defs/digest"},
+              "minItems": 2,
+              "maxItems": 2
+            }
+          ]
+        },
+        "analyzer_sha256": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "trace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tool",
+        "request",
+        "response"
+      ],
+      "properties": {
+        "tool": {
+          "enum": [
+            "af_list_paths",
+            "af_read_range",
+            "af_search",
+            "af_definition",
+            "af_references",
+            "af_implementation"
+          ]
+        },
+        "request": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "response": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "answer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "anchors",
+        "truncated"
+      ],
+      "properties": {
+        "anchors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/anchor"
+          },
+          "maxItems": 64
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      }
+    },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "elapsed_ns",
+        "source_digest",
+        "tools",
+        "trace",
+        "answer",
+        "failure",
+        "native_calls"
+      ],
+      "properties": {
+        "native_calls": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["intent", "raw"],
+                "properties": {
+                  "intent": {"$ref": "#/$defs/digest"},
+                  "raw": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]}
+                }
+              }
+            }
+          ]
+        },
+        "elapsed_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "source_digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "af_list_paths",
+              "af_read_range",
+              "af_search",
+              "af_definition",
+              "af_references",
+              "af_implementation"
+            ]
+          },
+          "maxItems": 6,
+          "minItems": 3
+        },
+        "trace": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/trace"
+          },
+          "maxItems": 64
+        },
+        "answer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/answer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "failure": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "task_id",
+        "plan_id",
+        "schedule_id",
+        "slots"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af.agent-bench-plan/1"
+        },
+        "task_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$"
+        },
+        "plan_id": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "schedule_id": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "slots": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 60
+        }
+      }
+    },
+    "pair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case",
+        "repetition",
+        "baseline_slot",
+        "treatment_slot",
+        "elapsed_delta_ns",
+        "inclusive_native_token_delta"
+      ],
+      "properties": {
+        "case": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$"
+        },
+        "repetition": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "baseline_slot": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 59
+        },
+        "treatment_slot": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 59
+        },
+        "elapsed_delta_ns": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inclusive_native_token_delta": {
+          "type": ["integer", "null"],
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "attempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attempt_id",
+        "started",
+        "context_id",
+        "reserved_tokens",
+        "af_charged_tokens",
+        "settlement",
+        "usage_id",
+        "raw_artifact_ids",
+        "abandoned"
+      ],
+      "properties": {
+        "attempt_id": {
+          "type": "string"
+        },
+        "started": {
+          "type": "boolean"
+        },
+        "context_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reserved_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "af_charged_tokens": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        },
+        "settlement": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "usage_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "raw_artifact_ids": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/digest"}
+        },
+        "abandoned": {
+          "anyOf": [
+            {
+              "enum": [
+                "writer_lost",
+                "host_cancelled"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "reportedSlot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "case",
+        "repetition",
+        "arm",
+        "status",
+        "receipt_id",
+        "receipt",
+        "grade",
+        "inclusive_native_tokens",
+        "af_charged_tokens",
+        "elapsed_ns",
+        "attempts"
+      ],
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 59
+        },
+        "case": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$"
+        },
+        "repetition": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "arm": {
+          "enum": [
+            "baseline",
+            "treatment"
+          ]
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "failed",
+            "missing",
+            "unstarted"
+          ]
+        },
+        "receipt_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "receipt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/receipt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "grade": {
+          "anyOf": [
+            {
+              "enum": [
+                "correct",
+                "incorrect",
+                "ambiguous"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inclusive_native_tokens": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "af_charged_tokens": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        },
+        "elapsed_ns": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "attempts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/attempt"
+          }
+        }
+      }
+    },
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "task_id",
+        "plan_id",
+        "schedule_id",
+        "source_snapshot_id",
+        "source_digest",
+        "cases_id",
+        "oracle_id",
+        "inference",
+        "grader",
+        "conclusion",
+        "slots",
+        "pairs",
+        "rust_analyzer_version",
+        "rust_analyzer_sha256",
+        "semantic_config",
+        "text_config"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af.agent-bench-report/2"
+        },
+        "task_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$"
+        },
+        "plan_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "schedule_id": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "source_snapshot_id": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "source_digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "cases_id": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "oracle_id": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "inference": {
+          "enum": ["synthetic_fixture", "native_codex_dummy_endpoint"]
+        },
+        "grader": {
+          "const": "synthetic_anchor_oracle"
+        },
+        "conclusion": {
+          "const": "no_improvement_claim"
+        },
+        "slots": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reportedSlot"
+          },
+          "maxItems": 60,
+          "minItems": 2
+        },
+        "pairs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/pair"
+          },
+          "maxItems": 30,
+          "minItems": 1
+        },
+        "rust_analyzer_version": {
+          "const": "1.88.0"
+        },
+        "rust_analyzer_sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "semantic_config": {
+          "$ref": "#/$defs/digest"
+        },
+        "text_config": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    }
+  }
+}

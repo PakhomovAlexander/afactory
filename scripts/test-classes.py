@@ -183,7 +183,8 @@ def schema_documents():
                'modules': mapping(primary), 'overrides': mapping(primary), 'scripts': primary,
                'utilities': names, 'always_on_scripts': names, 'exact': primary, 'hosted_checks': primary,
                'ignored': mapping({'enum': ['live-container', 'namespace-child',
-                                           'manual-measurement', 'subprocess-helper']})})
+                                           'manual-measurement', 'subprocess-helper',
+                                           'installed-conformance']})})
     plan = obj({'schema': {'const': SCHEMA}, 'profile': {'enum': ['full', 'fast', 'custom']},
                 'context': {'enum': list(CONTEXTS)}, 'sha': nullable, 'version': nullable,
                 'labels': names, 'selected': {'type': 'array', 'items': kind,

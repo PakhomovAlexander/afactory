@@ -12,6 +12,54 @@
       "schemas": ["schemas/backlog-open-issues-v1.json"]
     },
     {
+      "name": "agent-navigation-benchmark",
+      "reader_writer": [
+        "crates/af/src/task_commands/agent_bench.rs",
+        "crates/af/src/task_commands/agent_bench/external.rs",
+        "crates/af/src/task_commands/agent_bench/external/evaluator.rs",
+        "crates/af/src/task_commands/agent_bench/external/execution.rs",
+        "crates/af/src/task_commands/agent_bench/external/grading.rs",
+        "crates/af/src/task_commands/agent_bench/external/phase_evidence.rs",
+        "crates/af/src/task_commands/agent_bench/native_fixture.rs",
+        "crates/af/src/task_commands/agent_bench/subject.rs",
+        "crates/af-contracts/src/navigation.rs",
+        "crates/af-runner-codex/src/navigation/mod.rs",
+        "scripts/analyze-agent-bench.py"
+      ],
+      "semantic_owner": [
+        "crates/af/src/task_commands/agent_bench/external.rs",
+        "crates/af/src/task_commands/agent_bench/external/evaluator.rs",
+        "crates/af/src/task_commands/agent_bench/external/execution.rs",
+        "crates/af/src/task_commands/agent_bench/external/grading.rs",
+        "crates/af/src/task_commands/agent_bench/external/phase_evidence.rs",
+        "crates/af-sandbox/src/navigation.rs",
+        "crates/af-sandbox/src/navigation/semantic.rs",
+        "crates/af/src/task_commands/agent_bench/native_fixture.rs",
+        "crates/af/src/task_commands/agent_bench/subject.rs",
+        "scripts/analyze-agent-bench.py"
+      ],
+      "tests": [
+        "crates/af/tests/it/agent_bench.rs",
+        "crates/af-contracts/tests/agent_bench.rs",
+        "crates/af-contracts/tests/navigation.rs",
+        "crates/af-runner-codex/src/navigation/tests.rs",
+        "scripts/test-agent-bench.py"
+      ],
+      "schemas": [
+        "schemas/agent-bench-native-v2.json",
+        "schemas/agent-bench-external-v1.json",
+        "schemas/agent-bench-external-v3.json",
+        "schemas/agent-bench-evaluator-v1.json",
+        "schemas/agent-bench-grading-plan-v2.json",
+        "schemas/agent-bench-phase-evidence-v1.json",
+        "schemas/agent-bench-grading-receipt-v3.json",
+        "schemas/agent-bench-analysis-v2.json",
+        "schemas/agent-bench-evidence-v2.json",
+        "schemas/codex-navigation-call-v1.json",
+        "schemas/source-navigation-v3.json"
+      ]
+    },
+    {
       "name": "laboratory",
       "reader_writer": [
         "scripts/performance/perflab/contracts.py"

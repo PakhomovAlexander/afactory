@@ -49,7 +49,8 @@
           "live-container",
           "namespace-child",
           "manual-measurement",
-          "subprocess-helper"
+          "subprocess-helper",
+          "installed-conformance"
         ]
       },
       "type": "object"

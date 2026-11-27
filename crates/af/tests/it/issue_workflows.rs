@@ -1463,7 +1463,7 @@ fn design_acceptance_executes_both_challenges_and_refuses_a_failed_sibling() {
     );
     std::fs::write(&sdk, script).unwrap();
     let bin = temp.path().join("bin");
-    fake_models::install("codex", &bin, &auth);
+    install_profile_codex(&bin, &auth, &model_profile());
     let codex = bin.join("codex");
     let original = std::fs::read_to_string(&codex).unwrap();
     let end = original.rfind("sys.exit(64)").unwrap();

@@ -1,0 +1,198 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "af.source-navigation/3",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tool",
+        "offset"
+      ],
+      "properties": {
+        "tool": {
+          "const": "af_list_paths"
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16384
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tool",
+        "path",
+        "offset",
+        "length"
+      ],
+      "properties": {
+        "tool": {
+          "const": "af_read_range"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240,
+          "pattern": "^(?!(?:.*\\/)?(?:\\.|\\.\\.|\\.[gG][iI][tT]|\\.[hH][gG]|\\.[sS][vV][nN])(?:\\/|$))[A-Za-z0-9._-]+(?:\\/[A-Za-z0-9._-]+)*$"
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "length": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tool",
+        "query",
+        "offset"
+      ],
+      "properties": {
+        "tool": {
+          "const": "af_search"
+        },
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[\\u0001-\\u0009\\u000b\\u000c\\u000e-\\u007f]+$"
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "response": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tool",
+            "paths",
+            "next_offset"
+          ],
+          "properties": {
+            "tool": {
+              "const": "af_list_paths"
+            },
+            "paths": {
+              "type": "array",
+              "maxItems": 256,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240,
+                "pattern": "^(?!(?:.*\\/)?(?:\\.|\\.\\.|\\.[gG][iI][tT]|\\.[hH][gG]|\\.[sS][vV][nN])(?:\\/|$))[A-Za-z0-9._-]+(?:\\/[A-Za-z0-9._-]+)*$"
+              }
+            },
+            "next_offset": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 1,
+              "maximum": 16383
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tool",
+            "text"
+          ],
+          "properties": {
+            "tool": {
+              "const": "af_read_range"
+            },
+            "text": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tool",
+            "hits",
+            "next_offset",
+            "non_text_paths"
+          ],
+          "properties": {
+            "tool": {
+              "const": "af_search"
+            },
+            "hits": {
+              "type": "array",
+              "maxItems": 128,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "path",
+                  "line",
+                  "text"
+                ],
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240,
+                    "pattern": "^(?!(?:.*\\/)?(?:\\.|\\.\\.|\\.[gG][iI][tT]|\\.[hH][gG]|\\.[sS][vV][nN])(?:\\/|$))[A-Za-z0-9._-]+(?:\\/[A-Za-z0-9._-]+)*$"
+                  },
+                  "line": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "text": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "next_offset": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 128,
+              "maximum": 4294967295
+            },
+            "non_text_paths": {
+              "type": "array",
+              "maxItems": 16384,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240,
+                "pattern": "^(?!(?:.*\\/)?(?:\\.|\\.\\.|\\.[gG][iI][tT]|\\.[hH][gG]|\\.[sS][vV][nN])(?:\\/|$))[A-Za-z0-9._-]+(?:\\/[A-Za-z0-9._-]+)*$"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -51,6 +51,20 @@ def setUpModule():
 
 
 class Selection(unittest.TestCase):
+    def test_installed_navigation_conformance_has_explicit_ignored_e2e_policy(self):
+        identity = 'af-runner-codex navigation::tests::installed_app_server_conformance'
+        cat = tc.catalog()
+        self.assertEqual(cat['ignored'][identity], 'installed-conformance')
+        inventory = {'rust-suites': {'af-runner-codex': {'testcases': {
+            'navigation::tests::installed_app_server_conformance': {'ignored': True}}}}}
+        entry, = tc.partition(inventory, cat, held={})
+        self.assertEqual(entry['class'], 'e2e')
+        self.assertEqual(entry['ignored_policy'], 'installed-conformance')
+        self.assertTrue(entry['ignored'])
+        del cat['ignored'][identity]
+        with self.assertRaisesRegex(ValueError, 'ignored-test policy drift'):
+            tc.partition(inventory, cat, held={})
+
     def test_live_native_probe_refuses_zero_tests_and_has_current_catalog_authority(self):
         tc.audit_source()
         make = (ROOT / 'Makefile').read_text()
@@ -757,7 +771,7 @@ if mode == 'malformed':
     def test_full_gate_build_precedes_python_tests_with_real_step_receipts(self):
         # Keep the actual wrapper, Make graph and receipt writer. Only expensive payloads
         # are stand-ins; never run a nested real gate from this preflight regression.
-        preflight = ['ci-disk', 'adr-catalog', 'task-preflight', 'prereqs', 'gate-owner', 'nextest-gate', 'stress-proof',
+        preflight = ['ci-disk', 'adr-catalog', 'agent-bench', 'task-preflight', 'prereqs', 'gate-owner', 'nextest-gate', 'stress-proof',
                      'test-time-report', 'provider-auth-host', 'pi-host', 'task-wake-probes', 'pr-report', 'pr-lines',
                      'test-classes', 'test-catalog', 'workspace-fixtures', 'performance-schemas',
                      'performance-kernel-harness']
@@ -778,7 +792,7 @@ if mode == 'malformed':
             for name in ('verify.sh', 'verify-body.sh', 'gate-owner.py', 'ci-step.py'):
                 shutil.copy2(ROOT / 'scripts' / name, scripts / name)
             # All command paths required by the full Make entry must exist in the fixture.
-            payloads = ['contract-inventory.py', 'test-contract-inventory.py', 'test-ci-disk.py', 'test-adr.py', 'test-task-preflight.py', 'test-prereqs.py', 'test-gate-owner.py',
+            payloads = ['contract-inventory.py', 'test-contract-inventory.py', 'test-ci-disk.py', 'test-adr.py', 'test-agent-bench.py', 'test-task-preflight.py', 'test-prereqs.py', 'test-gate-owner.py',
                         'test-nextest-gate.py', 'test-stress-proof.py',
                         'test-test-time-report.py',
                         'test-provider-auth-host.py', 'test-scenario-github-adapter.py', 'test-scenario-git-workspace.py',

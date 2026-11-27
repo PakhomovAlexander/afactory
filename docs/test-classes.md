@@ -54,6 +54,9 @@ from the audited inventory. Tests in each root module are grouped only when thei
 other names stay exact. Explicit singleton overrides classify manual measurement tests as perf,
 and the Codex session parser and privacy regressions (`codex_*`) inside the `af` binary's perf
 `self_optimizer::` unit module as functional.
+The `installed-conformance` ignored policy denotes an explicitly invoked local executable
+prerequisite check. The restricted navigation installed app-server check is e2e and uses dummy
+authentication with local synthetic SSE; ordinary gates report it as ignored, never passed.
 Every ignored identity also records its manual/child/container policy; a new ignored test fails
 the audit until reviewed. The guarded kernel baseline refusal test is build-free; the judged comparison and
 tampered-candidate refusals after a measured baseline are `manual-measurement`: run

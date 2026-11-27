@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:agent-bench-external:1",
+  "title": "External prompt-only benchmark planning and replay",
+  "oneOf": [{"$ref": "#/$defs/plan"}, {"$ref": "#/$defs/summary"}, {"$ref": "#/$defs/report"}, {"$ref": "#/$defs/bundle"}, {"$ref": "#/$defs/schedule"}],
+  "$defs": {
+    "bundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "common_instruction", "cases"],
+      "properties": {
+        "schema": {"type": "string", "minLength": 1, "maxLength": 256},
+        "common_instruction": {"type": "string", "minLength": 1, "maxLength": 65536},
+        "cases": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "prompt"],
+            "properties": {
+              "id": {"type": "string", "pattern": "^N(0[1-9]|1[0-2])$"},
+              "prompt": {"type": "string", "minLength": 1, "maxLength": 65536}
+            }
+          },
+          "minItems": 12,
+          "maxItems": 12
+        }
+      }
+    },
+    "schedule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "status", "seed", "ordering", "blocks"],
+      "properties": {
+        "schema": {"type": "string", "minLength": 1, "maxLength": 256},
+        "status": {"type": "string", "minLength": 1, "maxLength": 256},
+        "seed": {"not": {"const": null}},
+        "ordering": {"not": {"const": null}},
+        "blocks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["pair_id", "case_id", "repetition", "order"],
+            "properties": {
+              "pair_id": {"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$"},
+              "case_id": {"type": "string", "pattern": "^N(0[1-9]|1[0-2])$"},
+              "repetition": {"type": "integer", "minimum": 1, "maximum": 3},
+              "order": {"type": "array", "items": {"enum": ["V1", "V2"]}, "minItems": 2, "maxItems": 2, "uniqueItems": true}
+            }
+          },
+          "minItems": 36,
+          "maxItems": 36
+        }
+      }
+    },
+    "inputPin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "object_id"],
+      "properties": {
+        "sha256": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "object_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}
+      }
+    },
+    "pins": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_revision", "source_digest", "bundle", "schedule", "project_graph"],
+      "properties": {
+        "source_revision": {"type": "string", "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$"},
+        "source_digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "bundle": {"$ref": "#/$defs/inputPin"},
+        "schedule": {"$ref": "#/$defs/inputPin"},
+        "project_graph": {"$ref": "#/$defs/inputPin"}
+      }
+    },
+    "predecessor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task_id", "revision_id", "plan_id", "result_id"],
+      "properties": {
+        "task_id": {"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$"},
+        "revision_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "plan_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "result_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}
+      }
+    },
+    "slot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index", "pair_id", "case_id", "repetition", "variant", "tool_set_id", "tools", "question"],
+      "properties": {
+        "index": {"type": "integer", "minimum": 0, "maximum": 71},
+        "pair_id": {"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$"},
+        "case_id": {"type": "string", "pattern": "^N(0[1-9]|1[0-2])$"},
+        "repetition": {"type": "integer", "minimum": 1, "maximum": 3},
+        "variant": {"enum": ["V1", "V2"]},
+        "tool_set_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "tools": {
+          "type": "array",
+          "items": {
+            "enum": ["af_list_paths", "af_read_range", "af_search", "af_definition", "af_references", "af_implementation"]
+          },
+          "minItems": 3,
+          "maxItems": 6
+        },
+        "question": {"type": "string", "minLength": 1, "maxLength": 65536}
+      }
+    },
+    "unstartedSlot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index", "pair_id", "case_id", "repetition", "variant", "tool_set_id", "tools", "question", "status", "attempts", "receipt", "grade", "elapsed_ns", "inclusive_native_tokens", "charged_tokens"],
+      "properties": {
+        "index": {"type": "integer", "minimum": 0, "maximum": 71},
+        "pair_id": {"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$"},
+        "case_id": {"type": "string", "pattern": "^N(0[1-9]|1[0-2])$"},
+        "repetition": {"type": "integer", "minimum": 1, "maximum": 3},
+        "variant": {"enum": ["V1", "V2"]},
+        "tool_set_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "tools": {
+          "type": "array",
+          "items": {
+            "enum": ["af_list_paths", "af_read_range", "af_search", "af_definition", "af_references", "af_implementation"]
+          },
+          "minItems": 3,
+          "maxItems": 6
+        },
+        "question": {"type": "string", "minLength": 1, "maxLength": 65536},
+        "status": {"const": "unstarted"},
+        "attempts": {"const": []},
+        "receipt": {"const": null},
+        "grade": {"const": null},
+        "elapsed_ns": {"const": null},
+        "inclusive_native_tokens": {"const": null},
+        "charged_tokens": {"const": null}
+      }
+    },
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "phase", "pins", "common_instruction", "predecessor", "slots"],
+      "properties": {
+        "schema": {"const": "af.agent-bench-external-plan/1"},
+        "phase": {"enum": ["smoke", "aa", "ab"]},
+        "pins": {"$ref": "#/$defs/pins"},
+        "common_instruction": {"type": "string", "minLength": 1, "maxLength": 65536},
+        "predecessor": {"oneOf": [{"$ref": "#/$defs/predecessor"}, {"const": null}]},
+        "slots": {"type": "array", "items": {"$ref": "#/$defs/slot"}, "minItems": 4, "maxItems": 72}
+      },
+      "if": {"properties": {"phase": {"const": "smoke"}}},
+      "then": {"properties": {"slots": {"minItems": 4, "maxItems": 4}}},
+      "else": {"properties": {"slots": {"minItems": 72, "maxItems": 72}}}
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "task_id", "plan_id", "phase", "prerequisite", "execution", "slots"],
+      "properties": {
+        "schema": {"const": "af.agent-bench-external-plan-summary/1"},
+        "task_id": {"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$"},
+        "plan_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "phase": {"enum": ["smoke", "aa", "ab"]},
+        "prerequisite": {"enum": ["none", "pending", "accepted"]},
+        "execution": {"const": "unavailable"},
+        "slots": {"type": "integer", "minimum": 4, "maximum": 72}
+      },
+      "if": {"properties": {"phase": {"const": "smoke"}}},
+      "then": {"properties": {"slots": {"const": 4}}},
+      "else": {"properties": {"slots": {"const": 72}}}
+    },
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "task_id", "plan_id", "phase", "prerequisite", "execution", "pins", "common_instruction", "predecessor", "slots"],
+      "properties": {
+        "schema": {"const": "af.agent-bench-external-report/1"},
+        "task_id": {"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$"},
+        "plan_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "phase": {"enum": ["smoke", "aa", "ab"]},
+        "prerequisite": {"enum": ["none", "pending", "accepted"]},
+        "execution": {"const": "unavailable"},
+        "pins": {"$ref": "#/$defs/pins"},
+        "common_instruction": {"type": "string", "minLength": 1, "maxLength": 65536},
+        "predecessor": {"oneOf": [{"$ref": "#/$defs/predecessor"}, {"const": null}]},
+        "slots": {"type": "array", "items": {"$ref": "#/$defs/unstartedSlot"}, "minItems": 4, "maxItems": 72}
+      },
+      "if": {"properties": {"phase": {"const": "smoke"}}},
+      "then": {"properties": {"slots": {"minItems": 4, "maxItems": 4}}},
+      "else": {"properties": {"slots": {"minItems": 72, "maxItems": 72}}}
+    }
+  }
+}

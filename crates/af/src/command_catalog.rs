@@ -208,6 +208,10 @@ pub(crate) const EFFECTS: &[(&str, Effects)] = &[
             ])
         },
     ),
+    ("af agent-bench plan", writes(&[(Store, None)])),
+    ("af agent-bench report", READS),
+    ("af agent-bench check-evaluator", READS),
+    ("af agent-bench plan-grading", writes(&[(Store, None)])),
     ("af task plan", writes(&[(Store, None)])),
     ("af task refresh", writes(&[(Store, None)])),
     ("af task decision-payload", writes(&[(Files, None)])),

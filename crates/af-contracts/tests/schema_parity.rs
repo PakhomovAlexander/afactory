@@ -1334,6 +1334,8 @@ fn current_contract_owners_and_retained_observation_schemas_are_explicit() {
     assert_eq!(
         versions,
         std::collections::BTreeMap::from([
+            // Planning-only and executable external phases both have current CLI writers.
+            ("agent-bench-external", vec![1, 3]),
             ("performance-executor-request", vec![1, 2, 3]),
             ("performance-executor-result", vec![2, 3]),
             ("provider-models", vec![2, 4]),

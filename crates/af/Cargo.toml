@@ -35,6 +35,7 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 rustix = { version = "1.1.4", features = ["fs", "net", "termios"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
+num-rational = "0.4.2"
 semver = "1.0.27"
 sha2 = "0.11.0"
 shell-words = "1.1.1"

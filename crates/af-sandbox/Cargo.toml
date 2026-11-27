@@ -13,6 +13,7 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
 af-contracts = { path = "../af-contracts" }
 af-parallel = { path = "../af-parallel" }
 af-process = { path = "../af-process" }
@@ -24,6 +25,7 @@ tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 # snapshot is materialized once per run and each sandbox is a cheap COW clone of it.
 reflink-copy = "0.1.19"
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
+sha2 = "0.11.0"
 tempfile = "3.27.0"
 # A runtime capability probe is bounded and kills the probe's whole process group on timeout.
 # An installed Docker client with a wedged daemon must not hang the review gate forever.
@@ -38,6 +40,7 @@ exacl = "0.13.0"
 xattr = "1.6.1"
 
 [dev-dependencies]
+jsonschema = { version = "0.58.4", default-features = false }
 af-check = { path = "../af-check" }
 
 [lints]

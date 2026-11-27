@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "af/AgentBenchGradingPlan@2 payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "subject_task", "subject_result", "subject_revision", "evaluator_sha256",
+    "source_digest", "engine", "transport", "binding", "subject_tokens", "prior_overhead_tokens", "prior_overhead_ms", "cases"
+  ],
+  "properties": {
+    "subject_task": { "type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$" },
+    "subject_result": { "$ref": "#/$defs/digest" },
+    "subject_revision": { "$ref": "#/$defs/digest" },
+    "evaluator_sha256": { "$ref": "#/$defs/digest" },
+    "source_digest": { "$ref": "#/$defs/digest" },
+    "engine": { "$ref": "#/$defs/digest" },
+    "transport": { "$ref": "#/$defs/digest" },
+    "binding": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "executable", "endpoint"],
+          "properties": {
+            "kind": { "const": "loopback_fixture" },
+            "executable": { "$ref": "#/$defs/path" },
+            "endpoint": { "type": "string", "pattern": "^127\\.0\\.0\\.1:[1-9][0-9]{0,4}$" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "executable", "account_binding", "auth_homes", "catalog"],
+          "properties": {
+            "kind": { "const": "codex_personal" },
+            "executable": { "$ref": "#/$defs/path" },
+            "account_binding": { "$ref": "#/$defs/digest" },
+            "auth_homes": {
+              "type": "array", "minItems": 12, "maxItems": 216, "uniqueItems": true,
+              "items": { "$ref": "#/$defs/path" }
+            },
+            "catalog": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["sha256", "object_id"],
+              "properties": {
+                "sha256": { "$ref": "#/$defs/digest" },
+                "object_id": { "$ref": "#/$defs/digest" }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "subject_tokens": { "type": ["integer", "null"], "minimum": 0 },
+    "prior_overhead_tokens": { "type": "integer", "minimum": 0 },
+    "prior_overhead_ms": { "type": "integer", "minimum": 0 },
+    "cases": {
+      "type": "array", "minItems": 4, "maxItems": 72,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["association", "receipt", "case_id", "family", "subject_status", "projected"],
+        "properties": {
+          "association": { "type": "string", "pattern": "^[a-f0-9]{32}$" },
+          "receipt": { "oneOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
+          "case_id": { "type": "string", "pattern": "^N(0[1-9]|1[0-2])$" },
+          "family": { "type": "string", "minLength": 1 },
+          "subject_status": { "enum": ["collected", "failed", "missing", "unstarted"] },
+          "projected": { "type": ["string", "null"] }
+        }
+      }
+    }
+  },
+  "if": { "properties": { "cases": { "maxItems": 4 } } },
+  "then": { "properties": { "binding": { "properties": { "auth_homes": { "maxItems": 12 } } } } },
+  "else": { "properties": {
+    "cases": { "minItems": 72 },
+    "binding": { "properties": { "auth_homes": { "minItems": 216 } } }
+  } },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "path": { "type": "string", "pattern": "^/" }
+  }
+}

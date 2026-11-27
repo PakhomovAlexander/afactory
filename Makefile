@@ -124,6 +124,7 @@ release-check:
 preflight-check:
 	$(CI_STEP) --stage preflight ci-disk python3 scripts/test-ci-disk.py
 	$(CI_STEP) --stage preflight adr-catalog python3 scripts/test-adr.py
+	$(CI_STEP) --stage preflight agent-bench python3 scripts/test-agent-bench.py
 	$(CI_STEP) --stage preflight task-preflight python3 scripts/test-task-preflight.py
 	$(CI_STEP) --stage preflight prereqs python3 scripts/test-prereqs.py
 	$(CI_STEP) --stage preflight gate-owner python3 scripts/test-gate-owner.py

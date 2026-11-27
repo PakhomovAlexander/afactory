@@ -30,6 +30,7 @@ pub mod finding_set;
 pub mod grouping;
 pub mod hex;
 pub mod json;
+pub mod navigation;
 pub mod patch;
 pub mod path;
 pub mod perf_calibration;

@@ -2,6 +2,7 @@
 //! Attempt limits, are charged only what they were observed to use, and are bounded by the
 //! node's recovery allowance.
 use super::*;
+use crate::store::TaskAttemptWall;
 use crate::store::task::execution::{PreparedTaskAttempt, TaskAbandonCause};
 use af_contracts::task::execution::*;
 
@@ -716,6 +717,86 @@ fn a_wall_end_another_attempt_produced_is_refused_at_recovery() {
         assert!(
             refused.contains("not that Attempt's own record"),
             "{refused}"
+        );
+    });
+}
+
+#[test]
+fn abandoned_attempt_keeps_intents_responses_and_only_its_known_charge() {
+    test_clock::with_time(1_000_000, |clock| {
+        let mut f = Fixture::new(false).with_execution_graph();
+        let lease = f
+            .store
+            .open_task(&f.cas, &f.revision_id, "writer", 3_000)
+            .unwrap();
+        f.propose(&lease);
+        f.store
+            .admit_task_plan(&f.cas, &lease, &f.authority)
+            .unwrap();
+        f.record_execution_inputs(&lease);
+        let attempt = start(&mut f, &lease, "started", clock);
+        let run_id = task_run_id(lease.task_id()).unwrap();
+        let intent = f.cas.put_json(&json!({"intent": 1})).unwrap();
+        let raw = f.cas.put_json(&json!({"usage": 3})).unwrap();
+        let pending = f.cas.put_json(&json!({"intent": 2})).unwrap();
+        f.store
+            .record_task_attempt_send(&f.cas, &attempt, 1, "send-1", &intent)
+            .unwrap();
+        let wall = TaskAttemptWall {
+            run_id: run_id.clone(),
+            attempt_id: attempt.id().into(),
+            node_id: NODE.into(),
+            round: 0,
+            epoch: 1,
+            started_unix_ms: clock.get(),
+            elapsed_ms: 0,
+            usage: Some(task::usage::TaskTokenUsageV3::charge_only(3)),
+        };
+        f.store
+            .record_task_attempt_send_response(&f.cas, &attempt, &wall, "send-1", &raw, true)
+            .unwrap();
+        assert!(
+            f.store
+                .record_task_attempt_send_response(&f.cas, &attempt, &wall, "send-1", &raw, true)
+                .is_err()
+        );
+        f.store
+            .record_task_attempt_send(&f.cas, &attempt, 2, "send-2", &pending)
+            .unwrap();
+        assert!(
+            f.store
+                .record_task_attempt_send(&f.cas, &attempt, 3, "no-ack", &pending)
+                .is_err()
+        );
+        let reader = EventStore::open_read_only(&f.path).unwrap();
+        assert_eq!(
+            reader.task_attempt_sends(&run_id, attempt.id()).unwrap(),
+            vec![(intent.clone(), Some(raw.clone())), (pending.clone(), None)]
+        );
+        take_over(&mut f, &lease, "successor", clock);
+        let execution = f.state().execution.unwrap();
+        let rows = execution.attempt_accounting();
+        let row = rows
+            .iter()
+            .find(|row| row.attempt_id == attempt.id())
+            .unwrap();
+        assert_eq!(row.charged_tokens, 3);
+        assert!(matches!(
+            row.result,
+            Some(TaskAttemptResultV1::Abandoned { .. })
+        ));
+        assert!(!row.billing_complete(&f.cas, true).unwrap());
+        assert!(row.raw_artifact_ids.ends_with(&[intent, raw, pending]));
+        assert!(
+            f.store
+                .record_task_attempt_send(
+                    &f.cas,
+                    &attempt,
+                    3,
+                    "stale-owner",
+                    &row.raw_artifact_ids[0]
+                )
+                .is_err()
         );
     });
 }

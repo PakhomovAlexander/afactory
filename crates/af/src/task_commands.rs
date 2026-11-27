@@ -36,6 +36,7 @@ use af_store::{Cas, EventStore, validate_envelope};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 mod acceptance;
+pub(crate) mod agent_bench;
 pub(crate) mod attention;
 mod bindings;
 pub(super) mod candidate;
@@ -3601,7 +3602,7 @@ pub(super) fn run(
     quiet: bool,
 ) -> Result<i32, String> {
     let started = clock()?;
-    let (_, state) = state_path(repo, state)?;
+    let (canonical_repo, state) = state_path(repo, state)?;
     require_store(&state)?;
     let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
     let mut store = EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())?;
@@ -3609,6 +3610,19 @@ pub(super) fn run(
         .task_projection(&cas, id)
         .map_err(|e| crate::store_release::explain(&state, e.to_string()))?
         .ok_or_else(|| task_not_found(&state, id))?;
+    if projection.revision.kind == agent_bench::external::KIND {
+        agent_bench::external::require_run_confirmation(
+            &cas,
+            &projection,
+            confirm_plan,
+            retry_gate,
+        )?;
+    }
+    if projection.revision.kind == agent_bench::external::grading::KIND
+        && (retry_gate || confirm_plan.is_none())
+    {
+        return Err("External grading requires --confirm-plan with the exact captured plan".into());
+    }
     // `--retry-gate` reopens only a finished Task whose last failure was a gate; anything else
     // is refused before a lease is taken or anything is recorded.
     if retry_gate
@@ -3669,12 +3683,6 @@ pub(super) fn run(
         present(&cas, &store, id, json, true)?.note(4);
         return Ok(4);
     }
-    let authority: RunAuthority = serde_json::from_value(
-        cas.get_json(&projection.revision.authority.policy_id)
-            .map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
-    let mut compiler = planning::restore(&cas, &projection, &authority)?;
     let plan: ExecutionPlan = artifact(
         &cas,
         projection
@@ -3684,64 +3692,101 @@ pub(super) fn run(
         EXECUTION_PLAN_V4,
     )?;
     let graph: CompiledTask = artifact(&cas, &plan.compiled_graph_id, COMPILED_TASK_V4)?;
-    compiler = restore_experimental_slots(compiler, &graph)?;
-    if plan.preparation.is_some() {
-        return planning::resume(
-            cas, store, authority, compiler, projection, plan, graph, json,
-        );
-    }
-    let adapters = bind_models(
-        &cas,
-        &mut compiler,
-        &authority,
-        &projection.revision_id,
-        &graph
-            .calls
-            .get("root")
-            .ok_or("Task has no captured root Pipeline")?
-            .pipeline,
-    )?;
-    compiler.validate_plan(&cas, &projection.revision, &plan)?;
-    let verification = projection
-        .revision
-        .acceptance
-        .values()
-        .any(|a| a.evidence_type == af_contracts::task::verification::REVIEWED_IMPLEMENTATION_V1)
-        .then_some(FileVerification::Review)
-        .or_else(|| {
-            projection
-                .revision
-                .acceptance
-                .values()
-                .any(|a| {
-                    a.evidence_type
-                        == af_contracts::task::verification::REPAIR_ALLOWED_IMPLEMENTATION_V1
-                })
-                .then_some(FileVerification::ReviewOrTargetedFixes)
-        });
-    let profile = selected_profile(
-        &compiler,
-        &authority,
-        &projection.revision.kind,
-        verification,
-    )?;
-    let inner = captured_domain(
-        &cas,
-        &authority,
-        profile,
-        graph.clone(),
-        &plan,
-        &compiler,
-        &state,
-        repo,
-    )?;
+    let (authority, compiler, inner, adapters, environment) = if matches!(
+        projection.revision.kind.as_str(),
+        agent_bench::KIND | agent_bench::external::KIND | agent_bench::external::grading::KIND
+    ) {
+        let (compiler, inner) = if projection.revision.kind == agent_bench::external::KIND {
+            agent_bench::external::restore(
+                &cas,
+                &projection,
+                graph.clone(),
+                &state,
+                canonical_repo,
+            )?
+        } else if projection.revision.kind == agent_bench::external::grading::KIND {
+            agent_bench::external::grading::restore(
+                &cas,
+                &projection,
+                graph.clone(),
+                &state,
+                canonical_repo,
+            )?
+        } else {
+            agent_bench::restore(&cas, &projection.revision, graph.clone())?
+        };
+        let environment: Box<dyn af_runtime::task::host::TaskEnvironment> =
+            Box::new(af_runtime::task::host::EmptyTaskEnvironment);
+        (None, compiler, inner, BTreeMap::new(), environment)
+    } else {
+        let authority: RunAuthority = serde_json::from_value(
+            cas.get_json(&projection.revision.authority.policy_id)
+                .map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let mut compiler = planning::restore(&cas, &projection, &authority)?;
+        compiler = restore_experimental_slots(compiler, &graph)?;
+        if plan.preparation.is_some() {
+            return planning::resume(
+                cas, store, authority, compiler, projection, plan, graph, json,
+            );
+        }
+        let adapters = bind_models(
+            &cas,
+            &mut compiler,
+            &authority,
+            &projection.revision_id,
+            &graph
+                .calls
+                .get("root")
+                .ok_or("Task has no captured root Pipeline")?
+                .pipeline,
+        )?;
+        compiler.validate_plan(&cas, &projection.revision, &plan)?;
+        let verification = projection
+            .revision
+            .acceptance
+            .values()
+            .any(|a| {
+                a.evidence_type == af_contracts::task::verification::REVIEWED_IMPLEMENTATION_V1
+            })
+            .then_some(FileVerification::Review)
+            .or_else(|| {
+                projection
+                    .revision
+                    .acceptance
+                    .values()
+                    .any(|a| {
+                        a.evidence_type
+                            == af_contracts::task::verification::REPAIR_ALLOWED_IMPLEMENTATION_V1
+                    })
+                    .then_some(FileVerification::ReviewOrTargetedFixes)
+            });
+        let profile = selected_profile(
+            &compiler,
+            &authority,
+            &projection.revision.kind,
+            verification,
+        )?;
+        let inner = captured_domain(
+            &cas,
+            &authority,
+            profile,
+            graph.clone(),
+            &plan,
+            &compiler,
+            &state,
+            repo,
+        )?;
+        let environment = domain::environment(&cas, &authority, profile)?;
+        (Some(authority), compiler, inner, adapters, environment)
+    };
     let models = model_bindings(&plan, &graph, &adapters)?;
     let domain = ProviderTaskDomain {
         graph: &graph,
         models: &models,
         inner: inner.as_ref(),
     };
-    let environment = domain::environment(&cas, &authority, profile)?;
     let host = CapturedTaskHost::capture_with_models(
         &cas,
         &compiler,
@@ -3753,7 +3798,10 @@ pub(super) fn run(
         &models,
     )?
     .with_activity(&state, id);
-    let developer = developer::host(&cas, &authority, None);
+    let developer = authority.as_ref().map_or_else(
+        || Box::new(NoTaskDeveloper) as Box<dyn af_runtime::task::host::TaskDeveloper>,
+        |authority| developer::host(&cas, authority, None),
+    );
     let trusted = CapturedTaskAuthority::new(&compiler, &host, developer.as_ref());
     // The process that takes the lease, recorded before it does, so `af task cancel` finds it
     // by the lease's writer and `af task wait` knows a run is on its way (ADR-0211).
@@ -3824,7 +3872,11 @@ pub(super) fn run(
                 .map_err(|e| e.to_string())?;
         }
         let deadline = if !projection.admitted {
-            admit_checks(&cas, &authority, &domain, &projection.revision)?;
+            if let Some(authority) = &authority {
+                admit_checks(&cas, authority, &domain, &projection.revision)?;
+            } else {
+                domain.admit_checks(&cas, &projection.revision)?;
+            }
             let admission = store
                 .admit_task_plan(&cas, &lease, &trusted)
                 .map_err(|e| e.to_string())?;

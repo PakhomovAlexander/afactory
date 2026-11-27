@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Synthetic private evaluator package for an external agent benchmark",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "status", "source_snapshot", "report_sha256", "report_artifact",
+    "verification_artifact", "rubric_text_verbatim", "cases"
+  ],
+  "properties": {
+    "schema": { "const": "af.agent-bench-evaluator/1" },
+    "status": { "const": "synthetic" },
+    "source_snapshot": { "$ref": "#/$defs/digest" },
+    "report_sha256": { "type": "string", "pattern": "^(sha256:)?[a-f0-9]{64}$" },
+    "report_artifact": { "$ref": "#/$defs/digest" },
+    "verification_artifact": { "$ref": "#/$defs/digest" },
+    "rubric_text_verbatim": { "$ref": "#/$defs/verbatim" },
+    "cases": {
+      "type": "array",
+      "minItems": 12,
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "family", "abstention", "oracle_text_verbatim"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^N(0[1-9]|1[012])$" },
+          "family": { "$ref": "#/$defs/label" },
+          "abstention": {
+            "oneOf": [{ "type": "boolean" }, { "$ref": "#/$defs/label" }]
+          },
+          "oracle_text_verbatim": { "$ref": "#/$defs/verbatim" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "label": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "verbatim": { "type": "string", "minLength": 1, "maxLength": 65536 }
+  }
+}

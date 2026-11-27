@@ -1,0 +1,258 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Codex raw navigation call v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "intent",
+    "http_status",
+    "response_sha256",
+    "response_bytes",
+    "usage",
+    "drained_mono_ns",
+    "failure"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/codex-navigation-call/1"
+    },
+    "intent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "ordinal",
+        "route",
+        "request_sha256",
+        "bindings",
+        "started_mono_ns"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "ordinal": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "route": {
+          "enum": [
+            "/models",
+            "/responses"
+          ]
+        },
+        "request_sha256": {
+          "type": "string"
+        },
+        "bindings": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "task_attempt_invocation",
+            "source",
+            "prompt",
+            "tools",
+            "model_catalog",
+            "executable",
+            "account",
+            "protocol",
+            "config"
+          ],
+          "properties": {
+            "task_attempt_invocation": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "prompt": {
+              "type": "string"
+            },
+            "tools": {
+              "type": "string"
+            },
+            "model_catalog": {
+              "type": "string"
+            },
+            "executable": {
+              "type": "string"
+            },
+            "account": {
+              "type": "string"
+            },
+            "protocol": {
+              "type": "string"
+            },
+            "config": {
+              "type": "string"
+            }
+          }
+        },
+        "started_mono_ns": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "http_status": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 599
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "response_sha256": {
+      "type": "string"
+    },
+    "response_bytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "usage": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "observations",
+            "terminal_event",
+            "value",
+            "reconciled",
+            "failure"
+          ],
+          "properties": {
+            "terminal_event": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "value": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "presence"
+                  ],
+                  "properties": {
+                    "presence": {
+                      "const": "absent"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "presence",
+                    "value"
+                  ],
+                  "properties": {
+                    "presence": {
+                      "const": "present"
+                    },
+                    "value": {}
+                  }
+                }
+              ]
+            },
+            "reconciled": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "input",
+                    "cached_input",
+                    "output",
+                    "reasoning_output",
+                    "inclusive",
+                    "chargeable"
+                  ],
+                  "properties": {
+                    "input": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "cached_input": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "output": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "reasoning_output": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "inclusive": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "chargeable": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "failure": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "observations": {
+              "type": "array",
+              "items": {}
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "drained_mono_ns": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "failure": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  }
+}

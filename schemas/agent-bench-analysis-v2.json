@@ -1,0 +1,429 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schedule",
+    "evidence",
+    "mode",
+    "totals",
+    "pairs",
+    "limits",
+    "qualification",
+    "conclusion",
+    "resources"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.agent-bench-analysis/2"
+    },
+    "schedule": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "evidence": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "mode": {
+      "enum": [
+        "smoke",
+        "aa",
+        "exposed_ab"
+      ]
+    },
+    "totals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "base",
+        "head"
+      ],
+      "properties": {
+        "base": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "slots",
+            "correct",
+            "known_native_tokens",
+            "known_chargeable",
+            "failures",
+            "native_tokens",
+            "wall_ns",
+            "chargeable",
+            "complete",
+            "charge_complete"
+          ],
+          "properties": {
+            "slots": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "correct": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "known_native_tokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "known_chargeable": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "failures": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "native_tokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "wall_ns": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "chargeable": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "complete": {
+              "type": "boolean"
+            },
+            "charge_complete": {
+              "type": "boolean"
+            }
+          }
+        },
+        "head": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "slots",
+            "correct",
+            "known_native_tokens",
+            "known_chargeable",
+            "failures",
+            "native_tokens",
+            "wall_ns",
+            "chargeable",
+            "complete",
+            "charge_complete"
+          ],
+          "properties": {
+            "slots": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "correct": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "known_native_tokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "known_chargeable": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "failures": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "native_tokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "wall_ns": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "chargeable": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "complete": {
+              "type": "boolean"
+            },
+            "charge_complete": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "pairs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "pair",
+          "family",
+          "eligible",
+          "native_tokens",
+          "wall_ns",
+          "case",
+          "repetition",
+          "correct_eligible"
+        ],
+        "properties": {
+          "pair": {
+            "type": "string"
+          },
+          "family": {
+            "type": "string"
+          },
+          "eligible": {
+            "type": "boolean"
+          },
+          "native_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "wall_ns": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "case": {
+            "type": "string"
+          },
+          "repetition": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "correct_eligible": {
+            "type": "boolean"
+          }
+        }
+      },
+      "maxItems": 256
+    },
+    "limits": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "navigation_trace_incomplete",
+          "monotonic_timing_incomplete",
+          "native_usage_incomplete",
+          "af_charge_incomplete",
+          "semantic_grade_unresolved"
+        ]
+      }
+    },
+    "qualification": {
+      "const": "structural_only"
+    },
+    "conclusion": {
+      "const": "no_improvement_claim"
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "native_tokens",
+        "wall_ns"
+      ],
+      "properties": {
+        "native_tokens": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "relative_difference",
+            "families",
+            "zero_baseline_pairs",
+            "screen"
+          ],
+          "properties": {
+            "relative_difference": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "numerator",
+                    "denominator"
+                  ],
+                  "properties": {
+                    "numerator": {
+                      "type": "integer"
+                    },
+                    "denominator": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "families": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "numerator",
+                  "denominator"
+                ],
+                "properties": {
+                  "numerator": {
+                    "type": "integer"
+                  },
+                  "denominator": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              }
+            },
+            "zero_baseline_pairs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            },
+            "screen": {
+              "enum": [
+                "incomplete",
+                "within_bounds",
+                "outside_bounds"
+              ]
+            }
+          }
+        },
+        "wall_ns": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "relative_difference",
+            "families",
+            "zero_baseline_pairs",
+            "screen"
+          ],
+          "properties": {
+            "relative_difference": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "numerator",
+                    "denominator"
+                  ],
+                  "properties": {
+                    "numerator": {
+                      "type": "integer"
+                    },
+                    "denominator": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "families": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "numerator",
+                  "denominator"
+                ],
+                "properties": {
+                  "numerator": {
+                    "type": "integer"
+                  },
+                  "denominator": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              }
+            },
+            "zero_baseline_pairs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            },
+            "screen": {
+              "enum": [
+                "incomplete",
+                "within_bounds",
+                "outside_bounds"
+              ]
+            }
+          }
+        }
+      }
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

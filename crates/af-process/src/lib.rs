@@ -171,7 +171,16 @@ pub enum SupervisedStreamError<E> {
     Input(E),
 }
 
+/// Monotonic observations by the supervisor, through process exit and pipe draining.
+#[derive(Debug, Clone, Copy)]
+pub struct ProcessTiming {
+    pub spawned: Instant,
+    pub exit_observed: Instant,
+    pub drained: Instant,
+}
+
 pub struct SupervisedDuplexOutput<I, R> {
+    pub timing: ProcessTiming,
     pub status: ExitStatus,
     pub input: Result<(), I>,
     pub output: R,
@@ -386,7 +395,9 @@ where
         command.process_group(0);
     }
 
+    let tree = (exit_policy == ExitPolicy::KillDescendants).then(|| reaper::Tree::new(command));
     let mut child = spawn::spawn_until(command, deadline, signals)?;
+    let spawned = Instant::now();
     let mut stdin = child.stdin.take().expect("stdin was piped");
     let mut stdout = child.stdout.take().expect("stdout was piped");
     let stderr_pipe = child.stderr.take().expect("stderr was piped");
@@ -408,7 +419,12 @@ where
 
         let stderr = drain_async(stderr_pipe, MAX_CAPTURED_STREAM_BYTES);
         let outcome = (|| {
-            wait_exact_signals(deadline, signals, &leader, exit_policy.kills_group())?;
+            let waited = wait_exact_signals(deadline, signals, &leader, exit_policy.kills_group());
+            let exit_observed = Instant::now();
+            if let Some(tree) = &tree {
+                tree.end_escaped(leader.pid());
+            }
+            waited?;
 
             let input = match input_receive.recv_timeout(stdin_writer_wait(deadline)) {
                 Ok(Ok(result)) => result,
@@ -452,21 +468,27 @@ where
                 }
             };
             let (stderr, total, stderr_held) = collect_stderr(stderr, &leader)?;
-            Ok((input, output, stderr, total, stderr_held))
+            Ok((input, output, stderr, total, stderr_held, exit_observed))
         })();
         // Reaping is the final operation: every kill above ran while the pid was reserved.
         let (status, rusage) = leader.reap();
         let pid = Some(leader.pid());
-        let (input, output, stderr, total, stderr_held) = outcome.map_err(|error| match error {
-            SupervisedError::TimedOut { stdout, stderr, .. } => SupervisedError::TimedOut {
-                stdout,
-                stderr,
-                pid,
-                rusage,
-            },
-            error => error,
-        })?;
+        let (input, output, stderr, total, stderr_held, exit_observed) =
+            outcome.map_err(|error| match error {
+                SupervisedError::TimedOut { stdout, stderr, .. } => SupervisedError::TimedOut {
+                    stdout,
+                    stderr,
+                    pid,
+                    rusage,
+                },
+                error => error,
+            })?;
         Ok(SupervisedDuplexOutput {
+            timing: ProcessTiming {
+                spawned,
+                exit_observed,
+                drained: Instant::now(),
+            },
             status: status.map_err(SupervisedError::Wait)?,
             input,
             output,

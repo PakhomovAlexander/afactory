@@ -33,6 +33,7 @@ pub mod build_cache;
 pub mod cache;
 pub mod check_runtime;
 pub mod container;
+pub mod navigation;
 #[cfg(unix)]
 pub mod removal;
 pub mod seal;

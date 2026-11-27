@@ -136,3 +136,29 @@ fn concurrent_runs_each_end_only_their_own_descendants() {
     );
     std::fs::remove_dir_all(&directory).unwrap();
 }
+
+#[test]
+fn a_duplex_setsid_child_is_ended_before_draining() {
+    let directory = scratch();
+    let mut command = Command::new("/bin/sh");
+    command
+        .current_dir(&directory)
+        .args(["-c", "setsid sh -c 'sleep 2; touch escaped' & sleep 0.2"]);
+    let output = af_process::run_supervised_duplex(
+        &mut command,
+        LOAD_SAFE_WALL,
+        ExitPolicy::KillDescendants,
+        |_| Ok::<_, String>(()),
+        |stdout| {
+            let mut bytes = Vec::new();
+            stdout.read_to_end(&mut bytes).unwrap();
+            bytes
+        },
+    )
+    .unwrap();
+    assert!(output.status.success());
+    assert!(!output.stderr_held);
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(!directory.join("escaped").exists());
+    std::fs::remove_dir_all(directory).unwrap();
+}
