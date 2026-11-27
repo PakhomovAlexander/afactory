@@ -313,7 +313,7 @@ def validate(document, treatment=None, evidence=None):
                   if entry.get("role") == "admission"]
     require(len(admissions) == 6 and mock.get("admission_count") == 6,
             "expected exactly six Provider admissions")
-    for model in ("gpt-6.1-sol", "gpt-6.1-terra"):
+    for model in ("gpt-6.2-sol", "gpt-6.1-terra"):
         selected = [entry for entry in admissions if entry.get("model") == model]
         require(len(selected) == 3, f"expected three {model} admissions")
         for entry in selected:

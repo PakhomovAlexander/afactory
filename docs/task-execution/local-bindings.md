@@ -36,7 +36,7 @@ files are absent; it refuses an existing `[task]` table even in preview mode. Us
 `af onboard` to validate existing Task authority.
 
 The generated `onboard/implementer` and `onboard/evaluator` use `codex-main`: the implementer
-uses `gpt-6.1-sol` at high effort and the independent evaluator `gpt-6.1-terra` at high effort.
+uses `gpt-6.2-sol` at high effort and the independent evaluator `gpt-6.1-terra` at high effort.
 `--runner` selects the `onboard/bugs` and `onboard/correctness` Review Workers and their Provider
 aliases: `codex-main` with `gpt-6.1-terra` at high effort, or `claude-main` with
 `claude-opus-5-5` at high effort. Implementation and evaluation always require a Codex Provider,

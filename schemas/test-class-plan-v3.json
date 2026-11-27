@@ -1,5 +1,5 @@
 {
-  "$id": "urn:af:schema:test-class-plan:2",
+  "$id": "urn:af:schema:test-class-plan:3",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
@@ -117,7 +117,9 @@
         "gate",
         "release_pr",
         "local",
-        "release"
+        "release",
+        "tagged_release",
+        "tagged_release_pr"
       ]
     },
     "labels": {
@@ -135,7 +137,7 @@
       ]
     },
     "schema": {
-      "const": "af.test-plan/2"
+      "const": "af.test-plan/3"
     },
     "selected": {
       "items": {

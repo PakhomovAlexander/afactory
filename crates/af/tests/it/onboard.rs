@@ -1526,8 +1526,9 @@ fn task_onboarding_requires_codex_even_with_only_claude_registered() {
     let applied = task_onboard(&repo, &provider, &["--apply", "--json"]);
     assert!(applied.status.success(), "{}", stderr(&applied));
     let catalog = std::fs::read_to_string(repo.join(".af/task-catalog.toml")).unwrap();
+    let sol = crate::issue_workflows::model_profile().sol;
     for (worker, model) in [
-        ("implementer", "gpt-6.1-sol"),
+        ("implementer", sol.as_str()),
         ("bugs", "claude-opus-5-5"),
         ("correctness", "claude-opus-5-5"),
         ("evaluator", "gpt-6.1-terra"),

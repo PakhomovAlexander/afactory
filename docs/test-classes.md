@@ -245,14 +245,18 @@ older PR runs. Removing `nobuild` restores ordinary class selection.
 1. Reject any `test:CLASS` with `no-CLASS`, and reject `release:fast` with `release:full`.
 2. Every PR defaults to functional + e2e + uix, including AF gate PRs targeting `af-gate/**`
    and release PRs named `release/vX.Y.Z`. Local `make check`, ordinary main and releases
-   without a matching merged release PR run all four. A tagged release with a matching PR
-   inherits that PR's selection. `release:fast` explicitly selects the fast default.
+   without a matching merged release PR start with all four. A tagged release with a matching PR
+   starts with that PR's selection. `release:fast` explicitly selects the fast default.
 3. Any positive labels form an explicit allowlist replacing those defaults:
    `test:functional`, `test:e2e`, `test:uix`, `test:perf`. With no positive label, use the default.
 4. Subtract `no-functional`, `no-e2e`, `no-uix`, `no-perf`. An empty result fails.
 5. `release:full` forces all four and refuses any negative or partial positive allowlist. Explicit
    positives naming all four are allowed. `release:fast` permits a custom positive allowlist or
    further exclusions; the retained profile is then named custom unless its union equals fast/full.
+6. For tagged publication, apply the version rule after validating the label selection and tag
+   binding. An RC omits e2e, including Linux container probes. A stable release requires e2e on
+   Linux and macOS, including Linux container probes. The rule takes precedence over e2e labels
+   and profiles. The final selection must be nonempty.
 
 | Labels | PR selection | Profile |
 | --- | --- | --- |
@@ -305,6 +309,8 @@ checks keep all ten documented: `test:functional`, `test:e2e`, `test:uix`, `test
 Change labels directly on the release PR to rerun selected CI automatically. Remove `release:full`
 before choosing exclusions or a partial allowlist. No policy file, metadata commit or additional
 approval is required. CI checks the release branch/workspace version and resolves the event's labels.
+Release PRs run the selected checks on Linux and macOS using the PR event. The shared validator
+validates an explicitly supplied plan first and requires one for release calls outside PR events.
 
 On the exact version-bump commit, **only when its version tag is absent**, `release-test-policy.py`
 reads GitHub's commit-associated PR API with `gh api` and explicit pagination. The resolver job has
@@ -317,24 +323,27 @@ No match defaults full. An unlabeled matching release PR selects fast, just as i
 Multiple exact matches, API errors, malformed responses, pagination overflow
 and invalid label selections fail before creating/pushing a tag.
 
-Before pushing, the resolver freezes `af.release-tests/2` JSON in the annotated tag: exact SHA,
+Before pushing, the resolver freezes `af.release-tests/3` JSON in the annotated tag: exact SHA,
 version, source PR repository/number/merge SHA/base/head/merge time (or null), captured labels and
 complete resolved plan including catalog digest. The pushed remote tag object must equal the local
 object. Competing creators never force or replace a ref. Subsequent main retries and tag-triggered
 runs read this annotation and never query moving labels. Malformed/stale bindings, changed catalog,
-wrong commit, moved local tag or tag/version mismatch fail closed. The same plan drives Linux/macOS.
+wrong commit, moved local tag or tag/version mismatch fail closed. Both paths apply the version rule
+after resolving the tag. The same effective plan drives Linux/macOS.
 Labels are captured at first tag creation, not historically at the merge instant: a label change
 between merge and first creation affects that initial capture. Once the annotation exists, later
 label changes and even API outages cannot change its selection or block retries.
 
-Plans use `af.test-plan/2`, receipts use `af.test-class-receipt/2`, and tag bindings use
-`af.release-tests/2`. The `release_pr` context requires exact merged PR provenance in the binding;
-the `release` context without provenance requires the full unlabeled plan. The generated v2
-schemas and parity checks cover this added context. Earlier contract versions fail closed under
-ADR-0145 rather than being treated as unbound manual tags.
+Plans use `af.test-plan/3`, receipts use `af.test-class-receipt/3`, and tag bindings use
+`af.release-tests/3`. The `release_pr` context requires exact merged PR provenance in the binding.
+The `release` context without provenance requires the full unlabeled plan. The effective plans use
+`tagged_release_pr` or `tagged_release`, respectively, and record the version rule in the e2e row.
+The generated schemas and parity checks cover these contexts. Earlier contract versions fail closed
+under ADR-0145.
 
-A direct lightweight tag or manually annotated tag without this binding defaults full, regardless of
-associated PR labels or stale metadata files. Ordinary main commits also run full. A tag creation race
+A direct lightweight tag or manually annotated tag without this binding starts with all classes,
+regardless of associated PR labels or stale metadata files, and applies the same version rule.
+Ordinary main commits run full. A tag creation race
 that leaves this version on another commit remains ordinary main validation, as before. There is no
 new manual publishing path; an operator pushing a tag uses the existing tag workflow. Rerunning that
 workflow uses the same immutable annotation. Validation artifacts are scoped to the current run
@@ -342,9 +351,9 @@ attempt. Rerun all jobs: a failed-jobs-only retry lacking current-attempt resolv
 evidence fails rather than consuming stale artifacts. Disposable Git remotes and offline API fixtures
 exercise these paths; tests strip runner identity/credentials and always install a fake `gh`.
 
-Release notes and the retained `release-test-selection` artifact name the profile, selected and
-excluded classes, exact version/SHA and workflow evidence URL. Fast/custom releases explicitly do not
-claim full tests. Publication still joins all selected OS gates and all build/smoke/signature jobs.
+The retained `release-test-selection` plan, check summary and release notes record the selection
+and its reasons. Release notes also name the exact version/SHA and link to workflow evidence.
+Publication joins all selected OS gates and all build/smoke/signature jobs.
 
 ## Separate Performance measurement
 

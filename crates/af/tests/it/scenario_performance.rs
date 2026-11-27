@@ -769,7 +769,7 @@ sys.exit(99)
                 (
                     "author",
                     "owner-default/report-author",
-                    "gpt-6.1-sol",
+                    "gpt-6.2-sol",
                     "medium",
                 ),
                 (
@@ -799,7 +799,7 @@ sys.exit(99)
                 roles.push((
                     "implementer",
                     "owner-default/implementer",
-                    "gpt-6.1-sol",
+                    "gpt-6.2-sol",
                     "medium",
                 ));
             }
@@ -1787,7 +1787,7 @@ sys.exit(99)
         "result":{"ok":literal("boolean",json!(true))},"completion":[literal("boolean",json!(true))],
         "authority":{"task_plans":[],"task_templates":[template_id],"grants":[],"decision_owners":[]},"limits":limits,"admission":null}}})).unwrap();
     let models: std::collections::BTreeMap<_, _> = [
-        ("implementer", "gpt-6.1-sol", "medium"), ("bugs", "gpt-6.1-terra", "high"),
+        ("implementer", "gpt-6.2-sol", "medium"), ("bugs", "gpt-6.1-terra", "high"),
         ("correctness", "gpt-6.1-terra", "high"), ("evaluator", "gpt-6.1-terra", "medium")
     ].into_iter().map(|(role, model, effort)| (format!("owner-default/{role}"), json!({"provider":"codex-personal","provider_kind":"codex","model":model,"effort":effort}))).collect();
     let scope = json!({"schema":"af/implementation-startup-scope@2", "owner":"owner", "recipe_id":af_scenario::contract::hash(&bundle).unwrap(),
@@ -2122,7 +2122,7 @@ fn native_scoped_implementation(
     std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
     let root = &bundle.definitions[&bundle.root];
     let models = |kind: &str| -> Value {
-        [ ("bugs", "gpt-6.1-terra", "high"), ("correctness", "gpt-6.1-terra", "high"), ("evaluator", "gpt-6.1-terra", "medium"), ("implementer", "gpt-6.1-sol", "medium") ].into_iter()
+        [ ("bugs", "gpt-6.1-terra", "high"), ("correctness", "gpt-6.1-terra", "high"), ("evaluator", "gpt-6.1-terra", "medium"), ("implementer", "gpt-6.2-sol", "medium") ].into_iter()
         .filter(|(role,_,_)| kind == "implement" || *role != "implementer")
         .map(|(role,model,effort)| (format!("owner-default/{role}"), json!({"provider":"codex-personal","provider_kind":"codex","model":model,"effort":effort}))).collect::<serde_json::Map<_,_>>().into()
     };

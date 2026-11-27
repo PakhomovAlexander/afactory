@@ -193,7 +193,7 @@ pub(super) fn files(
     let mut provider_lines = String::from("\n[providers]\n");
     for (index, name) in names.iter().enumerate() {
         let model = if index == 0 {
-            "gpt-6.1-sol"
+            "gpt-6.2-sol"
         } else {
             "gpt-6.1-terra"
         };

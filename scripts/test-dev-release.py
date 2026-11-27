@@ -1448,6 +1448,7 @@ class ReleaseCLI(unittest.TestCase):
                            'else: sys.exit(98)\n')
         write_fixture_gate(self.source / 'scripts/verify.sh')
         self.git('init', '-q', '-b', 'main', self.source)
+        self.git('-C', self.source, 'config', 'maintenance.auto', 'false')
         self.commit('initial')
         self.git('clone', '--bare', '--no-local', self.source, self.remote)
         self.initial = self.git('-C', self.source, 'rev-parse', 'HEAD')
