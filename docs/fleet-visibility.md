@@ -68,13 +68,11 @@ are selected by the server. An example with placeholders follows.
 ```
 
 The SSH account needs read access to the Project's registered Workspace and Task Store,
-including existing SQLite WAL and shared-memory files when present. The reader takes a private
-snapshot under SQLite's local file locks and replays committed frames from that snapshot. The
-snapshot directory and the database and WAL copies are created with owner-only permissions.
-SQLite can rebuild its shared-memory index inside that directory. The reader leaves source
-Store files and permissions untouched and needs temporary space for the snapshot.
-An active write, checkpoint, or inaccessible snapshot can make the origin
-temporarily unavailable. Running the command on the origin also shows the precise Project and
+including existing SQLite WAL and shared-memory files when present. The reader captures a
+private in-memory SQLite image under the native file locks. It replays the last valid commit
+from a live or cold WAL and leaves the source bytes and permissions untouched. An active
+write, checkpoint, rollback journal, or inaccessible Store can make the origin temporarily
+unavailable. Running the command on the origin also shows the precise Project and
 Store identities to put in the descriptor. For a principal separately authorized to take native
 plan Decisions, add
 `--allow-plan-decisions` and map `--principal` to their captured native developer identity.
@@ -112,33 +110,28 @@ current [version 2 cache records](../schemas/fleet-cache-v2.json) are eligible. 
 reader is temporarily unavailable after upgrade and only an obsolete record exists, the
 observation is unavailable until a successful read refreshes it.
 
-An origin reader replays private SQLite copies under the sandbox runtime root
-(`[storage] sandbox_root` or the system temporary directory). It checks the storage limit and
-free-space floor on the destination volume before copying. The reservation rounds the database,
-any copied WAL and its rebuilt SQLite index separately using a bound on the destination
-allocation unit. On Linux ext filesystems the reader uses the allocation of its fresh private
-snapshot directory when that directory occupies a data block. Ordinary tmpfs reads use the
-page size when the reported huge-page policies bound allocation to the file's length. On macOS
-the reader uses the APFS allocation block. A destination without a known bound makes the
-origin unavailable. The [allocation evidence](implementation-evidence/fleet-observation-allocation.md)
-records the public reader and filesystem fixtures.
-Readers under the same OS account serialize admission and copying through a private registry
-in the account's state directory,
-including when they use different sandbox roots or temporary directories. The lock is released
-for replay. Admission uses the machine Storage Budget inventory, counts retained copies and
-overlapping telemetry and cache directories once, and measures Store files without opening
-their databases. For a registered external Task Store, admission counts its owned entries.
-Telemetry inside one of those entries shares that entry's charge. An incomplete inventory or
-insufficient space makes the origin unavailable.
-Readers remove their copies on close. A subsequent origin read can reclaim abandoned copies
-across registered roots and leaves live readers' copies alone.
+The origin checks existing AF-owned storage against `[storage] max_bytes` and independently
+checks `[storage] min_free_bytes` on the volume of `[storage] sandbox_root` or the system
+temporary directory. The byte budget counts registered external Store entries and overlapping
+telemetry and cache directories once. Unknown measurements make the origin unavailable. A
+reader at both exact limits can proceed because it creates no runtime directory, database,
+WAL or shared-memory index on the volume. The check measures available space at admission.
+Other processes can change available space independently.
+
+Each input is limited to 64 MiB for the combined logical database and WAL lengths, including any
+database expansion declared by the last valid commit. Sparse inputs count by logical length.
+The reader holds an exclusive lock on its existing OS account home directory across
+admission and replay. Other origin commands under that account wait for the same lock even
+with different runtime roots. Process exit releases both the memory and the lock.
+The [allocation evidence](implementation-evidence/fleet-observation-allocation.md) records
+the public reader comparisons and the Linux filesystem fixtures.
 
 The [fleet integration tests](../crates/af/tests/it/fleet.rs) exercise the six public commands with
 local OpenSSH endpoints, disposable keys, the management wire formats and a native Task whose
 waiting transition is still in the WAL. They also cover clean shutdown, read-only Store files
 and directories, concurrent writes, and a fresh offline standalone Task workflow.
 The [Store snapshot regression](../crates/af-store/src/store/observation_snapshot.rs) checks
-permissions on the live snapshot under umasks `000` and `022` while replaying committed WAL frames.
+that no snapshot files are visible under umasks `000` and `022` while replaying committed WAL frames.
 
 Run the Fleet tests from an ordinary user shell.
 

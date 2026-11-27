@@ -1,15 +1,15 @@
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{self, ErrorKind, Read};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 use nix::fcntl::{FcntlArg, fcntl};
 use nix::libc;
+use rusqlite::{Connection, MAIN_DB};
 
-use super::{EventStore, StoreError};
-use crate::local_fs::{PRIVATE_DIR_MODE, private_file_options};
+use super::{EventStore, StoreError, require_event_layout};
 
-mod allocation;
+mod wal;
 
 // The bundled SQLite Unix VFS uses these POSIX byte ranges for its shared database lock
 // and the WAL write, checkpoint and recovery locks, respectively.
@@ -18,65 +18,37 @@ const DB_SHARED_SIZE: libc::off_t = 510;
 const WAL_WRITE_LOCK: libc::off_t = 120;
 const WAL_MUTATION_LOCKS: libc::off_t = 3;
 
-pub(super) struct SnapshotFiles {
-    // Closing a separate handle to the index would drop SQLite's POSIX locks. Keep it
-    // until after EventStore drops its SQLite connection.
-    #[cfg(target_os = "linux")]
-    _index: Option<File>,
-    _directory: tempfile::TempDir,
-}
+// Bound the database, WAL and any WAL-driven expansion using logical lengths, including
+// holes. Once capture returns, the WAL is gone and deserialization may duplicate the
+// database once. The caller serializes observations for the OS account.
+const INPUT_LIMIT: u64 = 64 * 1024 * 1024;
 
 impl EventStore {
-    /// Read a native local Store from a private SQLite snapshot. The snapshot directory and
-    /// copies are created with owner-only access. SQLite rebuilds any WAL index on the copy,
-    /// and the original files are opened only for reading. Measure the copy allowance
-    /// after creating its private directory, which may itself allocate a disk cluster.
-    ///
-    /// Use from a dedicated observation process with no other handles to the source
-    /// database or its sidecars. POSIX locks are process-owned: closing another handle
-    /// could drop these locks, and a writer in the same process would not conflict.
-    pub fn open_observation_snapshot(
-        path: &Path,
-        runtime: &Path,
-        allowance: impl FnOnce(&Path) -> Result<u64, StoreError>,
-    ) -> Result<Self, StoreError> {
-        let conflict = |error: io::Error| {
+    /// Capture committed bytes into a private, read-only in-memory database. The caller
+    /// holds the account observation lock from admission until the Store is dropped. Use
+    /// a dedicated reader process: closing another handle on a source inode can drop its
+    /// POSIX locks, and a writer in the same process would not conflict with them.
+    pub fn open_observation_snapshot(path: &Path) -> Result<Self, StoreError> {
+        let image = capture(path).map_err(|error| {
             StoreError::Conflict(format!("cannot observe {}: {error}", path.display()))
-        };
-        let directory = tempfile::Builder::new()
-            .prefix("snapshot-")
-            .permissions(fs::Permissions::from_mode(PRIVATE_DIR_MODE))
-            .tempdir_in(runtime)
-            .map_err(conflict)?;
-        let max_bytes = allowance(directory.path())?;
-        let database = directory.path().join("events.sqlite");
-        let has_wal = copy_snapshot(path, &database, max_bytes).map_err(conflict)?;
-        let mut store = if has_wal {
-            Self::open_read_only(&database)?
-        } else {
-            Self::open_unchanged(&database)?
-        };
-        // Opening and checking the schema rebuilds the index. Settle Linux delayed
-        // allocation before the caller releases the machine-wide admission lock.
-        #[cfg(target_os = "linux")]
-        let index = open_sidecar(&sidecar(&database, "-shm")).map_err(conflict)?;
-        #[cfg(target_os = "linux")]
-        if let Some(index) = &index {
-            if let Err(error) = index.sync_data() {
-                drop(store);
-                return Err(conflict(error));
-            }
-        }
-        store._observation_snapshot = Some(SnapshotFiles {
-            #[cfg(target_os = "linux")]
-            _index: index,
-            _directory: directory,
-        });
-        Ok(store)
+        })?;
+        let mut conn = Connection::open_in_memory()?;
+        conn.pragma_update(None, "temp_store", "MEMORY")?;
+        // The source is an already complete buffer, so this read cannot fail partway.
+        conn.deserialize_read_exact(MAIN_DB, image.as_slice(), image.len(), true)?;
+        drop(image);
+        conn.pragma_update(None, "query_only", true)?;
+        require_event_layout(&conn)?;
+        Ok(Self {
+            conn,
+            task_cache: std::cell::RefCell::new(None),
+            commit_observer: None,
+            observation_snapshot: true,
+        })
     }
 }
 
-fn copy_snapshot(path: &Path, destination: &Path, max_bytes: u64) -> io::Result<bool> {
+fn capture(path: &Path) -> io::Result<Vec<u8>> {
     let mut database = open_source(path)?;
     // Prevent rollback-mode writes to the main file and SQLite's last-close removal of
     // the WAL. A writer can still start WAL mode, so absence must be checked again.
@@ -87,88 +59,107 @@ fn copy_snapshot(path: &Path, destination: &Path, max_bytes: u64) -> io::Result<
     let shm_path = sidecar(path, "-shm");
     require_absent(&journal)?;
 
-    let mut wal = open_sidecar(&wal_path)?;
+    let mut wal_file = open_sidecar(&wal_path)?;
     let shm = open_sidecar(&shm_path)?;
     if let Some(file) = &shm {
-        // Writers, checkpoints and WAL recovery take exclusive locks here. Lock all
-        // three together before copying either data file. The index itself is transient
-        // and SQLite reconstructs it from the WAL in the private directory.
         lock_shared(file, WAL_WRITE_LOCK, WAL_MUTATION_LOCKS)?;
-        require_same_file(&shm_path, &file.metadata()?)?;
+        require_same_file(&shm_path, &file.metadata()?, false)?;
     }
 
-    let wal_bytes = wal
-        .as_ref()
-        .map(|file| file.metadata().map(|meta| meta.len()))
-        .transpose()?;
-    let directory = destination
-        .parent()
-        .expect("snapshot has a private directory");
-    let allocation = allocation::for_destination(directory)?;
-    if snapshot_allocation(original.len(), wal_bytes, allocation)
-        .is_none_or(|bytes| bytes > max_bytes)
-    {
+    let wal_meta = wal_file.as_ref().map(File::metadata).transpose()?;
+    let wal_size = wal_meta.as_ref().map_or(0, Metadata::len);
+    check_size(original.len(), wal_size)?;
+
+    let mut header = [0; 100];
+    database.read_exact(&mut header)?;
+    let page_size = database_page_size(&header, original.len())?;
+    let mut wal_bytes = zeroed(wal_size)?;
+    if let Some(file) = &mut wal_file {
+        file.read_exact(&mut wal_bytes)?;
+    }
+    if wal_size != 0 && header[18..20] != [2, 2] {
         return Err(io::Error::other(
-            "observation snapshot exceeds the available storage budget",
+            "SQLite WAL present for a rollback database",
         ));
     }
+    let commit = wal::last_commit(&wal_bytes, page_size)?;
+    let final_size = commit
+        .as_ref()
+        .map_or(original.len(), wal::Commit::image_size);
+    let copy_size = final_size.max(original.len());
+    check_size(copy_size, wal_size)?;
+    let mut image = zeroed(copy_size)?;
+    image[..header.len()].copy_from_slice(&header);
+    database.read_exact(&mut image[header.len()..original.len() as usize])?;
 
-    let mut copy_options = private_file_options();
-    copy_options.write(true).create_new(true);
-    copy_exact(
-        &mut database,
-        &mut copy_options.open(destination)?,
-        original.len(),
-    )?;
-    if let Some((wal, bytes)) = wal.as_mut().zip(wal_bytes) {
-        copy_exact(
-            wal,
-            &mut copy_options.open(sidecar(destination, "-wal"))?,
-            bytes,
-        )?;
-        require_same_file(&wal_path, &wal.metadata()?)?;
+    if let Some(meta) = &wal_meta {
+        require_same_file(&wal_path, meta, true)?;
     } else {
         require_absent(&wal_path)?;
     }
     if let Some(file) = &shm {
-        require_same_file(&shm_path, &file.metadata()?)?;
+        require_same_file(&shm_path, &file.metadata()?, false)?;
     } else {
-        // A cold WAL can survive without an index. A native writer would have to
-        // create the index to modify the WAL, and our main lock prevents its removal.
+        // A cold WAL can survive without an index. A native writer needs to create
+        // the index to mutate the WAL, and the shared database lock prevents removal.
         require_absent(&shm_path)?;
     }
     require_absent(&journal)?;
-    require_same_file(path, &original)?;
-    Ok(wal.is_some())
+    require_same_file(path, &original, true)?;
+
+    image.truncate(final_size as usize);
+    if let Some(commit) = commit {
+        commit.apply(&mut image);
+        let recovered = image[..100].try_into().expect("recovered SQLite header");
+        if database_page_size(recovered, final_size)? != page_size {
+            return Err(io::Error::other(
+                "SQLite WAL changed the database page size",
+            ));
+        }
+    }
+    // Deserialization needs a standalone image. SQLite must not look for a WAL.
+    image[18..20].fill(1);
+    Ok(image)
 }
 
-fn snapshot_allocation(
-    database: u64,
-    wal: Option<u64>,
-    allocation: allocation::Allocation,
-) -> Option<u64> {
-    let database = allocation.file_bytes(database)?;
-    let Some(wal) = wal else {
-        return Some(database);
+fn database_page_size(header: &[u8; 100], bytes: u64) -> io::Result<usize> {
+    let encoded = u16::from_be_bytes([header[16], header[17]]);
+    let page_size = if encoded == 1 {
+        65_536
+    } else {
+        usize::from(encoded)
     };
-    // WAL index entries are smaller than their corresponding WAL frames. Allow one WAL
-    // length plus a region for SQLite to rebuild the index. Each file has its own mapping.
-    let index = allocation.file_bytes(wal.checked_add(32_768)?)?;
-    database
-        .checked_add(allocation.file_bytes(wal)?)?
-        .checked_add(index)
-}
-
-fn copy_exact(source: &mut File, destination: &mut File, bytes: u64) -> io::Result<()> {
-    if io::copy(&mut source.take(bytes), destination)? != bytes || source.metadata()?.len() != bytes
+    if &header[..16] != b"SQLite format 3\0"
+        || !matches!(&header[18..20], [1, 1] | [2, 2])
+        || !page_size.is_power_of_two()
+        || page_size < 512
+        || bytes % page_size as u64 != 0
     {
         return Err(io::Error::other(
-            "observation source changed size during the copy",
+            "unsupported SQLite database header or length",
         ));
     }
-    #[cfg(target_os = "linux")]
-    destination.sync_data()?;
+    Ok(page_size)
+}
+
+fn check_size(database: u64, wal: u64) -> io::Result<()> {
+    if database
+        .checked_add(wal)
+        .is_none_or(|size| size > INPUT_LIMIT)
+    {
+        return Err(io::Error::other(
+            "observation snapshot exceeds the in-memory input limit",
+        ));
+    }
     Ok(())
+}
+
+fn zeroed(size: u64) -> io::Result<Vec<u8>> {
+    let size = usize::try_from(size).map_err(io::Error::other)?;
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(size).map_err(io::Error::other)?;
+    bytes.resize(size, 0);
+    Ok(bytes)
 }
 
 fn open_source(path: &Path) -> io::Result<File> {
@@ -205,10 +196,16 @@ fn lock_shared(file: &File, start: libc::off_t, len: libc::off_t) -> io::Result<
     Ok(())
 }
 
-fn require_same_file(path: &Path, original: &Metadata) -> io::Result<()> {
+fn require_same_file(path: &Path, original: &Metadata, check_size: bool) -> io::Result<()> {
     let current = fs::symlink_metadata(path)?;
     if (current.dev(), current.ino()) != (original.dev(), original.ino()) {
         return Err(io::Error::other(format!("{} was replaced", path.display())));
+    }
+    if check_size && current.len() != original.len() {
+        return Err(io::Error::other(format!(
+            "{} changed size during capture",
+            path.display()
+        )));
     }
     Ok(())
 }
@@ -229,6 +226,7 @@ fn sidecar(path: &Path, suffix: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
 
     use serde_json::json;
@@ -238,74 +236,10 @@ mod tests {
     use crate::Cas;
 
     #[test]
-    fn observation_snapshot_reserves_each_file_and_refuses_overflow() {
-        let unit = 4096;
-        let allocation = allocation::Allocation::new(unit);
-        assert_eq!(snapshot_allocation(1025, None, allocation), Some(unit));
-        assert_eq!(
-            snapshot_allocation(1025, Some(0), allocation),
-            Some(9 * unit)
-        );
-        assert_eq!(
-            snapshot_allocation(1025, Some(1025), allocation),
-            Some(11 * unit)
-        );
-        assert_eq!(snapshot_allocation(u64::MAX, None, allocation), None);
-        assert_eq!(snapshot_allocation(0, Some(u64::MAX), allocation), None);
-        assert_eq!(
-            snapshot_allocation(u64::MAX - 4095, Some(1), allocation),
-            None
-        );
-    }
-
-    #[test]
-    fn observation_snapshot_rounds_db_wal_and_index_to_separate_clusters() {
-        let cluster = 65_536;
-        let allocation = allocation::Allocation::new(cluster);
-        assert_eq!(snapshot_allocation(1024, None, allocation), Some(cluster));
-        assert_eq!(
-            snapshot_allocation(1024, Some(0), allocation),
-            Some(2 * cluster)
-        );
-        assert_eq!(
-            snapshot_allocation(1024, Some(1024), allocation),
-            Some(3 * cluster)
-        );
-        assert_eq!(
-            snapshot_allocation(1024, Some(32_769), allocation),
-            Some(4 * cluster)
-        );
-        assert_eq!(
-            snapshot_allocation(u64::MAX - cluster + 1, Some(1), allocation),
-            None
-        );
-    }
-
-    #[test]
-    fn observation_snapshot_reserves_mapping_for_every_ext_file() {
-        let block = 4096;
-        let logical = 13 * block;
-        assert_eq!(
-            snapshot_allocation(logical, None, allocation::Allocation::ext(block, block)),
-            Some(14 * block)
-        );
-        let cluster = 65_536;
-        let allocation = allocation::Allocation::ext(block, cluster);
-        // DB and WAL each need one data cluster and up to one mapping cluster.
-        // The rebuilt index spans two data clusters and can need a mapping cluster.
-        assert_eq!(
-            snapshot_allocation(logical, Some(logical), allocation),
-            Some(7 * cluster)
-        );
-        assert_eq!(snapshot_allocation(u64::MAX, None, allocation), None);
-        assert_eq!(
-            snapshot_allocation(u64::MAX - cluster + 1, None, allocation),
-            None
-        );
-        assert_eq!(
-            snapshot_allocation(logical, Some(u64::MAX), allocation),
-            None
-        );
+    fn observation_snapshot_bounds_combined_logical_lengths_and_refuses_overflow() {
+        assert!(check_size(INPUT_LIMIT - 1, 1).is_ok());
+        assert!(check_size(INPUT_LIMIT, 1).is_err());
+        assert!(check_size(u64::MAX, 1).is_err());
     }
 
     #[test]
@@ -325,25 +259,19 @@ mod tests {
                     .map(|path| (fs::metadata(path).unwrap().mode(), fs::read(path).unwrap()))
             };
             let before = source_state();
-            let reader =
-                EventStore::open_observation_snapshot(&source, source.parent().unwrap(), |_| {
-                    Ok(u64::MAX)
-                })
-                .unwrap();
+            let parent = source.parent().unwrap();
+            let entries = || {
+                fs::read_dir(parent)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().file_name())
+                    .collect::<std::collections::BTreeSet<_>>()
+            };
+            let before_entries = entries();
+            let reader = EventStore::open_observation_snapshot(&source).unwrap();
             assert_eq!(reader.replay("run").unwrap().len(), 1);
-            let database = reader.database_path().unwrap();
-            let directory = database.parent().unwrap();
-            let modes = [
-                directory.to_path_buf(),
-                database.clone(),
-                sidecar(&database, "-wal"),
-            ]
-            .map(|path| format!("{:04o}", fs::metadata(path).unwrap().mode() & 0o777));
-            assert_eq!(
-                modes,
-                ["0700", "0600", "0600"],
-                "directory, database and WAL modes"
-            );
+            assert!(reader.database_path().is_none());
+            assert!(reader.reopen(std::time::Duration::ZERO).is_err());
+            assert_eq!(entries(), before_entries);
             assert!(
                 source_state() == before,
                 "observation changed source bytes or permissions"

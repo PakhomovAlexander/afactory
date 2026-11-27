@@ -3604,13 +3604,12 @@ pub(crate) fn judge_floor(volumes: &[Volume], floor: u64) -> Result<(), String> 
     Ok(())
 }
 
-/// Remaining machine budget and free bytes above the floor, under the observation copy lock.
-pub(crate) fn observation_allowance(
-    destination: &Path,
-    runtimes: &[PathBuf],
+/// Admit a diskless observation under the account lock. Existing owned bytes must fit
+/// the machine budget and available volume space must independently satisfy the floor.
+pub(crate) fn check_observation_storage(
     policy: &StoragePolicy,
     origin_state_home: &Path,
-) -> Result<u64, String> {
+) -> Result<(), String> {
     let roots = Roots::current_for(true)?;
     let mut stock = inventory(&roots, Detail::Admission { origin_state_home });
     let telemetry = telemetry_roots(&roots, &mut stock, true);
@@ -3637,7 +3636,7 @@ pub(crate) fn observation_allowance(
         let path = config::canonical_root(&entry.path);
         whole.insert(path, entry.bytes);
     }
-    for path in runtimes.iter().chain(&telemetry) {
+    for path in &telemetry {
         let bytes = af_sandbox::open_anchor(path)
             .and_then(|directory| af_sandbox::removal::checked_allocated_bytes(&directory))
             .map_err(|error| observation_measurement_error(path, &error.to_string()))?;
@@ -3671,12 +3670,21 @@ pub(crate) fn observation_allowance(
                 .any(|parent| whole.contains_key(parent)))
             .then_some(*bytes)
         })
-        .fold(0, u64::saturating_add);
-    let free = measure_volume(destination).free?;
-    Ok(policy
-        .max_bytes
-        .saturating_sub(used)
-        .min(free.saturating_sub(policy.min_free_bytes)))
+        .try_fold(0_u64, u64::checked_add)
+        .ok_or("cannot determine the observation storage budget: inventory byte count overflow")?;
+    if used > policy.max_bytes {
+        return Err("observation snapshot exceeds the available storage budget".into());
+    }
+    let runtime = sandbox_root(policy);
+    let free = measure_volume(&runtime).free?;
+    if free < policy.min_free_bytes {
+        return Err(format!(
+            "observation volume {} has {free} free bytes below the configured floor of {}",
+            runtime.display(),
+            policy.min_free_bytes
+        ));
+    }
+    Ok(())
 }
 
 fn observation_measurement_error(path: &Path, reason: &str) -> String {

@@ -39,7 +39,7 @@ On this Task's Linux host, e2fsprogs 1.47.2 reported a 4,096-byte block and 65,5
 in an unmounted ext4 bigalloc image. Its fresh directory had logical size 4,096 and block count
 128. A 1,024-byte regular file had block count 128 as well. Both accounted for 65,536 bytes.
 This reproduces the supplied w7/r-401 image measurement for the regular file and measures the
-fresh directory the candidate uses to bound the cluster size. The Linux ext4 implementation
+fresh directory the earlier implementation used to bound the cluster size. The Linux ext4 implementation
 initializes a non-inline directory with a data block and charges the inode in whole clusters.
 [Directory initialization](https://github.com/torvalds/linux/blob/v6.12/fs/ext4/namei.c)
 [Cluster allocation](https://github.com/torvalds/linux/blob/v6.12/fs/ext4/mballoc.c)
@@ -110,7 +110,7 @@ The inherited executable ignores the debug allocation-unit input. The test print
 refusal path before asserting that both refusals name the Project. That assertion fails
 with the inherited executable.
 
-## Mapping metadata repair
+## Historical mapping metadata repair
 
 This repair starts from Snapshot
 `sha256:c2649219ca13c144c4a8f43d8d434cf1f9aab61a7db2992b4709297dfb826a4d`.
@@ -141,9 +141,10 @@ Tmpfs counts allocated pages and has no disk mapping blocks to charge to its fil
 reader admits only the inherited bounded-page modes. On APFS, file extent records are
 stored in shared volume trees. Its per-file reservation covers the rounded data stream.
 Shared volume metadata, including APFS copy-on-write tree updates, is outside AF's
-regular-file inventory. The free-space check uses the volume's measured available headroom
-for the copy reservation. It does not reserve the volume against concurrent activity or
-quantify growth of shared APFS trees. No APFS execution was performed for this repair.
+regular-file inventory. Measuring free bytes and subtracting this reservation did not
+bound those updates. The calculation also missed external attribute blocks charged to
+files on ext2. The in-memory repair below supersedes that reservation. No APFS execution
+was performed for the mapping repair.
 [Linux tmpfs huge-page policies](https://docs.kernel.org/admin-guide/mm/transhuge.html#hugepages-in-tmpfs-shmem)
 [Apple File System Reference](https://developer.apple.com/support/downloads/Apple-File-System-Reference.pdf)
 
@@ -251,3 +252,165 @@ For the inherited comparison substitute the inherited binary as described above 
 `fleet::origin_counts_telemetry_inside_a_registered_external_store_once` separately.
 The inherited mapping regression is expected to fail after printing its control and
 the Workspace refusals.
+
+## Bounded in-memory repair
+
+This repair starts from Source Snapshot
+`sha256:d33fa95a3d0d2c7e2e90ccd4abdee956af5bad8225332aed68067c07e7a90dc3`.
+The APFS findings identify reviewed Snapshot
+`sha256:fd58c831ba25a44696567f810f897f013d75c713ae23b92978549d0de6baefec`.
+
+The reader creates no snapshot files, directories or indexes when it checks the selected
+volume or captures and replays the Stores. The storage budget charges existing AF-owned
+disk usage. The separate volume check admits at exact equality with the configured floor.
+These checks measure current conditions. The read does not control allocations by other
+processes or the operating system.
+
+Before reading either file into a buffer, the reader checks the combined logical lengths
+against 64 MiB, including holes. It checks again with any WAL-driven expansion before
+allocating the database image. Capture keeps at most 64 MiB of database and WAL buffers.
+After dropping the WAL, SQLite deserialization can use one further copy of the image.
+The Project image can remain live while replaying the Task Store, yielding at most 192 MiB
+in snapshot buffers per account, with ordinary SQLite and projection working memory in
+addition. An existing account inode carries the exclusive lock across both reads. The
+kernel releases that lock and reclaims the images if the process exits or is killed.
+
+The database shared lock and the WAL write, checkpoint and recovery byte ranges exclude
+native mutations during capture. The reader verifies file identities and refuses a rollback
+journal or a newly appeared sidecar. For live and cold WALs it validates header and frame
+checksums, honors salts and applies pages only through the last valid commit. A read-only
+SQLite connection inspects the private image with memory-only temporary storage. The same
+path runs on macOS and Linux.
+
+### External ACL block measurement
+
+On Linux, a directory with a named default ACL passed the ACL to a file created with
+owner-only mode `0600`. Linux kept the named entry and masked its access.
+Separately, an unmounted ext2 image with 4,096-byte blocks and 128-byte inodes stored a
+four-page SQLite database with and without that access ACL. Both files used exactly four
+direct data blocks. The ACL-bearing file charged one additional block. Its retrieved
+bytes matched the original, and SQLite reported `ok` from `PRAGMA integrity_check`.
+
+| SQLite file | Logical bytes | Allocated bytes | External ACL block |
+| --- | ---: | ---: | --- |
+| No ACL | 16,384 | 16,384 | Absent |
+| Named access ACL | 16,384 | 20,480 | Present |
+
+The inherited calculation allowed four data blocks and zero mapping blocks for this file.
+Its reservation is 16,384 bytes. The ACL witness requires 20,480. The new reader creates
+no destination files that could inherit an ACL, including the database, WAL, index and
+runtime directory. The ext2 exercise sets the inherited ACL explicitly with `debugfs` on
+an unmounted image.
+
+Run with Python 3 and e2fsprogs on a Linux filesystem supporting POSIX ACLs.
+
+```sh
+mkdir -p target/observation-evidence
+work=$(mktemp -d target/observation-evidence/acl.XXXXXX)
+python3 - "$work" <<'PY'
+import os
+import sqlite3
+import struct
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+with sqlite3.connect(root / "four.sqlite") as db:
+    db.execute("PRAGMA page_size=4096")
+    db.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, value BLOB)")
+    db.executemany("INSERT INTO items(value) VALUES (?)", [(b"x" * 3500,)] * 2)
+    assert db.execute("PRAGMA page_count").fetchone() == (4,)
+entries = [(1, 7, -1), (2, 4, os.getuid()), (4, 5, -1), (16, 5, -1), (32, 0, -1)]
+acl = struct.pack("<I", 2) + b"".join(struct.pack("<HHi", *entry) for entry in entries)
+directory = root / "inheriting"
+directory.mkdir()
+os.setxattr(directory, "system.posix_acl_default", acl)
+child = directory / "file"
+os.close(os.open(child, os.O_CREAT | os.O_WRONLY, 0o600))
+actual = os.getxattr(child, "system.posix_acl_access")
+assert child.stat().st_mode & 0o777 == 0o600
+assert (2, 4, os.getuid()) in struct.iter_unpack("<HHi", actual[4:])
+assert (16, 0, -1) in struct.iter_unpack("<HHi", actual[4:])
+(root / "acl").write_bytes(actual)
+PY
+image=$work/ext2.img
+truncate -s 16M "$image"
+mke2fs -q -t ext2 -b 4096 -I 128 -F "$image"
+debugfs -w -R "write $work/four.sqlite /plain.sqlite" "$image"
+debugfs -w -R "write $work/four.sqlite /acl.sqlite" "$image"
+debugfs -w -R 'set_inode_field /plain.sqlite mode 0100600' "$image"
+debugfs -w -R 'set_inode_field /acl.sqlite mode 0100600' "$image"
+debugfs -w -R "ea_set -f $work/acl /acl.sqlite system.posix_acl_access" "$image"
+debugfs -R 'stat /plain.sqlite' "$image"
+debugfs -R 'stat /acl.sqlite' "$image"
+debugfs -R "dump /acl.sqlite $work/recovered.sqlite" "$image"
+cmp "$work/four.sqlite" "$work/recovered.sqlite"
+python3 - "$work/recovered.sqlite" <<'PY'
+import sqlite3
+import sys
+
+with sqlite3.connect(sys.argv[1]) as db:
+    assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+PY
+```
+
+### Paired public reader measurements
+
+The Linux public CLI comparison used the inherited executable and the patched executable
+on the same fixtures. Only the reported free bytes in the disk-boundary fixture were
+simulated. Both executables read a 1,024-byte-page Project database with 44,032 logical
+and 45,056 allocated bytes. The Workspace database measured 147,456 logical and allocated
+bytes. The eligible inventory was 516,096 bytes. The configured runtime directory started
+absent.
+
+| Machine limit | Free bytes | Free floor | Inherited | In-memory |
+| ---: | ---: | ---: | --- | --- |
+| 516,095 | 4,194,304 | 4,096 | Refused | Refused |
+| Unlimited | 4,194,304 | 4,194,305 | Refused | Refused |
+| 516,096 | 4,194,304 | 4,096 | Refused | Succeeded |
+| Unlimited | 4,194,304 | 4,194,304 | Refused | Succeeded |
+| 516,096 | 4,194,304 | 4,194,304 | Refused | Succeeded |
+| 4,710,400 | 4,194,304 | 4,096 | Succeeded | Succeeded |
+
+At both exact limits the new reader returned the expected observation with unchanged
+source bytes and inventory. It left the runtime directory and the old admission registry
+absent. This models a volume with no spare bytes above the floor. It does not measure
+APFS copy-on-write growth. The earlier macOS observations in this document are historical.
+No current macOS host was available to run the new reader.
+
+The geometry fixture replays the 53,248-byte Project database at the indirect boundary.
+The source and Workspace allocations were 53,248 and 147,456 bytes, and eligible inventory
+was 524,288. The new reader succeeded with 20,479, 57,343 and 65,535 bytes of headroom under
+both disk policies and created zero snapshot files. The cluster and ext2 image recipes
+above reproduced the earlier allocation witnesses on Linux. The ACL recipe reproduced the
+additional 4,096-byte charge that the old file calculation omitted.
+
+The external Store fixture measured 618,496 owned Project and Workspace bytes and 466,944
+owned external Store bytes before adding telemetry. The latter rose to 1,515,520 after
+adding 1,048,576 measured bytes inside `cas`. The old and new thresholds on the checkout's
+ext filesystem both increased by that single telemetry allocation.
+
+| Executable | Empty telemetry threshold | Populated telemetry threshold |
+| --- | ---: | ---: |
+| Inherited | 1,384,448 | 2,433,024 |
+| In-memory | 1,085,440 | 2,134,016 |
+
+The new exact total admits, and a limit one byte lower refuses. A separately configured
+unowned subtree adds its own charge. Unmeasurable overlapping telemetry still refuses.
+
+Run the public boundary and WAL fixtures on a volume with room for the default free-space
+floor. The concurrency fixture starts a second process while the first holds the account
+lock and repeats for normal close and forced interruption.
+
+```sh
+mkdir -p target/origin-tmp
+TMPDIR="$PWD/target/origin-tmp"   cargo nextest run --workspace --locked --profile ci --success-output immediate   -E '(binary_id(af::it) & test(/^fleet::/)) | (package(af-store) & test(/observation_snapshot/))'
+```
+
+For the paired Linux comparison retain the inherited executable before building the
+candidate. With other test runs stopped, substitute the inherited executable as described
+above and run
+`fleet::origin_admits_small_sqlite_pages_at_independent_disk_limits` and
+`fleet::origin_counts_telemetry_inside_a_registered_external_store_once` separately.
+The fixtures print the inherited outcomes and thresholds before they fail on a new
+expectation. Restore the candidate executable before re-running the filtered tests.
