@@ -32,16 +32,19 @@ pub(super) struct Options {
     /// SHA-256 of the subject package (defaults to the frozen experiment pin).
     #[arg(long, requires = "bundle")]
     bundle_sha256: Option<String>,
+    /// JSON file containing the ordered pair blocks for the external benchmark.
     #[arg(long, requires = "bundle")]
     schedule: Option<PathBuf>,
     /// SHA-256 of the ordered pair blocks (defaults to the frozen experiment pin).
     #[arg(long, requires = "bundle")]
     schedule_sha256: Option<String>,
+    /// External benchmark phase to plan. Smoke takes the first two pairs.
     #[arg(long, requires = "bundle")]
     phase: Option<Phase>,
     /// External explicit Rust crate graph, separate from the prompts.
     #[arg(long, requires_all = ["bundle", "project_graph_sha256"])]
     project_graph: Option<PathBuf>,
+    /// SHA-256 digest of the exact external crate graph file bytes.
     #[arg(long, requires = "project_graph")]
     project_graph_sha256: Option<String>,
     /// Strict JSON file declaring external smoke transport bindings.

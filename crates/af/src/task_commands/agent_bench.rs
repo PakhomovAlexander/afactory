@@ -33,43 +33,57 @@ pub(crate) enum BenchmarkCommand {
     Plan(Box<BenchmarkPlan>),
     /// Replay the captured schedule and retained observations
     Report {
+        /// Benchmark Task ID whose recorded evidence to replay.
         id: String,
+        /// Project checkout used to locate the Task Store.
         #[arg(long, default_value = ".")]
         repo: PathBuf,
+        /// Read the benchmark Task from this explicit Store directory.
         #[arg(long)]
         state: Option<PathBuf>,
+        /// Print the benchmark report as JSON.
         #[arg(long)]
         json: bool,
     },
     /// Validate a private evaluator package against a captured external Task
     CheckEvaluator(external::EvaluatorCheck),
-    /// Capture a synthetic blind grading plan for a finished external smoke Task
+    /// Capture a blind grading plan for a finished external benchmark Task
     PlanGrading(external::grading::GradingPlan),
 }
 
 #[derive(Debug, Args)]
 #[command(group(ArgGroup::new("input_mode").args(["smoke", "cases", "bundle"]).required(true)))]
 pub(crate) struct BenchmarkPlan {
+    /// Project checkout used to capture source and locate the Task Store.
     #[arg(long, default_value = ".")]
     repo: PathBuf,
+    /// Capture the benchmark Task in this explicit Store directory.
     #[arg(long)]
     state: Option<PathBuf>,
+    /// Use the built-in synthetic source, cases and oracle.
     #[arg(long)]
     smoke: bool,
+    /// JSON file containing the cases and explicit crate graph for a local paired run.
     #[arg(long, requires_all = ["cases_sha256", "oracle", "oracle_sha256", "source_revision"])]
     cases: Option<PathBuf>,
+    /// SHA-256 digest of the exact cases file bytes.
     #[arg(long, requires = "cases")]
     cases_sha256: Option<String>,
+    /// JSON file mapping each local case to its expected source anchors.
     #[arg(long, requires = "cases")]
     oracle: Option<PathBuf>,
+    /// SHA-256 digest of the exact oracle file bytes.
     #[arg(long, requires = "cases")]
     oracle_sha256: Option<String>,
+    /// Exact Git commit ID to capture as the benchmark source.
     #[arg(long, conflicts_with = "smoke")]
     source_revision: Option<String>,
     #[command(flatten)]
     external: external::Options,
+    /// Path to the pinned Linux rust-analyzer executable for semantic navigation.
     #[arg(long, required_unless_present = "bundle")]
     rust_analyzer: Option<PathBuf>,
+    /// SHA-256 digest of the exact rust-analyzer executable bytes.
     #[arg(long, required_unless_present = "bundle")]
     rust_analyzer_sha256: Option<String>,
     /// Directory containing the two exact Linux Rust 1.88 analyzer runtime libraries.
@@ -81,6 +95,7 @@ pub(crate) struct BenchmarkPlan {
     /// Credential-free Responses endpoint, restricted to 127.0.0.1.
     #[arg(long, requires = "native_fixture_codex")]
     fixture_endpoint: Option<std::net::SocketAddrV4>,
+    /// Print the captured Task plan as JSON.
     #[arg(long)]
     json: bool,
 }

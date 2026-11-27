@@ -11,13 +11,15 @@ pub(crate) struct EvaluatorCheck {
     /// An external benchmark Task with an exact captured source and subject package.
     pub(super) id: String,
     /// Private evaluator JSON file, outside the checkout and Task Store.
-    #[arg(long)]
+    #[arg(long, value_name = "FILE")]
     evaluator: PathBuf,
-    /// Digest of the exact evaluator file bytes, including whitespace.
-    #[arg(long)]
+    /// SHA-256 digest of the exact evaluator file bytes, including whitespace.
+    #[arg(long, value_name = "SHA256")]
     pub(super) evaluator_sha256: String,
+    /// Project checkout used to locate the Task Store.
     #[arg(long, default_value = ".")]
     pub(super) repo: PathBuf,
+    /// Use this explicit Store directory for the subject Task and any grading plan.
     #[arg(long)]
     pub(super) state: Option<PathBuf>,
 }
