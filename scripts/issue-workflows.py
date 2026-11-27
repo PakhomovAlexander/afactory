@@ -715,7 +715,10 @@ def composition(name, pins, facts):
             raise ValueError('stage template selects a different Pipeline')
         if pipeline == catalog()['verification'] and document.get('base', {}).get('commit') != template['authority_commit']:
             raise ValueError('verification base must retain the original whole-change commit')
-        if template.get('bindings') and set(template['bindings']) - {'schema', 'providers'}:
+        bindings = template.get('bindings')
+        if bindings and (set(bindings) - {'schema', 'providers', 'slots', 'packages'}
+                         or any(bindings.get(k, {}) != {} for k in ('slots', 'packages'))):
+            # The runtime writes canonical empty slot and package tables; only those may ride along.
             raise ValueError('stage templates may bind only personal accounts')
         if template.get('bindings') and any(p not in ('codex-personal', 'pi-personal') for p in template['bindings'].get('providers', {}).values()):
             raise ValueError('stage templates require personal accounts')

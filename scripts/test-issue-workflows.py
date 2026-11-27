@@ -739,12 +739,39 @@ class Workflows(unittest.TestCase):
 
     def test_compose_refuses_nonpersonal_or_slot_replacement_bindings(self):
         p = pin('bugfix/default-codex')
+        verify = pin(w.catalog()['verification'], 'verification')
         p['template']['bindings'] = {'schema': 'af.task-bindings/1', 'providers': {'x': 'codex-work'}}
         with self.assertRaises(ValueError):
-            w.composition('bugfix/default-codex', [p, pin(w.catalog()['verification'], 'verification')], FACTS)
-        p['template']['bindings'] = {'schema': 'af.task-bindings/1', 'slots': {}}
-        with self.assertRaises(ValueError):
-            w.composition('bugfix/default-codex', [p, pin(w.catalog()['verification'], 'verification')], FACTS)
+            w.composition('bugfix/default-codex', [p, verify], FACTS)
+        refused = [{'slots': {'implement': {'provider': 'codex-personal'}}},
+                   {'packages': {'implementer': 'other'}},
+                   {'slots': {}, 'packages': {'implementer': 'other'}},
+                   {'slots': {'implement': {}}, 'packages': {}},
+                   {'slots': [], 'packages': {}},
+                   {'slots': None},
+                   {'slots': {}, 'packages': {}, 'extra': {}},
+                   {'unknown': {}}]
+        for extra in refused:
+            with self.subTest(extra=extra):
+                p['template']['bindings'] = {'schema': 'af.task-bindings/1',
+                                             'providers': {'x': 'codex-personal'}, **extra}
+                with self.assertRaisesRegex(ValueError, 'may bind only personal accounts'):
+                    w.composition('bugfix/default-codex', [p, verify], FACTS)
+
+    def test_compose_accepts_canonical_empty_slot_and_package_tables(self):
+        # Issue #1206: the runtime serializes af.task-bindings/1 with empty slots and packages.
+        for extra in ({'slots': {}, 'packages': {}}, {'slots': {}}, {'packages': {}}):
+            with self.subTest(extra=extra):
+                p = pin('bugfix/default-codex')
+                p['template']['bindings'] = {'schema': 'af.task-bindings/1',
+                                             'providers': {'x': 'codex-personal'}, **extra}
+                verify = pin(w.catalog()['verification'], 'verification')
+                verify['template']['bindings'] = copy.deepcopy(p['template']['bindings'])
+                result = w.composition('bugfix/default-codex', [p, verify], FACTS)
+                self.assertIn('issue-workflow', result['definitions'])
+                p['template']['bindings']['providers'] = {'x': 'codex-work'}
+                with self.assertRaisesRegex(ValueError, 'require personal accounts'):
+                    w.composition('bugfix/default-codex', [p, verify], FACTS)
 
 
 if __name__ == '__main__':
