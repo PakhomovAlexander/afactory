@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:codex-dispatch-evidence:1",
+  "title": "CodexDispatchEvidence@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "launch_id",
+    "thread_id",
+    "nonce",
+    "outcome",
+    "proof_id"
+  ],
+  "properties": {
+    "launch_id": {
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+    },
+    "thread_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,128}$"
+    },
+    "nonce": {
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+    },
+    "outcome": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "not_dispatched"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "turn_id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "completed"
+            },
+            "turn_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,128}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "turn_id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "failed"
+            },
+            "turn_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,128}$"
+            }
+          }
+        }
+      ]
+    },
+    "proof_id": {
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+    }
+  }
+}

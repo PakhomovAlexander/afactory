@@ -562,7 +562,7 @@ fn owned_common_attempt_overrun_can_publish_facts_and_seal_without_new_dispatch(
     assert!(
         records
             .iter()
-            .all(|(kind, _)| kind == TASK_EXECUTION_RECORD_V5)
+            .all(|(kind, _)| kind == TASK_EXECUTION_RECORD_V6)
     );
     assert_eq!(
         records

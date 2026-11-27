@@ -121,6 +121,40 @@ fn malformed_task_files_name_the_field_and_its_shape() {
 }
 
 #[test]
+fn codex_session_continuation_is_refused_before_starting_an_attempt() {
+    let dir = tempfile::tempdir().unwrap();
+    let dir = dir.path();
+    let state = dir.join("state");
+    let mut producer = ticket();
+    producer["codex_session_continuation"] = json!(true);
+    let mut repair = producer.clone();
+    repair["continue"] = json!({"task": "predecessor", "round": 1});
+
+    for (file, document) in [("producer.json", producer), ("repair.json", repair)] {
+        let said = refused(dir, file, document.to_string().as_bytes());
+        let reason = "codex_session_continuation is unavailable: AF has no pinned Codex App Server \
+                      transport with verified sandbox, history and dispatch recovery";
+        assert!(said.contains(reason), "{said}");
+
+        let output = af(
+            dir,
+            &[
+                "task",
+                "start",
+                "--execute",
+                "--file",
+                file,
+                "--state",
+                state.to_str().unwrap(),
+            ],
+        );
+        assert_eq!(output.status.code(), Some(1), "{}", err(&output));
+        assert!(err(&output).contains(reason), "{}", err(&output));
+        assert!(!state.exists(), "a refused start created state");
+    }
+}
+
+#[test]
 fn a_zero_duration_flag_is_refused_before_the_task_file_is_read() {
     let dir = tempfile::tempdir().unwrap();
     // The file does not exist: a refusal that read it first would say so instead.

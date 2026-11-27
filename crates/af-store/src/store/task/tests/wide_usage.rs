@@ -166,7 +166,7 @@ fn check_wide_usage_at_controlled_time(clock: &std::cell::Cell<u64>) {
             append(
                 &mut f,
                 &lease,
-                TASK_EXECUTION_RECORD_V5,
+                TASK_EXECUTION_RECORD_V6,
                 serde_json::to_value(&settled).unwrap()
             )
             .is_err()
@@ -364,7 +364,7 @@ fn check_wide_usage_at_controlled_time(clock: &std::cell::Cell<u64>) {
             .unwrap();
         assert_eq!(
             first_settled.envelope.artifact_type,
-            TASK_EXECUTION_RECORD_V5
+            TASK_EXECUTION_RECORD_V6
         );
         assert_eq!(first_settled.envelope.payload["charged_tokens"], "7");
         let current = records
@@ -374,7 +374,7 @@ fn check_wide_usage_at_controlled_time(clock: &std::cell::Cell<u64>) {
             TaskExecutionRecordV1::Settled { attempt_id, .. } if attempt_id == active.id())
             })
             .unwrap();
-        assert_eq!(current.envelope.artifact_type, TASK_EXECUTION_RECORD_V5);
+        assert_eq!(current.envelope.artifact_type, TASK_EXECUTION_RECORD_V6);
         assert_eq!(
             current.envelope.payload["charged_tokens"],
             if recover {
@@ -392,7 +392,7 @@ fn check_wide_usage_at_controlled_time(clock: &std::cell::Cell<u64>) {
                 if attempt_id == active.id() && *charged_tokens == actual)
                 })
                 .unwrap();
-            assert_eq!(observed.envelope.artifact_type, TASK_EXECUTION_RECORD_V5);
+            assert_eq!(observed.envelope.artifact_type, TASK_EXECUTION_RECORD_V6);
             assert_eq!(
                 observed.envelope.payload["charged_tokens"],
                 actual.to_string()
@@ -428,7 +428,7 @@ fn execution_record_readers_preserve_each_declared_counter_domain() {
         let (id, envelope) = f
             .cas
             .put_artifact(
-                TASK_EXECUTION_RECORD_V5,
+                TASK_EXECUTION_RECORD_V6,
                 producer(),
                 vec![],
                 None,
@@ -451,7 +451,7 @@ fn execution_record_readers_preserve_each_declared_counter_domain() {
         let (id, _) = f
             .cas
             .put_artifact(
-                TASK_EXECUTION_RECORD_V5,
+                TASK_EXECUTION_RECORD_V6,
                 producer(),
                 vec![],
                 None,

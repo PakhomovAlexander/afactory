@@ -1,6 +1,7 @@
 use super::*;
 use af_contracts::Producer;
 use af_contracts::task::plan::PlanDependencyV1;
+mod codex;
 mod collection;
 mod lease;
 mod owned;
@@ -466,10 +467,15 @@ impl Fixture {
                 serde_json::to_value(TaskInvocationV1 {
                     plan_id: self.plan_id.clone(),
                     node: "root.nodes.write".into(),
-                    inputs: BTreeMap::from([(
-                        "input".into(),
-                        self.revision.inputs["requirements"].clone(),
-                    )]),
+                    inputs: [("input".into(), self.revision.inputs["requirements"].clone())]
+                        .into_iter()
+                        .chain(
+                            self.revision
+                                .inputs
+                                .get("source")
+                                .map(|source| ("source".into(), source.clone())),
+                        )
+                        .collect(),
                 })
                 .unwrap(),
             )
@@ -1283,7 +1289,7 @@ fn crash_after_successful_settlement_reuses_the_selected_result_under_a_new_writ
         let record = f
             .cas
             .put_artifact(
-                TASK_EXECUTION_RECORD_V5,
+                TASK_EXECUTION_RECORD_V6,
                 producer(),
                 vec![output.clone()],
                 None,

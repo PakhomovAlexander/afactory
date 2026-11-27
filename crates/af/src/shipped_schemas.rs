@@ -125,7 +125,7 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("task-diff", 1),
     schema!("task-event", 4),
     schema!("task-findings", 3),
-    schema!("task-inspection", 22),
+    schema!("task-inspection", 23),
     schema!("task-list-entry", 5),
     schema!("task-list", 5),
     schema!("task-materialized", 1),
@@ -295,7 +295,7 @@ mod tests {
             refusal("task-status-v3.json"),
             "this af ships no schema task-status-v3.json; `af schema show` lists the ids it ships"
         );
-        assert!(refusal("af/task-inspection@18").contains("only af/task-inspection@22"));
+        assert!(refusal("af/task-inspection@18").contains("only af/task-inspection@23"));
         assert_eq!(
             refusal("af.ci-diagnosis/0"),
             "this af ships no schema af.ci-diagnosis/0, only af.ci-diagnosis/1; run af schema \

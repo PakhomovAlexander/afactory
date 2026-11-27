@@ -151,7 +151,7 @@ fn agreed_state(fixture: &Fixture) -> (String, Option<String>, String) {
 /// (`listing`), so that a test that read it for an assertion of its own reads it once.
 fn agreed_state_in(fixture: &Fixture, listing: Option<&str>) -> (String, Option<String>, String) {
     let shown = fixture.json(&["task", "show", TASK]);
-    schemas::valid(&schemas::validator("task-inspection-v22.json"), &shown);
+    schemas::valid(&schemas::validator("task-inspection-v23.json"), &shown);
     let listed = fixture.json(&["task", "list"]);
     schemas::valid(&schemas::validator("task-list-v5.json"), &listed);
     let reported = fixture.json(&["task", "report", TASK]);
@@ -1648,7 +1648,7 @@ fn empty_diff_bind_failure_is_incomplete_execution_with_a_public_kernel_cause() 
     );
     assert!(!printed.contains("exhausted/budget"), "{printed}");
     let shown = fixture.json(&["task", "show", TASK]);
-    schemas::valid(&schemas::validator("task-inspection-v22.json"), &shown);
+    schemas::valid(&schemas::validator("task-inspection-v23.json"), &shown);
     assert_eq!(shown["state"]["outcome"], "execution_failed");
     assert_eq!(shown["state"]["cause"], "kernel_execution");
     let expected = fixture.next("af task show pagination-cli");
@@ -1862,7 +1862,7 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':tokens,'cached
         ],
         4,
     );
-    schemas::valid(&schemas::validator("task-inspection-v22.json"), &done);
+    schemas::valid(&schemas::validator("task-inspection-v23.json"), &done);
     assert_eq!(done["state"]["phase"], "finished");
     assert_eq!(done["state"]["outcome"], "exhausted");
     assert_eq!(done["state"]["cause"], "budget");

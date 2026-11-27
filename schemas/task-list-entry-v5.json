@@ -63,7 +63,7 @@
     "delivery": {
       "anyOf": [
         {
-          "$ref": "urn:af:schema:task-inspection:22#/$defs/deliveryReceipt"
+          "$ref": "urn:af:schema:task-inspection:23#/$defs/deliveryReceipt"
         },
         {
           "type": "null"

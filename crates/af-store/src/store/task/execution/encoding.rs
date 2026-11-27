@@ -17,7 +17,7 @@ pub fn read_execution_record(
     let envelope = cas
         .get_artifact(id)
         .map_err(|error| artifact_read_error(id, error))?;
-    if envelope.artifact_type != TASK_EXECUTION_RECORD_V5 {
+    if envelope.artifact_type != TASK_EXECUTION_RECORD_V6 {
         return Err(conflict("Expected a typed Task execution record"));
     }
     let record: TaskExecutionRecordV1 = TaskExecutionRecordV1::deserialize(&envelope.payload)?;
@@ -29,5 +29,5 @@ pub(super) fn encode_record(
     record: &TaskExecutionRecordV1,
 ) -> Result<(&'static str, serde_json::Value), StoreError> {
     record.validate().map_err(conflict)?;
-    Ok((TASK_EXECUTION_RECORD_V5, serde_json::to_value(record)?))
+    Ok((TASK_EXECUTION_RECORD_V6, serde_json::to_value(record)?))
 }

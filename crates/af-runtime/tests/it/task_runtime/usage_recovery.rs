@@ -334,7 +334,7 @@ fn recovery_case(
     }
     assert_eq!(
         settlement[0].0,
-        af_contracts::task::execution::TASK_EXECUTION_RECORD_V5
+        af_contracts::task::execution::TASK_EXECUTION_RECORD_V6
     );
     let recovered_usage =
         af_runner::task::usage::read_task_usage_exact(&f.cas, &settlement[0].1).unwrap();

@@ -296,10 +296,10 @@ fn task_states_topic_and_the_state_flags_describe_the_commands() {
     let json = out(&af(&["help", "json"]));
     for needle in [
         "af/task-findings@3",
-        "af/task-inspection@22",
+        "af/task-inspection@23",
         "af/task-report@4",
         "af/findings-sarif@1",
-        "af/task-inspection@22",
+        "af/task-inspection@23",
         "af/task-checks@4",
         "af/task-list@5",
         "af/task-list-entry@5",

@@ -22,7 +22,7 @@ use af_contracts::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 275] = [
+const SCHEMAS: [&str; 277] = [
     "task-wake-traversal-v1.json",
     "task-wake-route-traversal-v1.json",
     "task-wake-pi-config-v1.json",
@@ -157,7 +157,7 @@ const SCHEMAS: [&str; 275] = [
     "optimization-adoption-task-evidence-v1.json",
     "optimization-evaluation-v1.json",
     "experimental-slot-v2.json",
-    "task-inspection-v22.json",
+    "task-inspection-v23.json",
     "experiment-execution-plan-v3.json",
     "task-runtime-evidence-v1.json",
     "optimization-sources-v1.json",
@@ -245,7 +245,9 @@ const SCHEMAS: [&str; 275] = [
     "task-output-v1.json",
     "task-run-report-v3.json",
     "task-diagnostic-v1.json",
-    "task-execution-record-v5.json",
+    "codex-checkpoint-v1.json",
+    "codex-dispatch-evidence-v1.json",
+    "task-execution-record-v6.json",
     "task-revision-v1.json",
     "task-result-v1.json",
     "task-phase-v1.json",
@@ -444,9 +446,9 @@ fn task_invocations_and_attempt_records_are_versioned_and_closed() {
     for record in records {
         record.validate().unwrap();
         let mut value = serde_json::to_value(record).unwrap();
-        assert_valid("task-execution-record-v5.json", &value);
+        assert_valid("task-execution-record-v6.json", &value);
         value["undeclared"] = json!(true);
-        assert!(!validator("task-execution-record-v5.json").is_valid(&value));
+        assert!(!validator("task-execution-record-v6.json").is_valid(&value));
         assert!(serde_json::from_value::<TaskExecutionRecordV1>(value).is_err());
     }
     // Accounting records carry the same closed wire, with exact decimal charges.
@@ -492,7 +494,7 @@ fn task_invocations_and_attempt_records_are_versioned_and_closed() {
     for record in accounting {
         record.validate().unwrap();
         let mut value = serde_json::to_value(&record).unwrap();
-        assert_valid("task-execution-record-v5.json", &value);
+        assert_valid("task-execution-record-v6.json", &value);
         assert!(
             value["charged_tokens"].is_string(),
             "exact charges are canonical decimal text"
@@ -502,7 +504,7 @@ fn task_invocations_and_attempt_records_are_versioned_and_closed() {
             record
         );
         value["undeclared"] = json!(true);
-        assert!(!validator("task-execution-record-v5.json").is_valid(&value));
+        assert!(!validator("task-execution-record-v6.json").is_valid(&value));
         assert!(serde_json::from_value::<TaskExecutionRecordV1>(value).is_err());
     }
 }
@@ -2226,6 +2228,8 @@ fn finding_set_roundtrips_as_an_exact_reducer_projection() {
 
 #[path = "schema_parity/attempt_wall.rs"]
 mod attempt_wall;
+#[path = "schema_parity/codex_continuation.rs"]
+mod codex_continuation;
 #[path = "schema_parity/remote_check.rs"]
 mod remote_check;
 #[path = "schema_parity/task_agent_loop.rs"]

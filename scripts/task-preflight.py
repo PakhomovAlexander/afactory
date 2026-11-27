@@ -57,7 +57,7 @@ def operator(node):
 
 
 def report(inspection, checklist, now, diff=None):
-    require(inspection["schema"] == "af/task-inspection@22", "expected af task explain --json (@22)")
+    require(inspection["schema"] == "af/task-inspection@23", "expected af task explain --json (@23)")
     require(checklist["schema"] == "af-preflight-checklist/1", "unsupported checklist schema")
     require(set(checklist) <= {"schema", "plan_id", "original_source_snapshot_id",
                              "retained_candidate_snapshot_id", "criteria"},

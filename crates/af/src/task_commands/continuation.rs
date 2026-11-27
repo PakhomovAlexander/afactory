@@ -19,6 +19,7 @@ use af_contracts::task::findings::*;
 use af_contracts::task::input_bindings::ReferencedTaskV1;
 use af_contracts::task::pipeline::ReceiptOutcomeV1;
 use af_contracts::task::verification::{TASK_EVALUATION_V1, TaskEvaluationV1};
+use af_source_git::task::{read_origin, read_snapshot};
 
 /// A Task file's `continue` table: the recorded Task, and which of its review rounds; absent,
 /// the last one it recorded.
@@ -77,14 +78,18 @@ impl Continued {
     /// The `findings` port a reviewed continuation fills; a partial one fills none.
     pub(super) fn port(&self) -> Option<ArtifactInputV1> {
         match &self.lineage {
-            Lineage::Reviewed { findings_id, .. } => Some(ArtifactInputV1 {
-                artifact_ids: vec![findings_id.clone()],
-                artifact_type: TASK_REVIEW_FINDINGS_V1.into(),
-                cardinality: PortCardinality::One,
-                snapshot_id: None,
-            }),
+            Lineage::Reviewed { findings_id, .. } => Some(findings_port(findings_id)),
             Lineage::Partial { .. } | Lineage::ReviewTask { .. } => None,
         }
+    }
+}
+
+fn findings_port(id: &str) -> ArtifactInputV1 {
+    ArtifactInputV1 {
+        artifact_ids: vec![id.into()],
+        artifact_type: TASK_REVIEW_FINDINGS_V1.into(),
+        cardinality: PortCardinality::One,
+        snapshot_id: None,
     }
 }
 
@@ -228,6 +233,38 @@ fn candidate_output(
     task_report::output_holding(cas, store, run_id, &round.snapshot_id)
 }
 
+fn candidate_reference(
+    cas: &Cas,
+    store: &EventStore,
+    run_id: &str,
+    task: &str,
+    result: &TaskResultV1,
+    result_id: &str,
+    round: &TaskReviewRoundV1,
+) -> Result<ReferencedTaskV1, String> {
+    let (output_id, port) = candidate_output(cas, store, run_id, result, result_id, round)?
+        .ok_or_else(|| {
+            let shown = preview::short(task, 48);
+            format!(
+                "continue: Task `{shown}` round {} reviewed Snapshot {}, and no output the Task \
+                 recorded holds it, so a continuation could not record where its source came \
+                 from; continue from another round (`af task findings {shown} --round N` shows \
+                 each), or omit --round for the last",
+                round.round, round.snapshot_id
+            )
+        })?;
+    let reference = ReferencedTaskV1 {
+        task_id: task.into(),
+        task_revision_id: result.task_revision_id.clone(),
+        result_id: output_id,
+        port,
+        acceptance: result.acceptance,
+        domain_conclusion: result.domain_conclusion.clone(),
+    };
+    reference.validate()?;
+    Ok(reference)
+}
+
 fn phase_word(phase: &TaskPhaseV1) -> &'static str {
     match phase {
         TaskPhaseV1::Submitted {} => "submitted",
@@ -353,25 +390,8 @@ pub(super) fn resolve(
         let (_, manifest) = af_source_git::task::read_snapshot(cas, &round.snapshot_id)?;
         (source, manifest)
     } else {
-        let (output_id, port) = candidate_output(cas, store, &run_id, &result, result_id, &round)?
-            .ok_or_else(|| {
-                format!(
-                    "continue: Task `{shown}` round {} reviewed Snapshot {}, and no output the Task \
-                     recorded holds it, so a continuation could not record where its source came \
-                     from; continue from another round (`af task findings {shown} --round N` shows \
-                     each), or omit --round for the last",
-                    round.round, round.snapshot_id
-                )
-            })?;
-        let referenced = ReferencedTaskV1 {
-            task_id: task.clone(),
-            task_revision_id: result.task_revision_id.clone(),
-            result_id: output_id,
-            port,
-            acceptance: result.acceptance,
-            domain_conclusion: result.domain_conclusion.clone(),
-        };
-        referenced.validate()?;
+        let referenced =
+            candidate_reference(cas, store, &run_id, task, &result, result_id, &round)?;
         // The candidate the round reviewed, as an `af/SourceTree@1` of its own: a sealed candidate
         // is derived, so binding it re-roots it over the identical Manifest, exactly as an `inputs`
         // binding of a derived tree does (ADR-0117).
@@ -499,7 +519,7 @@ pub(super) fn recorded_partial(
     Ok(None)
 }
 
-/// The `continues` member of `af/task-inspection@22` for a partial tree (ADR-0257): the
+/// The `continues` member of `af/task-inspection@23` for a partial tree (ADR-0257): the
 /// continued Task, the node and Attempt its wall stopped, the wall end, the partial candidate
 /// and the Snapshot of the tree the new Task reads.
 pub(super) fn partial_inspection_value(
@@ -517,7 +537,7 @@ pub(super) fn partial_inspection_value(
     })
 }
 
-/// The `continues` member of `af/task-inspection@22`: the continued Task and round, the
+/// The `continues` member of `af/task-inspection@23`: the continued Task and round, the
 /// candidate the new Task reads, and the findings artifact with its count.
 pub(super) fn inspection_value(
     findings_id: &str,
@@ -624,6 +644,14 @@ pub(super) fn verify_findings(
     store: &EventStore,
     record: &TaskReviewFindingsV1,
 ) -> Result<(), String> {
+    verified_findings_round(cas, store, record).map(|_| ())
+}
+
+fn verified_findings_round(
+    cas: &Cas,
+    store: &EventStore,
+    record: &TaskReviewFindingsV1,
+) -> Result<(String, TaskReviewRoundV1), String> {
     let source = store
         .task_projection(cas, &record.continues.task_id)
         .map_err(|e| e.to_string())?
@@ -650,12 +678,168 @@ pub(super) fn verify_findings(
     {
         return Err("Findings differ from native review evidence".into());
     }
+    Ok((run, round))
+}
+
+/// Replay the same candidate binding used at planning before accepting an existing repair.
+/// Matching tree bytes cannot confer the provenance of the selected Task and Round.
+pub(super) fn verify_repair_inputs(
+    cas: &Cas,
+    store: &EventStore,
+    revision: &TaskRevisionV1,
+    findings_id: &str,
+    findings: &TaskReviewFindingsV1,
+) -> Result<(), String> {
+    if revision.inputs.get(FINDINGS_PORT) != Some(&findings_port(findings_id)) {
+        return Err("Native repair did not bind its selected Findings".into());
+    }
+    let (run, round) = verified_findings_round(cas, store, findings)?;
+    let prior = &findings.continues;
+    let result: TaskResultV1 = artifact(cas, &prior.result_id, TASK_RESULT_V1)?;
+    let reference = candidate_reference(
+        cas,
+        store,
+        &run,
+        &prior.task_id,
+        &result,
+        &prior.result_id,
+        &round,
+    )?;
+    if input_bindings::referenced_snapshot(cas, &reference)? != prior.snapshot_id {
+        return Err("Native repair predecessor output holds a different Snapshot".into());
+    }
+    let source = revision
+        .inputs
+        .get("source")
+        .ok_or("Native repair has no source input")?;
+    verify_repair_source(cas, source, prior, &reference)
+}
+
+fn verify_repair_source(
+    cas: &Cas,
+    source: &ArtifactInputV1,
+    prior: &TaskContinuesV1,
+    reference: &ReferencedTaskV1,
+) -> Result<(), String> {
+    if source.artifact_type != SOURCE_TREE_V1 || source.cardinality != PortCardinality::One {
+        return Err("Native repair requires one SourceTree input".into());
+    }
+    let (source_id, source_snapshot, root, _) = input_bindings::admitted_source(cas, source)?;
+    let (reviewed, _) = read_snapshot(cas, &prior.snapshot_id)?;
+    let candidate_id = if reviewed.parent_snapshot_id.is_none() {
+        if source_snapshot != prior.snapshot_id {
+            return Err("Native repair source differs from the reviewed root Snapshot".into());
+        }
+        source_id
+    } else {
+        let origin = read_origin(cas, &root.origin_id)?;
+        let original_origin = read_origin(cas, &reviewed.origin_id)?;
+        let bound = origin
+            .bound_from()
+            .ok_or("Native repair source has no reviewed candidate origin")?;
+        if root.parent_snapshot_id.is_some()
+            || root.manifest_id != reviewed.manifest_id
+            || origin.repository_id() != original_origin.repository_id()
+            || bound.snapshot_id != prior.snapshot_id
+            || bound.task.as_ref() != Some(reference)
+        {
+            return Err("Native repair source differs from the selected reviewed candidate".into());
+        }
+        bound.artifact_id.clone()
+    };
+    let candidate = cas.get_artifact(&candidate_id).map_err(|e| e.to_string())?;
+    let mut expected_refs = vec![prior.round_id.clone(), prior.snapshot_id.clone()];
+    expected_refs.sort();
+    expected_refs.dedup();
+    if input_bindings::source_tree_snapshot(cas, &candidate_id)? != prior.snapshot_id
+        || candidate.producer != producer()
+        || candidate.input_artifacts != expected_refs
+    {
+        return Err("Native repair source does not come from the selected Round".into());
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use af_source_git::task::{TaskSourceOrigin, write_origin};
+
+    #[test]
+    fn reviewed_repair_source_requires_the_exact_candidate_round_and_producer() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path()).unwrap();
+        let manifest = Manifest::new(vec![]).unwrap();
+        let origin = write_origin(
+            &cas,
+            &TaskSourceOrigin::Captured {
+                schema: af_source_git::task::TASK_SOURCE_ORIGIN_SCHEMA.into(),
+                repository_id: "fixture".into(),
+                content_digest: manifest.content_digest(),
+                source_revision: None,
+            },
+        )
+        .unwrap();
+        let base = capture_snapshot(&cas, &manifest, &origin, None).unwrap();
+        let reviewed = capture_snapshot(&cas, &manifest, &origin, Some(&base)).unwrap();
+        let digest = |byte: &str| format!("sha256:{}", byte.repeat(64));
+        let mut prior = TaskContinuesV1 {
+            task_id: "original".into(),
+            task_revision_id: digest("1"),
+            result_id: digest("2"),
+            round: 1,
+            round_id: digest("3"),
+            snapshot_id: reviewed.clone(),
+        };
+        let published = source_tree(&cas, producer(), &reviewed, vec![]).unwrap();
+        let invocation_id = digest("4");
+        let output = |snapshot| {
+            cas.put_artifact(
+                af_contracts::task::execution::TASK_OUTPUT_V1,
+                producer(),
+                vec![],
+                None,
+                json!({"invocation_id": invocation_id, "outputs": {"candidate": snapshot}}),
+            )
+            .unwrap()
+            .0
+        };
+        let reference = ReferencedTaskV1 {
+            task_id: prior.task_id.clone(),
+            task_revision_id: prior.task_revision_id.clone(),
+            result_id: output(published),
+            port: "candidate".into(),
+            acceptance: TaskAcceptanceV1::Unsatisfied,
+            domain_conclusion: "changes_requested".into(),
+        };
+        let candidate =
+            source_tree(&cas, producer(), &reviewed, vec![prior.round_id.clone()]).unwrap();
+        let (repair, _, _) =
+            input_bindings::bind_source(&cas, candidate.clone(), Some(&reference)).unwrap();
+        verify_repair_source(&cas, &repair, &prior, &reference).unwrap();
+        assert!(verify_repair_source(&cas, &candidate, &prior, &reference).is_err());
+
+        let other_candidate =
+            source_tree(&cas, producer(), &base, vec![prior.round_id.clone()]).unwrap();
+        assert!(verify_repair_source(&cas, &other_candidate, &prior, &reference).is_err());
+        let foreign_reference = ReferencedTaskV1 {
+            task_id: "foreign".into(),
+            ..reference.clone()
+        };
+        let (foreign_repair, _, foreign_manifest) =
+            input_bindings::bind_source(&cas, candidate, Some(&foreign_reference)).unwrap();
+        assert_eq!(manifest.content_digest(), foreign_manifest.content_digest());
+        assert!(verify_repair_source(&cas, &foreign_repair, &prior, &reference).is_err());
+
+        let other_round = source_tree(&cas, producer(), &reviewed, vec![digest("5")]).unwrap();
+        let (other_repair, _, _) =
+            input_bindings::bind_source(&cas, other_round, Some(&reference)).unwrap();
+        assert!(verify_repair_source(&cas, &other_repair, &prior, &reference).is_err());
+
+        prior.snapshot_id = base;
+        verify_repair_source(&cas, &other_candidate, &prior, &reference).unwrap();
+        assert!(verify_repair_source(&cas, &repair, &prior, &reference).is_err());
+    }
 
     #[test]
     fn reviewer_lines_lose_their_control_characters_and_stay_bounded() {

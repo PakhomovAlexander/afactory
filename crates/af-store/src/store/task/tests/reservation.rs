@@ -35,7 +35,7 @@ fn reservation_requires_exact_context_before_start_and_refuses_rebinding() {
         let record_id = f
             .cas
             .put_artifact(
-                af_contracts::task::execution::TASK_EXECUTION_RECORD_V5,
+                af_contracts::task::execution::TASK_EXECUTION_RECORD_V6,
                 producer(),
                 vec![],
                 None,

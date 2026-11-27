@@ -25,7 +25,7 @@ fn experimental_execution_records_round_trip_on_the_one_record_wire() {
     ] {
         record.validate().unwrap();
         let value = serde_json::to_value(&record).unwrap();
-        assert_valid("task-execution-record-v5.json", &value);
+        assert_valid("task-execution-record-v6.json", &value);
         assert_eq!(
             serde_json::from_value::<TaskExecutionRecordV1>(value.clone()).unwrap(),
             record
@@ -33,7 +33,7 @@ fn experimental_execution_records_round_trip_on_the_one_record_wire() {
         let mut bad = value;
         bad["prepared_id"] = json!("not-a-digest");
         assert_invalid(
-            "task-execution-record-v5.json",
+            "task-execution-record-v6.json",
             &bad,
             "invalid experiment identity",
         );
@@ -47,19 +47,19 @@ fn experimental_execution_records_round_trip_on_the_one_record_wire() {
 #[test]
 fn owned_inspection_pairs_each_execution_record_with_its_exact_type() {
     let value = json!({
-        "schema":"af/task-inspection@22", "task_id":"review-task", "revision_id":id('1'),
+        "schema":"af/task-inspection@23", "task_id":"review-task", "revision_id":id('1'),
         "phase":{"kind":"running"}, "state":{"phase":"running","outcome":null,"cause":null,"next_action":null}, "clock":{"wall_ms":60000,"started_unix_ms":1,"deadline_unix_ms":60001}, "plan_id":id('2'), "chargeable_tokens":"7", "attempts":1,
         "history":[], "run_reports":[],
         "execution_records":[
-            {"artifact_id":id('3'),"artifact_type":"af/TaskExecutionRecord@5","record":{"kind":"invocation","invocation_id":id('4')}},
-            {"artifact_id":id('5'),"artifact_type":"af/TaskExecutionRecord@5","record":{"kind":"owned_children_registered","child_set_id":id('6')}}
+            {"artifact_id":id('3'),"artifact_type":"af/TaskExecutionRecord@6","record":{"kind":"invocation","invocation_id":id('4')}},
+            {"artifact_id":id('5'),"artifact_type":"af/TaskExecutionRecord@6","record":{"kind":"owned_children_registered","child_set_id":id('6')}}
         ],
         "owned_child_sets":[{"artifact_id":id('6'),"artifact_type":"af/TaskOwnedChildSet@1","record":{
             "plan_id":id('2'), "parent_invocation_id":id('4'), "source_artifact_id":id('7'),
             "children":[{"node":"root.scatter.slice1","source_item_id":id('8'),"invocation_id":id('9')}]
         }}]
     });
-    assert_valid("task-inspection-v22.json", &value);
+    assert_valid("task-inspection-v23.json", &value);
     for (pointer, bad_value) in [
         (
             "/execution_records/1/artifact_type",
@@ -77,12 +77,12 @@ fn owned_inspection_pairs_each_execution_record_with_its_exact_type() {
     ] {
         let mut bad = value.clone();
         *bad.pointer_mut(pointer).unwrap() = bad_value;
-        assert_invalid("task-inspection-v22.json", &bad, pointer);
+        assert_invalid("task-inspection-v23.json", &bad, pointer);
     }
     let mut bad = value.clone();
     bad["owned_child_sets"][0]["record"]["children"][0]["allowance"] = json!(100);
     assert_invalid(
-        "task-inspection-v22.json",
+        "task-inspection-v23.json",
         &bad,
         "registry data cannot invent authority",
     );
@@ -172,7 +172,7 @@ fn owned_lifecycle_records_round_trip_on_the_one_record_wire() {
     ] {
         record.validate().unwrap();
         let value = serde_json::to_value(&record).unwrap();
-        assert_valid("task-execution-record-v5.json", &value);
+        assert_valid("task-execution-record-v6.json", &value);
         assert_eq!(
             serde_json::from_value::<TaskExecutionRecordV1>(value.clone()).unwrap(),
             record
@@ -181,7 +181,7 @@ fn owned_lifecycle_records_round_trip_on_the_one_record_wire() {
             let mut bad = value.clone();
             bad["child_set_id"] = invalid;
             assert_invalid(
-                "task-execution-record-v5.json",
+                "task-execution-record-v6.json",
                 &bad,
                 "invalid child identity",
             );
@@ -193,7 +193,7 @@ fn owned_lifecycle_records_round_trip_on_the_one_record_wire() {
         let mut bad = value;
         bad["reserved_tokens"] = json!(1);
         assert_invalid(
-            "task-execution-record-v5.json",
+            "task-execution-record-v6.json",
             &bad,
             "no reservation authority",
         );

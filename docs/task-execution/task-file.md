@@ -48,6 +48,14 @@ explicit [Provider admission cost](model-bindings.md) is optional; an omitted on
 fixed default allowance. Package existence, signing keys and joint
 resource feasibility still require admission validation.
 
+Codex session continuation is unavailable. A file containing
+`codex_session_continuation` is refused before Task capture or Worker admission.
+The ordinary `continue` table still binds the selected candidate and Findings.
+The Task Store can represent a fenced Codex launch and selected checkpoint. App Server
+dispatch and verified inheritance are pending.
+See the [proposed continuation decision](../adr/2026-11-27-bind-codex-continuation-to-the-first-reviewed-repair.md)
+for the tested App Server pin and outstanding conformance checks.
+
 ```text
 ticket + captured S0
         |
@@ -85,7 +93,7 @@ The branch and worktree must be absent. Delivery records its preparation before 
 verifies the materialized result, and supports retry/recovery with the same command. It makes
 no commit, push, PR or remote call. The common Store keeps delivery receipts alongside the Task.
 
-JSON inspection uses [`af/task-inspection@22`](../../schemas/task-inspection-v22.json) and list
+JSON inspection uses [`af/task-inspection@23`](../../schemas/task-inspection-v23.json) and list
 entries use [`af/task-list-entry@5`](../../schemas/task-list-entry-v5.json); their
 `chargeable_tokens` values are exact unsigned decimal strings. `explain` includes the captured
 [`af.compiled-task/6`](../../schemas/compiled-task-v6.json) graph and
@@ -97,6 +105,11 @@ NEW --from TASK`: the candidate is the new source and the round's findings the i
 leave `limits` and `pipeline` to `[task.defaults]` of `.af/af.toml` and point its Worker at files
 to read first with `context` ([Continue a reviewed Task](../tasks.md#continue-a-reviewed-task),
 [ADR-0212](../adr/0212-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)).
+
+When a Scenario reopens a recorded repair plan, AF verifies that the Findings input
+matches the selected predecessor Round and that the repair source comes from the exact
+recorded candidate output. A re-rooted candidate must retain the original Manifest and
+its Task and Round provenance.
 
 Exact plan inspection accepts only a plan recorded in the selected Task's history. It emits
 `af/task-plan-inspection@7`, including the original revision, compiled graph, bindings and

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:codex-checkpoint:1",
+  "title": "CodexCheckpoint@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "launch_id",
+    "output_id",
+    "candidate_id",
+    "sealed_output_id",
+    "snapshot_id",
+    "reply_id",
+    "prefix_id",
+    "prefix_bytes"
+  ],
+  "properties": {
+    "launch_id": {
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+    },
+    "output_id": {
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+    },
+    "candidate_id": {
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+    },
+    "sealed_output_id": {
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+    },
+    "snapshot_id": {
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+    },
+    "reply_id": {
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+    },
+    "prefix_id": {
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+    },
+    "prefix_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8388608
+    }
+  }
+}

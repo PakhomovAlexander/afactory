@@ -168,7 +168,7 @@ class FixtureContracts(TempDir):
         from types import SimpleNamespace
         repo = pathlib.Path(self.path('fixture/pristine'))
         repo.mkdir(parents=True)
-        ready = {'schema':'af/task-inspection@22', 'attempts':0, 'phase':{'kind':'ready'},
+        ready = {'schema':'af/task-inspection@23', 'attempts':0, 'phase':{'kind':'ready'},
                  'task_id':'telemetry-bench-concurrent', 'plan_id':'sha256:'+'1'*64}
         documents = [ready, {}, dict(ready, schema='af/task-inspection@18'),
                      dict(ready, attempts=1), dict(ready, attempts=False),

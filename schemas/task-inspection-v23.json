@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:task-inspection:22",
-  "title": "Task inspection af/task-inspection@22",
+  "$id": "urn:af:schema:task-inspection:23",
+  "title": "Task inspection af/task-inspection@23",
   "$comment": "The one read-only projection of a common Task. Sections beyond the required core appear only when the Task recorded them: owned children, Review handoffs and Integration phases, measured Attempt walls with their runtime evidence, experiments and adoption observations. History, execution, report and handoff entries keep their exact artifact types and payloads. The Store validates cross-artifact identities, histories, selected results and cumulative accounting; a JSON schema cannot authenticate CAS or recompute a history. These records grant no admission or dispatch authority. Explain adds graph and plan together. Version 12 adds the `state` every rendering prints, the `gate` summary of the last check receipt with its check reports and gate retries, and the `failures` of the last run report (`af help task-states`). Version 13 adds `continues`, the Task and review round a continued Task was planned from (ADR-0212).",
   "type": "object",
   "additionalProperties": false,
@@ -21,7 +21,7 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/task-inspection@22"
+      "const": "af/task-inspection@23"
     },
     "task_id": {
       "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
@@ -518,10 +518,10 @@
             "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
           },
           "artifact_type": {
-            "const": "af/TaskExecutionRecord@5"
+            "const": "af/TaskExecutionRecord@6"
           },
           "record": {
-            "$ref": "urn:af:schema:task-execution-record:5"
+            "$ref": "urn:af:schema:task-execution-record:6"
           },
           "diagnostic": {
             "$comment": "The exact CAS JSON a Failed settlement's diagnostic_id names: an af.task-diagnostic/1 object that no published schema types.",

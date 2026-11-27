@@ -1,6 +1,7 @@
 //! Durable invocation/admission/settlement shared by every new Task kind. The scheduler and
 //! domain adapters call this boundary; no Worker output can bypass plan or lease admission.
 
+mod codex;
 mod encoding;
 pub mod experiment;
 mod knowledge;
@@ -58,6 +59,7 @@ struct RecordedAttempt {
     /// When abandoned work stopped: its own writer's settlement, or the last time its lost
     /// writer recorded anything.
     abandoned_unix_ms: Option<u64>,
+    codex_launch: Option<codex::RecordedLaunch>,
 }
 
 impl RecordedAttempt {
@@ -310,6 +312,16 @@ pub(super) fn references(cas: &Cas, id: &str) -> Result<Vec<String>, StoreError>
     refs.insert(id.into());
     let mut invocation_ids = Vec::new();
     match &record {
+        TaskExecutionRecordV1::CodexLaunchResolved { evidence_id, .. } => {
+            refs.insert(codex::dispatch_evidence(cas, evidence_id)?.proof_id);
+        }
+        TaskExecutionRecordV1::CodexCheckpointSelected { checkpoint_id, .. } => {
+            refs.extend(
+                codex::checkpoint(cas, checkpoint_id)?
+                    .artifact_refs()
+                    .map(str::to_owned),
+            );
+        }
         TaskExecutionRecordV1::Invocation { invocation_id }
         | TaskExecutionRecordV1::Reserved { invocation_id, .. } => {
             invocation_ids.push(invocation_id.clone())
@@ -1011,13 +1023,34 @@ impl TaskProjection {
         record_id: &str,
         time: u64,
     ) -> Result<(), StoreError> {
-        let record = read_execution_record(cas, record_id)?.record;
+        let DecodedTaskExecutionRecord { record, envelope } =
+            read_execution_record(cas, record_id)?;
+        if matches!(
+            record,
+            TaskExecutionRecordV1::CodexLaunchArmed { .. }
+                | TaskExecutionRecordV1::CodexLaunchResolved { .. }
+                | TaskExecutionRecordV1::CodexCheckpointSelected { .. }
+        ) && (envelope.producer
+            != (af_contracts::Producer::KernelOperation {
+                run_id: task_run_id(&self.task_id)?,
+                node_id: None,
+                operation_id: "task-execution@1".into(),
+            })
+            || envelope.subject_snapshot_id.is_some()
+            || envelope.input_artifacts != record.artifact_refs())
+        {
+            return Err(conflict(
+                "Codex execution record must be kernel-produced for this Task",
+            ));
+        }
         let dispatching = matches!(
             record,
             TaskExecutionRecordV1::Invocation { .. }
                 | TaskExecutionRecordV1::Reserved { .. }
                 | TaskExecutionRecordV1::ContextBound { .. }
                 | TaskExecutionRecordV1::Started { .. }
+                | TaskExecutionRecordV1::CodexLaunchArmed { .. }
+                | TaskExecutionRecordV1::CodexCheckpointSelected { .. }
                 | TaskExecutionRecordV1::Published { .. }
         );
         if dispatching {
@@ -1172,6 +1205,7 @@ impl TaskProjection {
             } => {
                 let input = invocation(cas, invocation_id)?;
                 execution.check_owned_open(&input.node)?;
+                execution.check_codex_fence(&input.node)?;
                 if execution.invocations.get(&input.node).map(|(id, _)| id) != Some(invocation_id)
                     || execution.outputs.contains_key(&input.node)
                     || execution.reusable_output(&input.node).is_some()
@@ -1239,6 +1273,7 @@ impl TaskProjection {
                         usage_observed: false,
                         abandoned: None,
                         abandoned_unix_ms: None,
+                        codex_launch: None,
                     },
                 );
             }
@@ -1268,7 +1303,8 @@ impl TaskProjection {
                 }
                 attempt.context_id = Some(context_id.clone());
             }
-            TaskExecutionRecordV1::Started { attempt_id } => {
+            TaskExecutionRecordV1::Started { attempt_id }
+            | TaskExecutionRecordV1::CodexLaunchArmed { attempt_id, .. } => {
                 let node = &execution
                     .attempts
                     .get(attempt_id)
@@ -1276,6 +1312,10 @@ impl TaskProjection {
                     .reservation
                     .node;
                 execution.check_owned_open(node)?;
+                execution.check_codex_fence(node)?;
+                if let TaskExecutionRecordV1::CodexLaunchArmed { launch, .. } = &record {
+                    execution.validate_codex_launch(cas, node, attempt_id, launch)?;
+                }
                 let attempt = execution
                     .attempts
                     .get_mut(attempt_id)
@@ -1296,6 +1336,30 @@ impl TaskProjection {
                     .map_err(conflict)?;
                 attempt.started = true;
                 attempt.started_unix_ms = Some(time);
+                if let TaskExecutionRecordV1::CodexLaunchArmed { launch, .. } = record {
+                    attempt.codex_launch = Some(codex::RecordedLaunch::new(record_id, launch));
+                }
+            }
+            TaskExecutionRecordV1::CodexLaunchResolved {
+                attempt_id,
+                launch_id,
+                evidence_id,
+                outcome,
+            } => {
+                execution.resolve_codex_launch(
+                    cas,
+                    record_id,
+                    attempt_id,
+                    launch_id,
+                    evidence_id,
+                    outcome,
+                )?;
+            }
+            TaskExecutionRecordV1::CodexCheckpointSelected {
+                attempt_id,
+                checkpoint_id,
+            } => {
+                execution.select_codex_checkpoint(cas, &self.task_id, attempt_id, checkpoint_id)?;
             }
             TaskExecutionRecordV1::Released { attempt_id, .. } => {
                 let attempt = execution
@@ -1348,6 +1412,15 @@ impl TaskProjection {
                     },
                 )?;
                 if let TaskAttemptResultV1::Succeeded { output_id } = result {
+                    if attempt
+                        .codex_launch
+                        .as_ref()
+                        .is_some_and(|launch| !launch.completed())
+                    {
+                        return Err(conflict(
+                            "Successful Codex settlement needs a completed launch",
+                        ));
+                    }
                     let out = output(cas, output_id)?;
                     verify_attempt_producer(
                         cas,
@@ -1862,6 +1935,7 @@ impl EventStore {
             .clone()
             .ok_or_else(|| conflict("Task has no recorded invocation"))?;
         execution.check_owned_open(node)?;
+        execution.check_codex_fence(node)?;
         let callback = execution.validate_retry(cas, &state.revision, &plan, node, authority)?;
         let (invocation_id, input) = execution
             .invocations

@@ -242,7 +242,7 @@
     "type": "af/ExecutionPlan@4"
   },
   "inspection": {
-    "schema": "af/task-inspection@22",
+    "schema": "af/task-inspection@23",
     "task_id": "cold-only",
     "revision_id": "<run:1>",
     "phase": {
@@ -421,7 +421,7 @@
           "now_unix_ms": "<ms>",
           "change": {
             "kind": "execution_recorded",
-            "record_id": "sha256:305d93a3897113023f000092de0d1a352d6bb6ec471fa5764342e03b27443407"
+            "record_id": "sha256:9a622b330cf3bbd5512360bf4cdf38f73d5770c75c684b677f719d5a4e81b7c6"
           }
         }
       },
@@ -529,7 +529,7 @@
           "now_unix_ms": "<ms>",
           "change": {
             "kind": "execution_recorded",
-            "record_id": "sha256:74a6d14bda902c1b681b7aad9e8e1f68cef855fbf1d44576fd84468a5b7506f0"
+            "record_id": "sha256:2489a0fce044bd54d2651e3423393596574f64e819bbe87b48f16e43616f9429"
           }
         }
       },
@@ -613,7 +613,7 @@
           "now_unix_ms": "<ms>",
           "change": {
             "kind": "execution_recorded",
-            "record_id": "sha256:32c159230623db92f72f0c766c9941dfd43c6d6adb725eddd174e7fc4d0686fa"
+            "record_id": "sha256:5c81112af85e7da713feb2eabc163a5cceaefb8999f356ba555672d2a23b4727"
           }
         }
       },
@@ -716,7 +716,7 @@
     "execution_records": [
       {
         "artifact_id": "<run:12>",
-        "artifact_type": "af/TaskExecutionRecord@5",
+        "artifact_type": "af/TaskExecutionRecord@6",
         "record": {
           "invocation_id": "<run:37>",
           "kind": "invocation"
@@ -724,7 +724,7 @@
       },
       {
         "artifact_id": "<run:13>",
-        "artifact_type": "af/TaskExecutionRecord@5",
+        "artifact_type": "af/TaskExecutionRecord@6",
         "record": {
           "kind": "published",
           "output_id": "<run:38>"
@@ -732,7 +732,7 @@
       },
       {
         "artifact_id": "<run:14>",
-        "artifact_type": "af/TaskExecutionRecord@5",
+        "artifact_type": "af/TaskExecutionRecord@6",
         "record": {
           "invocation_id": "<run:39>",
           "kind": "invocation"
@@ -740,7 +740,7 @@
       },
       {
         "artifact_id": "<run:15>",
-        "artifact_type": "af/TaskExecutionRecord@5",
+        "artifact_type": "af/TaskExecutionRecord@6",
         "record": {
           "attempt_id": "b0207f3c7f11dc88ecf5de0f56",
           "deadline_unix_ms": "<ms>",
@@ -753,7 +753,7 @@
       },
       {
         "artifact_id": "<run:16>",
-        "artifact_type": "af/TaskExecutionRecord@5",
+        "artifact_type": "af/TaskExecutionRecord@6",
         "record": {
           "attempt_id": "b0207f3c7f11dc88ecf5de0f56",
           "context_id": "<run:40>",
@@ -761,8 +761,8 @@
         }
       },
       {
-        "artifact_id": "sha256:305d93a3897113023f000092de0d1a352d6bb6ec471fa5764342e03b27443407",
-        "artifact_type": "af/TaskExecutionRecord@5",
+        "artifact_id": "sha256:9a622b330cf3bbd5512360bf4cdf38f73d5770c75c684b677f719d5a4e81b7c6",
+        "artifact_type": "af/TaskExecutionRecord@6",
         "record": {
           "attempt_id": "b0207f3c7f11dc88ecf5de0f56",
           "kind": "started"
@@ -770,7 +770,7 @@
       },
       {
         "artifact_id": "<run:17>",
-        "artifact_type": "af/TaskExecutionRecord@5",
+        "artifact_type": "af/TaskExecutionRecord@6",
         "record": {
           "attempt_id": "b0207f3c7f11dc88ecf5de0f56",
           "charged_tokens": "0",
@@ -783,7 +783,7 @@
       },
       {
         "artifact_id": "<run:18>",
-        "artifact_type": "af/TaskExecutionRecord@5",
+        "artifact_type": "af/TaskExecutionRecord@6",
         "record": {
           "attempt_id": "b0207f3c7f11dc88ecf5de0f56",
           "charged_tokens": "0",
@@ -800,7 +800,7 @@
       },
       {
         "artifact_id": "<run:19>",
-        "artifact_type": "af/TaskExecutionRecord@5",
+        "artifact_type": "af/TaskExecutionRecord@6",
         "record": {
           "attempt_id": "b0207f3c7f11dc88ecf5de0f56",
           "kind": "published",
@@ -809,7 +809,7 @@
       },
       {
         "artifact_id": "<run:20>",
-        "artifact_type": "af/TaskExecutionRecord@5",
+        "artifact_type": "af/TaskExecutionRecord@6",
         "record": {
           "invocation_id": "<run:43>",
           "kind": "invocation"
@@ -817,7 +817,7 @@
       },
       {
         "artifact_id": "<run:21>",
-        "artifact_type": "af/TaskExecutionRecord@5",
+        "artifact_type": "af/TaskExecutionRecord@6",
         "record": {
           "kind": "published",
           "output_id": "<run:44>"
@@ -825,7 +825,7 @@
       },
       {
         "artifact_id": "<run:22>",
-        "artifact_type": "af/TaskExecutionRecord@5",
+        "artifact_type": "af/TaskExecutionRecord@6",
         "record": {
           "invocation_id": "<run:45>",
           "kind": "invocation"
@@ -833,7 +833,7 @@
       },
       {
         "artifact_id": "<run:23>",
-        "artifact_type": "af/TaskExecutionRecord@5",
+        "artifact_type": "af/TaskExecutionRecord@6",
         "record": {
           "attempt_id": "4e27a434f2f8f3d579808052b1",
           "deadline_unix_ms": "<ms>",
@@ -846,7 +846,7 @@
       },
       {
         "artifact_id": "<run:24>",
-        "artifact_type": "af/TaskExecutionRecord@5",
+        "artifact_type": "af/TaskExecutionRecord@6",
         "record": {
           "attempt_id": "4e27a434f2f8f3d579808052b1",
           "context_id": "<run:46>",
@@ -854,8 +854,8 @@
         }
       },
       {
-        "artifact_id": "sha256:74a6d14bda902c1b681b7aad9e8e1f68cef855fbf1d44576fd84468a5b7506f0",
-        "artifact_type": "af/TaskExecutionRecord@5",
+        "artifact_id": "sha256:2489a0fce044bd54d2651e3423393596574f64e819bbe87b48f16e43616f9429",
+        "artifact_type": "af/TaskExecutionRecord@6",
         "record": {
           "attempt_id": "4e27a434f2f8f3d579808052b1",
           "kind": "started"
@@ -863,7 +863,7 @@
       },
       {
         "artifact_id": "<run:25>",
-        "artifact_type": "af/TaskExecutionRecord@5",
+        "artifact_type": "af/TaskExecutionRecord@6",
         "record": {
           "attempt_id": "4e27a434f2f8f3d579808052b1",
           "charged_tokens": "0",
@@ -877,7 +877,7 @@
       },
       {
         "artifact_id": "<run:26>",
-        "artifact_type": "af/TaskExecutionRecord@5",
+        "artifact_type": "af/TaskExecutionRecord@6",
         "record": {
           "attempt_id": "4e27a434f2f8f3d579808052b1",
           "charged_tokens": "0",
@@ -895,7 +895,7 @@
       },
       {
         "artifact_id": "<run:27>",
-        "artifact_type": "af/TaskExecutionRecord@5",
+        "artifact_type": "af/TaskExecutionRecord@6",
         "record": {
           "attempt_id": "4e27a434f2f8f3d579808052b1",
           "kind": "published",
@@ -904,7 +904,7 @@
       },
       {
         "artifact_id": "<run:28>",
-        "artifact_type": "af/TaskExecutionRecord@5",
+        "artifact_type": "af/TaskExecutionRecord@6",
         "record": {
           "invocation_id": "<run:50>",
           "kind": "invocation"
@@ -912,7 +912,7 @@
       },
       {
         "artifact_id": "<run:29>",
-        "artifact_type": "af/TaskExecutionRecord@5",
+        "artifact_type": "af/TaskExecutionRecord@6",
         "record": {
           "attempt_id": "6793b5444595249e7390a03c27",
           "deadline_unix_ms": "<ms>",
@@ -925,7 +925,7 @@
       },
       {
         "artifact_id": "<run:30>",
-        "artifact_type": "af/TaskExecutionRecord@5",
+        "artifact_type": "af/TaskExecutionRecord@6",
         "record": {
           "attempt_id": "6793b5444595249e7390a03c27",
           "context_id": "<run:51>",
@@ -933,8 +933,8 @@
         }
       },
       {
-        "artifact_id": "sha256:32c159230623db92f72f0c766c9941dfd43c6d6adb725eddd174e7fc4d0686fa",
-        "artifact_type": "af/TaskExecutionRecord@5",
+        "artifact_id": "sha256:5c81112af85e7da713feb2eabc163a5cceaefb8999f356ba555672d2a23b4727",
+        "artifact_type": "af/TaskExecutionRecord@6",
         "record": {
           "attempt_id": "6793b5444595249e7390a03c27",
           "kind": "started"
@@ -942,7 +942,7 @@
       },
       {
         "artifact_id": "<run:31>",
-        "artifact_type": "af/TaskExecutionRecord@5",
+        "artifact_type": "af/TaskExecutionRecord@6",
         "record": {
           "attempt_id": "6793b5444595249e7390a03c27",
           "charged_tokens": "0",
@@ -955,7 +955,7 @@
       },
       {
         "artifact_id": "<run:32>",
-        "artifact_type": "af/TaskExecutionRecord@5",
+        "artifact_type": "af/TaskExecutionRecord@6",
         "record": {
           "attempt_id": "6793b5444595249e7390a03c27",
           "charged_tokens": "0",
@@ -972,7 +972,7 @@
       },
       {
         "artifact_id": "<run:33>",
-        "artifact_type": "af/TaskExecutionRecord@5",
+        "artifact_type": "af/TaskExecutionRecord@6",
         "record": {
           "attempt_id": "6793b5444595249e7390a03c27",
           "kind": "published",
@@ -981,7 +981,7 @@
       },
       {
         "artifact_id": "<run:34>",
-        "artifact_type": "af/TaskExecutionRecord@5",
+        "artifact_type": "af/TaskExecutionRecord@6",
         "record": {
           "invocation_id": "<run:54>",
           "kind": "invocation"
@@ -989,7 +989,7 @@
       },
       {
         "artifact_id": "<run:35>",
-        "artifact_type": "af/TaskExecutionRecord@5",
+        "artifact_type": "af/TaskExecutionRecord@6",
         "record": {
           "kind": "published",
           "output_id": "<run:55>"

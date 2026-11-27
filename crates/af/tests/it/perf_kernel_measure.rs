@@ -397,7 +397,7 @@ impl Consumer {
             "{task_id}: {stderr}\n{}",
             self.explain(&outcome)
         );
-        schemas::valid(&schemas::validator("task-inspection-v22.json"), &outcome);
+        schemas::valid(&schemas::validator("task-inspection-v23.json"), &outcome);
         if expected == 4 {
             // Completed domain evidence retains its disposition, distinct from a failed
             // native invocation. Preserve the source runtime's public result.

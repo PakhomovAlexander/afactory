@@ -418,7 +418,7 @@ fn exact_artifact(cas: &Cas, exact: &ExactArtifactRefV1) -> Result<ArtifactInput
 }
 
 pub(super) type BoundSource = (ArtifactInputV1, TaskInputBindingV1, Manifest);
-type AdmittedSource = (String, String, TaskSnapshot, Manifest);
+pub(super) type AdmittedSource = (String, String, TaskSnapshot, Manifest);
 
 /// The referenced `af/SourceTree@1`, admitted before anything is decided about it.
 ///
@@ -427,7 +427,10 @@ type AdmittedSource = (String, String, TaskSnapshot, Manifest);
 /// that named one Snapshot in its subject and another in its payload would otherwise resolve to
 /// whichever the branch below happened to read. The Snapshot's origin must read and belong to
 /// the tree it describes. Only an admitted source is carried verbatim or re-rooted.
-fn admitted_source(cas: &Cas, recorded: &ArtifactInputV1) -> Result<AdmittedSource, String> {
+pub(super) fn admitted_source(
+    cas: &Cas,
+    recorded: &ArtifactInputV1,
+) -> Result<AdmittedSource, String> {
     let [referenced] = recorded.artifact_ids.as_slice() else {
         return Err("a bound source names exactly one af/SourceTree@1 artifact".into());
     };
@@ -471,7 +474,7 @@ fn admitted_source(cas: &Cas, recorded: &ArtifactInputV1) -> Result<AdmittedSour
 /// artifact: the port names exactly one `af/SourceTree@1`, and that envelope's payload and
 /// subject name the Snapshot the port names. A port that says one Snapshot over an artifact
 /// that holds another is refused, never taken as the first one's provenance.
-fn referenced_snapshot(cas: &Cas, task: &ReferencedTaskV1) -> Result<String, String> {
+pub(super) fn referenced_snapshot(cas: &Cas, task: &ReferencedTaskV1) -> Result<String, String> {
     use af_contracts::task::execution::{TASK_OUTPUT_V1, TaskOutputV1};
     let found = cas.get_artifact(&task.result_id);
     let envelope = found.map_err(|e| format!("the referenced Task output is unreadable: {e}"))?;

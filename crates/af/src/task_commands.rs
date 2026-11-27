@@ -4743,7 +4743,7 @@ struct Inspection {
 }
 
 /// The document `af task show --json` and `af task explain --json` print.
-pub(crate) const TASK_INSPECTION_V22: &str = "af/task-inspection@22";
+pub(crate) const TASK_INSPECTION_V23: &str = "af/task-inspection@23";
 
 #[allow(clippy::too_many_arguments)]
 fn present_with_format(
@@ -5710,7 +5710,7 @@ fn inspection(
     let store_dir = store.database_path();
     let cancelled = runs::cancelled_epoch(store_dir.as_deref().and_then(Path::parent), &state);
     let view = selected_view(cas, &state, result.as_ref(), clock()?, cancelled)?;
-    let mut value = json!({"schema":TASK_INSPECTION_V22,"task_id":state.task_id,"revision_id":state.revision_id,"phase":state.phase,"state":view.state,"plan_id":state.plan_id,
+    let mut value = json!({"schema":TASK_INSPECTION_V23,"task_id":state.task_id,"revision_id":state.revision_id,"phase":state.phase,"state":view.state,"plan_id":state.plan_id,
         "chargeable_tokens":state.execution.as_ref().map_or(0,|e|e.budget.committed_tokens()).to_string(),"attempts":state.execution.as_ref().map_or(0,|e|e.budget.begun_attempts())});
     // The wall clock starts at the first admission: the wall the Task has, when its clock
     // started, and the deadline it has since.

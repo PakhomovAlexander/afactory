@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:task-execution-record:5",
-  "title": "TaskExecutionRecord@5",
+  "$id": "urn:af:schema:task-execution-record:6",
+  "title": "TaskExecutionRecord@6",
   "oneOf": [
     {
       "type": "object",
@@ -101,6 +101,211 @@
         "attempt_id": {
           "type": "string",
           "pattern": "^[A-Za-z0-9]{26}$"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "attempt_id",
+        "launch"
+      ],
+      "properties": {
+        "kind": {
+          "const": "codex_launch_armed"
+        },
+        "attempt_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9]{26}$"
+        },
+        "launch": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "context_id",
+            "executable_digest",
+            "protocol_digest",
+            "runtime_digest",
+            "sandbox_digest",
+            "reply_schema_digest",
+            "submission_digest",
+            "nonce",
+            "thread_id",
+            "mode"
+          ],
+          "properties": {
+            "context_id": {
+              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+            },
+            "executable_digest": {
+              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+            },
+            "protocol_digest": {
+              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+            },
+            "runtime_digest": {
+              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+            },
+            "sandbox_digest": {
+              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+            },
+            "reply_schema_digest": {
+              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+            },
+            "submission_digest": {
+              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+            },
+            "nonce": {
+              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+            },
+            "thread_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,128}$"
+            },
+            "mode": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "producer"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "checkpoint_id"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "warm_repair"
+                    },
+                    "checkpoint_id": {
+                      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "fresh_repair"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "attempt_id",
+        "launch_id",
+        "evidence_id",
+        "outcome"
+      ],
+      "properties": {
+        "kind": {
+          "const": "codex_launch_resolved"
+        },
+        "attempt_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9]{26}$"
+        },
+        "launch_id": {
+          "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+        },
+        "evidence_id": {
+          "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+        },
+        "outcome": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "not_dispatched"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "turn_id"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "completed"
+                },
+                "turn_id": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{1,128}$"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "turn_id"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "failed"
+                },
+                "turn_id": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{1,128}$"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "attempt_id",
+        "checkpoint_id"
+      ],
+      "properties": {
+        "kind": {
+          "const": "codex_checkpoint_selected"
+        },
+        "attempt_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9]{26}$"
+        },
+        "checkpoint_id": {
+          "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
         }
       }
     },

@@ -97,6 +97,15 @@ pub(super) fn diagnose(document: &Value) -> Option<String> {
         ));
     };
     if let Some(unknown) = fields.keys().find(|key| !FIELDS.contains(&key.as_str())) {
+        // Keep this request outside the Task file schema until the transport can enforce
+        // its authority. Diagnose it without accepting or recording an opt-in.
+        if unknown == "codex_session_continuation" {
+            return Some(
+                "codex_session_continuation is unavailable: AF has no pinned Codex App Server \
+                 transport with verified sandbox, history and dispatch recovery"
+                    .into(),
+            );
+        }
         return Some(format!(
             "{unknown} is not a Task file field; its fields are {}",
             FIELDS.join(", ")

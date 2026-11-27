@@ -798,7 +798,6 @@ fn validate_recorded_plan(
         if Some(findings.continues.task_id.as_str()) != reference["task"].as_str() {
             return Err("Native repair continued another Task".into());
         }
-        continuation::verify_findings(&opened.cas, &opened.store, &findings)?;
         let evidence: af_scenario::task_outcome::TaskOutcome =
             serde_json::from_value(document["requirements"]["scenario_native_outcome"].clone())
                 .map_err(|e| e.to_string())?;
@@ -808,10 +807,18 @@ fn validate_recorded_plan(
             .ok_or("Missing exact repair evidence")?;
         if findings_id != repair.findings_id
             || findings.continues.result_id != evidence.receipt.result_id
+            || findings.continues.round_id != repair.round_id
             || findings.continues.snapshot_id != repair.snapshot_id
         {
             return Err("Native repair continuation differs from exact outcome".into());
         }
+        continuation::verify_repair_inputs(
+            &opened.cas,
+            &opened.store,
+            revision,
+            &findings_id,
+            &findings,
+        )?;
     } else if !predecessors.contains_key("source")
         && let Some(source) = opened.task.revision.inputs.get("source")
     {

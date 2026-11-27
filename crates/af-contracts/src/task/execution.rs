@@ -22,7 +22,103 @@ mod decimal_tokens {
 
 pub const TASK_INVOCATION_V1: &str = "af/TaskInvocation@1";
 pub const TASK_OUTPUT_V1: &str = "af/TaskOutput@1";
-pub const TASK_EXECUTION_RECORD_V5: &str = "af/TaskExecutionRecord@5";
+pub const TASK_EXECUTION_RECORD_V6: &str = "af/TaskExecutionRecord@6";
+pub const CODEX_CHECKPOINT_V1: &str = "af/CodexCheckpoint@1";
+
+/// Dispatch metadata only. The private request is identified by digest and is never
+/// included in the execution stream.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodexLaunchV1 {
+    pub context_id: String,
+    pub executable_digest: String,
+    pub protocol_digest: String,
+    pub runtime_digest: String,
+    pub sandbox_digest: String,
+    pub reply_schema_digest: String,
+    pub submission_digest: String,
+    pub nonce: String,
+    pub thread_id: String,
+    pub mode: CodexLaunchModeV1,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CodexLaunchModeV1 {
+    Producer {},
+    WarmRepair { checkpoint_id: String },
+    FreshRepair {},
+}
+
+/// Only a trusted transport with evidence of quiescence or a permanently closed,
+/// unsent channel can write a resolution. There is no timeout or abandonment variant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CodexLaunchOutcomeV1 {
+    NotDispatched {},
+    Completed { turn_id: String },
+    Failed { turn_id: String },
+}
+
+pub const CODEX_DISPATCH_EVIDENCE_V1: &str = "af/CodexDispatchEvidence@1";
+
+/// Correlated reconciliation evidence produced by the trusted transport. The evidence
+/// artifact's inputs retain the launch and the transport's protected proof.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodexDispatchEvidenceV1 {
+    pub launch_id: String,
+    pub thread_id: String,
+    pub nonce: String,
+    pub outcome: CodexLaunchOutcomeV1,
+    pub proof_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodexCheckpointV1 {
+    pub launch_id: String,
+    pub output_id: String,
+    pub candidate_id: String,
+    pub sealed_output_id: String,
+    pub snapshot_id: String,
+    pub reply_id: String,
+    /// The canonical history bytes through the selected turn, kept outside the Worker tree.
+    pub prefix_id: String,
+    pub prefix_bytes: u64,
+}
+
+pub const CODEX_PREFIX_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+impl CodexCheckpointV1 {
+    pub fn artifact_refs(&self) -> [&str; 7] {
+        [
+            &self.launch_id,
+            &self.output_id,
+            &self.candidate_id,
+            &self.sealed_output_id,
+            &self.snapshot_id,
+            &self.reply_id,
+            &self.prefix_id,
+        ]
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        require(
+            self.artifact_refs().into_iter().all(is_digest)
+                && (1..=CODEX_PREFIX_MAX_BYTES).contains(&self.prefix_bytes),
+            "Codex checkpoint needs exact artifact identities and a bounded history prefix",
+        )
+    }
+}
+
+fn codex_native_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -111,6 +207,21 @@ pub enum TaskExecutionRecordV1 {
     Started {
         attempt_id: String,
     },
+    /// Starts the common Attempt and arms a single native submission in one checked record.
+    CodexLaunchArmed {
+        attempt_id: String,
+        launch: CodexLaunchV1,
+    },
+    CodexLaunchResolved {
+        attempt_id: String,
+        launch_id: String,
+        evidence_id: String,
+        outcome: CodexLaunchOutcomeV1,
+    },
+    CodexCheckpointSelected {
+        attempt_id: String,
+        checkpoint_id: String,
+    },
     Released {
         attempt_id: String,
         reason: String,
@@ -196,6 +307,20 @@ impl TaskExecutionRecordV1 {
                 refs.extend(feedback_ids.iter().map(String::as_str));
             }
             Self::ContextBound { context_id, .. } => refs.push(context_id.as_str()),
+            Self::CodexLaunchArmed { launch, .. } => {
+                refs.push(&launch.context_id);
+                if let CodexLaunchModeV1::WarmRepair { checkpoint_id } = &launch.mode {
+                    refs.push(checkpoint_id);
+                }
+            }
+            Self::CodexLaunchResolved {
+                launch_id,
+                evidence_id,
+                ..
+            } => {
+                refs.extend([launch_id.as_str(), evidence_id.as_str()]);
+            }
+            Self::CodexCheckpointSelected { checkpoint_id, .. } => refs.push(checkpoint_id),
             Self::Settled {
                 result,
                 raw_artifact_ids,
@@ -303,6 +428,40 @@ impl TaskExecutionRecordV1 {
             Self::Started { attempt_id } | Self::ContextBound { attempt_id, .. } => {
                 Some(attempt_id)
             }
+            Self::CodexLaunchArmed { attempt_id, launch } => {
+                require(
+                    [
+                        &launch.executable_digest,
+                        &launch.protocol_digest,
+                        &launch.runtime_digest,
+                        &launch.sandbox_digest,
+                        &launch.reply_schema_digest,
+                        &launch.submission_digest,
+                        &launch.nonce,
+                    ]
+                    .into_iter()
+                    .all(|id| is_digest(id))
+                        && codex_native_id(&launch.thread_id),
+                    "Codex launch requires pinned transport and exact submission identities",
+                )?;
+                Some(attempt_id)
+            }
+            Self::CodexLaunchResolved {
+                attempt_id,
+                outcome,
+                ..
+            } => {
+                if let CodexLaunchOutcomeV1::Completed { turn_id }
+                | CodexLaunchOutcomeV1::Failed { turn_id } = outcome
+                {
+                    require(
+                        codex_native_id(turn_id),
+                        "Invalid Codex terminal turn identity",
+                    )?;
+                }
+                Some(attempt_id)
+            }
+            Self::CodexCheckpointSelected { attempt_id, .. } => Some(attempt_id),
             Self::Released { attempt_id, reason } => {
                 require(
                     !reason.trim().is_empty() && reason.chars().count() <= 65536,

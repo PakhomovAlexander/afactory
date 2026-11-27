@@ -108,7 +108,7 @@ fn cumulative_execution_accounting_has_one_full_width_encoding() {
             if kind == "settled" {
                 value["result"] = json!({"kind":"abandoned", "diagnostic_id":digest});
             }
-            assert_valid("task-execution-record-v5.json", &value);
+            assert_valid("task-execution-record-v6.json", &value);
             af_contracts::json::admit(&value).unwrap();
             let typed: TaskExecutionRecordV1 = serde_json::from_value(value.clone()).unwrap();
             typed.validate().unwrap();
@@ -117,7 +117,7 @@ fn cumulative_execution_accounting_has_one_full_width_encoding() {
     }
     let numeric = json!({"kind":"usage_observed", "attempt_id":"A".repeat(26),
         "charged_tokens":7, "usage_id":digest, "raw_artifact_ids":[]});
-    assert_invalid("task-execution-record-v5.json", &numeric, "numeric charge");
+    assert_invalid("task-execution-record-v6.json", &numeric, "numeric charge");
     assert!(serde_json::from_value::<TaskExecutionRecordV1>(numeric).is_err());
 }
 
@@ -151,7 +151,7 @@ fn unknown_usage_settles_at_zero_with_a_closed_cause_and_reported_usage_keeps_it
         Cause::Unreported,
     ] {
         let value = settled("0", Some(json!({"cause": cause.as_str()})));
-        assert_valid("task-execution-record-v5.json", &value);
+        assert_valid("task-execution-record-v6.json", &value);
         let typed: TaskExecutionRecordV1 = serde_json::from_value(value.clone()).unwrap();
         typed.validate().unwrap();
         let TaskExecutionRecordV1::Settled { unknown_usage, .. } = &typed else {
@@ -168,14 +168,14 @@ fn unknown_usage_settles_at_zero_with_a_closed_cause_and_reported_usage_keeps_it
     // A settlement with reported usage has no marker and keeps its charge, the reservation
     // included.
     let reported_charge = settled("400000", None);
-    assert_valid("task-execution-record-v5.json", &reported_charge);
+    assert_valid("task-execution-record-v6.json", &reported_charge);
     let typed: TaskExecutionRecordV1 = serde_json::from_value(reported_charge.clone()).unwrap();
     typed.validate().unwrap();
     assert_eq!(serde_json::to_value(&typed).unwrap(), reported_charge);
 
     let charged = settled("400000", Some(json!({"cause":"capacity"})));
     assert_invalid(
-        "task-execution-record-v5.json",
+        "task-execution-record-v6.json",
         &charged,
         "unknown usage is charged zero",
     );
@@ -184,7 +184,7 @@ fn unknown_usage_settles_at_zero_with_a_closed_cause_and_reported_usage_keeps_it
     let mut reported = settled("0", Some(json!({"cause":"capacity"})));
     reported["usage_id"] = json!(digest);
     assert_invalid(
-        "task-execution-record-v5.json",
+        "task-execution-record-v6.json",
         &reported,
         "unknown usage names no usage report",
     );
@@ -199,7 +199,7 @@ fn unknown_usage_settles_at_zero_with_a_closed_cause_and_reported_usage_keeps_it
     ] {
         let value = settled("0", Some(invalid));
         assert_invalid(
-            "task-execution-record-v5.json",
+            "task-execution-record-v6.json",
             &value,
             "a closed unknown-usage marker",
         );
@@ -232,7 +232,7 @@ fn cumulative_records_reject_invalid_decimal_encodings() {
         let record = json!({"kind":"usage_observed", "attempt_id":"A".repeat(26),
             "charged_tokens":invalid, "usage_id":digest, "raw_artifact_ids":[]});
         assert_invalid(
-            "task-execution-record-v5.json",
+            "task-execution-record-v6.json",
             &record,
             "canonical cumulative record",
         );

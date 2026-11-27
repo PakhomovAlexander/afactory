@@ -1075,6 +1075,7 @@ impl TaskProjection {
             TaskChangeV1::ExecutionRecorded { record_id } => matches!(
                 execution::read_execution_record(cas, record_id)?.record,
                 af_contracts::task::execution::TaskExecutionRecordV1::UsageObserved { .. }
+                    | af_contracts::task::execution::TaskExecutionRecordV1::CodexLaunchResolved { .. }
             ),
             _ => false,
         };
@@ -1685,7 +1686,7 @@ impl EventStore {
             let record: af_contracts::task::execution::TaskExecutionRecordV1 = payload(
                 cas,
                 &record_id,
-                af_contracts::task::execution::TASK_EXECUTION_RECORD_V5,
+                af_contracts::task::execution::TASK_EXECUTION_RECORD_V6,
             )?;
             record.validate().map_err(conflict)?;
             visit(&run_id, record);
@@ -2117,32 +2118,42 @@ impl EventStore {
         {
             return Err(conflict("Owned completion lost its Task prefix"));
         }
-        let owned_record = if let TaskChangeV1::ExecutionRecorded { record_id } = &transition.change
-        {
-            execution::owned::is_owned_record(
-                &execution::read_execution_record(cas, record_id)?.record,
-            )
-        } else {
-            false
-        };
-        let valid_until = if let TaskChangeV1::LeaseRenewed { .. } = &transition.change {
-            // Recheck expiry inside the write transaction: a renewal that waited for the
-            // database's write lock must not extend a lease that expired meanwhile (ADR-0128).
-            state.as_ref().map(|state| state.lease_until)
-        } else if owned_record || matches!(transition.change, TaskChangeV1::RecordingResumed { .. })
-        {
-            state.as_ref().map(|state| {
-                state.lease_until.min(
-                    state
-                        .plan_id
-                        .as_ref()
-                        .and_then(|id| state.decisions.get(id))
-                        .map_or(u64::MAX, |decision| decision.valid_until),
+        let (expiring_record, reconciliation) =
+            if let TaskChangeV1::ExecutionRecorded { record_id } = &transition.change {
+                use af_contracts::task::execution::TaskExecutionRecordV1;
+                let record = execution::read_execution_record(cas, record_id)?.record;
+                (
+                    execution::owned::is_owned_record(&record)
+                        || matches!(
+                            record,
+                            TaskExecutionRecordV1::CodexLaunchArmed { .. }
+                                | TaskExecutionRecordV1::CodexCheckpointSelected { .. }
+                        ),
+                    matches!(record, TaskExecutionRecordV1::CodexLaunchResolved { .. }),
                 )
-            })
-        } else {
-            None
-        };
+            } else {
+                (false, false)
+            };
+        let valid_until =
+            if reconciliation || matches!(transition.change, TaskChangeV1::LeaseRenewed { .. }) {
+                // Recheck expiry inside the write transaction: a renewal that waited for the
+                // database's write lock must not extend a lease that expired meanwhile (ADR-0128).
+                state.as_ref().map(|state| state.lease_until)
+            } else if expiring_record
+                || matches!(transition.change, TaskChangeV1::RecordingResumed { .. })
+            {
+                state.as_ref().map(|state| {
+                    state.lease_until.min(
+                        state
+                            .plan_id
+                            .as_ref()
+                            .and_then(|id| state.decisions.get(id))
+                            .map_or(u64::MAX, |decision| decision.valid_until),
+                    )
+                })
+            } else {
+                None
+            };
         let refs = references(cas, &transition.change, state.as_ref())?;
         let run_id = task_run_id(task_id)?;
         let event = NewEvent::new(event_type, value.clone()).referencing(refs);
@@ -2199,7 +2210,7 @@ impl EventStore {
             self.append_batch_observed(&run_id, cas, &[event], Some(&permit), applied.as_ref());
         if matches!(&appended, Err(StoreError::Conflict(message))
             if message == "Task write lost its sequence/lease comparison")
-            && !owned_record
+            && !expiring_record
             && let Some((writer, epoch, first)) = retry_from
         {
             let fresh = self

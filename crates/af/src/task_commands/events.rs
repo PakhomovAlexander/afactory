@@ -252,6 +252,9 @@ fn execution(
         }
         TaskExecutionRecordV1::ContextBound { attempt_id, .. }
         | TaskExecutionRecordV1::Started { attempt_id }
+        | TaskExecutionRecordV1::CodexLaunchArmed { attempt_id, .. }
+        | TaskExecutionRecordV1::CodexLaunchResolved { attempt_id, .. }
+        | TaskExecutionRecordV1::CodexCheckpointSelected { attempt_id, .. }
         | TaskExecutionRecordV1::Released { attempt_id, .. }
         | TaskExecutionRecordV1::Settled { attempt_id, .. }
         | TaskExecutionRecordV1::UsageObserved { attempt_id, .. }

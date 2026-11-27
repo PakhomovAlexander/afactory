@@ -61,7 +61,7 @@ fn renewal_race_settles_once_with_exact_accounting_and_replay() {
                 usage_id: Some(usage),
                 unknown_usage: None,
             };
-            let record_id = put(&f.cas, TASK_EXECUTION_RECORD_V5, &record);
+            let record_id = put(&f.cas, TASK_EXECUTION_RECORD_V6, &record);
             let mut transition = TaskTransitionV1 {
                 writer: lease.writer.clone(),
                 epoch: lease.epoch,
