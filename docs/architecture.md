@@ -588,7 +588,7 @@ version and native `af catalog digest` pin refresh, without changing Worker auth
 
 Native Review's Store contains Task transitions and typed native Round outputs. The shared
 canonical Ledger is initialized from the Task Subject, with no Campaign manifest or bootstrap
-event. SQLite Stores use layout 5 and stamp each event row with the
+event. SQLite Stores use layout 6, require the benchmark send ledger at creation, and stamp each event row with the
 `review.kernel/RunEvent@5` envelope identity. Store opens check the current events table definition, including
 its event and per-run sequence identity constraints, through SQLite schema metadata. An earlier
 or malformed layout fails closed before schema or journal changes. Replay rejects rows with a

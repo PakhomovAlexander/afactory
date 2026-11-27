@@ -381,7 +381,7 @@ fn prepared_task_opening_uses_current_output_contracts() {
             Some("af/task-event@4"),
             Some("review.kernel/RunEvent@5"),
             "review.kernel/RunEvent@5",
-            5,
+            6,
         )
     );
     assert_eq!(shown["task_id"], id);

@@ -399,19 +399,17 @@ impl EventStore {
                     spelled(&usage, &mut roots);
                     spelled(&observation, &mut roots);
                 }
-                if crate::store::has_send_layout(&self.conn)? {
-                    let mut sends = self.conn.prepare(
-                        "SELECT intent_artifact_id, COALESCE(raw_artifact_id,'')
+                let mut sends = self.conn.prepare(
+                    "SELECT intent_artifact_id, COALESCE(raw_artifact_id,'')
                      FROM task_attempt_send_v1 WHERE run_id=?1",
-                    )?;
-                    let rows = sends.query_map([&run_id], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                    })?;
-                    for row in rows {
-                        let (intent, raw) = row?;
-                        spelled(&intent, &mut roots);
-                        spelled(&raw, &mut roots);
-                    }
+                )?;
+                let rows = sends.query_map([&run_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?;
+                for row in rows {
+                    let (intent, raw) = row?;
+                    spelled(&intent, &mut roots);
+                    spelled(&raw, &mut roots);
                 }
                 let mut ends = self
                     .conn

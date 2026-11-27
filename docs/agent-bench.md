@@ -280,3 +280,5 @@ The offline analyzer accepts a tool-only A/B schedule with one shared immutable 
 configuration, collector and protocol. The two catalog references identify the baseline text
 tools and the treatment set with Rust semantic navigation added. The analyzer uses the same
 paired weighting and missing-data rules as the map experiment.
+
+The Store records external grading sends in layout 6. [Grading send decision](adr/2026-11-27-record-benchmark-grading-sends.md)

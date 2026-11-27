@@ -49,38 +49,7 @@ fn event_envelope_conflict() -> StoreError {
 
 // The SQLite layout version binds the database to the RunEvent envelope. The row
 // carries the full identity so replay also refuses a mixed or damaged log.
-const EVENT_LAYOUT_VERSION: u32 = 5;
-// The benchmark records its first externally visible send under this layout.
-// A missing ledger on a Store that used it is corruption, even after reopening.
-const SEND_LAYOUT_VERSION: u32 = 6;
-const SEND_TABLE: &str = "CREATE TABLE task_attempt_send_v1 (
-                 run_id TEXT NOT NULL,
-                 attempt_id TEXT NOT NULL,
-                 node_id TEXT NOT NULL,
-                 ordinal INTEGER NOT NULL,
-                 intent_id TEXT NOT NULL UNIQUE,
-                 intent_artifact_id TEXT NOT NULL,
-                 raw_artifact_id TEXT,
-                 usage_known INTEGER,
-                 PRIMARY KEY (run_id, node_id, ordinal)
-             )";
-
-fn has_send_layout(conn: &Connection) -> Result<bool, StoreError> {
-    let version: u32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    match version {
-        EVENT_LAYOUT_VERSION => Ok(false),
-        SEND_LAYOUT_VERSION => Ok(true),
-        _ => Err(event_envelope_conflict()),
-    }
-}
-
-fn ensure_send_layout(tx: &rusqlite::Transaction<'_>) -> Result<(), StoreError> {
-    if !has_send_layout(tx)? {
-        tx.execute(SEND_TABLE, [])?;
-        tx.pragma_update(None, "user_version", SEND_LAYOUT_VERSION)?;
-    }
-    Ok(())
-}
+const EVENT_LAYOUT_VERSION: u32 = 6;
 
 // SQLite stores each CREATE statement in sqlite_schema without IF NOT EXISTS
 // or the terminating semicolon. Keep the spelling of the AF-produced layout.
@@ -101,6 +70,17 @@ const EVENT_TABLE: &str = "CREATE TABLE events (
              )";
 
 const EVENT_AUXILIARY_LAYOUT: &[&str] = &[
+    "CREATE TABLE task_attempt_send_v1 (
+                 run_id TEXT NOT NULL,
+                 attempt_id TEXT NOT NULL,
+                 node_id TEXT NOT NULL,
+                 ordinal INTEGER NOT NULL,
+                 intent_id TEXT NOT NULL UNIQUE,
+                 intent_artifact_id TEXT NOT NULL,
+                 raw_artifact_id TEXT,
+                 usage_known INTEGER,
+                 PRIMARY KEY (run_id, node_id, ordinal)
+             )",
     "CREATE INDEX events_by_correlation
                  ON events (run_id, correlation_id)",
     "CREATE INDEX events_by_type_sequence
@@ -145,13 +125,12 @@ fn check_event_layout(conn: &Connection) -> Result<bool, StoreError> {
             .collect::<Vec<_>>()
             .join(", ");
         let writer = required_count + 1;
-        let send = writer + 1;
         format!(
             "SELECT user_version, objects = 0, required = {required_count} AND NOT EXISTS (
                         SELECT 1
                         FROM main.sqlite_schema AS tbl
                         JOIN pragma_index_list(tbl.name, 'main') AS idx
-                        WHERE tbl.type = 'table' AND tbl.sql IN ({definitions}, ?{writer}, ?{send})
+                        WHERE tbl.type = 'table' AND tbl.sql IN ({definitions}, ?{writer})
                           AND idx.origin IN ('pk', 'u')
                           AND NOT EXISTS (
                               SELECT 1 FROM main.sqlite_schema AS implicit
@@ -159,9 +138,7 @@ fn check_event_layout(conn: &Connection) -> Result<bool, StoreError> {
                                 AND implicit.tbl_name = tbl.name AND implicit.rootpage > 0
                                 AND implicit.sql IS NULL
                           )
-                    ), invalid_writer = 0,
-                    CASE user_version WHEN {SEND_LAYOUT_VERSION} THEN send_named = 1 AND send_valid = 1
-                                      ELSE send_named = 0 END
+                    ), invalid_writer = 0
              FROM pragma_user_version,
                   (SELECT count(*) AS objects,
                           count(CASE WHEN sql IN ({definitions})
@@ -169,9 +146,7 @@ fn check_event_layout(conn: &Connection) -> Result<bool, StoreError> {
                                      THEN 1 END) AS required,
                           count(CASE WHEN name = 'store_writers' COLLATE NOCASE
                                      AND (type != 'table' OR rootpage <= 0 OR sql IS NOT ?{writer})
-                                     THEN 1 END) AS invalid_writer,
-                          count(CASE WHEN name = 'task_attempt_send_v1' COLLATE NOCASE THEN 1 END) AS send_named,
-                          count(CASE WHEN type = 'table' AND rootpage > 0 AND sql = ?{send} THEN 1 END) AS send_valid
+                                     THEN 1 END) AS invalid_writer
                    FROM main.sqlite_schema)"
         )
     });
@@ -179,23 +154,14 @@ fn check_event_layout(conn: &Connection) -> Result<bool, StoreError> {
     // PRIMARY KEY and UNIQUE indexes from the definitions. Verify their schema
     // entries too, since index_list can still name an index whose entry is lost.
     // The provenance table is optional until the first append.
-    let (version, empty, complete, writer_valid, send_valid): (u32, bool, bool, bool, bool) = conn
-        .query_row(
-            &QUERY,
-            rusqlite::params_from_iter(required_layout().chain([writers::CREATE, SEND_TABLE])),
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                ))
-            },
-        )?;
-    match (version, empty, complete, writer_valid, send_valid) {
-        (0, true, _, _, _) => Ok(false),
-        (EVENT_LAYOUT_VERSION | SEND_LAYOUT_VERSION, _, true, true, true) => Ok(true),
+    let (version, empty, complete, writer_valid): (u32, bool, bool, bool) = conn.query_row(
+        &QUERY,
+        rusqlite::params_from_iter(required_layout().chain(std::iter::once(writers::CREATE))),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )?;
+    match (version, empty, complete, writer_valid) {
+        (0, true, _, _) => Ok(false),
+        (EVENT_LAYOUT_VERSION, _, true, true) => Ok(true),
         _ => Err(event_envelope_conflict()),
     }
 }
@@ -2357,56 +2323,26 @@ mod tests {
     }
 
     #[test]
-    fn first_send_layout_is_atomic_and_missing_recorded_layout_is_refused() {
+    fn refuses_prior_layout_without_modifying_database() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("events.sqlite");
-        let mut store = EventStore::open(&path).unwrap();
-        assert!(!has_send_layout(&store.conn).unwrap());
-        assert!(
-            store
-                .task_attempt_sends("run", "attempt")
-                .unwrap()
-                .is_empty()
-        );
-
-        // A send failing before its intent is committed must leave the prior layout intact.
+        let conn = Connection::open(&path).unwrap();
+        for definition in
+            required_layout().filter(|sql| !sql.starts_with("CREATE TABLE task_attempt_send_v1"))
         {
-            let tx = store.conn.transaction().unwrap();
-            ensure_send_layout(&tx).unwrap();
-            assert!(has_send_layout(&tx).unwrap());
-            tx.rollback().unwrap();
+            conn.execute_batch(definition).unwrap();
         }
-        assert!(!has_send_layout(&store.conn).unwrap());
-
-        let tx = store.conn.transaction().unwrap();
-        ensure_send_layout(&tx).unwrap();
-        tx.execute(
-            "INSERT INTO task_attempt_send_v1
-            (run_id, attempt_id, node_id, ordinal, intent_id, intent_artifact_id)
-            VALUES ('run', 'attempt', 'node', 1, 'intent', 'artifact')",
-            [],
-        )
-        .unwrap();
-        tx.commit().unwrap();
-        drop(store);
-        let reader = EventStore::open_unchanged(&path).unwrap();
-        assert_eq!(
-            reader.task_attempt_sends("run", "attempt").unwrap(),
-            vec![("artifact".to_owned(), None)]
-        );
-        drop(reader);
-        Connection::open(&path)
-            .unwrap()
-            .execute("DROP TABLE task_attempt_send_v1", [])
-            .unwrap();
-        assert!(matches!(
-            EventStore::open(&path),
-            Err(StoreError::Conflict(_))
-        ));
-        assert!(matches!(
+        conn.pragma_update(None, "user_version", 5).unwrap();
+        drop(conn);
+        let before = std::fs::read(&path).unwrap();
+        for result in [
+            EventStore::open_read_only(&path),
             EventStore::open_unchanged(&path),
-            Err(StoreError::Conflict(_))
-        ));
+            EventStore::open(&path),
+        ] {
+            assert!(matches!(result, Err(StoreError::Conflict(_))));
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+        }
     }
 
     #[test]

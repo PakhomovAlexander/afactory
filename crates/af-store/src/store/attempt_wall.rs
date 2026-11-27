@@ -82,7 +82,6 @@ impl EventStore {
             return Err(StoreError::Conflict("Send Attempt deadline elapsed".into()));
         }
         let run_id = super::task::task_run_id(attempt.task_id())?;
-        super::ensure_send_layout(&transaction)?;
         let previous: Option<(String, u32, Option<bool>)> = transaction
             .query_row(
                 "SELECT attempt_id, ordinal, usage_known FROM task_attempt_send_v1
@@ -184,9 +183,6 @@ impl EventStore {
         run_id: &str,
         attempt_id: &str,
     ) -> Result<Vec<(String, Option<String>)>, StoreError> {
-        if !super::has_send_layout(&self.conn)? {
-            return Ok(Vec::new());
-        }
         let mut statement = self.conn.prepare(
             "SELECT intent_artifact_id, raw_artifact_id FROM task_attempt_send_v1
              WHERE run_id=?1 AND attempt_id=?2 ORDER BY ordinal",
@@ -201,9 +197,6 @@ impl EventStore {
         run_id: &str,
         attempt_id: &str,
     ) -> Result<bool, StoreError> {
-        if !super::has_send_layout(&self.conn)? {
-            return Ok(false);
-        }
         Ok(self.conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM task_attempt_send_v1 WHERE run_id=?1 AND attempt_id=?2
              AND COALESCE(usage_known, 0)=0)",

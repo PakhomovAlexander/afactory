@@ -26,6 +26,7 @@ Rust names do not themselves authorize another representation. Changed typed sha
 identities, coherent writers/readers, fixtures and parity. There is no migration or reader fallback
 for retired execution state. The compiled schema's title names its actual `CompiledTask@4` envelope.
 
+Layout 6 requires the benchmark send ledger and retains the RunEvent@5 envelope.
 Store opens check the SQLite layout version and required schema objects before use. An initialized
 WAL Store can be opened while a writer holds a transaction. The writer provenance table may be
 absent in a current-layout Store and is created with the first append. Replay still checks the
