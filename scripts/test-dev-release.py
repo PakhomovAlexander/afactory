@@ -296,6 +296,8 @@ if a[0]=='api':
    batch=[dict(row) for row in batch]
    d['releases'][0]['draft']=not d['releases'][0].get('draft',False)
    d['release_change_after_read']=False;save()
+  if d.get('release_stale_after_create') and batch and batch[0]['draft']:
+   batch=[];d['release_stale_after_create']=False;save()
   out(batch)
  if endpoint.startswith('rules/branches/main'): out([] if d.get('no_strict') else [{'type':'required_status_checks','ruleset_id':1,'ruleset_source_type':'Repository','parameters':{'strict_required_status_checks_policy':True,'required_status_checks':[{'context':'validation / lint'}]}}])
  if endpoint=='rulesets/1': out({'enforcement':'active','bypass_actors':[{}] if d.get('bypass') else []})
@@ -330,7 +332,8 @@ if a[0]=='api':
   if endpoint.startswith('actions/artifacts/'):
    record(plan, 'plan');sys.stdout.buffer.write(archive);sys.exit(0)
   if '/artifacts?' in endpoint:
-   rows=[] if d.get('ci_plan_missing') else [{'id':observed_run_id*1000+d.get('artifact_attempt',attempt),'name':'validation-plan-'+str(d.get('artifact_attempt',attempt)),'expired':False,'digest':(d.get('plan_digest') or 'sha256:'+hashlib.sha256(archive).hexdigest()),'workflow_run':{'id':observed_run_id,'head_sha':head}}]
+   missing=d.get('ci_plan_missing') and not (observed_run_id==10 and d.get('ci_superseded'))
+   rows=[] if missing else [{'id':observed_run_id*1000+d.get('artifact_attempt',attempt),'name':'validation-plan-'+str(d.get('artifact_attempt',attempt)),'expired':False,'digest':(d.get('plan_digest') or 'sha256:'+hashlib.sha256(archive).hexdigest()),'workflow_run':{'id':observed_run_id,'head_sha':head}}]
    d.setdefault('ci_plan_reads',[]).append({'run_id':observed_run_id,'profile':plan['profile'],'missing':not rows});save()
    out({'total_count':len(rows)+(1 if d.get('ci_artifacts_partial_page') else 0),'artifacts':rows}, 'artifacts')
   state='pass' if observed_run_id==10 and d.get('ci_superseded') else d.get('checks','pass')
@@ -341,7 +344,9 @@ if a[0]=='api':
    if d.get('rerun_during_read'): row['run_attempt']+=1
    out(row)
   if endpoint.startswith('actions/workflows/ci.yml/runs'):
-   rows=[] if d.get('ci_missing') else ([{**row,'id':10,'run_attempt':1}] if d.get('ci_prior_run') else [])+[row];out({'total_count':len(rows)+(1 if d.get('ci_runs_partial_page') else 0),'workflow_runs':rows})
+   prior={**row,'id':10,'run_attempt':1}
+   if d.get('ci_superseded'): prior.update(status='completed',conclusion='success')
+   rows=[] if d.get('ci_missing') else ([prior] if d.get('ci_prior_run') else [])+[row];out({'total_count':len(rows)+(1 if d.get('ci_runs_partial_page') else 0),'workflow_runs':rows})
   names=['validation / resolve','validation / lint']
   for os_name in ('ubuntu-latest','macos-latest'):
    names += ['validation / '+n+' ('+os_name+')' for n in ['base','check']+['class '+c for c in plan['selected']]]
@@ -378,7 +383,8 @@ if a[:2]==['pr','create']:
   sha=subprocess.check_output([os.environ['REAL_GIT'],'--git-dir',d['remote'],'rev-parse','refs/heads/'+head],text=True).strip()
   d['pr_branch']=head
   d.pop('ci_merge',None)
-  d['pr']={'number':1,'url':'https://example.test/pr/1','state':'OPEN','headRefOid':sha,'baseRefName':'main','mergeCommit':None,'isCrossRepository':False,'labels':[{'name':a[a.index('--label')+1]}]}
+  labels=[{'name':a[a.index('--label')+1]}] if '--label' in a else []
+  d['pr']={'number':1,'url':'https://example.test/pr/1','state':'OPEN','headRefOid':sha,'baseRefName':'main','mergeCommit':None,'isCrossRepository':False,'labels':labels}
  effect('pr',create);print('https://example.test/pr/1');sys.exit(0)
 if a[:2]==['pr','checks']:
  if d.get('formal_checks') is None:
@@ -1929,7 +1935,7 @@ class ReleaseCLI(unittest.TestCase):
                                                '--json', 'name,bucket,link', '--help'])
 
     def test_plan_uses_canonical_repository_and_preserves_nested_queries(self):
-        result = self.cli('plan')
+        result = self.cli('plan', '--profile', 'full')
         self.assertIn('authoritative main/tag fetch complete', result.stderr)
         state = json.loads(result.stdout)
         self.assertEqual(state['plan']['source'], self.initial)
@@ -3005,6 +3011,30 @@ class ReleaseCLI(unittest.TestCase):
         self.assertEqual(evidence['plan']['profile'], 'full')
         self.assertEqual(self.data()['effects'].count('merge'), 1)
 
+    def test_unlabeled_fast_pr_reuses_passing_run_behind_cancelled_duplicate(self):
+        self.data(no_label=True, ci_run_id=20, ci_prior_run=True, ci_superseded=True,
+                  checks='pending', ci_plan_missing=True, formal_checks='pending')
+        self.cli('rc')
+        self.assertEqual(self.data()['pr']['labels'], [])
+        self.assertNotIn('merge', self.data()['effects'])
+
+        self.data(checks='fail')
+        self.assertIn('checks_rejected', self.cli('resume', ok=False).stderr)
+        self.data(checks='cancel')
+        self.cli('resume')
+        self.assertNotIn('merge', self.data()['effects'])
+
+        self.data(formal_checks='pass', ci_attempt=2)
+        self.cli('resume')
+        self.assertNotIn('merge', self.data()['effects'])
+
+        self.data(ci_attempt=1)
+        self.cli('resume')
+        evidence = self.state_value()['receipts']['checks']['checks'][0]
+        self.assertEqual(evidence['run_id'], 10)
+        self.assertEqual(evidence['plan']['profile'], 'fast')
+        self.assertEqual(self.data()['effects'].count('merge'), 1)
+
     def test_complete_roster_and_exact_plan_fail_closed(self):
         self.data(ci_missing=True)
         self.cli('rc')
@@ -3086,7 +3116,7 @@ class ReleaseCLI(unittest.TestCase):
     def test_permission_and_configuration_fail_before_validation(self):
         for field, message in (('deny', 'repository_permission'), ('no_secrets', 'runner_configuration'), ('no_label', 'release_label')):
             self.data(**{field: True})
-            self.assertIn(message, self.cli('rc', ok=False).stderr)
+            self.assertIn(message, self.cli('rc', '--profile', 'full', ok=False).stderr)
             self.assertNotIn('metadata', self.data().get('effects', []))
             self.data(**{field: False})
 
@@ -3164,7 +3194,7 @@ class ReleaseCLI(unittest.TestCase):
         self.cli('rc')
         self.publish_assets(self.state_value())
         releases = self.old_releases() + self.data()['releases']
-        self.data(releases=releases, release_no_link=False)
+        self.data(releases=releases, release_no_link=False, release_change_after_read=True)
         self.assertTrue(json.loads(self.cli('resume').stdout)['published'])
         self.assertEqual(self.data()['effects'].count('merge'), 1)
 
@@ -3295,7 +3325,7 @@ class ReleaseCLI(unittest.TestCase):
                   'expired':False, 'workflow_run':{'id':1, 'head_sha':state['candidate']}}
         self.data(bundles=[{**bundle, 'expired':True}])
         self.assertIn('expired', helper('bundle').stderr)
-        self.data(bundles=[bundle], bundle_dir=str(retained))
+        self.data(bundles=[bundle], bundle_dir=str(retained), release_change_after_read=True)
         signature.write_bytes(b'rebuilt signature')
         self.assertEqual(helper('bundle').returncode, 0)
         self.assertEqual(signature.read_bytes(), original)
@@ -3365,6 +3395,8 @@ class ReleaseCLI(unittest.TestCase):
                     self.assertIn('foreign workflow/source provenance', foreign.stderr)
                     self.assertNotEqual(foreign.returncode, 0)
                     self.data(bundle_workflow_id=339974639)
+                    if effect == 'create-release' and when == 'before':
+                        self.data(release_stale_after_create=True)
                     second = subprocess.run(command, cwd=runner, env=env, capture_output=True, text=True)
                     self.assertEqual(second.returncode, 0, second.stderr)
                     data = self.data()

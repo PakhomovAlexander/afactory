@@ -26,6 +26,13 @@ def gh(*args):
     return result.stdout
 
 
+def find_release(tag):
+    rows = observation.releases(lambda endpoint: gh(
+        'api', 'repos/{owner}/{repo}/' + endpoint, '--include'),
+        retry_delays=observation.PUBLICATION_RETRY_DELAYS)
+    return next((row for row in rows if row['tag_name'] == tag), None)
+
+
 def publish(tag, source, files, notes):
     if not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+(?:-rc\.[1-9][0-9]*)?', tag) or not re.fullmatch('[0-9a-f]{40}', source):
         raise ValueError('expected exact release tag and source SHA')
@@ -50,17 +57,15 @@ def publish(tag, source, files, notes):
         if path.name in expected_archives | {'release-provenance.json'}:
             if hashlib.sha256(path.read_bytes()).hexdigest() != sums.get(path.name):
                 raise ValueError('local signed digest differs: ' + path.name)
-    rows = observation.releases(lambda endpoint: gh(
-        'api', 'repos/{owner}/{repo}/' + endpoint, '--include'))
-    release = next((row for row in rows if row['tag_name'] == tag), None)
+    release = find_release(tag)
     if release is None:
         flags = ['--prerelease'] if '-rc.' in tag else []
         gh('release', 'create', tag, '--verify-tag', '--target', source,
            '--title', tag, '--notes-file', notes, '--draft', *flags)
         # A lost reply returns failure; next invocation reads the durable draft.
-        rows = observation.releases(lambda endpoint: gh(
-            'api', 'repos/{owner}/{repo}/' + endpoint, '--include'))
-        release = next(row for row in rows if row['tag_name'] == tag)
+        release = find_release(tag)
+        if release is None:
+            raise ValueError('created draft is not visible; rerun to reconcile')
     if release['target_commitish'] != source:
         raise ValueError('release target differs from exact publication source')
     existing = {asset['name'] for asset in release['assets']}

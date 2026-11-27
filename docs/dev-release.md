@@ -19,8 +19,9 @@ deadline and makes no GitHub request. Unsupported clients (including GitHub CLI 
 with `gh_capability` and an upgrade instruction before authorization or release effects. Upgrade
 `gh` and retry the same command; exact-head CI and additional required checks remain mandatory.
 Read-only status remains available with an unsupported client.
-The selected release label (`release:fast` or `release:full`) must already exist. Required checks and branch protection apply;
-the CLI has no admin or ruleset bypass mode.
+Fast release PRs use the unlabeled default so PR creation only triggers the opened CI event.
+The controller can resume a fast PR that already has `release:fast`. Full release PRs use
+`release:full`, which must already exist. Required checks and branch protection apply.
 
 Use an owned mode-0700 state directory outside any source checkout. The default is
 `$XDG_STATE_HOME/afactory-release/OWNER--REPO` (falling back to `~/.local/state`). Share that directory
@@ -262,9 +263,11 @@ approved main base. It downloads that run's `validation-plan-ATTEMPT` artifact, 
 archive SHA256, and validates the plan through the existing resolver and source-bound catalog. The
 retained event plan must name this release version, context, authorized profile and exact classes;
 current PR labels cannot establish what an earlier run executed. An opened fast run while a full
-label event has yet to arrive remains waiting, as does a missing or not-yet-retained attempt plan.
-A cancelled run without a retained plan cannot establish its profile and keeps waiting; once its
-plan identifies the authorized profile, cancellation or failure rejects the checks.
+label event has yet to arrive remains waiting, as does a missing plan on the selected attempt.
+A cancelled first attempt with no retained plan can be skipped when another exact run supplies the
+authorized evidence. An in-progress newer run or a newer rerun still blocks selection of an earlier
+run. A cancellation or failure for the authorized profile still rejects the checks.
+[Release recovery decision](adr/2026-11-27-recover-release-ci-duplicates-and-inventory-reads.md).
 
 REST run and job `head_sha` identify the branch candidate. The retained plan's `sha` identifies the
 tested PR merge commit: its ordered parents must be approved main and candidate, and its tree must
@@ -280,7 +283,7 @@ closed. Paginated collections must agree with their advertised total count and h
 partial pages cannot establish completion. Additional formally required statuses must also pass.
 Reruns use their latest attempt, rechecked after observation, never earlier successful attempts.
 Before accepting evidence, the controller re-observes the complete matching run collection and
-waits if the selected run or attempt is no longer latest. This client observation is not atomic
+waits if the selected run or attempt is no longer latest under these rules. This client observation is not atomic
 with merging; server-side strict checks remain required.
 Receipts retain the exact resolved plan, artifact identity/digest and complete job outcomes.
 The [attempt-specific jobs endpoint](https://docs.github.com/en/rest/actions/workflow-jobs#list-jobs-for-a-workflow-run-attempt)
@@ -333,7 +336,8 @@ then verifies signed digests through the publisher. Bundles are retained for 90 
 missing-after-release-creation (even an empty draft) or ambiguous bundles require operator
 recovery of the original artifact. Every existing asset, including the signature, must match
 the retained bytes exactly; another valid signature is an identity conflict.
-Rebuilt archives never replace partially uploaded bytes. Signed provenance identifies the original
+During publication, differing complete inventory reads are retried with one- and two-second delays.
+Each retry requires two fresh matching traversals. Signed provenance identifies the original
 signing run; a later successful protected publication run may publish that same bundle. Pin-only
 credentials and failures remain independent of readiness. Release lookup includes drafts and all
 pages, independently of surviving Git refs, with a 1000-record observation limit. Secret readiness

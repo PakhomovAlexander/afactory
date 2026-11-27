@@ -450,10 +450,11 @@ class Controller:
         path = 'repos/' + self.args.repo + ('/' + endpoint if endpoint else '')
         return json.loads(run(['gh', 'api', path]))
 
-    def releases(self):
+    def releases(self, *, retry_delays=()):
         try:
             return observation.releases(lambda endpoint: run(
-                ['gh', 'api', 'repos/' + self.args.repo + '/' + endpoint, '--include']))
+                ['gh', 'api', 'repos/' + self.args.repo + '/' + endpoint, '--include']),
+                retry_delays=retry_delays)
         except ValueError as error:
             raise Refusal(str(error)) from error
 
@@ -635,10 +636,11 @@ class Controller:
             raise Refusal('runner_configuration: missing observable secret names ' + ', '.join(sorted(missing)))
         self.merge_prerequisite()
         self.validation_policy(source, policy)
-        labels = self.api('labels?per_page=100')
         profile = self.state['plan']['profile'] if self.state else (self.args.profile or 'fast')
-        if 'release:' + profile not in {item['name'] for item in labels}:
-            raise Refusal('release_label: provision release:' + profile + ' with make test-labels APPLY=1')
+        if profile == 'full':
+            labels = self.api('labels?per_page=100')
+            if 'release:full' not in {item['name'] for item in labels}:
+                raise Refusal('release_label: provision release:full with make test-labels APPLY=1')
         return policy
 
     def pages(self, endpoint, key=None):
@@ -704,8 +706,7 @@ class Controller:
             raise Refusal('validation_policy: enable the declared CI workflow')
         return workflow
 
-    def validation_plan(self, selected):
-        """Read the digest-verified resolver output of this exact run attempt."""
+    def validation_plan_artifact(self, selected):
         artifacts = self.pages('actions/runs/%s/artifacts' % selected['id'], 'artifacts')
         name = 'validation-plan-' + str(selected['run_attempt'])
         matches = [a for a in artifacts if a.get('name') == name]
@@ -717,6 +718,13 @@ class Controller:
         origin = artifact.get('workflow_run', {})
         if origin.get('id') != selected['id'] or origin.get('head_sha') != selected['head_sha']:
             raise Refusal('checks_rejected: foreign validation plan origin')
+        return artifact
+
+    def validation_plan(self, selected):
+        """Read the digest-verified resolver output of this exact run attempt."""
+        artifact = self.validation_plan_artifact(selected)
+        if artifact is None:
+            return None
         archive = subprocess.run(['gh', 'api', 'repos/' + self.args.repo +
                                   '/actions/artifacts/%s/zip' % artifact['id']],
                                  capture_output=True, timeout=remaining())
@@ -761,7 +769,15 @@ class Controller:
                          and x.get('base', {}).get('sha') == p['source']
                          and x.get('base', {}).get('ref') == 'main'
                          for x in r.get('pull_requests', []))]
-        return max(exact, key=lambda r: (r['id'], r['run_attempt']), default=None)
+        for run in sorted(exact, key=lambda r: (r['id'], r['run_attempt']), reverse=True):
+            # A cancellation before the resolver saved a plan proves no validation outcome.
+            # Recheck it on the final observation in case a plan or rerun becomes visible.
+            if (run['run_attempt'] == 1 and run['status'] == 'completed'
+                    and run.get('conclusion') == 'cancelled'
+                    and self.validation_plan_artifact(run) is None):
+                continue
+            return run
+        return None
 
     def pr_checks(self, pr):
         p = self.state['plan']
@@ -1125,7 +1141,8 @@ class Controller:
                 raise Refusal('pr_collision: foreign head or base')
             selected = {label['name'] for label in row['labels']
                         if label['name'].startswith(('release:', 'test:', 'no-'))}
-            if selected != {'release:' + p['profile']}:
+            allowed = (set(), {'release:fast'}) if p['profile'] == 'fast' else ({'release:full'},)
+            if selected not in allowed:
                 raise Refusal('profile_conflict: release PR labels differ from captured validation policy')
             if row['state'] == 'CLOSED':
                 raise Refusal('pr_closed: operator action required')
@@ -1164,8 +1181,11 @@ class Controller:
             self.branch_output_path().unlink(missing_ok=True)
             if not pr:
                 self.receipt('pr', 'intent')
+                # An unlabeled release PR already selects fast. Adding a label during
+                # creation also emits a labeled event that races the opened event.
+                labels = ['--label', 'release:full'] if p['profile'] == 'full' else []
                 self.gh('pr', 'create', '--base', 'main', '--head', p['branch'],
-                        '--title', 'release: v' + p['version'], '--label', 'release:' + p['profile'],
+                        '--title', 'release: v' + p['version'], *labels,
                         '--body', 'Release identity `' + self.state['identity'] + '`; exact source `' +
                         p['source'] + '`.\n\n' + p['policy']['compatibility'] +
                         '\n\nValidation profile: ' + p['profile'] + '; platform/archive/signature checks remain mandatory. Pin adoption is separate.')
@@ -1246,7 +1266,7 @@ class Controller:
         commit = next((r.split()[0] for r in refs if r.endswith('^{}')), refs[0].split()[0])
         if commit != self.state['merged']:
             raise Refusal('tag_collision: release tag names another commit')
-        releases = self.releases()
+        releases = self.releases(retry_delays=observation.PUBLICATION_RETRY_DELAYS)
         release = next((r for r in releases if r['tag_name'] == tag), None)
         if release is None or release['draft']:
             self.receipt('publication', 'waiting', next='wait for protected signing/publication runner')
