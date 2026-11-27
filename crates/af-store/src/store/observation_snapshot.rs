@@ -214,6 +214,10 @@ fn lock_shared(file: &File, start: libc::off_t, len: libc::off_t) -> io::Result<
 }
 
 fn live_index(file: &File) -> io::Result<Option<wal::LiveIndex>> {
+    // libc gives the constants different types on Apple and Linux. Match in flock's type.
+    const UNLOCKED: libc::c_short = libc::F_UNLCK as _;
+    const READ_LOCK: libc::c_short = libc::F_RDLCK as _;
+
     let mut lock = libc::flock {
         l_type: libc::F_WRLCK as _,
         l_whence: libc::SEEK_SET as _,
@@ -224,9 +228,9 @@ fn live_index(file: &File) -> io::Result<Option<wal::LiveIndex>> {
     // Observe the DMS without taking it. Holding it ourselves could keep a stale
     // index alive and stop the next SQLite connection from recovering the WAL.
     fcntl(file, FcntlArg::F_GETLK(&mut lock)).map_err(io::Error::from)?;
-    match i32::from(lock.l_type) {
-        libc::F_UNLCK => Ok(None),
-        libc::F_RDLCK => {
+    match lock.l_type {
+        UNLOCKED => Ok(None),
+        READ_LOCK => {
             let mut bytes = [0; wal::INDEX_PREFIX_BYTES];
             file.read_exact_at(&mut bytes, 0).map_err(|error| {
                 io::Error::other(format!("cannot read live SQLite WAL index; retry: {error}"))
@@ -283,6 +287,15 @@ mod tests {
         assert!(check_size(INPUT_LIMIT - 1, 1).is_ok());
         assert!(check_size(INPUT_LIMIT, 1).is_err());
         assert!(check_size(u64::MAX, 1).is_err());
+    }
+
+    #[test]
+    fn observation_snapshot_ignores_unlocked_wal_index() {
+        let index = tempfile::NamedTempFile::new().unwrap();
+        let reader = open_source(index.path()).unwrap();
+
+        // The kernel reports no DMS holder, so even an empty index is ignored.
+        assert!(live_index(&reader).unwrap().is_none());
     }
 
     #[test]
