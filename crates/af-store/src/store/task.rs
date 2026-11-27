@@ -599,7 +599,7 @@ fn plan_for_revision(
     revision_id: &str,
     revision: &TaskRevisionV1,
 ) -> Result<ExecutionPlan, StoreError> {
-    let plan: ExecutionPlan = payload(cas, id, task::EXECUTION_PLAN_V4)?;
+    let plan: ExecutionPlan = payload(cas, id, task::EXECUTION_PLAN_V5)?;
     plan.validate().map_err(conflict)?;
     if plan.task_revision_id != revision_id
         || plan.authority != revision.authority

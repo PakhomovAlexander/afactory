@@ -70,7 +70,7 @@ enum Protocol {
 
 impl NativeLogin {
     pub(super) fn start(spec: &ProviderSpec, lock: &BoundDirectoryLock) -> Result<Self, Failure> {
-        if spec.kind == ProviderKind::Pi {
+        if matches!(spec.kind, ProviderKind::Pi | ProviderKind::Antigravity) {
             return Err(Failure::Unsupported);
         }
         super::super::availability::check(spec).map_err(|_| Failure::Failed)?;
@@ -115,7 +115,7 @@ impl NativeLogin {
         kind: ProviderKind,
         guarded: bool,
     ) -> Result<Self, Failure> {
-        if kind == ProviderKind::Pi {
+        if matches!(kind, ProviderKind::Pi | ProviderKind::Antigravity) {
             return Err(Failure::Unsupported);
         }
         if !guarded {
@@ -148,7 +148,7 @@ impl NativeLogin {
             guarded,
             stdout,
             protocol: match kind {
-                ProviderKind::Pi => return Err(Failure::Failed),
+                ProviderKind::Pi | ProviderKind::Antigravity => return Err(Failure::Unsupported),
                 ProviderKind::Codex => Protocol::Codex(Codex::default()),
                 ProviderKind::Claude => Protocol::Claude(Claude::default()),
             },
@@ -464,7 +464,7 @@ fn validate_url(kind: ProviderKind, url: &str) -> Result<(), Failure> {
         return Err(Failure::InvalidChallenge);
     };
     let allowed = match kind {
-        ProviderKind::Pi => false,
+        ProviderKind::Pi | ProviderKind::Antigravity => false,
         ProviderKind::Codex => host == "auth.openai.com" && path == "codex/device",
         ProviderKind::Claude => {
             matches!(host, "claude.ai" | "claude.com" | "platform.claude.com") && !path.is_empty()

@@ -54,13 +54,13 @@ mod tests {
     #[test]
     fn one_current_kind_format_preserves_every_installed_profile_and_refuses_retired_labels() {
         let common: serde_json::Value =
-            serde_json::from_str(include_str!("../../../../schemas/task-contracts-v4.json"))
+            serde_json::from_str(include_str!("../../../../schemas/task-contracts-v5.json"))
                 .unwrap();
         let schema: serde_json::Value =
             serde_json::from_str(include_str!("../../../../schemas/task-kind-v3.json")).unwrap();
         let registry = jsonschema::Registry::new()
             .add(
-                "urn:af:schema:task-contracts:4",
+                "urn:af:schema:task-contracts:5",
                 jsonschema::Resource::from_contents(common),
             )
             .unwrap()

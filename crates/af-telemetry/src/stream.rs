@@ -83,6 +83,8 @@ pub enum Harness {
     Claude,
     /// `codex exec --json`.
     Codex,
+    /// `agy --input-format stream-json --output-format stream-json`.
+    Antigravity,
 }
 
 /// Which pipe a chunk came from.
@@ -400,6 +402,24 @@ impl Usage {
         }
     }
 
+    /// Antigravity's `usage`: input already excludes cache reads.
+    fn antigravity(value: &Value) -> Self {
+        let mut malformed = false;
+        let usage = Self {
+            input: Self::counter(value, "input_tokens", &mut malformed),
+            output: Self::counter(value, "output_tokens", &mut malformed),
+            cache_read: Self::counter(value, "cache_read_tokens", &mut malformed),
+            cache_write: None,
+            reasoning: Self::counter(value, "thinking_tokens", &mut malformed),
+            malformed,
+            reported: value.is_object(),
+        };
+        Self {
+            malformed: usage.malformed || !value.is_object(),
+            ..usage
+        }
+    }
+
     fn attrs(&self, harness: Harness, mut attrs: Attrs) -> Attrs {
         if !self.reported {
             return attrs.enumerated("af.usage.observation", "unknown");
@@ -417,7 +437,7 @@ impl Usage {
         }
         // The conventions' input includes cached tokens; the exact split stays in `af.usage.*`.
         let input = match harness {
-            Harness::Claude => self.input.map(|input| {
+            Harness::Claude | Harness::Antigravity => self.input.map(|input| {
                 u128::from(input)
                     + u128::from(self.cache_read.unwrap_or(0))
                     + u128::from(self.cache_write.unwrap_or(0))
@@ -847,9 +867,13 @@ impl Tap {
             self.pend("line", Media::Text, line);
             return;
         }
+        let kind_key = match self.options.harness {
+            Harness::Antigravity => "event",
+            Harness::Claude | Harness::Codex => "type",
+        };
         let Some(value) = serde_json::from_slice::<Value>(line)
             .ok()
-            .filter(|value| value.get("type").is_some_and(Value::is_string))
+            .filter(|value| value.get(kind_key).is_some_and(Value::is_string))
         else {
             self.unparsed_lines += 1;
             self.unparsed_bytes += line.len() as u64;
@@ -859,6 +883,7 @@ impl Tap {
         match self.options.harness {
             Harness::Claude => self.claude(writer, &value, arrival),
             Harness::Codex => self.codex(writer, &value, arrival),
+            Harness::Antigravity => self.antigravity(writer, &value, arrival),
         }
     }
 
@@ -1549,6 +1574,93 @@ impl Tap {
             _ => (event::OTHER_ITEM, attrs),
         };
         self.on_turn(writer, name, attrs, arrival);
+    }
+
+    // --------------------------------------------------------------------------------------
+    // Antigravity
+
+    fn antigravity(&mut self, writer: &Writer, value: &Value, arrival: u128) {
+        let kind = value.get("event").and_then(Value::as_str).unwrap_or("");
+        match kind {
+            "init" => {
+                let mut attrs = Attrs::new().enumerated("af.stream.kind", "init");
+                if let Some(conv) = value.get("conversation_id").and_then(Value::as_str) {
+                    let corr = self.corr(conv);
+                    attrs = attrs
+                        .id("af.corr", corr.clone())
+                        .text("gen_ai.conversation.id", corr);
+                }
+                if let Some(model) = value
+                    .get("init")
+                    .and_then(|init| init.get("model"))
+                    .and_then(Value::as_str)
+                {
+                    attrs = self.model_attrs(attrs, Some(model), "gen_ai.response.model");
+                }
+                self.on_harness(writer, event::INIT, attrs, arrival);
+            }
+            "step_update" => {
+                let update = value.get("step_update").unwrap_or(&Value::Null);
+                let state = update.get("state").and_then(Value::as_str).unwrap_or("");
+                let step_type = update
+                    .get("step_type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if step_type == "agent_response" {
+                    if self.turn.is_none() {
+                        self.open_turn(writer, arrival);
+                    }
+                    if let Some(conv) = update
+                        .get("conversation_id")
+                        .or_else(|| value.get("conversation_id"))
+                        .and_then(Value::as_str)
+                    {
+                        let corr = self.corr(conv);
+                        if let Some(turn) = self.turn.as_mut() {
+                            turn.message = Some(corr);
+                        }
+                    }
+                    if let Some(text) = update.get("text_delta").and_then(Value::as_str) {
+                        if let Some(turn) = self.turn.as_mut() {
+                            turn.text_blocks += 1;
+                            turn.text_bytes += text.len() as i64;
+                            turn.last = arrival;
+                        }
+                        self.pend_value("output", Some(&Value::String(text.to_owned())));
+                    }
+                    if state == "DONE" {
+                        if let Some(usage) = update.get("usage")
+                            && let Some(turn) = self.turn.as_mut()
+                        {
+                            turn.usage = Usage::antigravity(usage);
+                        }
+                        self.close_turn(writer, arrival, "succeeded", 0);
+                    }
+                }
+            }
+            "result" => {
+                let result = value.get("result").unwrap_or(&Value::Null);
+                let ok = result.get("status").and_then(Value::as_str) == Some("SUCCESS");
+                if self.turn.is_some() {
+                    self.close_turn(writer, arrival, if ok { "succeeded" } else { "failed" }, 0);
+                }
+                let mut attrs = Attrs::new()
+                    .enumerated("af.stream.kind", "result")
+                    .boolean("af.result.is_error", !ok);
+                if let Some(turns) = result.get("num_turns").and_then(Value::as_i64) {
+                    attrs = attrs.int("af.result.num_turns", turns);
+                }
+                if let Some(conv) = result.get("conversation_id").and_then(Value::as_str) {
+                    let corr = self.corr(conv);
+                    attrs = attrs.id("af.corr", corr);
+                }
+                attrs = attrs.int("af.result.bytes", size_of(result.get("response")));
+                self.on_harness(writer, event::RESULT, attrs, arrival);
+            }
+            _ => {
+                self.unparsed_lines += 1;
+            }
+        }
     }
 
     // --------------------------------------------------------------------------------------

@@ -3033,7 +3033,7 @@ fn capture_execution_plan(
     plan: &ExecutionPlan,
 ) -> Result<String, String> {
     cas.put_artifact(
-        EXECUTION_PLAN_V4,
+        EXECUTION_PLAN_V5,
         producer(),
         vec![revision_id.to_owned()],
         None,
@@ -3681,7 +3681,7 @@ pub(super) fn run(
             .plan_id
             .as_deref()
             .ok_or("Task has no captured plan")?,
-        EXECUTION_PLAN_V4,
+        EXECUTION_PLAN_V5,
     )?;
     let graph: CompiledTask = artifact(&cas, &plan.compiled_graph_id, COMPILED_TASK_V4)?;
     compiler = restore_experimental_slots(compiler, &graph)?;
@@ -4743,7 +4743,7 @@ struct Inspection {
 }
 
 /// The document `af task show --json` and `af task explain --json` print.
-pub(crate) const TASK_INSPECTION_V22: &str = "af/task-inspection@22";
+pub(crate) const TASK_INSPECTION_V22: &str = "af/task-inspection@23";
 
 #[allow(clippy::too_many_arguments)]
 fn present_with_format(
@@ -6062,7 +6062,7 @@ fn inspection(
         value["undeclared_af_paths"] = serde_json::to_value(group).map_err(|e| e.to_string())?;
     }
     if explain && let Some(id) = &state.plan_id {
-        let plan: ExecutionPlan = artifact(cas, id, EXECUTION_PLAN_V4)?;
+        let plan: ExecutionPlan = artifact(cas, id, EXECUTION_PLAN_V5)?;
         let graph = artifact::<CompiledTask>(cas, &plan.compiled_graph_id, COMPILED_TASK_V4)?;
         // Each Worker slot's binding beside its Attempt wall (ADR-0257).
         value["slots"] = preview::slots_value(cas, &plan, &graph);

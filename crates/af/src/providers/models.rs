@@ -25,6 +25,8 @@ use af_runner::models::{self as rules, Catalog, CatalogModel, Kind, Resolution};
 pub(crate) const CLAUDE_SOURCE: &str = "claude list_models";
 /// The source a Codex catalog is read from.
 pub(crate) const CODEX_SOURCE: &str = "codex app-server model/list";
+/// The source an Antigravity catalog is read from.
+pub(crate) const ANTIGRAVITY_SOURCE: &str = "agy acp session/new";
 
 /// What a listed catalog proves, printed under every one.
 pub(crate) const PROOF: &str = "af recognises these spellings for this Provider: they are what \
@@ -120,6 +122,7 @@ fn rule_kind(kind: ProviderKind) -> Kind {
         ProviderKind::Pi => Kind::Pi,
         ProviderKind::Claude => Kind::Claude,
         ProviderKind::Codex => Kind::Codex,
+        ProviderKind::Antigravity => Kind::Antigravity,
     }
 }
 
@@ -221,11 +224,51 @@ fn probe_spec(spec: &ProviderSpec, cancelled: &AtomicBool, check_cli: bool) -> C
         ProviderKind::Pi => unreachable!("Pi catalog uses the SDK host"),
         ProviderKind::Claude => claude_catalog(&program, spec, &probe_path, cancelled),
         ProviderKind::Codex => codex_catalog(&program, spec, &probe_path, cancelled),
+        ProviderKind::Antigravity => antigravity_catalog(&program, spec, &probe_path, cancelled),
     };
     match listed {
         Ok(report) => CatalogOutcome::Listed(report),
         Err(reason) => CatalogOutcome::Unavailable(reason),
     }
+}
+
+/// The Antigravity catalog: `session/new` over `agy acp --stdio` after `initialize`.
+fn antigravity_catalog(
+    program: &Path,
+    spec: &ProviderSpec,
+    probe_path: &std::ffi::OsStr,
+    cancelled: &AtomicBool,
+) -> Result<CatalogReport, String> {
+    let mut observed = AppServerProbe::default();
+    let session = super::antigravity::probe_acp_session(
+        program,
+        spec,
+        probe_path,
+        cancelled,
+        None,
+        None,
+        &mut observed,
+    )?;
+    if !session.authenticated {
+        return Err("antigravity ACP `session/new` requires authentication; log in first".into());
+    }
+    let result = session
+        .models_result
+        .ok_or("agy acp answered `session/new` without a result object")?;
+    let (catalog, skipped) = super::antigravity::parse_acp_models(&result)?;
+    let version = session.version.or_else(|| {
+        match version_check(program, spec, probe_path, cancelled, None) {
+            VersionCheck::Reported(Some(line)) => version_word(&line),
+            _ => None,
+        }
+    });
+    Ok(CatalogReport {
+        source: ANTIGRAVITY_SOURCE,
+        version,
+        fetched_at: None,
+        catalog,
+        skipped,
+    })
 }
 
 /// The Codex catalog: `model/list` on a bare app-server, the CLI's version, and the cache's
@@ -1246,7 +1289,7 @@ fn resolution_lines(catalog: &ProviderCatalog, request: &ResolveRequest) -> Vec<
     lines
 }
 
-/// The versioned `af/provider-models@4` document.
+/// The versioned `af/provider-models@5` document.
 pub(crate) fn document(
     catalogs: &[ProviderCatalog],
     resolve: Option<&ResolveRequest>,
@@ -1285,6 +1328,7 @@ pub(crate) fn document(
                     Kind::Pi => "AF Pi SDK host catalog",
                     Kind::Claude => CLAUDE_SOURCE,
                     Kind::Codex => CODEX_SOURCE,
+                    Kind::Antigravity => ANTIGRAVITY_SOURCE,
                 },
                 "harness_version": report.and_then(|report| report.version.clone()),
                 "freshness": {
@@ -1319,7 +1363,7 @@ pub(crate) fn document(
         })
         .collect();
     serde_json::json!({
-        "schema": "af/provider-models@4",
+        "schema": "af/provider-models@5",
         "exit_code": exit_code,
         "token_free": true,
         "proves": PROOF,

@@ -465,7 +465,7 @@ explicit node outputs, exact Worker bindings and captured policy. Compilation em
 `af.compiled-task/6` in `af/CompiledTask@4`. Native Review operations are ordinary primitive
 operators; `review_domain`, `review_integration_checks` and the optional Campaign phase graph
 are refused. The captured engine is `af.task-engine/4`; inspection is
-`af/task-inspection@22`, recorded-plan inspection `af/task-plan-inspection@7`, and Experimental
+`af/task-inspection@23`, recorded-plan inspection `af/task-plan-inspection@7`, and Experimental
 execution plans `af.experiment-execution-plan/3` in `af/ExperimentExecutionPlan@3`.
 These changed closed shapes have current writers, schemas and explicit retired-format refusal.
 Pipeline `/6`, TaskKind `/3` and unchanged referenced subshapes keep their existing identities.

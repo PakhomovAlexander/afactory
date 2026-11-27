@@ -83,10 +83,10 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("performance-pr-proof", 1),
     schema!("performance-publication-activation", 1),
     schema!("pi-provider-setup", 4),
-    schema!("provider-detect", 4),
-    schema!("provider-models", 4),
-    schema!("provider-setup", 2),
-    schema!("provider-status", 6),
+    schema!("provider-detect", 5),
+    schema!("provider-models", 5),
+    schema!("provider-setup", 3),
+    schema!("provider-status", 7),
     schema!("result-document", 1),
     schema!("result-snapshot", 1),
     schema!("review-decision-context", 1),
@@ -125,7 +125,7 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("task-diff", 1),
     schema!("task-event", 4),
     schema!("task-findings", 3),
-    schema!("task-inspection", 22),
+    schema!("task-inspection", 23),
     schema!("task-list-entry", 5),
     schema!("task-list", 5),
     schema!("task-materialized", 1),
@@ -266,19 +266,19 @@ mod tests {
     }
 
     #[test]
-    fn schema_listing_names_provider_status_v6_and_its_sdk_host_scope() {
+    fn schema_listing_names_provider_status_v7_and_its_sdk_host_scope() {
         let line = listing()
             .lines()
-            .find(|line| line.starts_with("af/provider-status@6 "))
+            .find(|line| line.starts_with("af/provider-status@7 "))
             .unwrap()
             .to_owned();
         assert_eq!(
             line.split_whitespace().collect::<Vec<_>>(),
-            ["af/provider-status@6", "Provider", "status@6"]
+            ["af/provider-status@7", "Provider", "status@7"]
         );
         let (_, _, text) = SCHEMAS
             .iter()
-            .find(|(id, _, _)| *id == "af/provider-status@6")
+            .find(|(id, _, _)| *id == "af/provider-status@7")
             .unwrap();
         let schema: serde_json::Value = serde_json::from_str(text).unwrap();
         assert!(schema["$comment"].as_str().unwrap().contains("Pi SDK host"));
@@ -295,7 +295,7 @@ mod tests {
             refusal("task-status-v3.json"),
             "this af ships no schema task-status-v3.json; `af schema show` lists the ids it ships"
         );
-        assert!(refusal("af/task-inspection@18").contains("only af/task-inspection@22"));
+        assert!(refusal("af/task-inspection@18").contains("only af/task-inspection@23"));
         assert_eq!(
             refusal("af.ci-diagnosis/0"),
             "this af ships no schema af.ci-diagnosis/0, only af.ci-diagnosis/1; run af schema \

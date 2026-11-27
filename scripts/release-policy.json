@@ -205,7 +205,7 @@
       ".github/workflows/ci.yml": "27944b207fc1e97dcde3b3647647b0c6666f0ddaa21ae7c32ce895dba8bcbe6b",
       ".github/workflows/validate.yml": "394257f69b5d58043cb0dc8fdd200d12cf822d346b1c47fd369bcc47aaac1106",
       "scripts/test-classes.py": "c89ece37044baf125771d301cb1f4f10e3e407681e63b6f5a6cd67458f57a5ce",
-      ".config/test-classes.json": "cea10b91e9fe9c0efbbd81e7446d052c26fe46be1ed72f8bc7323e06f07c22fe"
+      ".config/test-classes.json": "25fc60bee93ad63e74b988e9c6cdd8da3ede46f7d7d2d57b4be5275fc4de8180"
     }
   }
 }

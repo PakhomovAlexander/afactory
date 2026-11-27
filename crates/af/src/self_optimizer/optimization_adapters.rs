@@ -1258,7 +1258,7 @@ mod tests {
     fn real_inspection_shape_requires_attestation_and_reconciles_cumulative_attempts() {
         let dir = tempfile::tempdir().unwrap();
         let mut adapter = state("af", dir.path());
-        let receipt = serde_json::json!({"schema":"af/task-inspection@22","task_id":"declared-session","chargeable_tokens":"17",
+        let receipt = serde_json::json!({"schema":"af/task-inspection@23","task_id":"declared-session","chargeable_tokens":"17",
             "history":[{"transition":{"now_unix_ms":1,"change":{"kind":"opened"}}},
                 {"transition":{"now_unix_ms":2,"change":{"kind":"execution_recorded","record_id":"reserved"}}},
                 {"transition":{"now_unix_ms":3,"change":{"kind":"execution_recorded","record_id":"started"}}},
@@ -1328,7 +1328,7 @@ mod tests {
     }
 
     /// A Task whose file bound a root input port carries an `input_bindings` record in the same
-    /// `af/task-inspection@22` document. The adapter admits it, and its accounting reads exactly
+    /// `af/task-inspection@23` document. The adapter admits it, and its accounting reads exactly
     /// as the same receipt without the record (ADR-0117). The receipt is a real
     /// `af task plan --json` document from the `bound-inputs` fixture, written by
     /// `crates/af/tests/task_input_bindings.rs` under `AF_WRITE_INSPECTION_FIXTURE=1`.
@@ -1337,7 +1337,7 @@ mod tests {
         let real =
             include_str!("../../../../fixtures/task-runtime/bound-inputs/inspection-bound.json");
         let mut receipt: serde_json::Value = serde_json::from_str(real).unwrap();
-        assert_eq!(receipt["schema"], "af/task-inspection@22");
+        assert_eq!(receipt["schema"], "af/task-inspection@23");
         assert!(receipt["input_bindings"]["bindings"]["history"].is_object());
         // The adapter admits a receipt only for the execution it declared: this Task.
         let task_id = receipt["task_id"].as_str().unwrap().to_owned();
@@ -1371,7 +1371,7 @@ mod tests {
         adapter.attest_project = true;
         let exact = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
         let receipt = serde_json::json!({
-            "schema":"af/task-inspection@22",
+            "schema":"af/task-inspection@23",
             "task_id":"declared-session",
             "chargeable_tokens":"19",
             "history":[],

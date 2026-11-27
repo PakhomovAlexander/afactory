@@ -322,7 +322,7 @@ mod origin_tests {
         let mut builder = jsonschema::Registry::new();
         let mut origin = serde_json::Value::Null;
         for name in [
-            "task-contracts-v4.json",
+            "task-contracts-v5.json",
             "task-input-bindings-v1.json",
             selected,
         ] {

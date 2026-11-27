@@ -236,7 +236,7 @@
   },
   "$defs": {
     "digest": {
-      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
     },
     "commit": {
       "type": "string",

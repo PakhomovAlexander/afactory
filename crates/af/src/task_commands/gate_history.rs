@@ -18,7 +18,7 @@ fn identity(cas: &Cas, task: &TaskProjection) -> Option<(String, String)> {
 
 fn checks(cas: &Cas, task: &TaskProjection) -> Option<BTreeSet<String>> {
     let plan_id = task.plan_id.as_deref()?;
-    let plan: ExecutionPlan = artifact(cas, plan_id, EXECUTION_PLAN_V4).ok()?;
+    let plan: ExecutionPlan = artifact(cas, plan_id, EXECUTION_PLAN_V5).ok()?;
     let graph: CompiledTask = artifact(cas, &plan.compiled_graph_id, COMPILED_TASK_V4).ok()?;
     Some(
         graph

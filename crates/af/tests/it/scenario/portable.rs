@@ -394,7 +394,7 @@ distinct_models = true
         fs::set_permissions(codex, fs::Permissions::from_mode(0o755)).unwrap();
         fs::write(
             root.join("providers.toml"),
-            toml::to_string(&json!({"version":4,"providers":[
+            toml::to_string(&json!({"version":5,"providers":[
                 {"id":format!("portable-{issue}"),"kind":"codex","auth_dir":provider_home}
             ]}))
             .unwrap(),

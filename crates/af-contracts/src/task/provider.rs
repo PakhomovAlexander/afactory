@@ -4,7 +4,7 @@ use super::plan::WorkerExecutionV3;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-pub const TASK_PROVIDER_ADMISSION_V4: &str = "af/TaskProviderAdmission@4";
+pub const TASK_PROVIDER_ADMISSION_V5: &str = "af/TaskProviderAdmission@5";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

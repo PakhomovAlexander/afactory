@@ -649,7 +649,7 @@ impl CompiledTask {
                             "result".into(),
                             PipelinePortV1 {
                                 artifact_type:
-                                    af_contracts::task::provider::TASK_PROVIDER_ADMISSION_V4.into(),
+                                    af_contracts::task::provider::TASK_PROVIDER_ADMISSION_V5.into(),
                                 cardinality: af_contracts::PortCardinality::One,
                                 optional: false,
                                 affinity: PortAffinityV1::Unbound {},

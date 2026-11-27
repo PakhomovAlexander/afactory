@@ -25,6 +25,7 @@ af-runner = { path = "../af-runner" }
 af-runner-claude = { path = "../af-runner-claude" }
 af-runner-pi = { path = "../af-runner-pi" }
 af-runner-codex = { path = "../af-runner-codex" }
+af-runner-antigravity = { path = "../af-runner-antigravity" }
 af-source-git = { path = "../af-source-git" }
 af-source-issue = { path = "../af-source-issue" }
 af-store = { path = "../af-store" }

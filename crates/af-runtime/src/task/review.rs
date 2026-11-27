@@ -876,7 +876,7 @@ impl ReviewTaskDomain {
             serde_json::from_value(record.payload).map_err(|e| e.to_string())?;
         receipt.validate()?;
         let plan_record = envelope(cas, &receipt.invocation.plan_id)?;
-        if plan_record.artifact_type != af_contracts::task::EXECUTION_PLAN_V4 {
+        if plan_record.artifact_type != af_contracts::task::EXECUTION_PLAN_V5 {
             return Err("Native Round has no current plan".into());
         }
         let plan: ExecutionPlan =
@@ -920,7 +920,7 @@ impl ReviewTaskDomain {
         // Task has another graph even when it uses the same Pipeline and Review policy.
         // Recompute under that exact original graph, preserving the shared depth bound.
         let original_plan = envelope(cas, &receipt.invocation.plan_id)?;
-        if original_plan.artifact_type != af_contracts::task::EXECUTION_PLAN_V4 {
+        if original_plan.artifact_type != af_contracts::task::EXECUTION_PLAN_V5 {
             return Err("Review history lost its current captured plan".into());
         }
         let original_plan: ExecutionPlan =

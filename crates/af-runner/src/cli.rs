@@ -40,8 +40,9 @@ const FIX_MARKERS: [&str; 8] = [
 
 /// What an argument parser prints when it refuses an option or argument it does not know:
 /// commander (`error: unknown option '--safe-mode'`), clap (`error: unexpected argument '--stdio'
-/// found`), argparse and getopt (`unrecognized arguments`, `unrecognised option`).
-const INVOCATION_ERROR_MARKERS: [&str; 9] = [
+/// found`), Go flag (`flags provided but not defined: -foo`, `flag provided but not defined`,
+/// `flag needs an argument`), argparse and getopt (`unrecognized arguments`, `unrecognised option`).
+const INVOCATION_ERROR_MARKERS: [&str; 12] = [
     "unknown option",
     "unexpected argument",
     "unrecognized option",
@@ -51,6 +52,9 @@ const INVOCATION_ERROR_MARKERS: [&str; 9] = [
     "unrecognised argument",
     "unrecognised subcommand",
     "unknown argument",
+    "flags provided but not defined",
+    "flag provided but not defined",
+    "flag needs an argument",
 ];
 
 /// One option af passes: the spelling it emits, and the long name a help page lists it under.

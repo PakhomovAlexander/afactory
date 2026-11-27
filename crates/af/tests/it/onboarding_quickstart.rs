@@ -184,7 +184,7 @@ test -z "$(git remote)"
     );
     let plan: serde_json::Value =
         serde_json::from_slice(&std::fs::read(root.path().join("plan.json")).unwrap()).unwrap();
-    assert_eq!(plan["schema"], "af/task-inspection@22");
+    assert_eq!(plan["schema"], "af/task-inspection@23");
     assert_eq!(plan["attempts"], 0);
     assert!(plan["plan"].is_object());
     assert!(plan["graph"].is_object());

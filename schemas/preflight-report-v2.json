@@ -38,10 +38,10 @@
           "type": "string"
         },
         "plan_id": {
-          "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
         },
         "revision_id": {
-          "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
         },
         "observed_at_unix_ms": {
           "type": "integer",
@@ -59,12 +59,12 @@
           ],
           "properties": {
             "expected_original_source_snapshot_id": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
             },
             "source_snapshot_id": {
               "anyOf": [
                 {
-                  "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+                  "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
                 },
                 {
                   "type": "null"
@@ -74,7 +74,7 @@
             "retained_candidate_snapshot_id": {
               "anyOf": [
                 {
-                  "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+                  "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
                 },
                 {
                   "type": "null"
@@ -340,13 +340,13 @@
           ],
           "properties": {
             "inspection": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
             },
             "checklist": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
             },
             "diff": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
             }
           }
         }

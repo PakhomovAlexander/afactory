@@ -401,7 +401,7 @@ pub fn run_planned(planned: Planned, host: impl FnOnce(&Path) -> RemoteCheckHost
     let (plan, graph) = compiler.compile(&cas, &revision, &pipeline_name).unwrap();
     let plan_id = cas
         .put_artifact(
-            EXECUTION_PLAN_V4,
+            EXECUTION_PLAN_V5,
             producer(),
             vec![],
             None,

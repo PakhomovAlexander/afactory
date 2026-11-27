@@ -21,6 +21,12 @@ use super::*;
 const CLAUDE_MARKERS: &[&str] = &[".claude.json", ".credentials.json", "settings.json"];
 /// The marker names that make a directory a Codex auth directory.
 const CODEX_MARKERS: &[&str] = &["auth.json", "config.toml"];
+/// The marker names that make a directory an Antigravity auth directory.
+const ANTIGRAVITY_MARKERS: &[&str] = &[
+    "installation_id",
+    "jetski_state.pbtxt",
+    "conversation_summaries.db",
+];
 
 /// Harness CLIs af does not drive yet: listed by name and version when found on `PATH`, never
 /// probed, and none of their directories is scanned.
@@ -289,10 +295,14 @@ pub fn run(options: DetectOptions) -> Result<i32, String> {
     if only == Some(ProviderKind::Pi) {
         return Err("Pi uses explicit `af provider setup --kind pi --backend openai-codex --auth-dir DIR --sdk-entrypoint FILE`; it has no ambient discovery".into());
     }
-    let kinds: Vec<ProviderKind> = [ProviderKind::Claude, ProviderKind::Codex]
-        .into_iter()
-        .filter(|kind| only.is_none_or(|only| only == *kind))
-        .collect();
+    let kinds: Vec<ProviderKind> = [
+        ProviderKind::Claude,
+        ProviderKind::Codex,
+        ProviderKind::Antigravity,
+    ]
+    .into_iter()
+    .filter(|kind| only.is_none_or(|only| only == *kind))
+    .collect();
     if !options.ids.is_empty() && options.ids.len() != options.dirs.len() {
         return usage(
             options.json,
@@ -382,19 +392,25 @@ pub fn run(options: DetectOptions) -> Result<i32, String> {
                     claude.push(DEFAULT_CLAUDE_MARKER);
                 }
                 let codex = markers_in(probe, CODEX_MARKERS).unwrap_or_default();
-                match (claude.is_empty(), codex.is_empty()) {
-                    (false, true) => ProviderKind::Claude,
-                    (true, false) => ProviderKind::Codex,
-                    (both_empty, _) => {
-                        let what = if both_empty {
-                            "holds no login marker of either kind"
-                        } else {
-                            "holds login markers of both kinds"
-                        };
+                let antigravity = markers_in(probe, ANTIGRAVITY_MARKERS).unwrap_or_default();
+                match (claude.is_empty(), codex.is_empty(), antigravity.is_empty()) {
+                    (false, true, true) => ProviderKind::Claude,
+                    (true, false, true) => ProviderKind::Codex,
+                    (true, true, false) => ProviderKind::Antigravity,
+                    (true, true, true) => {
                         return usage(
                             options.json,
                             &format!(
-                                "--dir {} {what}; pass --kind claude or --kind codex",
+                                "--dir {} holds no login marker of any supported kind; pass --kind claude, --kind codex, or --kind antigravity",
+                                dir.display()
+                            ),
+                        );
+                    }
+                    _ => {
+                        return usage(
+                            options.json,
+                            &format!(
+                                "--dir {} holds login markers of multiple kinds; pass --kind claude, --kind codex, or --kind antigravity",
                                 dir.display()
                             ),
                         );
@@ -612,6 +628,7 @@ fn selector(kind: ProviderKind) -> &'static str {
         ProviderKind::Pi => "AF_PI_AUTH_DIR_NOT_AMBIENT",
         ProviderKind::Claude => "CLAUDE_CONFIG_DIR",
         ProviderKind::Codex => "CODEX_HOME",
+        ProviderKind::Antigravity => "AF_ANTIGRAVITY_AUTH_DIR_NOT_AMBIENT",
     }
 }
 
@@ -620,6 +637,7 @@ fn marker_names(kind: ProviderKind) -> &'static [&'static str] {
         ProviderKind::Pi => &["auth.json"],
         ProviderKind::Claude => CLAUDE_MARKERS,
         ProviderKind::Codex => CODEX_MARKERS,
+        ProviderKind::Antigravity => ANTIGRAVITY_MARKERS,
     }
 }
 
@@ -832,12 +850,19 @@ fn scanned_dirs(
     found
 }
 
-/// `~/.claude` or `~/.codex`, then the literal one-level sibling names, sorted: `~/.<kind>-*`,
-/// `~/.config/<kind>` and `~/.config/<kind>-*`.
+fn default_home_dir(kind: ProviderKind, home: &Path) -> PathBuf {
+    match kind {
+        ProviderKind::Antigravity => home.join(".gemini").join("antigravity-cli"),
+        _ => home.join(format!(".{}", kind.name())),
+    }
+}
+
+/// `~/.claude`, `~/.codex`, or `~/.gemini/antigravity-cli`, then the literal one-level sibling
+/// names, sorted: `~/.<kind>-*`, `~/.config/<kind>` and `~/.config/<kind>-*`.
 fn home_dirs(kind: ProviderKind, home: &Path) -> Vec<(PathBuf, Source)> {
     let name = kind.name();
     let mut found = Vec::new();
-    let default = home.join(format!(".{name}"));
+    let default = default_home_dir(kind, home);
     if fs::metadata(&default).is_ok_and(|meta| meta.is_dir()) {
         found.push((default, Source::Default));
     }
@@ -887,7 +912,11 @@ pub(super) fn names_only_scan() -> Vec<PathBuf> {
     let home = home_dir();
     let mut ignored = Vec::new();
     let mut found = Vec::new();
-    for kind in [ProviderKind::Claude, ProviderKind::Codex] {
+    for kind in [
+        ProviderKind::Claude,
+        ProviderKind::Codex,
+        ProviderKind::Antigravity,
+    ] {
         for (path, _) in scanned_dirs(kind, home.as_deref(), &mut ignored) {
             let path = fs::canonicalize(&path).unwrap_or(path);
             if !found.contains(&path) {
@@ -919,7 +948,11 @@ pub(super) fn registrable_logins() -> Vec<(PathBuf, ProviderKind)> {
         Ok(None) | Err(_) => Vec::new(),
     };
     let home = home_dir();
-    let kinds = [ProviderKind::Claude, ProviderKind::Codex];
+    let kinds = [
+        ProviderKind::Claude,
+        ProviderKind::Codex,
+        ProviderKind::Antigravity,
+    ];
     let mut ignored = Vec::new();
     let mut candidates = Vec::new();
     for kind in kinds {
@@ -1468,6 +1501,14 @@ fn login_label(kind: ProviderKind, auth: Auth, status: &ProviderStatus) -> Strin
             _ => "Claude (other method)".into(),
         },
         (ProviderKind::Codex, _) => "Codex (other method)".into(),
+        (ProviderKind::Antigravity, "OAuth" | "oauth") => {
+            if status.subscription.is_empty() || status.subscription == "-" {
+                "Antigravity (OAuth)".into()
+            } else {
+                format!("{} (OAuth)", status.subscription)
+            }
+        }
+        (ProviderKind::Antigravity, _) => "Antigravity (other method)".into(),
     }
 }
 
@@ -1520,7 +1561,7 @@ fn account_label(kind: ProviderKind, auth: Auth, answer: &str) -> Option<String>
 fn derived_id(candidate: &Candidate, home: Option<&Path>) -> String {
     let kind = candidate.kind.name();
     let path = candidate.path();
-    let default = home.map(|home| home.join(format!(".{kind}")));
+    let default = home.map(|home| default_home_dir(candidate.kind, home));
     let canonical_default = default
         .as_deref()
         .and_then(|dir| fs::canonicalize(dir).ok());
@@ -1683,6 +1724,10 @@ fn install_commands(kind: ProviderKind) -> [&'static str; 2] {
             "curl -fsSL https://claude.ai/install.sh | bash",
         ],
         ProviderKind::Codex => ["npm install -g @openai/codex", "brew install codex"],
+        ProviderKind::Antigravity => [
+            "curl -fsSL https://antigravity.google/install.sh | sh",
+            "see https://antigravity.google/docs/getting-started",
+        ],
     }
 }
 
@@ -1692,6 +1737,7 @@ fn upgrade_command(kind: ProviderKind) -> &'static str {
         ProviderKind::Pi => "install official @earendil-works/pi-coding-agent@1.4.0",
         ProviderKind::Claude => "npm install -g @anthropic-ai/claude-code@latest",
         ProviderKind::Codex => "npm install -g @openai/codex@latest",
+        ProviderKind::Antigravity => "agy update",
     }
 }
 
@@ -1707,6 +1753,7 @@ fn suggest(
     let mut taken = registry_ids.clone();
     taken.insert("claude-ambient".to_string());
     taken.insert("codex-ambient".to_string());
+    taken.insert("antigravity-ambient".to_string());
     for row in rows.iter_mut() {
         let candidate = &row.candidate;
         let kind = candidate.kind;
@@ -2094,7 +2141,7 @@ fn conflicted(
     eprintln!("af provider detect: {message}");
 }
 
-/// What a whole `af/provider-detect@4` document says beside its rows.
+/// What a whole `af/provider-detect@5` document says beside its rows.
 struct Shape {
     code: i32,
     /// Whether `--apply` was given, whatever it found to do.
@@ -2132,10 +2179,11 @@ fn install_docs(kind: ProviderKind) -> &'static str {
         ProviderKind::Pi => "https://github.com/earendil-works/pi/tree/v1.4.0",
         ProviderKind::Claude => "https://code.claude.com/docs/en/setup",
         ProviderKind::Codex => "https://developers.openai.com/codex/cli",
+        ProviderKind::Antigravity => "https://antigravity.google/docs/getting-started",
     }
 }
 
-/// One `af/provider-detect@4` document: closed states, af's own labels and paths, never an
+/// One `af/provider-detect@5` document: closed states, af's own labels and paths, never an
 /// email, an organization, a credential or the CLI's words. Next actions are typed fields
 /// (`install`, `next_action`, each row's `suggested`); `notes` repeat them for a person.
 fn document(
@@ -2220,7 +2268,7 @@ fn document(
         })
         .collect();
     serde_json::json!({
-        "schema": "af/provider-detect@4",
+        "schema": "af/provider-detect@5",
         "exit_code": shape.code,
         "applied": shape.applied,
         "binaries": binaries,
@@ -2539,7 +2587,11 @@ fn guidance_notes(kinds: &[ProviderKind]) -> Vec<String> {
 /// looked, and the command to run next. `af provider status` prints the same lines.
 pub(super) fn install_guidance() -> Vec<String> {
     install_guidance_for(
-        &[ProviderKind::Claude, ProviderKind::Codex],
+        &[
+            ProviderKind::Claude,
+            ProviderKind::Codex,
+            ProviderKind::Antigravity,
+        ],
         home_dir().as_deref(),
     )
 }
@@ -2677,7 +2729,7 @@ mod tests {
             Applied::AlreadyRegistered
         );
         // Removed again: a logged-out row is no longer called registered.
-        crate::providers::fixture_fs::write(&registry, "version = 4\n").unwrap();
+        crate::providers::fixture_fs::write(&registry, "version = 5\n").unwrap();
         let mut rows = vec![row(scanned(), Auth::NotAuthenticated)];
         apply(&mut rows, &registry, true, Some(&home), &BTreeSet::new()).unwrap();
         assert!(rows[0].applied.is_none());
@@ -2687,7 +2739,11 @@ mod tests {
     /// C3 item 17: with no scratch directory, each CLI is checked with its own kind's spec.
     #[test]
     fn a_cli_without_a_scratch_directory_is_checked_as_its_own_kind() {
-        for kind in [ProviderKind::Claude, ProviderKind::Codex] {
+        for kind in [
+            ProviderKind::Claude,
+            ProviderKind::Codex,
+            ProviderKind::Antigravity,
+        ] {
             let spec = capability_spec(kind, None);
             assert_eq!(spec.kind, kind);
             assert_eq!(spec.auth_dir, None);

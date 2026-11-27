@@ -20,21 +20,21 @@
       "const": "af.pipeline/6"
     },
     "name": {
-      "$ref": "urn:af:schema:task-contracts:4#/$defs/package"
+      "$ref": "urn:af:schema:task-contracts:5#/$defs/package"
     },
     "version": {
-      "$ref": "urn:af:schema:task-contracts:4#/$defs/text"
+      "$ref": "urn:af:schema:task-contracts:5#/$defs/text"
     },
     "contract": {
       "$ref": "#/$defs/contract"
     },
     "accepts": {
-      "$ref": "urn:af:schema:task-contracts:4#/$defs/applicability"
+      "$ref": "urn:af:schema:task-contracts:5#/$defs/applicability"
     },
     "slots": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+        "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
       },
       "additionalProperties": {
         "$ref": "#/$defs/slot"
@@ -53,20 +53,20 @@
     "outputs": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+        "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
       },
       "additionalProperties": {
-        "$ref": "urn:af:schema:task-contracts:4#/$defs/valueRef"
+        "$ref": "urn:af:schema:task-contracts:5#/$defs/valueRef"
       },
       "minProperties": 1
     },
     "coverage": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+        "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
       },
       "additionalProperties": {
-        "$ref": "urn:af:schema:task-contracts:4#/$defs/valueRef"
+        "$ref": "urn:af:schema:task-contracts:5#/$defs/valueRef"
       },
       "minProperties": 0
     },
@@ -96,7 +96,7 @@
         "inputs": {
           "type": "object",
           "propertyNames": {
-            "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+            "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
           },
           "additionalProperties": {
             "$ref": "#/$defs/inputPort"
@@ -106,10 +106,10 @@
         "outputs": {
           "type": "object",
           "propertyNames": {
-            "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+            "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
           },
           "additionalProperties": {
-            "$ref": "urn:af:schema:task-contracts:4#/$defs/outputPort"
+            "$ref": "urn:af:schema:task-contracts:5#/$defs/outputPort"
           },
           "minProperties": 1
         }
@@ -128,16 +128,16 @@
       ],
       "properties": {
         "artifact_type": {
-          "$ref": "urn:af:schema:task-contracts:4#/$defs/artifactType"
+          "$ref": "urn:af:schema:task-contracts:5#/$defs/artifactType"
         },
         "cardinality": {
-          "$ref": "urn:af:schema:task-contracts:4#/$defs/cardinality"
+          "$ref": "urn:af:schema:task-contracts:5#/$defs/cardinality"
         },
         "optional": {
           "type": "boolean"
         },
         "affinity": {
-          "$ref": "urn:af:schema:task-contracts:4#/$defs/affinity"
+          "$ref": "urn:af:schema:task-contracts:5#/$defs/affinity"
         },
         "root_default": {
           "enum": [
@@ -153,7 +153,7 @@
         "covers": {
           "type": "array",
           "items": {
-            "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+            "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
           },
           "uniqueItems": true,
           "minItems": 0,
@@ -256,16 +256,16 @@
       ],
       "properties": {
         "worker": {
-          "$ref": "urn:af:schema:task-contracts:4#/$defs/package"
+          "$ref": "urn:af:schema:task-contracts:5#/$defs/package"
         },
         "role": {
-          "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+          "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
         },
         "input_type": {
-          "$ref": "urn:af:schema:task-contracts:4#/$defs/artifactType"
+          "$ref": "urn:af:schema:task-contracts:5#/$defs/artifactType"
         },
         "output_type": {
-          "$ref": "urn:af:schema:task-contracts:4#/$defs/artifactType"
+          "$ref": "urn:af:schema:task-contracts:5#/$defs/artifactType"
         },
         "min_attempts": {
           "type": "integer",
@@ -283,7 +283,7 @@
         "independent_from": {
           "type": "array",
           "items": {
-            "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+            "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
           },
           "uniqueItems": true,
           "minItems": 0,
@@ -307,7 +307,7 @@
       ],
       "properties": {
         "id": {
-          "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+          "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
         },
         "operator": {
           "$ref": "#/$defs/operator"
@@ -315,15 +315,15 @@
         "inputs": {
           "type": "object",
           "propertyNames": {
-            "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+            "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
           },
           "additionalProperties": {
-            "$ref": "urn:af:schema:task-contracts:4#/$defs/valueRef"
+            "$ref": "urn:af:schema:task-contracts:5#/$defs/valueRef"
           },
           "minProperties": 0
         },
         "when": {
-          "$ref": "urn:af:schema:task-contracts:4#/$defs/condition"
+          "$ref": "urn:af:schema:task-contracts:5#/$defs/condition"
         }
       }
     },
@@ -341,7 +341,7 @@
               "const": "worker"
             },
             "slot": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
             }
           }
         },
@@ -374,7 +374,7 @@
             "checks": {
               "type": "array",
               "items": {
-                "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+                "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
               },
               "uniqueItems": true,
               "minItems": 0,
@@ -383,7 +383,7 @@
             "remote_checks": {
               "type": "array",
               "items": {
-                "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+                "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
               },
               "uniqueItems": true,
               "minItems": 1,
@@ -420,7 +420,7 @@
             "measures": {
               "type": "array",
               "items": {
-                "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+                "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
               },
               "uniqueItems": true,
               "minItems": 1,
@@ -441,7 +441,7 @@
               "const": "compare"
             },
             "objective": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
             }
           }
         },
@@ -457,7 +457,7 @@
               "const": "verify"
             },
             "slot": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
             }
           }
         },
@@ -474,15 +474,15 @@
               "const": "call"
             },
             "pipeline": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/package"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/package"
             },
             "bindings": {
               "type": "object",
               "propertyNames": {
-                "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+                "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
               },
               "additionalProperties": {
-                "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+                "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
               },
               "minProperties": 0
             }
@@ -524,7 +524,7 @@
               "const": "fix_verify"
             },
             "slot": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
             }
           }
         },
@@ -685,10 +685,10 @@
               "const": "optimization_experiment"
             },
             "baseline_slot": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
             },
             "candidate_slot": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
             }
           }
         },
@@ -770,7 +770,7 @@
               "minItems": 1,
               "maxItems": 64,
               "items": {
-                "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+                "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
               }
             },
             "protected_paths": {
@@ -811,7 +811,7 @@
               "const": "review_slice"
             },
             "scatter": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
             },
             "max_paths_per_slice": {
               "type": "integer",
@@ -838,7 +838,7 @@
               "const": "review_scatter"
             },
             "slot": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
             },
             "max_fanout": {
               "type": "integer",
@@ -865,11 +865,11 @@
               "minItems": 1,
               "maxItems": 63,
               "items": {
-                "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+                "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
               }
             },
             "closeout": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
             }
           }
         },

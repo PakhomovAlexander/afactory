@@ -1,4 +1,4 @@
-//! The agent-facing `af/provider-detect@4` document (ADR-0206).
+//! The agent-facing `af/provider-detect@5` document (ADR-0206).
 //!
 //! Like the other Provider onboarding documents it carries no Rust type: `af provider detect`
 //! builds it from what the machine's CLIs and directories said. The schema is the contract, and
@@ -9,7 +9,7 @@
 use super::{assert_invalid, assert_valid};
 use serde_json::{Value, json};
 
-const SCHEMA: &str = "provider-detect-v4.json";
+const SCHEMA: &str = "provider-detect-v5.json";
 
 fn row(dir: &str, source: &str, auth: &str) -> Value {
     let authenticated = auth == "authenticated";
@@ -46,7 +46,7 @@ fn row(dir: &str, source: &str, auth: &str) -> Value {
 
 fn scan() -> Value {
     json!({
-        "schema": "af/provider-detect@4",
+        "schema": "af/provider-detect@5",
         "exit_code": 0,
         "applied": false,
         "binaries": [{

@@ -939,7 +939,7 @@ fn reauthentication_never_recreates_an_existing_binding_removed_during_login() {
     crate::common::provider_fixture_fs::write(
         &registry,
         format!(
-            "version = 4\n[[providers]]\nid = \"codex-main\"\nkind = \"codex\"\nauth_dir = {}\n",
+            "version = 5\n[[providers]]\nid = \"codex-main\"\nkind = \"codex\"\nauth_dir = {}\n",
             serde_json::to_string(auth.to_str().unwrap()).unwrap()
         ),
     )
@@ -957,7 +957,7 @@ fn reauthentication_never_recreates_an_existing_binding_removed_during_login() {
         .open(config.join("providers.toml.lock"))
         .unwrap();
     fs2::FileExt::lock_exclusive(&lock).unwrap();
-    crate::common::provider_fixture_fs::write(&registry, "version = 4\nproviders = []\n").unwrap();
+    crate::common::provider_fixture_fs::write(&registry, "version = 5\nproviders = []\n").unwrap();
     drop(lock);
     fixture.complete();
     let output = fixture.result(child);
@@ -965,7 +965,7 @@ fn reauthentication_never_recreates_an_existing_binding_removed_during_login() {
     assert_eq!(state(&output)["registered"], false);
     assert_eq!(
         std::fs::read_to_string(registry).unwrap(),
-        "version = 4\nproviders = []\n"
+        "version = 5\nproviders = []\n"
     );
     fixture.no_secrets(&output);
 }

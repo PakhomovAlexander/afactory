@@ -54,7 +54,7 @@
   "schemas": {
     "assessment": {
       "path": "assessment.schema.json",
-      "digest": "sha256:db88776b05544e611cd609234ed1ea8106b5913a7463348f0ec338f2420f2dfb"
+      "digest": "sha256:47488512194c3f8a1cc8e90050fde79c598741b2fe17b8482300a7204f2614bb"
     }
   }
 }

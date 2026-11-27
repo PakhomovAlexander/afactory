@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:task-inspection:22",
-  "title": "Task inspection af/task-inspection@22",
+  "$id": "urn:af:schema:task-inspection:23",
+  "title": "Task inspection af/task-inspection@23",
   "$comment": "The one read-only projection of a common Task. Sections beyond the required core appear only when the Task recorded them: owned children, Review handoffs and Integration phases, measured Attempt walls with their runtime evidence, experiments and adoption observations. History, execution, report and handoff entries keep their exact artifact types and payloads. The Store validates cross-artifact identities, histories, selected results and cumulative accounting; a JSON schema cannot authenticate CAS or recompute a history. These records grant no admission or dispatch authority. Explain adds graph and plan together. Version 12 adds the `state` every rendering prints, the `gate` summary of the last check receipt with its check reports and gate retries, and the `failures` of the last run report (`af help task-states`). Version 13 adds `continues`, the Task and review round a continued Task was planned from (ADR-0212).",
   "type": "object",
   "additionalProperties": false,
@@ -21,16 +21,16 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/task-inspection@22"
+      "const": "af/task-inspection@23"
     },
     "task_id": {
-      "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+      "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
     },
     "revision_id": {
-      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
     },
     "phase": {
-      "$ref": "urn:af:schema:task-contracts:4#/$defs/taskPhase"
+      "$ref": "urn:af:schema:task-contracts:5#/$defs/taskPhase"
     },
     "state": {
       "description": "The state `af task list`, `show`, `report` and `run` print for this Task.",
@@ -105,7 +105,7 @@
     "plan_id": {
       "anyOf": [
         {
-          "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
         },
         {
           "type": "null"
@@ -136,10 +136,10 @@
       ],
       "properties": {
         "artifact_id": {
-          "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
         },
         "request_revision_id": {
-          "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
         },
         "assessment": {
           "type": "object",
@@ -158,7 +158,7 @@
             "requested": {
               "anyOf": [
                 {
-                  "$ref": "urn:af:schema:task-contracts:4#/$defs/choice"
+                  "$ref": "urn:af:schema:task-contracts:5#/$defs/choice"
                 },
                 {
                   "type": "null"
@@ -446,13 +446,13 @@
       ],
       "properties": {
         "bootstrap_plan_id": {
-          "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
         },
         "proposal_id": {
-          "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
         },
         "request_revision_id": {
-          "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
         }
       }
     },
@@ -468,10 +468,10 @@
         ],
         "properties": {
           "artifact_id": {
-            "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+            "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
           },
           "decision": {
-            "$ref": "urn:af:schema:task-contracts:4#/$defs/planDecision"
+            "$ref": "urn:af:schema:task-contracts:5#/$defs/planDecision"
           },
           "valid_until_unix_ms": {
             "type": "integer",
@@ -515,7 +515,7 @@
         ],
         "properties": {
           "artifact_id": {
-            "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+            "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
           },
           "artifact_type": {
             "const": "af/TaskExecutionRecord@5"
@@ -593,7 +593,7 @@
         ],
         "properties": {
           "artifact_id": {
-            "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+            "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
           },
           "record": {
             "$ref": "urn:af:schema:task-attempt-wall-end:1"
@@ -616,7 +616,7 @@
         ],
         "properties": {
           "artifact_id": {
-            "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+            "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
           },
           "report": {
             "$ref": "urn:af:schema:task-run-report:3"
@@ -657,7 +657,7 @@
       }
     },
     "result": {
-      "$ref": "urn:af:schema:task-contracts:4#/$defs/taskResult"
+      "$ref": "urn:af:schema:task-contracts:5#/$defs/taskResult"
     },
     "planning_diagnostic": {
       "type": "object",
@@ -674,7 +674,7 @@
         "plan_id": {
           "anyOf": [
             {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
             },
             {
               "type": "null"
@@ -690,7 +690,7 @@
     "repair_assessments": {
       "type": "array",
       "items": {
-        "$ref": "urn:af:schema:task-contracts:4#/$defs/repairAssessment"
+        "$ref": "urn:af:schema:task-contracts:5#/$defs/repairAssessment"
       },
       "minItems": 1
     },
@@ -806,7 +806,7 @@
       "$ref": "urn:af:schema:compiled-task:6"
     },
     "plan": {
-      "$ref": "urn:af:schema:task-contracts:4#/$defs/executionPlan"
+      "$ref": "urn:af:schema:task-contracts:5#/$defs/executionPlan"
     },
     "owned_child_sets": {
       "type": "array",
@@ -821,7 +821,7 @@
         ],
         "properties": {
           "artifact_id": {
-            "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+            "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
           },
           "artifact_type": {
             "const": "af/TaskOwnedChildSet@1"
@@ -997,7 +997,7 @@
             ]
           },
           "artifact_id": {
-            "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+            "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
           },
           "artifact_type": {
             "enum": [
@@ -1007,10 +1007,10 @@
             ]
           },
           "prepared_id": {
-            "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+            "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
           },
           "decision_id": {
-            "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+            "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
           },
           "record": {
             "oneOf": [
@@ -1091,7 +1091,7 @@
           ],
           "properties": {
             "task_id": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
             },
             "round": {
               "type": "integer",
@@ -1099,13 +1099,13 @@
               "maximum": 16
             },
             "result_id": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
             },
             "snapshot_id": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
             },
             "findings_id": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
             },
             "findings": {
               "type": "integer",
@@ -1127,7 +1127,7 @@
           ],
           "properties": {
             "task_id": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/name"
             },
             "node": {
               "type": "string",
@@ -1139,13 +1139,13 @@
               "pattern": "^[A-Za-z0-9]{26}$"
             },
             "wall_end_id": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
             },
             "partial_candidate_id": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
             },
             "snapshot_id": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
             }
           }
         }
@@ -1248,13 +1248,13 @@
               "type": "string"
             },
             "result_id": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
             },
             "source_snapshot_id": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
             },
             "derived_snapshot_id": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
             },
             "target": {
               "type": "object",
@@ -1311,13 +1311,13 @@
               "type": "string"
             },
             "result_id": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
             },
             "source_snapshot_id": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
             },
             "derived_snapshot_id": {
-              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+              "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
             },
             "target": {
               "type": "object",
@@ -1456,7 +1456,7 @@
       "then": {
         "properties": {
           "plan_id": {
-            "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+            "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
           }
         }
       }

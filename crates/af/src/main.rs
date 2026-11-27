@@ -1435,6 +1435,7 @@ fn provider_kind(kind: cli::ProviderKindArg) -> &'static str {
         cli::ProviderKindArg::Pi => "pi",
         cli::ProviderKindArg::Claude => "claude",
         cli::ProviderKindArg::Codex => "codex",
+        cli::ProviderKindArg::Antigravity => "antigravity",
     }
 }
 

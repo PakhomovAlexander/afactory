@@ -24,7 +24,7 @@ def document(root, treatment):
                 units.append({"package": crate, "target": crate.replace("-", "_"),
                               "test_profile": bool(target), "fresh": not is_dirty})
         result = {
-            "schema": "af/task-inspection@22",
+            "schema": "af/task-inspection@23",
             "state": {"phase": "finished", "outcome": dev_flow.OUTCOMES[index]},
             "result": {"domain_conclusion": dev_flow.OUTCOMES[index]},
             "review_rounds": [{"conclusion": dev_flow.REVIEW_CONCLUSIONS[index]}],

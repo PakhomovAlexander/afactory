@@ -316,7 +316,7 @@ fn gate_next_action(id: &str, retry: &GateRetry) -> String {
 /// a shell takes as one word.
 fn failed_provider(cas: &Cas, state: &TaskProjection) -> Option<String> {
     let execution = state.execution.as_ref()?;
-    let plan: ExecutionPlan = artifact(cas, state.plan_id.as_deref()?, EXECUTION_PLAN_V4).ok()?;
+    let plan: ExecutionPlan = artifact(cas, state.plan_id.as_deref()?, EXECUTION_PLAN_V5).ok()?;
     execution
         .attempt_accounting()
         .iter()

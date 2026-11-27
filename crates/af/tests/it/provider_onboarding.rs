@@ -191,7 +191,7 @@ fn setup_requires_an_explicit_opt_in_before_any_login() {
     assert_eq!(code(&output), 3, "{}", err(&output));
     assert!(!auth.join("login-log").exists());
     let value = document(&output);
-    valid("provider-setup-v2.json", &value);
+    valid("provider-setup-v3.json", &value);
     assert_eq!(value["result"], "human_action_required");
     assert_eq!(value["login_launched"], false);
     assert_eq!(value["next_action"]["kind"], "interactive_login");
@@ -242,7 +242,7 @@ fn an_authenticated_context_registers_without_a_login() {
     );
     assert!(err(&output).is_empty(), "{}", err(&output));
     let value = document(&output);
-    valid("provider-setup-v2.json", &value);
+    valid("provider-setup-v3.json", &value);
     assert_eq!(value["result"], "registered");
     assert_eq!(value["provider"]["registered"], true);
     assert_eq!(value["provider"]["auth"], "authenticated");
@@ -277,7 +277,7 @@ fn documents_redact_identity_and_provider_output() {
         &["provider", "status", "--json", "--usage"],
     );
     let reported = document(&status);
-    valid("provider-status-v6.json", &reported);
+    valid("provider-status-v7.json", &reported);
 
     for rendered in [out(&setup), out(&status)] {
         for leaked in [
@@ -501,7 +501,7 @@ exit 64
     let fast = run(&["provider", "status", "--json"]);
     assert_eq!(code(&fast), 0, "{}", err(&fast));
     let reported = document(&fast);
-    valid("provider-status-v6.json", &reported);
+    valid("provider-status-v7.json", &reported);
     assert_eq!(reported["usage_requested"], false);
     let provider = reported["providers"][0].clone();
     assert_eq!(provider["id"], "codex-main");
@@ -516,7 +516,7 @@ exit 64
     let probed = run(&["provider", "status", "--json", "--usage"]);
     assert_eq!(code(&probed), 7, "{}", err(&probed));
     let reported = document(&probed);
-    valid("provider-status-v6.json", &reported);
+    valid("provider-status-v7.json", &reported);
     assert_eq!(reported["usage_requested"], true);
     assert_eq!(reported["exit_code"], 7);
     let provider = reported["providers"][0].clone();
@@ -621,11 +621,11 @@ fn pi_setup_status_and_exact_model_catalog_are_token_free_and_secret_free() {
         for (args, schema) in [
             (
                 vec!["provider", "status", "--json"],
-                "provider-status-v6.json",
+                "provider-status-v7.json",
             ),
             (
                 vec!["provider", "models", "pi-personal", "--json"],
-                "provider-models-v4.json",
+                "provider-models-v5.json",
             ),
             (
                 vec![
@@ -644,7 +644,7 @@ fn pi_setup_status_and_exact_model_catalog_are_token_free_and_secret_free() {
                     },
                     "--json",
                 ],
-                "provider-models-v4.json",
+                "provider-models-v5.json",
             ),
         ] {
             let out = invoke(&args);
@@ -656,8 +656,8 @@ fn pi_setup_status_and_exact_model_catalog_are_token_free_and_secret_free() {
             );
             let value: Value = serde_json::from_slice(&out.stdout).unwrap();
             valid(schema, &value);
-            if schema == "provider-status-v6.json" {
-                assert_eq!(value["schema"], "af/provider-status@6");
+            if schema == "provider-status-v7.json" {
+                assert_eq!(value["schema"], "af/provider-status@7");
                 assert_eq!(value["providers"][0]["kind"], "pi");
                 assert_eq!(value["providers"][0]["auth"], "authenticated");
             }
@@ -688,7 +688,7 @@ fn pi_setup_status_and_exact_model_catalog_are_token_free_and_secret_free() {
             ]);
             assert!(page.status.success(), "{}", err(&page));
             let value = document(&page);
-            valid("provider-models-v4.json", &value);
+            valid("provider-models-v5.json", &value);
             assert_eq!(value["providers"][0]["models"].as_array().unwrap().len(), 6);
             assert_eq!(value["providers"][0]["catalog_page"]["total"], 70);
             assert_eq!(
@@ -738,7 +738,7 @@ fn pi_setup_status_and_exact_model_catalog_are_token_free_and_secret_free() {
         std::fs::remove_file(&sdk).unwrap();
         let status = invoke(&["provider", "status", "--json"]);
         let value: Value = serde_json::from_slice(&status.stdout).unwrap();
-        valid("provider-status-v6.json", &value);
+        valid("provider-status-v7.json", &value);
         assert!(value["registry"]["warning"].is_null());
         assert_ne!(value["providers"][0]["auth"], "authenticated");
         assert!(!String::from_utf8_lossy(&status.stderr).contains("registry"));
@@ -796,7 +796,7 @@ fn pi_home_installation_is_authenticated_from_non_repository_home() {
         let status = invoke(cwd, &["provider", "status", "--json"]);
         assert_eq!(code(&status), 0, "{} {}", out(&status), err(&status));
         let value = document(&status);
-        valid("provider-status-v6.json", &value);
+        valid("provider-status-v7.json", &value);
         assert_eq!(value["providers"][0]["auth"], "authenticated");
     }
     let setup = invoke(&home, &setup_args);
@@ -940,7 +940,7 @@ fn pi_node_resolution_and_setup_refuse_repository_owned_path_before_spawn() {
                 valid("pi-provider-setup-v4.json", &value);
                 assert_eq!(value["outcome"], "already_registered");
             } else {
-                valid("provider-status-v6.json", &value);
+                valid("provider-status-v7.json", &value);
                 assert_eq!(value["providers"][0]["auth"], "authenticated");
             }
         }
@@ -975,7 +975,7 @@ fn pi_node_resolution_and_setup_refuse_repository_owned_path_before_spawn() {
                     assert!(err(&output).starts_with("af provider setup: "));
                 } else {
                     assert_eq!(code(&output), 0, "{}", err(&output));
-                    valid("provider-status-v6.json", &value);
+                    valid("provider-status-v7.json", &value);
                     assert_eq!(value["providers"][0]["auth"], "unavailable");
                     let human = invoke(absolute_path.as_os_str(), &["provider", "status"]);
                     assert!(

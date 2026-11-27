@@ -426,3 +426,67 @@ fn pi_static_rules_accept_sdk_cloud_and_routed_ids_without_widening_native_cli_g
     }
     assert!(check_static(Kind::Pi, "k3.1-pro", Some("unsupported")).is_err());
 }
+
+#[test]
+fn antigravity_static_and_catalog_rules_accept_exact_versioned_ids_and_efforts() {
+    let kind = Kind::parse("antigravity").unwrap();
+    assert_eq!(kind.name(), "antigravity");
+    assert_eq!(kind.efforts(), ["low", "medium", "high", "xhigh", "max"]);
+
+    let catalog = Catalog {
+        models: vec![
+            row(
+                "gemini-4-neon-high",
+                "Gemini 4 Neon (High)",
+                &[],
+                &["low", "medium", "high", "xhigh"],
+            ),
+            row(
+                "claude-sonnet-4-6",
+                "Claude Sonnet 4.6",
+                &[],
+                &["low", "medium", "high", "xhigh"],
+            ),
+        ],
+    };
+    assert_eq!(
+        check_static(kind, "gemini-4-neon-high", Some("high")),
+        Ok(())
+    );
+    assert_eq!(
+        check(kind, Some(&catalog), "gemini-4-neon-high", Some("xhigh")),
+        Verdict::Ok
+    );
+    assert_eq!(
+        check_static(kind, "gemini-4-neon-high", Some("ultra"))
+            .unwrap_err()
+            .rule,
+        Rule::EffortVocabulary
+    );
+    assert_eq!(
+        check_static(kind, "gemini", Some("high")).unwrap_err().rule,
+        Rule::Unversioned
+    );
+    assert_eq!(
+        check_static(kind, "gemini-latest", Some("high"))
+            .unwrap_err()
+            .rule,
+        Rule::Unversioned
+    );
+    let hint = check_static(kind, "gemini-4-neon-high", Some("ultra"))
+        .unwrap_err()
+        .hint(
+            ProviderRef {
+                id: Some("agy-main"),
+                kind,
+            },
+            "gemini-4-neon-high",
+            Some("ultra"),
+        );
+    assert!(
+        hint.contains(
+            "the effort level `ultra` is not one Antigravity accepts: low, medium, high, xhigh, max"
+        ),
+        "{hint}"
+    );
+}

@@ -40,14 +40,14 @@
       "minItems": 0,
       "maxItems": 64,
       "items": {
-        "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+        "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
       }
     },
     "auto_apply_nominated": {
       "type": "boolean"
     },
     "result_id": {
-      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:5#/$defs/digest"
     }
   }
 }

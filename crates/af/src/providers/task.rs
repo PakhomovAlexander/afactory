@@ -267,7 +267,7 @@ impl TaskProviderIdentity {
             .ok_or("Provider auth directory is not absolute UTF-8")?;
         let flags = match self.spec.kind {
             ProviderKind::Pi => unreachable!("Pi uses the SDK host"),
-            ProviderKind::Claude => vec![
+            ProviderKind::Claude | ProviderKind::Antigravity => vec![
                 "--model".into(),
                 model.into(),
                 "--effort".into(),
@@ -314,6 +314,24 @@ impl TaskProviderIdentity {
             ProviderKind::Codex => Box::new(
                 af_runner_codex::task::CodexTaskAdapter::new(&command)?
                     .with_codex_home(auth.into()),
+            ),
+            ProviderKind::Antigravity => Box::new(
+                af_runner_antigravity::task::AntigravityTaskAdapter::new(&command)?
+                    .for_provider(self.spec.id.clone())
+                    .with_auth(
+                        PathBuf::from(auth),
+                        self.user
+                            .as_ref()
+                            .and_then(|s| s.to_str())
+                            .map(str::to_owned),
+                        self.home
+                            .as_ref()
+                            .and_then(|s| s.to_str())
+                            .map(str::to_owned),
+                    )
+                    .keeping_transcripts(
+                        crate::storage::policy().is_ok_and(|policy| policy.keep_worker_transcripts),
+                    ),
             ),
         })
     }
@@ -507,6 +525,7 @@ impl Recheck {
             ProviderKind::Pi => "Pi SDK",
             ProviderKind::Claude => "Claude",
             ProviderKind::Codex => "Codex",
+            ProviderKind::Antigravity => "Antigravity",
         };
         match self {
             Recheck::Unavailable(reason) => reason.clone(),
@@ -530,7 +549,7 @@ impl Recheck {
                     probe_timeout(match kind {
                         ProviderKind::Pi => PROBE_TIMEOUT,
                         ProviderKind::Claude => CLAUDE_STRUCTURAL_TIMEOUT,
-                        ProviderKind::Codex => PROBE_TIMEOUT,
+                        ProviderKind::Codex | ProviderKind::Antigravity => PROBE_TIMEOUT,
                     })
                 });
                 let each = if silences.contains(&ProbeSilenceV1::TimedOut) {
@@ -750,6 +769,39 @@ fn observe_identity(
             Ok(Observation {
                 principal: Some(principal),
                 auth_method: "chatgpt".into(),
+                org: None,
+            })
+        }
+        ProviderKind::Antigravity => {
+            let mut observed = AppServerProbe::default();
+            let session = super::antigravity::probe_acp_session(
+                program,
+                spec,
+                probe_path,
+                cancelled,
+                deadline,
+                None,
+                &mut observed,
+            )
+            .map_err(|message| IdentityFailure {
+                cli_silent: observed.lacks_protocol
+                    || !observed.answered && !probe_gave_up(&message),
+                silence: if probe_timed_out(&message) {
+                    Some(ProbeSilenceV1::TimedOut)
+                } else {
+                    observed.lacks_protocol.then_some(ProbeSilenceV1::Malformed)
+                },
+                protocol_unanswered: observed.lacks_protocol,
+                message,
+            })?;
+            if !session.authenticated {
+                return Err(IdentityFailure::answered(
+                    "Antigravity account is not authenticated",
+                ));
+            }
+            Ok(Observation {
+                principal: None,
+                auth_method: "oauth".into(),
                 org: None,
             })
         }

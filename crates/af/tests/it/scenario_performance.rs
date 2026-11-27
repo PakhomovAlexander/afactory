@@ -289,7 +289,7 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':8000001 if (ho
         .unwrap();
         std::fs::set_permissions(bin.join("codex"), std::fs::Permissions::from_mode(0o755))
             .unwrap();
-        std::fs::write(home.join("providers.toml"), toml::to_string(&json!({"version":4,"providers":[{"id":"codex-personal","kind":"codex","auth_dir":home}]})).unwrap()).unwrap();
+        std::fs::write(home.join("providers.toml"), toml::to_string(&json!({"version":5,"providers":[{"id":"codex-personal","kind":"codex","auth_dir":home}]})).unwrap()).unwrap();
         let path = std::env::join_paths([bin.as_path(), Path::new("/usr/bin"), Path::new("/bin")])
             .unwrap();
         let task_state = f.machine.join("tasks");

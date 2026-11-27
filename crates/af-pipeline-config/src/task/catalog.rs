@@ -1062,8 +1062,11 @@ impl TaskPlanCompiler {
                 Ok((port.clone(), schema))
             })
             .collect::<Result<BTreeMap<_, _>, String>>()?;
-        if matches!(&worker.runner, TaskWorkerRunner::Model { provider_kind, .. } if provider_kind == "codex")
-        {
+        if matches!(
+            &worker.runner,
+            TaskWorkerRunner::Model { provider_kind, .. }
+                if matches!(provider_kind.as_str(), "codex" | "antigravity")
+        ) {
             af_runner::task::reply_schema::strict_outputs(&outputs)
                 .map_err(|error| format!("Worker {name}: {error}"))?;
         }
@@ -1254,8 +1257,11 @@ impl TaskPlanCompiler {
         for slot in graph.slots.values() {
             let name = &slot.worker;
             let worker = self.worker(name).ok_or("Missing captured Worker")?;
-            if matches!(&worker.runner, TaskWorkerRunner::Model { provider_kind, .. } if provider_kind == "codex")
-            {
+            if matches!(
+                &worker.runner,
+                TaskWorkerRunner::Model { provider_kind, .. }
+                    if matches!(provider_kind.as_str(), "codex" | "antigravity")
+            ) {
                 let kernel = worker
                     .signature
                     .contract
