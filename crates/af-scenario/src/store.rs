@@ -174,7 +174,15 @@ impl Store {
         requested: Option<&Path>,
         create: bool,
     ) -> Result<Self> {
-        Self::open_inner(host, requested, create, true)
+        Self::open_inner(host, requested, create, true).map(|(store, _)| store)
+    }
+
+    /// Inspect the validated snapshot loaded during this open, without retaining a Store handle.
+    pub fn inspect(
+        host: std::sync::Arc<dyn crate::Host>,
+        requested: Option<&Path>,
+    ) -> Result<World> {
+        Self::open_inner(host, requested, false, true).map(|(_, world)| world)
     }
     #[cfg(test)]
     pub fn isolated(path: &Path) -> Result<Self> {
@@ -184,13 +192,14 @@ impl Store {
             true,
             false,
         )
+        .map(|(store, _)| store)
     }
     fn open_inner(
         host: std::sync::Arc<dyn crate::Host>,
         requested: Option<&Path>,
         create: bool,
         register: bool,
-    ) -> Result<Self> {
+    ) -> Result<(Self, World)> {
         let path = requested
             .map(Path::to_path_buf)
             .unwrap_or(host.default_store_path()?);
@@ -294,8 +303,8 @@ impl Store {
             host.register_store(&path);
         }
         let store = Self { path, host };
-        store.read()?;
-        Ok(store)
+        let world = store.read()?;
+        Ok((store, world))
     }
     fn connection(&self) -> Result<Connection> {
         let c = Connection::open_with_flags(
@@ -700,7 +709,7 @@ mod tests {
         host.reject_templates.store(false, Ordering::Relaxed);
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("state");
-        let store = Store::open_inner(host.clone(), Some(&path), true, false).unwrap();
+        let (store, _) = Store::open_inner(host.clone(), Some(&path), true, false).unwrap();
         let run = Run::new(
             host.as_ref(),
             "recorded".into(),

@@ -2637,6 +2637,82 @@ fn assert_native_scoped_accounting(p: &Performance, run: &Value, service_file: &
     }
 }
 
+struct JournalPoll {
+    connection: Option<rusqlite::Connection>,
+    version: Option<i64>,
+    fallback: std::time::Instant,
+}
+
+impl JournalPoll {
+    fn new(journal: &Path, now: std::time::Instant) -> Self {
+        Self {
+            connection: rusqlite::Connection::open_with_flags(
+                journal,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .and_then(|connection| {
+                connection.busy_timeout(std::time::Duration::ZERO)?;
+                Ok(connection)
+            })
+            .ok(),
+            version: None,
+            fallback: now,
+        }
+    }
+
+    fn due(&mut self, now: std::time::Instant, force: bool) -> bool {
+        // data_version is comparable only on this connection. Sample before the CLI
+        // observation so a commit during that observation can trigger another read.
+        let version = self.connection.as_ref().and_then(|connection| {
+            connection
+                .query_row("PRAGMA main.data_version", [], |row| row.get(0))
+                .ok()
+        });
+        if force || version.is_none() || version != self.version || now >= self.fallback {
+            self.version = version;
+            // Periodically ask the CLI even if the hint stays unchanged (e.g. the
+            // journal was replaced). The CLI remains the authority for state and errors.
+            self.fallback = now + std::time::Duration::from_secs(1);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+#[test]
+fn native_journal_poll_observes_commits_and_falls_back_without_a_hint() {
+    use std::time::{Duration, Instant};
+
+    let dir = tempfile::tempdir().unwrap();
+    let journal = dir.path().join("journal.sqlite");
+    let now = Instant::now();
+    let mut missing = JournalPoll::new(&journal, now);
+    assert!(missing.due(now, false));
+    assert!(missing.due(now, false));
+    assert!(!journal.exists());
+
+    let writer = rusqlite::Connection::open(&journal).unwrap();
+    writer
+        .execute("CREATE TABLE changes (id INTEGER)", [])
+        .unwrap();
+    let mut poll = JournalPoll::new(&journal, now);
+    assert!(poll.due(now, false));
+    assert!(!poll.due(now, false));
+    writer
+        .execute("INSERT INTO changes VALUES (1)", [])
+        .unwrap();
+    assert!(poll.due(now, false));
+    // A commit after sampling, including while the CLI is running, stays visible.
+    writer
+        .execute("INSERT INTO changes VALUES (2)", [])
+        .unwrap();
+    assert!(poll.due(now, false));
+    assert!(!poll.due(now, false));
+    assert!(poll.due(now, true));
+    assert!(poll.due(now + Duration::from_secs(1), false));
+}
+
 fn drive_native_scoped(p: &Performance, service_file: &Path, interrupt: bool) -> Value {
     struct Service(std::process::Child);
     impl Drop for Service {
@@ -2662,9 +2738,13 @@ fn drive_native_scoped(p: &Performance, service_file: &Path, interrupt: bool) ->
     };
     let mut service = spawn();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(240);
+    let journal = p.f.state.join("runs/scenarios.sqlite");
+    let mut poll = JournalPoll::new(&journal, std::time::Instant::now());
+    let mut run = Value::Null;
     let mut interrupted = false;
     let run = loop {
-        if interrupt && !interrupted && service_file.with_extension("barrier").exists() {
+        let restart = interrupt && !interrupted && service_file.with_extension("barrier").exists();
+        if restart {
             let before = p.cli(&p.f.state, &["scenario", "driver-status", "scoped"]);
             service.0.kill().unwrap();
             service.0.wait().unwrap();
@@ -2683,14 +2763,20 @@ fn drive_native_scoped(p: &Performance, service_file: &Path, interrupt: bool) ->
                 write(service_file, &state);
             }
             service = spawn();
-            if std::fs::read_to_string(p.home.join("scoped-mode")).unwrap() == "transport" {
+            if transport {
                 let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+                let mut status_poll = JournalPoll::new(&journal, std::time::Instant::now());
+                let mut status = Value::Null;
                 let retained = loop {
-                    let status = p.cli(&p.f.state, &["scenario", "driver-status", "scoped"]);
+                    let exited = service.0.try_wait().unwrap().is_some();
+                    let now = std::time::Instant::now();
+                    if status_poll.due(now, exited || now >= until) {
+                        status = p.cli(&p.f.state, &["scenario", "driver-status", "scoped"]);
+                    }
                     if status["preflight_wait"] == "transport" {
                         break status;
                     }
-                    assert!(service.0.try_wait().unwrap().is_none());
+                    assert!(!exited);
                     assert!(std::time::Instant::now() < until, "{status}");
                     std::thread::sleep(std::time::Duration::from_millis(100));
                 };
@@ -2728,7 +2814,11 @@ fn drive_native_scoped(p: &Performance, service_file: &Path, interrupt: bool) ->
             }
             interrupted = true;
         }
-        let run = p.cli(&p.f.state, &["scenario", "show", "scoped"]);
+        let exited = service.0.try_wait().unwrap().is_some();
+        let now = std::time::Instant::now();
+        if poll.due(now, restart || exited || now >= deadline) {
+            run = p.cli(&p.f.state, &["scenario", "show", "scoped"]);
+        }
         assert_ne!(
             run["status"],
             "failed",
@@ -2751,7 +2841,7 @@ fn drive_native_scoped(p: &Performance, service_file: &Path, interrupt: bool) ->
             break run;
         }
         assert!(
-            service.0.try_wait().unwrap().is_none(),
+            !exited,
             "service exited: {}",
             std::fs::read_to_string(p.f.machine.join("driver-stderr")).unwrap()
         );

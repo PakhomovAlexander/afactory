@@ -622,6 +622,74 @@ fn cli_rejects_unauthorized_actions_stale_pins_and_corrupt_state() {
 }
 
 #[test]
+fn show_and_list_read_current_validated_scenario_state() {
+    let f = Fixture::bare();
+    let show = ["scenario", "show", "inspect"];
+    let list = ["scenario", "list"];
+    let assert_refusal = |args: &[&str], expected: &str| {
+        let error = value(output(&f.repo, &f.state, args), 1);
+        assert!(
+            error["error"].as_str().unwrap().contains(expected),
+            "{error}"
+        );
+    };
+    for args in [&show[..], &list] {
+        assert_refusal(args, "Scenario Store does not exist");
+    }
+    assert!(!f.state.exists());
+
+    let started = f.start("inspect");
+    assert_eq!(cli(&f.repo, &f.state, &show), started);
+    let listed = cli(&f.repo, &f.state, &list);
+    valid("scenario-list-v12.json", &listed);
+    assert_eq!(listed["runs"]["inspect"], started);
+    assert_refusal(&["scenario", "show", "absent"], "Scenario Run not found");
+
+    let cancelled = cli(
+        &f.repo,
+        &f.state,
+        &[
+            "scenario",
+            "cancel",
+            "inspect",
+            "--reason",
+            "inspection test",
+        ],
+    );
+    assert_eq!(cancelled["status"], "cancelled");
+    assert_eq!(cli(&f.repo, &f.state, &show), cancelled);
+    assert_eq!(cli(&f.repo, &f.state, &list)["runs"]["inspect"], cancelled);
+
+    let c = rusqlite::Connection::open(f.state.join("runs/scenarios.sqlite")).unwrap();
+    c.execute("UPDATE journal SET digest='damaged'", [])
+        .unwrap();
+    for args in [&show[..], &list] {
+        assert_refusal(args, "Corrupt Scenario journal checksum or size");
+    }
+    let document: String = c
+        .query_row("SELECT document FROM journal", [], |r| r.get(0))
+        .unwrap();
+    let mut world: Value = serde_json::from_str(&document).unwrap();
+    world["writer_version"] = json!("invalid");
+    let document = serde_json::to_string(&world).unwrap();
+    c.execute(
+        "UPDATE journal SET document=?1, digest=?2",
+        rusqlite::params![document, af_scenario::contract::digest(document.as_bytes())],
+    )
+    .unwrap();
+    for args in [&show[..], &list] {
+        assert_refusal(
+            args,
+            "Scenario Store was written by another release or version",
+        );
+    }
+    c.execute("DELETE FROM journal", []).unwrap();
+    for args in [&show[..], &list] {
+        assert_refusal(args, "Missing Scenario journal record");
+    }
+}
+
+#[test]
 fn stale_observed_head_and_changed_adapter_bytes_fail_without_publication() {
     let f = Fixture::bare();
     f.install_service();
