@@ -289,6 +289,7 @@ fn origin_reserves_destination_allocation_before_copying_small_sqlite_pages() {
     let (allocated, task_copy) = origin_copy_sizes(&machine, &project, &database);
     let used = origin_inventory_bytes(&project, &database);
     let between = logical + (allocated - logical) / 2;
+    let sufficient = allocated + task_copy + 2 * 1024 * 1024;
     assert!(logical < between && between < allocated);
     eprintln!(
         "Project logical={logical} allocated={allocated} unit={unit} inventory={used} \
@@ -303,7 +304,7 @@ fn origin_reserves_destination_allocation_before_copying_small_sqlite_pages() {
         reader
     };
     assert_eq!(
-        as_json(command(used + allocated + task_copy).output().unwrap())["origin"]["tasks"],
+        as_json(command(used + sufficient).output().unwrap())["origin"]["tasks"],
         json!([])
     );
     let snapshots = af_sandbox::stale::observation_root(&machine.path("tmp"));
@@ -311,7 +312,7 @@ fn origin_reserves_destination_allocation_before_copying_small_sqlite_pages() {
     #[cfg(debug_assertions)]
     {
         let marker = machine.path("rounding-snapshot-ready");
-        let mut reader = paused_reader(command(used + allocated + task_copy), &marker);
+        let mut reader = paused_reader(command(used + sufficient), &marker);
         assert_eq!(
             af_sandbox::storage::allocated_bytes(&snapshots).unwrap(),
             allocated
@@ -319,7 +320,7 @@ fn origin_reserves_destination_allocation_before_copying_small_sqlite_pages() {
         fs::remove_file(marker).unwrap();
         assert!(reader.0.take().unwrap().wait().unwrap().success());
 
-        let free = allocated + task_copy + unit;
+        let free = sufficient + unit;
         let above_floor = |available| {
             command(u64::MAX)
                 .env("AF_TEST_FREE_BYTES", free.to_string())
@@ -331,7 +332,7 @@ fn origin_reserves_destination_allocation_before_copying_small_sqlite_pages() {
                 .unwrap()
         };
         assert_eq!(
-            as_json(above_floor(allocated + task_copy))["origin"]["tasks"],
+            as_json(above_floor(sufficient))["origin"]["tasks"],
             json!([])
         );
         let refused_by_floor = above_floor(between);
@@ -362,15 +363,15 @@ fn origin_reserves_larger_clusters_before_copying() {
         .unwrap()
         .len();
     let inventory = origin_inventory_bytes(&project, &database);
-    let project_reservation = logical.next_multiple_of(cluster);
-    let workspace_reservation = workspace_logical.next_multiple_of(cluster);
-    let sufficient = project_reservation + workspace_reservation;
-    let boundary = allocated + (project_reservation - allocated) / 2;
-    assert!(fragment < cluster && allocated < boundary && boundary < project_reservation);
+    let project_data = logical.next_multiple_of(cluster);
+    let workspace_data = workspace_logical.next_multiple_of(cluster);
+    let sufficient = 4 * 1024 * 1024;
+    let boundary = allocated + (project_data - allocated) / 2;
+    assert!(fragment < cluster && allocated < boundary && boundary < project_data);
     eprintln!(
         "Project logical={logical} allocated={allocated} Workspace logical={workspace_logical} \
          allocated={workspace_allocated} inventory={inventory} fragment={fragment} cluster={cluster} \
-         Project reservation={project_reservation} Workspace reservation={workspace_reservation} \
+         rounded Project data={project_data} rounded Workspace data={workspace_data} \
          boundary={boundary} sufficient={sufficient}"
     );
     let command = |max: u64, free: u64, floor: u64| {
@@ -404,6 +405,107 @@ fn origin_reserves_larger_clusters_before_copying() {
     assert_eq!(fs::read_dir(snapshots).unwrap().count(), 0);
 }
 
+#[cfg(debug_assertions)]
+#[test]
+fn origin_reserves_ext_mapping_before_copying() {
+    const BLOCK: u64 = 4096;
+    // Measured on ext2 at the first indirect block. The same 13 data blocks may need
+    // one external extent node on ext4. The reader fixture can run without a mount.
+    const DATA_ONLY: u64 = 53_248;
+    const WITH_MAPPING: u64 = 57_344;
+    let machine = Machine::new();
+    let (project, database) = planned_origin(&machine);
+    use_small_sqlite_pages(&database, BLOCK);
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    while fs::metadata(&database).unwrap().len() < DATA_ONLY {
+        // Fill the database to the indirect boundary using real SQLite pages.
+        connection
+            .execute("INSERT INTO fixture_padding VALUES (zeroblob(900))", [])
+            .unwrap();
+    }
+    let integrity: String = connection
+        .pragma_query_value(None, "integrity_check", |row| row.get(0))
+        .unwrap();
+    assert_eq!(integrity, "ok");
+    drop(connection);
+    let source = fs::metadata(&database).unwrap();
+    assert_eq!(source.len(), DATA_ONLY);
+    let inventory = origin_inventory_bytes(&project, &database);
+    let workspace = fs::metadata(origin_workspace_state(&project).join("events.sqlite")).unwrap();
+    let sufficient = WITH_MAPPING + workspace.len().next_multiple_of(BLOCK) + 2 * 1024 * 1024;
+    let free = sufficient + BLOCK;
+    let command = |max: u64, floor: u64| {
+        let mut reader = machine.origin_reader(&project);
+        reader
+            .env("AF_TEST_OBSERVATION_EXT_MAPPING", "1")
+            .env("AF_TEST_FREE_BYTES", free.to_string())
+            .env("AF_STORAGE__MAX_BYTES", format!("{max}B"))
+            .env("AF_STORAGE__MIN_FREE_BYTES", format!("{floor}B"));
+        reader
+    };
+    let by_max = command(inventory + DATA_ONLY, 0).output().unwrap();
+    let by_floor = command(u64::MAX, free - DATA_ONLY).output().unwrap();
+    let just_below = WITH_MAPPING - 1;
+    eprintln!(
+        "Project logical={} allocated={} Workspace logical={} allocated={} inventory={inventory} \
+         data-only={DATA_ONLY} measured ext2 allocation={WITH_MAPPING} \
+         max={} free={free} floor={} control max={} control floor={BLOCK}",
+        source.len(),
+        source.blocks() * 512,
+        workspace.len(),
+        workspace.blocks() * 512,
+        inventory + DATA_ONLY,
+        free - DATA_ONLY,
+        inventory + sufficient
+    );
+    for (policy, output) in [("max", &by_max), ("floor", &by_floor)] {
+        eprintln!(
+            "{policy}: {} {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let marker = machine.path("mapping-snapshot-ready");
+    let mut reader = paused_reader(command(inventory + sufficient, BLOCK), &marker);
+    let snapshots = af_sandbox::stale::observation_root(&machine.path("tmp"));
+    let live = af_sandbox::storage::allocated_bytes(&snapshots).unwrap();
+    eprintln!("control admitted, live Project allocation={live}");
+    assert!(live > 0);
+    fs::remove_file(marker).unwrap();
+    assert!(reader.0.take().unwrap().wait().unwrap().success());
+    require_snapshot_budget_refusal(by_max, &database);
+    require_snapshot_budget_refusal(by_floor, &database);
+    require_snapshot_budget_refusal(
+        command(inventory + just_below, 0).output().unwrap(),
+        &database,
+    );
+    require_snapshot_budget_refusal(
+        command(u64::MAX, free - just_below).output().unwrap(),
+        &database,
+    );
+    assert_eq!(fs::read_dir(snapshots).unwrap().count(), 0);
+}
+
+// Measure the first budget of a complete reader so overlap and concurrent inventory tests
+// can exercise exact boundaries independently of the destination reservation formula.
+fn first_origin_budget(command: impl Fn(u64) -> Output, mut low: u64, mut high: u64) -> u64 {
+    as_json(command(high));
+    while low < high {
+        let mid = low + (high - low) / 2;
+        let result = command(mid);
+        if result.status.success() {
+            high = mid;
+        } else {
+            require_failure(
+                result,
+                "observation snapshot exceeds the available storage budget",
+            );
+            low = mid + 1;
+        }
+    }
+    low
+}
+
 #[test]
 fn origin_counts_telemetry_inside_a_registered_external_store_once() {
     let machine = Machine::new();
@@ -431,21 +533,6 @@ fn origin_counts_telemetry_inside_a_registered_external_store_once() {
     );
     let telemetry = external.join("cas/telemetry");
     fs::create_dir_all(&telemetry).unwrap();
-    fs::write(telemetry.join("retained"), vec![1_u8; 1024 * 1024]).unwrap();
-
-    let project_bytes = origin_inventory_bytes(&project, &database);
-    let store_bytes = af_sandbox::storage::allocated_bytes(&external).unwrap();
-    let telemetry_bytes = af_sandbox::storage::allocated_bytes(&telemetry).unwrap();
-    let (project_copy, task_copy) = origin_copy_sizes(&machine, &project, &database);
-    let exact = project_bytes + store_bytes + project_copy + task_copy;
-    eprintln!(
-        "Project and Workspace inventory={project_bytes} external Store inventory={store_bytes} \
-         included telemetry={telemetry_bytes} Project copy={project_copy} \
-         Workspace copy={task_copy} exact budget={exact}"
-    );
-    let foreign = external.join("unowned");
-    fs::create_dir(&foreign).unwrap();
-    fs::write(foreign.join("retained"), vec![2_u8; 1024 * 1024]).unwrap();
     let command = |root: &Path, max: u64| {
         let mut reader = machine.origin_reader(&project);
         reader
@@ -454,6 +541,27 @@ fn origin_counts_telemetry_inside_a_registered_external_store_once() {
             .env("AF_STORAGE__MIN_FREE_BYTES", "0B");
         reader.output().unwrap()
     };
+    let project_bytes = origin_inventory_bytes(&project, &database);
+    let empty_store_bytes = af_sandbox::storage::allocated_bytes(&external).unwrap();
+    let baseline = first_origin_budget(
+        |max| command(&telemetry, max),
+        project_bytes + empty_store_bytes,
+        project_bytes + empty_store_bytes + 2 * 1024 * 1024,
+    );
+    fs::write(telemetry.join("retained"), vec![1_u8; 1024 * 1024]).unwrap();
+    let store_bytes = af_sandbox::storage::allocated_bytes(&external).unwrap();
+    let telemetry_bytes = af_sandbox::storage::allocated_bytes(&telemetry).unwrap();
+    let (project_copy, task_copy) = origin_copy_sizes(&machine, &project, &database);
+    assert_eq!(store_bytes, empty_store_bytes + telemetry_bytes);
+    let exact = baseline + telemetry_bytes;
+    eprintln!(
+        "Project and Workspace inventory={project_bytes} external Store inventory={store_bytes} \
+         included telemetry={telemetry_bytes} Project allocated={project_copy} \
+         Workspace allocated={task_copy} first empty budget={baseline} exact budget={exact}"
+    );
+    let foreign = external.join("unowned");
+    fs::create_dir(&foreign).unwrap();
+    fs::write(foreign.join("retained"), vec![2_u8; 1024 * 1024]).unwrap();
 
     assert_eq!(
         as_json(command(&telemetry, exact + telemetry_bytes))["origin"]["tasks"],
@@ -496,14 +604,19 @@ fn origin_snapshots_share_the_machine_storage_budget() {
 
     let snapshots = af_sandbox::stale::observation_root(&machine.path("tmp"));
     let baseline = af_sandbox::storage::allocated_bytes(&machine.path("state/af")).unwrap();
-    let limit = format!("{}B", baseline + 4 * MIB);
-    let command = || {
+    let with_budget = |budget| {
         let mut reader = machine.origin_reader(&project);
         reader
-            .env("AF_STORAGE__MAX_BYTES", &limit)
+            .env("AF_STORAGE__MAX_BYTES", format!("{budget}B"))
             .env("AF_STORAGE__MIN_FREE_BYTES", "0B");
         reader
     };
+    let limit = first_origin_budget(
+        |budget| with_budget(budget).output().unwrap(),
+        0,
+        baseline + 32 * MIB,
+    );
+    let command = || with_budget(limit);
     assert_eq!(
         as_json(command().output().unwrap())["origin"]["tasks"],
         json!([])
@@ -583,7 +696,11 @@ fn origin_snapshots_share_the_machine_storage_budget() {
         // The first runtime is also inside the configured telemetry tree. The two copies
         // fit with one charge for that retained allocation, but not with two charges.
         fs::remove_file(&marker).unwrap();
-        let wider_budget = format!("{}B", baseline + 7 * MIB);
+        let mut live = paused_reader(command(), &marker);
+        let retained = af_sandbox::storage::allocated_bytes(&snapshots).unwrap();
+        fs::remove_file(&marker).unwrap();
+        assert!(live.0.take().unwrap().wait().unwrap().success());
+        let wider_budget = format!("{}B", limit + retained);
         let wider = || {
             let mut reader = command();
             reader

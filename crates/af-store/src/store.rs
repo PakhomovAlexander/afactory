@@ -406,7 +406,7 @@ pub struct EventStore {
     /// process's observer, if any.
     commit_observer: Option<Arc<dyn observer::CommitObserver>>,
     // Drop the connection before removing its private database and any recovery files.
-    _observation_snapshot: Option<tempfile::TempDir>,
+    _observation_snapshot: Option<observation_snapshot::SnapshotFiles>,
 }
 
 /// A bounded, process-local observation of this connection's database. This is only an

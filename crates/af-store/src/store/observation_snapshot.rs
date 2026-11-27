@@ -18,6 +18,14 @@ const DB_SHARED_SIZE: libc::off_t = 510;
 const WAL_WRITE_LOCK: libc::off_t = 120;
 const WAL_MUTATION_LOCKS: libc::off_t = 3;
 
+pub(super) struct SnapshotFiles {
+    // Closing a separate handle to the index would drop SQLite's POSIX locks. Keep it
+    // until after EventStore drops its SQLite connection.
+    #[cfg(target_os = "linux")]
+    _index: Option<File>,
+    _directory: tempfile::TempDir,
+}
+
 impl EventStore {
     /// Read a native local Store from a private SQLite snapshot. The snapshot directory and
     /// copies are created with owner-only access. SQLite rebuilds any WAL index on the copy,
@@ -44,11 +52,26 @@ impl EventStore {
         let database = directory.path().join("events.sqlite");
         let has_wal = copy_snapshot(path, &database, max_bytes).map_err(conflict)?;
         let mut store = if has_wal {
-            Self::open_read_only(database)?
+            Self::open_read_only(&database)?
         } else {
-            Self::open_unchanged(database)?
+            Self::open_unchanged(&database)?
         };
-        store._observation_snapshot = Some(directory);
+        // Opening and checking the schema rebuilds the index. Settle Linux delayed
+        // allocation before the caller releases the machine-wide admission lock.
+        #[cfg(target_os = "linux")]
+        let index = open_sidecar(&sidecar(&database, "-shm")).map_err(conflict)?;
+        #[cfg(target_os = "linux")]
+        if let Some(index) = &index {
+            if let Err(error) = index.sync_data() {
+                drop(store);
+                return Err(conflict(error));
+            }
+        }
+        store._observation_snapshot = Some(SnapshotFiles {
+            #[cfg(target_os = "linux")]
+            _index: index,
+            _directory: directory,
+        });
         Ok(store)
     }
 }
@@ -129,7 +152,7 @@ fn snapshot_allocation(
         return Some(database);
     };
     // WAL index entries are smaller than their corresponding WAL frames. Allow one WAL
-    // length plus a region for SQLite to rebuild the index. Each file rounds independently.
+    // length plus a region for SQLite to rebuild the index. Each file has its own mapping.
     let index = allocation.file_bytes(wal.checked_add(32_768)?)?;
     database
         .checked_add(allocation.file_bytes(wal)?)?
@@ -143,6 +166,8 @@ fn copy_exact(source: &mut File, destination: &mut File, bytes: u64) -> io::Resu
             "observation source changed size during the copy",
         ));
     }
+    #[cfg(target_os = "linux")]
+    destination.sync_data()?;
     Ok(())
 }
 
@@ -252,6 +277,33 @@ mod tests {
         );
         assert_eq!(
             snapshot_allocation(u64::MAX - cluster + 1, Some(1), allocation),
+            None
+        );
+    }
+
+    #[test]
+    fn observation_snapshot_reserves_mapping_for_every_ext_file() {
+        let block = 4096;
+        let logical = 13 * block;
+        assert_eq!(
+            snapshot_allocation(logical, None, allocation::Allocation::ext(block, block)),
+            Some(14 * block)
+        );
+        let cluster = 65_536;
+        let allocation = allocation::Allocation::ext(block, cluster);
+        // DB and WAL each need one data cluster and up to one mapping cluster.
+        // The rebuilt index spans two data clusters and can need a mapping cluster.
+        assert_eq!(
+            snapshot_allocation(logical, Some(logical), allocation),
+            Some(7 * cluster)
+        );
+        assert_eq!(snapshot_allocation(u64::MAX, None, allocation), None);
+        assert_eq!(
+            snapshot_allocation(u64::MAX - cluster + 1, None, allocation),
+            None
+        );
+        assert_eq!(
+            snapshot_allocation(logical, Some(u64::MAX), allocation),
             None
         );
     }
