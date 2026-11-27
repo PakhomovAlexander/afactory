@@ -157,8 +157,8 @@
   },
   {
    "path": "crates/af-store/Cargo.toml",
-   "sha256": "sha256:d4a36d50860309a126632312e34b52bcee2130fd8ceb346de80d8508c72ee6f2",
-   "size": 1797
+   "sha256": "sha256:230025e1046807d955e3c1cb956354c619272ecf68501f4ec10b7e9cf5037ea4",
+   "size": 1810
   },
   {
    "path": "crates/af-telemetry/Cargo.toml",
@@ -4306,7 +4306,7 @@
    "size": 6781
   }
  ],
- "harness_digest": "sha256:da738f82da503d25caf64f0ec286fc6dcda2efc11b50bfd35fa94ec9f22b5067",
+ "harness_digest": "sha256:ca248a50b3d63851df020810f7814e4b0950afac7e4f59763fa5b79ac9c9886a",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",
