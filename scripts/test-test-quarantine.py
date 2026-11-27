@@ -1100,7 +1100,7 @@ class Apply(QuarantineFiles):
         self.assertEqual(result.stdout, '')
         self.assertIn('injected catalog replacement failure', result.stderr)
         captured, = self.issues.glob('.quarantine-*/*.rollback')
-        self.assertIn(f'entry retained at {captured}', result.stderr)
+        self.assertIn(f'entry retained at {captured.resolve()}', result.stderr)
         self.assertTrue(os.path.samestat(captured.stat(), identity))
         self.assertEqual(captured.read_bytes(), b'independent replacement\r\n')
         target = self.issues / 'flaky-af-graph-many-case_00.md'
