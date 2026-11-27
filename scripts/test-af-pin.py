@@ -1,17 +1,31 @@
 #!/usr/bin/env python3
 """Hermetic pin checks and preparation with local Git, fake GitHub and real signatures."""
+from contextlib import contextmanager
 from pathlib import Path
 import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 
 SCRIPTS = Path(__file__).resolve().parent
 GIT = shutil.which('git')
 TARGETS = ['aarch64-apple-darwin', 'x86_64-unknown-linux-musl', 'aarch64-unknown-linux-musl']
+
+
+@contextmanager
+def fixture_umask(required=0o022):
+    """Create owned fixtures without group/world write bits, restoring the caller's umask."""
+    previous = os.umask(0o077)
+    os.umask(previous | required)
+    try:
+        yield
+    finally:
+        os.umask(previous)
 
 
 def lock(version, worker='1.0.0', targets=TARGETS):
@@ -133,53 +147,54 @@ class Repository(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
-        self.repo = self.root / 'repo'
-        (self.repo / 'scripts').mkdir(parents=True)
-        (self.repo / '.af').mkdir()
-        (self.repo / '.github/workflows').mkdir(parents=True)
-        shutil.copytree(SCRIPTS / 'performance/perflab/_vendor',
-                        self.repo / 'scripts/performance/perflab/_vendor')
-        for script in ('af-pin.py', 'pin-release.sh', 'prepare-release-pin.py'):
-            shutil.copy(SCRIPTS / script, self.repo / 'scripts' / script)
-        (self.repo / '.github/workflows/release.yml').write_text(
-            ''.join(f'          - target: {target}\n' for target in TARGETS))
-        self.changelog('0.2.0', '0.1.0')
-        (self.repo / '.af/af.lock').write_text(lock('0.2.0'))
-        # Fake transport imports deterministic target digests from this fixture.
-        bin_dir = self.root / 'bin'
-        bin_dir.mkdir()
-        shutil.copy(Path(__file__), bin_dir / 'fixture_af_pin.py')
-        self.env = {**os.environ, 'AF': str(bin_dir / 'af'), 'FAKE_AF_TESTS': str(bin_dir), 'PYTHONDONTWRITEBYTECODE': '1',
-                    'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1',
-                    'GIT_AUTHOR_NAME': 'Fixture', 'GIT_AUTHOR_EMAIL': 'fixture@example.invalid',
-                    'GIT_COMMITTER_NAME': 'Fixture', 'GIT_COMMITTER_EMAIL': 'fixture@example.invalid'}
-        for key in ('FAKE_AF_MOVE_MAIN', 'FAKE_PR_REFUSE', 'FAKE_PR_RACE',
-                    'RELEASE_PIN_TOKEN', 'GH_TOKEN'):
-            self.env.pop(key, None)
-        (bin_dir / 'git').write_text(FAKE_GIT)
-        (bin_dir / 'git').chmod(0o755)
-        self.env['REAL_GIT'] = GIT
-        self.env['FAKE_GIT_CALLS'] = str(self.root / 'git-calls')
-        (bin_dir / 'gh').write_text(FAKE_GH)
-        (bin_dir / 'gh').chmod(0o755)
-        self.env['PATH'] = str(bin_dir) + os.pathsep + os.environ['PATH']
-        self.env['FAKE_PR_STATE'] = str(self.root / 'prs.json')
-        self.env['GH_REPO'] = 'fixture/repo'
+        with fixture_umask():
+            self.root = Path(self.tmp.name)
+            self.repo = self.root / 'repo'
+            (self.repo / 'scripts').mkdir(parents=True)
+            (self.repo / '.af').mkdir()
+            (self.repo / '.github/workflows').mkdir(parents=True)
+            shutil.copytree(SCRIPTS / 'performance/perflab/_vendor',
+                            self.repo / 'scripts/performance/perflab/_vendor')
+            for script in ('af-pin.py', 'pin-release.sh', 'prepare-release-pin.py'):
+                shutil.copy(SCRIPTS / script, self.repo / 'scripts' / script)
+            (self.repo / '.github/workflows/release.yml').write_text(
+                ''.join(f'          - target: {target}\n' for target in TARGETS))
+            self.changelog('0.2.0', '0.1.0')
+            (self.repo / '.af/af.lock').write_text(lock('0.2.0'))
+            # Fake transport imports deterministic target digests from this fixture.
+            bin_dir = self.root / 'bin'
+            bin_dir.mkdir()
+            shutil.copy(Path(__file__), bin_dir / 'fixture_af_pin.py')
+            self.env = {**os.environ, 'AF': str(bin_dir / 'af'), 'FAKE_AF_TESTS': str(bin_dir), 'PYTHONDONTWRITEBYTECODE': '1',
+                        'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1',
+                        'GIT_AUTHOR_NAME': 'Fixture', 'GIT_AUTHOR_EMAIL': 'fixture@example.invalid',
+                        'GIT_COMMITTER_NAME': 'Fixture', 'GIT_COMMITTER_EMAIL': 'fixture@example.invalid'}
+            for key in ('FAKE_AF_MOVE_MAIN', 'FAKE_PR_REFUSE', 'FAKE_PR_RACE',
+                        'RELEASE_PIN_TOKEN', 'GH_TOKEN'):
+                self.env.pop(key, None)
+            (bin_dir / 'git').write_text(FAKE_GIT)
+            (bin_dir / 'git').chmod(0o755)
+            self.env['REAL_GIT'] = GIT
+            self.env['FAKE_GIT_CALLS'] = str(self.root / 'git-calls')
+            (bin_dir / 'gh').write_text(FAKE_GH)
+            (bin_dir / 'gh').chmod(0o755)
+            self.env['PATH'] = str(bin_dir) + os.pathsep + os.environ['PATH']
+            self.env['FAKE_PR_STATE'] = str(self.root / 'prs.json')
+            self.env['GH_REPO'] = 'fixture/repo'
 
-        self.git('init', '-q', '-b', 'main')
-        self.git('remote', 'add', 'origin', 'https://github.com/fixture/repo.git')
-        assets = self.root / 'assets'
-        assets.mkdir()
-        key = self.repo / 'crates/af/keys/release.pub'
-        key.parent.mkdir(parents=True)
-        secret = self.root / 'release.key'
-        subprocess.run(['minisign', '-G', '-W', '-p', str(key), '-s', str(secret)],
-                       check=True, capture_output=True)
-        self.env.update(FIXTURE_ASSETS=str(assets), FIXTURE_SECRET=str(secret),
-                        REAL_MINISIGN=shutil.which('minisign'))
-        self.git('add', '.')
-        self.git('commit', '-qm', 'fixture')
+            self.git('init', '-q', '-b', 'main')
+            self.git('remote', 'add', 'origin', 'https://github.com/fixture/repo.git')
+            assets = self.root / 'assets'
+            assets.mkdir()
+            key = self.repo / 'crates/af/keys/release.pub'
+            key.parent.mkdir(parents=True)
+            secret = self.root / 'release.key'
+            subprocess.run(['minisign', '-G', '-W', '-p', str(key), '-s', str(secret)],
+                           check=True, capture_output=True)
+            self.env.update(FIXTURE_ASSETS=str(assets), FIXTURE_SECRET=str(secret),
+                            REAL_MINISIGN=shutil.which('minisign'))
+            self.git('add', '.')
+            self.git('commit', '-qm', 'fixture')
 
     def changelog(self, *versions):
         # A version given as 'X [YANKED]' is a release that was tagged but never published.
@@ -543,6 +558,18 @@ except ValueError:
             self.assertEqual(result.returncode, 1)
             self.assertNotIn('secret', result.stderr)
             self.assertEqual(path.read_bytes(), before)
+        for target in (path, path.parent, self.repo / 'crates/af/keys/release.pub'):
+            with self.subTest(group_writable=target.name):
+                mode = stat.S_IMODE(target.stat().st_mode)
+                target.chmod(mode | 0o020)
+                try:
+                    self.assertEqual(self.helper().returncode, 1)
+                    self.assertEqual(path.read_bytes(), before)
+                    if target == path:
+                        self.assertEqual(self.pin_release('0.3.0').returncode, 1)
+                        self.assertEqual(path.read_bytes(), before)
+                finally:
+                    target.chmod(mode)
         external = self.root / 'foreign.lock'
         path.rename(external)
         path.symlink_to(external)
@@ -553,7 +580,8 @@ except ValueError:
         self.assertEqual(self.helper().returncode, 1)
         self.assertEqual(external.read_bytes(), before)
         path.unlink()
-        path.write_bytes(before)
+        with fixture_umask():
+            path.write_bytes(before)
         parent = path.parent
         moved = self.root / 'authority'
         parent.rename(moved)
@@ -982,6 +1010,53 @@ except ValueError:
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('on main already pins af 0.3.0', result.stdout)
         self.assertEqual(Path(self.env['FAKE_PR_STATE'] + '.creates').read_text(), '1')
+
+
+class InheritedUmask(unittest.TestCase):
+    def test_fixture_umask_tightens_group_write_preserves_strict_and_restores_on_error(self):
+        original = os.umask(0o002)
+        try:
+            with fixture_umask():
+                observed = os.umask(0o077)
+                os.umask(observed)
+                self.assertEqual(observed, 0o022)
+            restored = os.umask(0o077)
+            self.assertEqual(restored, 0o002)
+            with self.assertRaisesRegex(RuntimeError, 'boom'):
+                with fixture_umask():
+                    observed = os.umask(0o022)
+                    os.umask(observed)
+                    self.assertEqual(observed, 0o077)
+                    raise RuntimeError('boom')
+            restored = os.umask(original)
+            self.assertEqual(restored, 0o077)
+        finally:
+            os.umask(original)
+
+    def test_release_pin_fixtures_and_wrapper_pass_under_umask_002(self):
+        """A host with umask 0002 must pass fixture setup and pin-release.sh checkouts
+        without weakening prepare-release-pin.py's non-group-writable ownership checks."""
+        cases = (
+            'Repository.test_exact_bytes_outside_af_tables_and_check_only',
+            'Repository.test_pr_is_pin_only_on_current_main_and_reuses_one_pr',
+            'Repository.test_main_moved_during_refresh_rebuilds_on_new_tip',
+            'Repository.test_invalid_identity_and_hostile_paths_never_write',
+        )
+        child = (
+            'import os, runpy, sys\n'
+            'os.umask(0o002)\n'
+            'sys.argv = sys.argv[1:]\n'
+            'runpy.run_path(sys.argv[0], run_name="__main__")\n'
+        )
+        result = subprocess.run(
+            [sys.executable, '-IB', '-c', child, str(Path(__file__).resolve()), *cases],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f'Ran {len(cases)} tests', result.stderr)
+        self.assertIn('OK', result.stderr)
 
 
 if __name__ == '__main__':
