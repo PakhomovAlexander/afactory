@@ -268,23 +268,171 @@ class LifecycleTests(unittest.TestCase):
         native = dict(schema="af/git-candidate-source@2", repository_id="fixture", source_snapshot=S, task_source_snapshot=S,
                       candidate_snapshot=R, predecessor_snapshot=None, source_content_digest=D, source_commit=source_commit,
                       candidate_tree=tree, transport_commit=transport)
-        af.write_text(fixture_launcher('''import hashlib, json, pathlib, sys, subprocess, os
+        # Retained workspace-blobs receipts from 2026-11-27.
+        # Base commit f97ac450d3bfd95f6537ebbdc744cd1479db4677
+        # Measured streaming commit a0b3c521e32716a194381eaa04a3cf37d087885b
+        # Measured tree 5196135f44a79cdea2808a404623136529cd3f1b
+        # Measured script SHA-256 8ba5163af18261229f7a238ee365ecd15821b3e2d4b69d9155312f0be4207936
+        # The delivered script differs from those measured bytes only in this comment.
+        #
+        # Uninstrumented wall seconds on one macOS 27.0.1 arm64 runner, Python 3.14.7.
+        # Base at 03:22:09, :17, :22 UTC:
+        #   4.488326833117753, 4.150564291980118, 4.108307125046849 (median 4.150564 s).
+        # Streaming at 03:22:14, :16, :26 UTC:
+        #   1.594446875154972, 1.7018510419875383, 1.5567236673086882 (median 1.594447 s).
+        # All six exited 0. Each created 300 paths, marked many/299 assume-unchanged,
+        # changed it to b"other\n", required cleanup_workspace_v1 to raise Refused,
+        # and asserted those modified bytes survived. Separate diagnostics passed on
+        # both revisions and counted 303 (base) and 4 (streaming) cat-file blob launches.
+        # Each also launched Git once for ls-tree and once for rev-parse, for 305 and 6
+        # direct Git launches by the fake materializer, respectively.
+        #
+        # On Linux the 32 MiB duplicate zero blob (Git OID d4988d268749185a4f9120756d2c5fec51e2ef05)
+        # streamed directly through Git with exit 0 under 40 MiB RLIMIT_AS on both
+        # tested revisions. The whole-blob predecessor debc61fd23ba6b1f72780154e2cdb65638f43b81
+        # passed without the limit and exited 1 with MemoryError under it. The streaming
+        # revision exited 0 both ways. Each successful materialization matched both
+        # file digests and modes (0644 and 0755) and symlink link -> new.
+        # Separate Mac probe, peak RSS in bytes of the fake materializer's Python process:
+        #   duplicate blob      base       predecessor    streaming
+        #   8 MiB               39632896   31424512       22495232
+        #   64 MiB             157089792   90112000       22282240
+        # All six Mac probes exited 0 and matched both file digests, modes and the symlink.
+        #
+        # Reproduce in the recorded revision roots on the same runner with TMPDIR
+        # outside any Git checkout. Interleave three timings per revision, saving
+        # wall time and exit status for each invocation:
+        #   python=/opt/homebrew/opt/python@3.14/bin/python3.14
+        #   suite=scripts/test-scenario-git-workspace.py
+        #   test=LifecycleTests.test_raw_verification_handles_a_large_tracked_tree_and_its_final_paths
+        #   /usr/bin/time -p "$python" -IB "$suite" "$test" -v; printf 'exit=%s\n' "$?"
+        # To reproduce just the helper's Git counts, use this separate diagnostic:
+        #   trace=$(mktemp "${TMPDIR:-/tmp}/workspace-blobs.XXXXXX")
+        #   "$python" -IB - "$suite" "$test" "$trace" <<'PY'
+        #   from collections import Counter
+        #   import json, runpy, sys, unittest
+        #   from pathlib import Path
+        #   suite, name, trace = sys.argv[1:]
+        #   fixture = runpy.run_path(suite)
+        #   adapter = fixture["A"]
+        #   original = adapter.bounded_command
+        #   def traced(argv, cwd, env, *args, **kwargs):
+        #       if list(argv[1:3]) == ["task", "materialize"]:
+        #           env = dict(env, GIT_TRACE2_EVENT=str(Path(trace).resolve()))
+        #       return original(argv, cwd, env, *args, **kwargs)
+        #   adapter.bounded_command = traced
+        #   case = fixture["LifecycleTests"](name.split(".", 1)[1])
+        #   result = unittest.TextTestRunner(verbosity=2).run(case)
+        #   starts = (json.loads(line) for line in Path(trace).read_text().splitlines())
+        #   print(Counter(" ".join(e["argv"][3:5]) if e["argv"][3] == "cat-file" else e["argv"][3]
+        #                 for e in starts if e["event"] == "start"))
+        #   raise SystemExit(0 if result.wasSuccessful() else 1)
+        #   PY
+        #   rm "$trace"
+        #
+        # Memory reproduction uses the same isolated fixture. Run the following with
+        # python=python3 and mib=32 on Linux, or mib=8 and then mib=64 with the Mac
+        # Python above. Set bounded_exit=1 for the Linux predecessor and 0 for the
+        # streaming revision or either Mac size. The Linux control streams the same
+        # Git object to disk.
+        #   "$python" -IB - "$suite" "$test" "$mib" "$bounded_exit" <<'PY'
+        #   import hashlib, json, os, resource, runpy, shutil, stat, subprocess, sys
+        #   suite, test, mib, bounded_exit = sys.argv[1:]
+        #   fixture = runpy.run_path(suite)
+        #   case = fixture["LifecycleTests"](test.split(".", 1)[1])
+        #   linux = sys.platform.startswith("linux")
+        #   block = bytes(2**20) if linux else b"12345678" * (2**17)
+        #   limit = 40 * 2**20
+        #   def constrain():
+        #       resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
+        #   def digest(path):
+        #       with path.open("rb") as stream:
+        #           return hashlib.file_digest(stream, "sha256").hexdigest()
+        #   try:
+        #       case.setUp()
+        #       case.git("checkout", "-q", "af-candidate")
+        #       data = case.repo / "data"
+        #       with data.open("wb") as stream:
+        #           for _ in range(int(mib)):
+        #               stream.write(block)
+        #       shutil.copyfile(data, case.repo / "data-exec")
+        #       data.chmod(0o644)
+        #       (case.repo / "data-exec").chmod(0o755)
+        #       case.git("add", "data", "data-exec")
+        #       case.git("commit", "-qm", "probe duplicate blob with separate modes")
+        #       oid = case.git("rev-parse", "HEAD:data")
+        #       assert oid == case.git("rev-parse", "HEAD:data-exec")
+        #       expected = digest(data)
+        #       if linux:
+        #           control = case.root / "streamed"
+        #           with control.open("wb") as stream:
+        #               result = subprocess.run(["/usr/bin/git", "-C", str(case.repo),
+        #                                        "cat-file", "blob", oid], env=case.env,
+        #                                       stdout=stream, preexec_fn=constrain, check=True)
+        #           assert digest(control) == expected
+        #           print("direct Git exit", result.returncode, "blob", oid)
+        #       for bounded in ((False, True) if linux else (False,)):
+        #           dest = case.root / ("bounded" if bounded else "normal")
+        #           subprocess.run(["/usr/bin/git", "clone", "-q", "--no-checkout", "-b",
+        #                           "af-candidate", str(case.repo), str(dest)], env=case.env, check=True)
+        #           args = [case.config["af"], "task", "materialize", "probe", "--into", str(dest),
+        #                   "--repo", str(case.repo), "--snapshot", fixture["R"]]
+        #           if not linux:
+        #               rss = ("import resource,runpy,sys\nsys.argv=sys.argv[1:]\n"
+        #                      "try: runpy.run_path(sys.argv[0],run_name='__main__')\n"
+        #                      "finally: print(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)\n")
+        #               args = [sys.executable, "-ISB", "-c", rss, *args]
+        #           result = subprocess.run(args, env=case.env, capture_output=True, text=True,
+        #                                   preexec_fn=constrain if bounded else None)
+        #           print("limit bytes", limit if bounded else None, "exit", result.returncode)
+        #           if bounded and int(bounded_exit):
+        #               assert result.returncode == int(bounded_exit)
+        #               assert "MemoryError" in result.stderr
+        #               print(result.stderr)
+        #               continue
+        #           result.check_returncode()
+        #           lines = result.stdout.splitlines()
+        #           receipt = json.loads(lines[0])
+        #           assert receipt["verified"] and receipt["snapshot_id"] == fixture["R"]
+        #           for name, mode in (("data", 0o644), ("data-exec", 0o755)):
+        #               path = dest / name
+        #               assert digest(path) == expected and stat.S_IMODE(path.stat().st_mode) == mode
+        #           assert os.readlink(dest / "link") == "new"
+        #           print("modes and symlink matched, SHA-256", expected)
+        #           if not linux:
+        #               print("peak Python RSS bytes", int(lines[1]))
+        #   finally:
+        #       case.doCleanups()
+        #   PY
+        af.write_text(fixture_launcher('''import hashlib, json, pathlib, sys, subprocess, os, shutil, tempfile
 args=sys.argv[1:]
 if args[:2] == ["task", "materialize"]:
  dest=pathlib.Path(args[args.index("--into")+1])
  repo=args[args.index("--repo")+1]
  listing=subprocess.check_output(["/usr/bin/git","-C",repo,"ls-tree","-rz",subprocess.check_output(["/usr/bin/git","-C",str(dest),"rev-parse","HEAD"]).decode().strip()])
+ # Group paths by blob so every object needs only one Git read.
+ paths_by_oid={}
  for record in listing.split(b"\\0"):
   if not record: continue
   metadata,name=record.split(b"\\t",1)
-  mode,kind,oid=metadata.split()
-  content=subprocess.check_output(["/usr/bin/git","-C",repo,"cat-file","blob",oid.decode()])
-  path=dest / os.fsdecode(name)
-  path.parent.mkdir(parents=True,exist_ok=True)
-  if mode==b"120000": path.symlink_to(os.fsdecode(content))
-  else:
-   path.write_bytes(content)
-   path.chmod(0o755 if mode==b"100755" else 0o644)
+  mode,_,oid=metadata.split()
+  paths_by_oid.setdefault(oid,[]).append((mode,name))
+ for oid,entries in paths_by_oid.items():
+  # Spool one blob at a time so file content never accumulates in memory.
+  with tempfile.TemporaryFile(dir=dest) as content:
+   subprocess.run(["/usr/bin/git","-C",repo,"cat-file","blob",oid.decode()],stdout=content,check=True)
+   size=content.tell()
+   for mode,name in entries:
+    path=dest / os.fsdecode(name)
+    path.parent.mkdir(parents=True,exist_ok=True)
+    content.seek(0)
+    if mode==b"120000":
+     if size>4096: raise ValueError("fixture symlink target exceeds 4096 bytes")
+     path.symlink_to(os.fsdecode(content.read(size)))
+    else:
+     with path.open("wb") as output:
+      shutil.copyfileobj(content,output,length=64*1024)
+     path.chmod(0o755 if mode==b"100755" else 0o644)
  print(json.dumps(dict(schema="af/task-materialized@1",task_id=args[2],snapshot_id=args[args.index("--snapshot")+1],verified=True)))
  sys.exit(0)
 assert args[:2] == ["scenario", "candidate-source"]
