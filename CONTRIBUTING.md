@@ -37,9 +37,12 @@ Where Linux and macOS differ, split on `target_os`.
 ## Before every pull request
 
 For a code Task, the implementer runs a filtered nextest selection through `--profile ci`
-for the tests it touched and repeats that selection after its last edit. The Task gate runs
-the fast profile (functional, e2e, uix; ADR-0251), and every pull request defaults to the same
-fast selection (ADR-0239); the full check remains in `make check`, main validation and unbound
+for the tests it touched and repeats that selection after its last edit. The local Task gate runs
+`scripts/verify.sh --profile task` (configured in `.config/task-gate.json`, currently
+`functional` and `uix` without `e2e` or `dev-release-tests`;
+[ADR-2026-11-27-configure-the-local-task-gate-profile](docs/adr/2026-11-27-configure-the-local-task-gate-profile.md)),
+while every pull request defaults to the fast selection (functional, e2e, uix plus `base-check`;
+ADR-0239); the full check remains in `make check`, main validation and unbound
 releases. Before a pull request, run the full local check:
 
 ```sh
@@ -50,7 +53,7 @@ That is `cargo fmt --all -- --check`, `cargo clippy --all-targets --locked -- -D
 `cargo nextest run --profile ci` over every test binary except the tests
 `.config/test-quarantine.json` lists (ADR-0268), and the release-selection check
 (`scripts/test-release-resolve.py`), plus preflight and feature-on perf checks.
-This repository's Task gate runs `scripts/verify.sh --profile fast` (functional, e2e, uix).
+This repository's Task gate runs `scripts/verify.sh --profile task`.
 CI uses the selected classes described below; the default PR omits perf. A local pass alone
 does not establish the outcome of separate CI/container work.
 Clippy warnings are errors; fix them rather than allowing them.
@@ -419,9 +422,10 @@ Vulnerabilities go through private reporting, never a public issue: see `SECURIT
 
 ## Selecting validation classes
 
-`make check` remains full. The local Task gate uses `scripts/verify.sh --profile fast`,
-which records the shared `test-build` receipt before functional, e2e and uix class tests;
-every pull request defaults to the same fast selection (ADR-0239), and the full check remains
+`make check` remains full. The local Task gate uses `scripts/verify.sh --profile task`
+(configured in `.config/task-gate.json`, currently `functional` and `uix` without `e2e` or
+`dev-release-tests`), which records the shared `test-build` receipt before class tests;
+every pull request defaults to the fast selection (functional, e2e, uix; ADR-0239), and the full check remains
 in `make check`, main validation and unbound releases. For
 selective development use `make check-fast` (functional, e2e, uix), `make check-full` (all four,
 including perf), or `make test-plan TEST_LABEL_FILE=event.json`

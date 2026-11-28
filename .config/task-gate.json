@@ -1,0 +1,10 @@
+{
+  "exclude_release_steps": [
+    "dev-release-tests"
+  ],
+  "labels": [
+    "release:fast",
+    "no-e2e"
+  ],
+  "schema": "af.task-gate/1"
+}

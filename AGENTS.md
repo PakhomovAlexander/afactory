@@ -59,8 +59,10 @@ review corpora belong in consuming repositories, not here.
   the separate Performance measurement; exclusions are reported as NOT RUN or exempt, never
   as measured passes. Inspect the entire diff when choosing coverage and explain the choice
   in the PR description. Re-evaluate labels on updates. Local `make check` remains full; this
-  repository's Task gate runs `scripts/verify.sh --profile fast` (functional, e2e, uix); every
-  pull request defaults to the same fast selection (ADR-0239), and the full check remains in
+  repository's Task gate runs `scripts/verify.sh --profile task` (configured in
+  `.config/task-gate.json`, currently `functional` and `uix` without `e2e` or
+  `dev-release-tests`); every pull request defaults to the fast selection (`functional`, `e2e`,
+  `uix` plus `base-check` including `dev-release-tests`, ADR-0239), and the full check remains in
   `make check`, main validation and unbound releases;
   release selections are bound to exact SHA/version tags. This operator policy supersedes
   ADR-0196's prose-only recommendation; the kernel's remote-gate `no_perf_paths` authority

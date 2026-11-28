@@ -6,10 +6,14 @@ individual assertion, deadline, or nextest exclusive scheduling rule.
 always-full CI policy in ADR-0107, the unconditional latest-Python lab dependency in ADR-0197,
 and the repository operator's prose-only recommendation for `no-perf` in ADR-0196. The AF kernel's
 remote gate label authority is unchanged. Local `make check` remains full. The repository's
-Task gate selects the fast profile (functional, e2e, uix) through
-`scripts/verify.sh --profile fast`
-([ADR-0251](adr/0251-run-the-task-gate-on-the-fast-validation-profile.md)); every pull request
-defaults to the same fast selection (ADR-0239), and the full check remains in `make check`,
+Task gate selects its configured profile through `scripts/verify.sh --profile task` and
+`.config/task-gate.json` (`af.task-gate/1`, currently `functional` and `uix` without `e2e` or
+`dev-release-tests`;
+[ADR-2026-11-27-configure-the-local-task-gate-profile](adr/2026-11-27-configure-the-local-task-gate-profile.md),
+superseding the fixed `--profile fast` command in
+[ADR-0251](adr/0251-run-the-task-gate-on-the-fast-validation-profile.md)); every pull request
+defaults to the fast selection (functional, e2e, uix plus `base-check` including
+`dev-release-tests`, ADR-0239), and the full check remains in `make check`,
 main validation and unbound releases.
 
 ## Classes and catalog
@@ -412,7 +416,10 @@ regression does not establish that outer-run admission or independent goal evalu
 `verify.sh` retains the native ownership wrapper; `verify-body.sh` owns the complete gate body.
 With no arguments or `--profile full` it runs full `make check`; `--profile fast` writes
 a gate-context `release:fast` plan into the private run directory, then runs `test-build` before
-`check-classes`.
+`check-classes`; `--profile task` (or `--gate-config CONFIG.json`, with optional `--label`,
+`--exclude-release-step` and `--include-release-step` overrides) resolves `.config/task-gate.json`
+through `scripts/test-classes.py task-gate` and passes any configured
+`AF_GATE_SKIP_RELEASE_STEPS` to `check-classes`.
 Explicit `--test-plan PLAN.json` selects `check-classes` as before, keeping its evidence
 beneath the existing private gate output.
 Native `execute` explicitly passes `--build-scope plan`: every selected variant compiles before

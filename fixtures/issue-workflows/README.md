@@ -33,7 +33,7 @@ The shared Review policy retains an optional bugs policy entry to allow light's 
 reviewer; default graphs bind both reviewers and require every bound result for closure.
 Do not describe this as per-Pipeline enforcement of required benchmark Demands.
 
-The native `kernel` check still runs `scripts/verify.sh --profile fast` locally, and Markdown
+The native `kernel` check runs `scripts/verify.sh --profile task` locally, and Markdown
 checks remain mandatory. No check node selects `remote_checks`. Independence is checked against
 the source writer. The final `issue-internal/verification` Task has no implementer and is shared
 by every selection; it is an internal capability, not nine extra selectable profiles.

@@ -35,7 +35,9 @@ if [[ -n "${AF_CHECK_REPORT:-}" ]]; then
   export AF_GATE_TEST_REPORT="$run_dir/test-runs.jsonl"
 fi
 # Selection is explicit caller data. No arguments keep the complete AF gate.
+usage='usage: scripts/verify.sh [--profile task|fast|full | --gate-config CONFIG.json | --test-plan PLAN.json] [--label LABEL]... [--exclude-release-step STEP]... [--include-release-step STEP]...'
 check_args=(check)
+skip_file=""
 if [[ "$#" -gt 0 ]]; then
   if [[ "$#" -eq 2 && "$1" == --test-plan && -f "$2" ]]; then
     check_args=(check-classes "TEST_PLAN=$2")
@@ -45,14 +47,51 @@ if [[ "$#" -gt 0 ]]; then
     check_args=(test-build check-classes "TEST_PLAN=$plan")
   elif [[ "$#" -eq 2 && "$1" == --profile && "$2" == full ]]; then
     check_args=(check)
+  elif [[ "$#" -ge 2 && ( ( "$1" == --profile && "$2" == task ) || ( "$1" == --gate-config && -f "$2" ) ) ]]; then
+    gate_args=()
+    if [[ "$1" == --gate-config ]]; then
+      gate_args+=(--config "$2")
+    fi
+    shift 2
+    while [[ "$#" -gt 0 ]]; do
+      case "$1" in
+        --config)
+          if [[ "$#" -lt 2 || ! -f "$2" ]]; then
+            echo "$usage" >&2
+            exit 2
+          fi
+          gate_args+=("$1" "$2")
+          shift 2
+          ;;
+        --label|--exclude-release-step|--include-release-step)
+          if [[ "$#" -lt 2 ]]; then
+            echo "$usage" >&2
+            exit 2
+          fi
+          gate_args+=("$1" "$2")
+          shift 2
+          ;;
+        *)
+          echo "$usage" >&2
+          exit 2
+          ;;
+      esac
+    done
+    plan="$run_dir/test-plan.json"
+    skip_file="$run_dir/skip-release-steps.txt"
+    python3 scripts/test-classes.py task-gate ${gate_args[@]+"${gate_args[@]}"} --output "$plan" --skip-steps-output "$skip_file"
+    check_args=(test-build task-gate-check "TEST_PLAN=$plan")
   else
-    echo 'usage: scripts/verify.sh [--profile fast|full | --test-plan PLAN.json]' >&2
+    echo "$usage" >&2
     exit 2
   fi
 fi
+# Clear inherited Make flag/override channels so ambient MAKEFLAGS cannot override the
+# profile's resolved release-step selection or TEST_PLAN.
+unset MAKEFLAGS GNUMAKEFLAGS MFLAGS MAKEOVERRIDES MAKELEVEL MAKEFILES AF_GATE_SKIP_RELEASE_STEPS
 status=0
 AF_WORKSPACE_ROOT="$PWD" CARGO_TARGET_DIR="$target_dir" AF_GATE_NEXTEST_TARGET="$target_dir" \
-  AF_GATE_NEXTEST_RUN="$run_dir" make "${check_args[@]}" || status=$?
+  AF_GATE_NEXTEST_RUN="$run_dir" AF_TASK_GATE_SKIP_STEPS_FILE="$skip_file" make "${check_args[@]}" || status=$?
 if [[ -n "${AF_CHECK_REPORT:-}" ]]; then
   report_status=0
   python3 scripts/ci-step.py --finish-tests "$AF_GATE_TEST_REPORT" || report_status=$?

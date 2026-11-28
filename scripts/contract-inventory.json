@@ -126,6 +126,7 @@
         "scripts/test-test-classes.py"
       ],
       "schemas": [
+        "schemas/task-gate-v1.json",
         "schemas/test-class-catalog-v1.json",
         "schemas/test-class-plan-v3.json",
         "schemas/test-class-receipt-v3.json",

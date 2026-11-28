@@ -136,3 +136,27 @@ fn triage_contract_kernel_validation_and_roundtrip_boundaries() {
         );
     }
 }
+
+#[test]
+fn task_gate_schema_rejects_empty_labels_and_accepts_checked_in_config() {
+    let validator = jsonschema::options()
+        .build(&read("schemas/task-gate-v1.json"))
+        .unwrap();
+    let checked_in = read(".config/task-gate.json");
+    assert!(
+        validator.is_valid(&checked_in),
+        "checked-in .config/task-gate.json must validate against schemas/task-gate-v1.json"
+    );
+    for invalid in [
+        json!({"schema": "af.task-gate/1", "labels": [""], "exclude_release_steps": []}),
+        json!({"schema": "af.task-gate/1", "labels": ["noe2e"], "exclude_release_steps": []}),
+        json!({"schema": "af.task-gate/1", "labels": ["no-e2ee"], "exclude_release_steps": []}),
+        json!({"schema": "af.task-gate/1", "labels": [], "exclude_release_steps": []}),
+        json!({"schema": "af.task-gate/1", "labels": ["release:fast"], "exclude_release_steps": [""]}),
+    ] {
+        assert!(
+            !validator.is_valid(&invalid),
+            "expected schema rejection for {invalid}"
+        );
+    }
+}

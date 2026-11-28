@@ -1,0 +1,43 @@
+{
+  "$id": "urn:af:schema:task-gate:1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "exclude_release_steps": {
+      "items": {
+        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+        "type": "string"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "labels": {
+      "items": {
+        "enum": [
+          "no-e2e",
+          "no-functional",
+          "no-perf",
+          "no-uix",
+          "release:fast",
+          "release:full",
+          "test:e2e",
+          "test:functional",
+          "test:perf",
+          "test:uix"
+        ]
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "schema": {
+      "const": "af.task-gate/1"
+    }
+  },
+  "required": [
+    "schema",
+    "labels",
+    "exclude_release_steps"
+  ],
+  "type": "object"
+}

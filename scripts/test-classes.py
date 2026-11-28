@@ -18,8 +18,12 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parent.parent
 CATALOG = ROOT / '.config/test-classes.json'
 QUARANTINE = ROOT / '.config/test-quarantine.json'
+TASK_GATE = ROOT / '.config/task-gate.json'
+TASK_GATE_SCHEMA = 'af.task-gate/1'
 CLASSES = ('functional', 'e2e', 'uix', 'perf')
 FAST = list(CLASSES[:3])
+KNOWN_LABELS = frozenset({*(f'test:{c}' for c in CLASSES), *(f'no-{c}' for c in CLASSES),
+                          'release:fast', 'release:full'})
 # A listed test classifies as this, and no plan selects it (ADR-0268).
 QUARANTINED = 'quarantine'
 QUARANTINE_LIMIT = 20
@@ -221,9 +225,16 @@ def schema_documents():
                      'tests': {'type': 'object', 'minProperties': 1, 'maxProperties': QUARANTINE_LIMIT,
                                'propertyNames': {'pattern': '^[A-Za-z0-9_:./-]+ [A-Za-z0-9_:]+$'},
                                'additionalProperties': result}})
+    gate_cfg = obj({'schema': {'const': TASK_GATE_SCHEMA},
+                    'labels': {'type': 'array', 'items': {'enum': sorted(KNOWN_LABELS)},
+                               'minItems': 1, 'uniqueItems': True},
+                    'exclude_release_steps': {'type': 'array', 'uniqueItems': True,
+                                              'items': {'type': 'string',
+                                                        'pattern': '^[a-z0-9]+(?:-[a-z0-9]+)*$'}}})
     return {f'{name}-v{version}.json': {'$schema': 'https://json-schema.org/draft/2020-12/schema',
                                       '$id': f'urn:af:schema:{name}:{version}', **document}
-            for name, version, document in [('test-class-catalog', 1, cat), ('test-class-plan', 3, plan),
+            for name, version, document in [('task-gate', 1, gate_cfg),
+                                            ('test-class-catalog', 1, cat), ('test-class-plan', 3, plan),
                                             ('release-test-binding', 3, binding),
                                             ('test-class-receipt', 3, receipt),
                                             ('test-quarantine', 1, quarantined),
@@ -249,10 +260,8 @@ def resolve(labels=(), context='local', sha=None, version=None):
     if any(value is not None and not isinstance(value, str) for value in (sha, version)):
         raise ValueError('SHA/version must be strings or null')
     labels = sorted(set(labels))
-    known = {f'test:{c}' for c in CLASSES} | {f'no-{c}' for c in CLASSES}
-    known |= {'release:fast', 'release:full'}
     for label in labels:
-        if label.startswith(('test:', 'no-', 'release:')) and label not in known:
+        if label.startswith(('test:', 'no-', 'release:')) and label not in KNOWN_LABELS:
             raise ValueError(f'unknown reserved class label: {label!r}')
     positive = {c for c in CLASSES if f'test:{c}' in labels}
     negative = {c for c in CLASSES if f'no-{c}' in labels}
@@ -451,6 +460,66 @@ def filterset(entries, selected):
     return ' | '.join(clauses) or 'none()'
 
 
+def release_check_steps(makefile=None):
+    """Ordered release-check step labels declared in Makefile."""
+    text = (ROOT / 'Makefile').read_text() if makefile is None else makefile
+    target = text.split('release-check:\n', 1)[1].split('\n\n', 1)[0]
+    steps = re.findall(r'--stage release ([a-z0-9]+(?:-[a-z0-9]+)*)\b', target)
+    if not steps or len(steps) != len(set(steps)):
+        raise ValueError('Makefile release-check steps missing or duplicated')
+    return steps
+
+
+def task_gate(value=None, path=None, labels=None, exclude_steps=(), include_steps=(), makefile=None):
+    """Validate the local Task gate config and return (plan, excluded_release_steps)."""
+    source = TASK_GATE if path is None else Path(path)
+    where = str(source.relative_to(ROOT)) if source.is_relative_to(ROOT) else str(source)
+    if value is None:
+        value = read(source)
+    if (not isinstance(value, dict)
+            or set(value) != {'schema', 'labels', 'exclude_release_steps'}
+            or value['schema'] != TASK_GATE_SCHEMA):
+        raise ValueError(f'{where}: unsupported task gate config; fix: write '
+                         '{"schema": "af.task-gate/1", "labels": [...], "exclude_release_steps": [...]}')
+    cfg_labels = value['labels']
+    if (not isinstance(cfg_labels, list) or not cfg_labels
+            or not all(isinstance(x, str) and x for x in cfg_labels)
+            or len(set(cfg_labels)) != len(cfg_labels)):
+        raise ValueError(f'{where}: `labels` must be a non-empty list of unique strings')
+    cfg_steps = value['exclude_release_steps']
+    if (not isinstance(cfg_steps, list)
+            or not all(isinstance(x, str) and re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*', x) for x in cfg_steps)
+            or len(set(cfg_steps)) != len(cfg_steps)):
+        raise ValueError(f'{where}: `exclude_release_steps` must be a list of unique step names')
+    known = set(release_check_steps(makefile))
+    effective_labels = list(labels) if labels else list(cfg_labels)
+    if any(not isinstance(x, str) or not x for x in effective_labels):
+        raise ValueError(f'{where}: CLI labels must be non-empty strings')
+    unknown_labels = sorted((set(cfg_labels) | set(effective_labels)) - KNOWN_LABELS)
+    if unknown_labels:
+        raise ValueError(f'{where}: unknown selection labels {unknown_labels}; '
+                         f'allowed: {sorted(KNOWN_LABELS)}')
+    overlap = set(exclude_steps) & set(include_steps)
+    if overlap:
+        raise ValueError(f'{where}: contradictory release-step overrides: {sorted(overlap)}')
+    effective_steps = [s for s in cfg_steps if s not in set(include_steps)]
+    for step in exclude_steps:
+        if step not in effective_steps:
+            effective_steps.append(step)
+    unknown = sorted((set(cfg_steps) | set(exclude_steps) | set(include_steps)) - known)
+    if unknown:
+        raise ValueError(f'{where}: unknown release-check steps {unknown}; known: {sorted(known)}')
+    try:
+        resolved = resolve(cfg_labels, context='gate')
+        if labels:
+            if len(set(effective_labels)) != len(effective_labels):
+                raise ValueError('CLI labels must be unique')
+            resolved = resolve(effective_labels, context='gate')
+    except ValueError as error:
+        raise ValueError(f'{where}: {error}') from None
+    return resolved, effective_steps
+
+
 def audit_source(cat=None):
     """Catch new integration modules, binaries and script checks even on a fast plan."""
     cat = cat or catalog()
@@ -499,6 +568,7 @@ def audit_source(cat=None):
         except ValueError as error:
             raise ValueError(f'.config/test-quarantine.json: {identity}: {error}; '
                              'fix: correct the identity or remove the entry') from None
+    task_gate(makefile=makefile)
 
 
 def aggregate(plan, needs):
@@ -883,6 +953,13 @@ def main():
     plan.add_argument('--version')
     plan.add_argument('--output', required=True)
     plan.add_argument('--github-output')
+    tg = sub.add_parser('task-gate')
+    tg.add_argument('--config')
+    tg.add_argument('--label', action='append', default=[])
+    tg.add_argument('--exclude-release-step', action='append', default=[])
+    tg.add_argument('--include-release-step', action='append', default=[])
+    tg.add_argument('--output', required=True)
+    tg.add_argument('--skip-steps-output')
     sub.add_parser('audit')
     schema = sub.add_parser('schemas')
     schema.add_argument('--write', action='store_true')
@@ -956,6 +1033,17 @@ def main():
                 stream.write('perf=' + str('perf' in value['selected']).lower() + '\n')
     elif args.command == 'audit':
         audit_source()
+    elif args.command == 'task-gate':
+        audit_source()
+        resolved, excluded = task_gate(path=args.config, labels=args.label,
+                                       exclude_steps=args.exclude_release_step,
+                                       include_steps=args.include_release_step)
+        write(args.output, resolved)
+        if args.skip_steps_output:
+            out_skip = Path(args.skip_steps_output)
+            out_skip.parent.mkdir(parents=True, exist_ok=True)
+            out_skip.write_text(' '.join(excluded) + ('\n' if excluded else ''))
+        print(json.dumps({'plan': resolved, 'exclude_release_steps': excluded}, indent=2))
     elif args.command == 'nextest-gate':
         arguments = args.arguments[1:] if args.arguments[:1] == ['--'] else args.arguments
         gate = str(ROOT / 'scripts/nextest-gate.py')
