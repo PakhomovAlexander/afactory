@@ -315,20 +315,21 @@ the [event reference](https://docs.github.com/en/actions/reference/workflows-and
 describes job `GITHUB_SHA`. Neither substitutes for exact candidate/base/plan binding.
 
 Before any expensive work or publication effect, `plan` and `rc` require an observable active
-repository main ruleset with `required_status_checks`, a nonempty required check list,
-`strict_required_status_checks_policy: true`, and no bypass actors. An administrator must select
-**Require status checks to pass** and **Require branches to be up to date before merging** for
-`main`, include the stable `validation / lint` check (and any other repository-required checks),
-and leave the bypass list empty. The CLI only reads this setup; it never configures it. Missing
-setup produces `expected_base_prerequisite` with these instructions, including in read-only plan.
-The target repository's previously observed rules without required statuses do not satisfy this
-prerequisite. The owner must approve any administrator setup separately.
+repository main ruleset with `required_status_checks`, a nonempty required check list, and no
+bypass actors. `strict_required_status_checks_policy: false` is permitted and is the repository's
+persistent setting on `main-release-base-safety`. An administrator must select **Require status
+checks to pass** for `main`, include the stable `validation / lint` check (and any other
+repository-required checks), and leave the bypass list empty. The CLI only reads this setup; it
+never configures it. Missing setup produces `expected_base_prerequisite` with these instructions,
+including in read-only plan. The target repository's previously observed rules without required
+statuses do not satisfy this prerequisite. The owner must approve any administrator setup
+separately.
 
-GitHub's strict check rule enforces freshness at merge time. The client rechecks fetched main and
-the strict rule immediately before requesting merge. `--match-head-commit` protects only the head;
-it is never a base compare-and-swap. Post-merge tree and ancestry checks remain mandatory.
-See GitHub's [active branch rules API](https://docs.github.com/en/rest/repos/rules#get-rules-for-a-branch)
-and [workflow attempts API](https://docs.github.com/en/rest/actions/workflow-jobs#list-jobs-for-a-workflow-run-attempt).
+The client rechecks fetched main and the active required-status ruleset immediately before
+requesting merge. `--match-head-commit` protects only the head; it is never a base
+compare-and-swap. Post-merge tree and ancestry checks remain mandatory. See GitHub's
+[active branch rules API](https://docs.github.com/en/rest/repos/rules#get-rules-for-a-branch) and
+[workflow attempts API](https://docs.github.com/en/rest/actions/workflow-jobs#list-jobs-for-a-workflow-run-attempt).
 
 Publication saves one immutable signed bundle named by tag and source before its first release
 asset upload. Every rerun restores that bundle, including original provenance and signature,

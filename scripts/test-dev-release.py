@@ -299,7 +299,7 @@ if a[0]=='api':
   if d.get('release_stale_after_create') and batch and batch[0]['draft']:
    batch=[];d['release_stale_after_create']=False;save()
   out(batch)
- if endpoint.startswith('rules/branches/main'): out([] if d.get('no_strict') else [{'type':'required_status_checks','ruleset_id':1,'ruleset_source_type':'Repository','parameters':{'strict_required_status_checks_policy':True,'required_status_checks':[{'context':'validation / lint'}]}}])
+ if endpoint.startswith('rules/branches/main'): out([] if d.get('no_strict') else [{'type':'required_status_checks','ruleset_id':1,'ruleset_source_type':'Repository','parameters':{'strict_required_status_checks_policy':False,'required_status_checks':[{'context':'validation / lint'}]}}])
  if endpoint=='rulesets/1': out({'enforcement':'active','bypass_actors':[{}] if d.get('bypass') else []})
  if endpoint=='actions/workflows/release.yml': out({'id':339974639,'path':'.github/workflows/release.yml'})
  if endpoint=='actions/workflows/ci.yml': out({'id':339965080,'state':'disabled_manually' if d.get('ci_disabled') else 'active','path':'.github/workflows/ci.yml'})
@@ -2809,6 +2809,9 @@ class ReleaseCLI(unittest.TestCase):
             self.assertIn('expected_base_prerequisite', self.cli('plan', ok=False).stderr)
             self.assertEqual(self.data().get('effects', []), [])
             self.data(**{flag: False})
+        # Active required_status_checks with strict_required_status_checks_policy=False is accepted.
+        plan = json.loads(self.cli('plan', '--format', 'json').stdout)
+        self.assertEqual(plan['status'], 'planned')
 
     def assert_cheap_local_commands_reach_ci_wait(self, profile):
         self.data(checks='pending')
