@@ -177,8 +177,8 @@ contains exactly `python3 -I scripts/release-contract.py` followed by
 these commands. Normal RC creation runs no local `verify.sh`, `make check`, Rust compilation or
 tests, or Python regression suite. Cargo-nextest and Node/npx are not RC prerequisites.
 Broad validation runs in mandatory exact-source Linux/macOS hosted CI and the protected release
-workflow; `--profile fast/full` selects that captured hosted coverage. Required checks, strict main
-protection, archive smoke, signatures and separate pin adoption remain mandatory. The repository's
+workflow; `--profile fast/full` selects that captured hosted coverage. Required checks, active
+required-status main protection, archive smoke, signatures and separate pin adoption remain mandatory. The repository's
 native local development fast gate is unchanged. This boundary makes no measured speedup claim.
 
 Preparation updates the workspace manifest, workspace lock, collected changelog fragments, exact
@@ -224,8 +224,8 @@ that leave identical observations cannot be detected.
 
 Main moving before merge produces `stale_main`: the approved source stays fixed. Review the new
 source and use a separate plan/state directory after investigating any already-published branch/PR;
-there is no automatic rebase. A merged release must have the candidate's exact tree and source
-ancestry. The tag resolver also checks the approved first parent and metadata-only diff before
+there is no automatic rebase. A merged release must have the candidate's exact tree and approved
+first parent. The tag resolver also checks the approved first parent and metadata-only diff before
 creating a tag, so a main advance racing merge cannot silently publish different source. Failed checks retain their failure details; repair the cause under normal policy before
 resuming. A different branch head, tag, PR base, signed source or archive digest requires operator
 reconciliation, never force-push or clobber.
@@ -283,8 +283,11 @@ closed. Paginated collections must agree with their advertised total count and h
 partial pages cannot establish completion. Additional formally required statuses must also pass.
 Reruns use their latest attempt, rechecked after observation, never earlier successful attempts.
 Before accepting evidence, the controller re-observes the complete matching run collection and
-waits if the selected run or attempt is no longer latest under these rules. This client observation is not atomic
-with merging; server-side strict checks remain required.
+waits if the selected run or attempt is no longer latest under these rules. This client observation
+is not atomic with merging; server-side required status checks (with no bypass) and
+`--match-head-commit` protect the candidate head, while pre-merge `unchanged_main`, post-merge tree
+and exact first-parent checks, and `scripts/resolve-release.sh`'s first-parent check refuse
+concurrent `main` advances.
 Receipts retain the exact resolved plan, artifact identity/digest and complete job outcomes.
 The [attempt-specific jobs endpoint](https://docs.github.com/en/rest/actions/workflow-jobs#list-jobs-for-a-workflow-run-attempt)
 binds jobs to the attempt; the documented job shape need not contain `run_attempt`. When supplied,
@@ -327,7 +330,7 @@ separately.
 
 The client rechecks fetched main and the active required-status ruleset immediately before
 requesting merge. `--match-head-commit` protects only the head; it is never a base
-compare-and-swap. Post-merge tree and ancestry checks remain mandatory. See GitHub's
+compare-and-swap. Post-merge tree and exact first-parent checks remain mandatory. See GitHub's
 [active branch rules API](https://docs.github.com/en/rest/repos/rules#get-rules-for-a-branch) and
 [workflow attempts API](https://docs.github.com/en/rest/actions/workflow-jobs#list-jobs-for-a-workflow-run-attempt).
 

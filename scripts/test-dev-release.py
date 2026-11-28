@@ -299,7 +299,7 @@ if a[0]=='api':
   if d.get('release_stale_after_create') and batch and batch[0]['draft']:
    batch=[];d['release_stale_after_create']=False;save()
   out(batch)
- if endpoint.startswith('rules/branches/main'): out([] if d.get('no_strict') else [{'type':'required_status_checks','ruleset_id':1,'ruleset_source_type':'Repository','parameters':{'strict_required_status_checks_policy':False,'required_status_checks':[{'context':'validation / lint'}]}}])
+ if endpoint.startswith('rules/branches/main'): out([] if d.get('no_strict') else [{'type':'required_status_checks','ruleset_id':1,'ruleset_source_type':'Repository','parameters':{'strict_required_status_checks_policy':bool(d.get('strict_policy',False)),'required_status_checks':[{'context':'validation / lint'}]}}])
  if endpoint=='rulesets/1': out({'enforcement':'active','bypass_actors':[{}] if d.get('bypass') else []})
  if endpoint=='actions/workflows/release.yml': out({'id':339974639,'path':'.github/workflows/release.yml'})
  if endpoint=='actions/workflows/ci.yml': out({'id':339965080,'state':'disabled_manually' if d.get('ci_disabled') else 'active','path':'.github/workflows/ci.yml'})
@@ -394,15 +394,31 @@ if a[:2]==['pr','merge']:
  def merge():
   head=d['pr']['headRefOid']
   base=subprocess.check_output([os.environ['REAL_GIT'],'--git-dir',d['remote'],'rev-parse',head+'^'],text=True).strip()
-  if d.get('race_merge'):
-   env={**os.environ,'GIT_AUTHOR_NAME':'Test','GIT_AUTHOR_EMAIL':'test@example.invalid','GIT_COMMITTER_NAME':'Test','GIT_COMMITTER_EMAIL':'test@example.invalid'}
-   tree=subprocess.check_output([os.environ['REAL_GIT'],'--git-dir',d['remote'],'rev-parse',base+'^{tree}'],text=True).strip()
+  env={**os.environ,'GIT_AUTHOR_NAME':'Test','GIT_AUTHOR_EMAIL':'test@example.invalid','GIT_COMMITTER_NAME':'Test','GIT_COMMITTER_EMAIL':'test@example.invalid'}
+  race=d.get('race_merge')
+  race_blob=None
+  if race:
+   if race=='tree':
+    race_blob=subprocess.check_output([os.environ['REAL_GIT'],'--git-dir',d['remote'],'hash-object','-w','--stdin'],input='concurrent main change\n',text=True).strip()
+    entries=subprocess.check_output([os.environ['REAL_GIT'],'--git-dir',d['remote'],'ls-tree',base],text=True)
+    tree=subprocess.check_output([os.environ['REAL_GIT'],'--git-dir',d['remote'],'mktree'],input=entries+'100644 blob '+race_blob+'\tRACE.txt\n',text=True).strip()
+   else:
+    tree=subprocess.check_output([os.environ['REAL_GIT'],'--git-dir',d['remote'],'rev-parse',base+'^{tree}'],text=True).strip()
    moved=subprocess.check_output([os.environ['REAL_GIT'],'--git-dir',d['remote'],'commit-tree',tree,'-p',base,'-m','concurrent main'],env=env,text=True).strip()
    subprocess.check_call([os.environ['REAL_GIT'],'--git-dir',d['remote'],'update-ref','refs/heads/main',moved])
   main=subprocess.check_output([os.environ['REAL_GIT'],'--git-dir',d['remote'],'rev-parse','refs/heads/main'],text=True).strip()
-  if main!=base: sys.exit(1) # server-enforced strict freshness
+  if main!=base and d.get('strict_policy'): sys.exit(1) # server-enforced strict freshness
   if d.get('defer_merge'): return
-  sha=d['pr']['headRefOid'];d['pr']['state']='MERGED';d['pr']['mergeCommit']={'oid':sha};d['merged']=sha
+  if main!=base:
+   if race_blob is not None:
+    entries=subprocess.check_output([os.environ['REAL_GIT'],'--git-dir',d['remote'],'ls-tree',head],text=True)
+    merged_tree=subprocess.check_output([os.environ['REAL_GIT'],'--git-dir',d['remote'],'mktree'],input=entries+'100644 blob '+race_blob+'\tRACE.txt\n',text=True).strip()
+   else:
+    merged_tree=subprocess.check_output([os.environ['REAL_GIT'],'--git-dir',d['remote'],'rev-parse',head+'^{tree}'],text=True).strip()
+   sha=subprocess.check_output([os.environ['REAL_GIT'],'--git-dir',d['remote'],'commit-tree',merged_tree,'-p',main,'-m','squash merge onto advanced main'],env=env,text=True).strip()
+  else:
+   sha=d['pr']['headRefOid']
+  d['pr']['state']='MERGED';d['pr']['mergeCommit']={'oid':sha};d['merged']=sha
   subprocess.check_call([os.environ['REAL_GIT'],'--git-dir',d['remote'],'update-ref','refs/heads/main',sha])
  effect('merge',merge);sys.exit(0)
 if a[:2]==['release','create']:
@@ -2913,11 +2929,28 @@ class ReleaseCLI(unittest.TestCase):
                 self.commit('restore reviewed validation source')
 
     def test_main_racing_merge_is_refused_by_server(self):
-        self.data(race_merge=True)
+        self.data(strict_policy=True, race_merge=True)
         self.cli('rc', ok=False)
         self.assertEqual(self.data()['pr']['state'], 'OPEN')
         self.assertNotIn('merge', self.data()['effects'])
         self.assertIn('stale_main', self.cli('resume', ok=False).stderr)
+
+    def assert_non_strict_race_refuses(self, race):
+        self.data(race_merge=race)
+        error = self.cli('rc', ok=False).stderr
+        self.assertIn('merge_source_conflict', error)
+        self.assertEqual(self.data()['pr']['state'], 'MERGED')
+        state = self.state_value()
+        self.assertEqual(state['stage'], 'merge')
+        self.assertEqual(state['receipts']['merge']['status'], 'intent')
+        self.assertIsNone(state.get('merged'))
+        self.assertNotIn('publication', state['receipts'])
+
+    def test_main_racing_merge_without_strict_policy_refuses_tree_neutral_advance(self):
+        self.assert_non_strict_race_refuses(True)
+
+    def test_main_racing_merge_without_strict_policy_refuses_tree_changing_advance(self):
+        self.assert_non_strict_race_refuses('tree')
 
     def test_exact_ci_evidence_and_additional_formal_checks(self):
         self.data(ci_missing=True)

@@ -1221,7 +1221,7 @@ class Controller:
         merged = pr['mergeCommit']['oid']
         self.fetch()
         if (self.git('rev-parse', merged + '^{tree}') != self.state['candidate_tree']
-                or run(['git', '--git-dir', self.mirror, 'merge-base', p['source'], merged]) != p['source']):
+                or self.git('show', '-s', '--format=%P', merged).split()[:1] != [p['source']]):
             raise Refusal('merge_source_conflict: merged bytes/lineage differ; evidence cannot be reused')
         self.state['merged'] = merged
         self.receipt('merge', 'complete', commit=merged, url=pr['url'])
