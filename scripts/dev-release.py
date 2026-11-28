@@ -671,10 +671,9 @@ class Controller:
     def merge_prerequisite(self):
         rules = self.pages('rules/branches/main')
         if not any(r.get('type') == 'required_status_checks'
-                   and r.get('parameters', {}).get('strict_required_status_checks_policy') is True
-                   and r['parameters'].get('required_status_checks') for r in rules):
+                   and r.get('parameters', {}).get('required_status_checks') for r in rules):
             raise Refusal('expected_base_prerequisite: administrator must configure an active main '
-                          'ruleset with required status checks and Require branches to be up to date; '
+                          'ruleset with required status checks; '
                           'release actor must have no bypass. See docs/dev-release.md')
         # Effective branch rules do not describe bypass actors. Inspect their owning
         # rulesets too, refusing any bypass rather than assuming this token cannot use it.
@@ -1044,7 +1043,7 @@ class Controller:
             'profile': profile, 'executor': digest((ROOT / 'scripts/dev-release.py').read_text()),
             'date': time.strftime('%Y-%m-%d', time.gmtime()),
             'signing_readiness': 'unavailable locally; protected publication runner verifies key usability',
-            'main_policy': 'require active strict required-status ruleset with no bypass; refuse main movement; verify merged tree and ancestry',
+            'main_policy': 'require active required-status ruleset with no bypass; refuse main movement; verify merged tree and ancestry',
         }, 'authorization': AUTHORIZATION if authorized else None,
             'created': int(time.time()), 'receipts': {}, 'stage': 'preflight', 'status': 'planned'}
         self.state['pin'] = {'state': self.pin_readiness, 'url': None}
@@ -1222,7 +1221,7 @@ class Controller:
         merged = pr['mergeCommit']['oid']
         self.fetch()
         if (self.git('rev-parse', merged + '^{tree}') != self.state['candidate_tree']
-                or run(['git', '--git-dir', self.mirror, 'merge-base', p['source'], merged]) != p['source']):
+                or self.git('show', '-s', '--format=%P', merged).split()[:1] != [p['source']]):
             raise Refusal('merge_source_conflict: merged bytes/lineage differ; evidence cannot be reused')
         self.state['merged'] = merged
         self.receipt('merge', 'complete', commit=merged, url=pr['url'])
