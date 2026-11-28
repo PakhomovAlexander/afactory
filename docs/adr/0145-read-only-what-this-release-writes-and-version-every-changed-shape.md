@@ -5,7 +5,8 @@
 Supersedes in part [ADR-0002](0002-event-payload-changes-bump-the-type-version.md) and
 [ADR-0021](0021-keep-reviewer-result-wire-shape-flat.md): the GA scope of their version rules.
 Supersedes [ADR-0110](0110-capture-sessions-in-two-phases-and-confirm-clean-rounds-cold.md) in
-full.
+full. Superseded in part by the [Worker session continuation decision](2026-11-28-admit-worker-session-continuation-by-reservation.md)
+on reviewed merge, solely to permit the new continuation contract under clause 6.
 
 ## Context
 
