@@ -10,6 +10,9 @@
 # Main moving before branch creation restarts preparation, at most three times. An existing
 # branch on an older main is refused for human review/rebase; no second PR is created.
 set -euo pipefail
+# Prevent git checkout from creating group- or world-writable files under umask 0002,
+# without loosening a stricter caller umask such as 0077.
+umask go-w
 
 usage() {
   sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
