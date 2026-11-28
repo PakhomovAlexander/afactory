@@ -19,6 +19,36 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
+## [0.15.3-rc.3] - 2026-11-27
+
+### Authority compatibility
+
+Breaking combined Scenario/Ant and publication shapes: Scenario definitions/bundles 11, policy 8, pins/runs/list 12, Store 18 with retained driver 2 and typed bounded preflight waits; Ant definition 12, pin/tick 13, state/list 14, inspection 9; adapter request 8/response 3, workspace config 3/state 6 and GitHub journal 9, native Git candidate request/export 2. Nightly config/publish 2 and native nightly service/job/completion 1 retain separate release scope and external signing permission. Implementation startup scope 2 retains exact native scoped publication, finite progress and bounded repairs. Builtin backlog Actions settle native verified Documents and dispatch to receiver-owned native, GitHub, Markdown or Jira destinations. Markdown configuration and configured publication observations use version 2. Generic signed and performance authority stay separate. Finish or discard prior-release state; no migration or replay of retired shapes. Review and commit authority and refresh its lock before adoption. Performance executor 5, history 2, equivalence 2 and schedule 3 remain required. Native Task kernel failures are execution_failed/kernel_execution (exit 8); Task state/status/findings 3, inspection 21 and report/checks 4 replace their earlier public formats. Scenario terminal outcome 2 carries that failure without repair or publication authority. CI Health Phase 1 retains typed accepted/refused diagnosis, exact-head evidence and report-only remedies. Its watchdog remains inactive.
+
+### Changes
+
+- Release of reviewed source `3fa653da8294f2cf994de5b7b8d325cf8ae855fb`; collected change notes follow.
+
+- Keep the quarantine catalog intact and clean up newly published issue bodies if
+  `test-quarantine.py apply --write` fails during publication. Rollback restores bodies replaced
+  by independent writers during cleanup. If a new claim blocks restoration, apply keeps the
+  replacement in staging, reports its recovery path, and removes the failed apply's staged bodies.
+  Applies that share an issue directory serialize publication and rollback across catalogs.
+  Concurrent writes to the same catalog are also serialized. A staging cleanup warning after
+  publication leaves the apply successful and its issue commands available.
+
+- Isolate the quoted numeric-colon path parser regression from Git fixture setup, covering absolute
+  and `../` prefixes without subprocesses while retaining Git-backed integration coverage.
+
+- Added Antigravity (`agy`) as a supported model provider (`--kind antigravity`) via the new `af-runner-antigravity` crate, with token-free `agy acp --stdio` capability, authentication, and model catalog probes (`af provider detect`, `setup`, `add`, `status`, `models`, `doctor`) and `stream-json` Task Worker execution with adapter-owned `--sandbox` and `--settings` confinement.
+- Bumped machine-local provider and task contract schemas under ADR-0145: `provider-registry` v4→v5, `provider-status` v6→v7, `provider-models` v4→v5, `provider-detect` v4→v5, `provider-setup` v2→v3, `task-contracts` v4→v5, `execution-plan` v4→v5, `task-provider-admission` v4→v5, and `task-inspection` v22→v23.
+
+- Open fast release PRs without a redundant profile label and recover passing exact-source CI
+  evidence when a duplicate run was canceled before retaining its validation plan.
+- Retry changing GitHub release inventory reads during publication while preserving the signed
+  release bundle.
+  [Release recovery decision](../docs/adr/2026-11-27-recover-release-ci-duplicates-and-inventory-reads.md).
+
 ## [0.15.3-rc.1] - 2026-11-26
 
 ### Authority compatibility
