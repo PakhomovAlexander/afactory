@@ -3,6 +3,6 @@
   "contract": "native-task-review@1",
   "receipt": "af/TaskCheckReceipt@2",
   "schema": "af.dev-release-contract/1",
-  "source": "3fa653da8294f2cf994de5b7b8d325cf8ae855fb",
-  "version": "0.15.3-rc.3"
+  "source": "8df8568290b5f4be25eafbb7d613bcb0e3a3c991",
+  "version": "0.15.3-rc.4"
 }
