@@ -886,13 +886,31 @@ The exact, per-node set of carried layers one Round's Attempts start from: Notes
 Delta selected from the previous closed Round's admitted Attempt of the same node, the Build Cache
 carried from this Round's Gate, and the basis of the node's Warm Workspace, recorded as
 `WarmSet@3` before the first dispatch and listed in every Attempt's context manifest. A layer that
-cannot be carried is recorded with its reason, never omitted silently. No harness session is
-carried: every Attempt is a new conversation.
+cannot be carried is recorded with its reason, never omitted silently. Warm Set selection is
+independent of Worker Session Continuation.
 _Avoid_: "warm cache" or "the previous session" as ambient state; a Warm Set is an artifact, and
 a retry inherits the recorded Warm Set rather than its failed sibling's state. Development
 Workers select declared immutable caches and explicit omissions before invocation reservation;
 replay reads that exact selection. Declared knowledge carries same-slot Task Notes and their
 Head Delta through the same Warm Set type, with bounded retrieval recorded in typed context.
+
+**Worker Session Continuation**:
+An Attempt starts a fresh conversation by default, including on retry. Under the
+[Worker session continuation decision](docs/adr/2026-11-28-admit-worker-session-continuation-by-reservation.md),
+the sole exception is an explicit, trusted plan opt-in that admits an exact private checkpoint
+prefix on the reserved predecessor edge. Identity is scoped to the effective slot, including
+the role, specific reviewer or verifier assignment, and Scatter shard and slice where applicable.
+Implementers, reviewers, verifiers, evaluators and other compatible model Workers use the same
+admission path with independent slots and output authority. A successor Task requires an
+explicit approved import edge. Only captured policy can permit an initial fresh seed or a
+recorded fresh-only fallback on ineligibility. The new Attempt's reservation-bound Context
+Manifest must authorize every restored item under current typed inputs or exact grants and bind
+the installed native projection, current request and fresh isolated sandbox. Restart must
+reconcile durable dispatch intent before retry or fallback, block on unresolved sends and
+fence late writes from the old epoch. Context counts against the current bounds and observed
+usage settles once per turn. Abandoned work records a zero charge with unknown usage when
+usage is absent. This decision defines a future contract. Execution remains fresh until
+the corresponding role and transport capabilities are implemented and qualified.
 
 **Knowledge Index**:
 An immutable bounded manifest rebuilt from explicit captured source ranges and declared
