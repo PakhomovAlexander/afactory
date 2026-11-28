@@ -739,12 +739,58 @@ class Workflows(unittest.TestCase):
 
     def test_compose_refuses_nonpersonal_or_slot_replacement_bindings(self):
         p = pin('bugfix/default-codex')
+        verify = pin(w.catalog()['verification'], 'verification')
         p['template']['bindings'] = {'schema': 'af.task-bindings/1', 'providers': {'x': 'codex-work'}}
         with self.assertRaises(ValueError):
-            w.composition('bugfix/default-codex', [p, pin(w.catalog()['verification'], 'verification')], FACTS)
-        p['template']['bindings'] = {'schema': 'af.task-bindings/1', 'slots': {}}
-        with self.assertRaises(ValueError):
-            w.composition('bugfix/default-codex', [p, pin(w.catalog()['verification'], 'verification')], FACTS)
+            w.composition('bugfix/default-codex', [p, verify], FACTS)
+        refused = [{'slots': {'implement': {'provider': 'codex-personal'}}},
+                   {'packages': {'implementer': 'other'}},
+                   {'slots': {}, 'packages': {'implementer': 'other'}},
+                   {'slots': {'implement': {}}, 'packages': {}},
+                   {'slots': [], 'packages': {}},
+                   {'slots': None},
+                   {'slots': {}, 'packages': {}, 'extra': {}},
+                   {'unknown': {}}]
+        for extra in refused:
+            with self.subTest(extra=extra):
+                p['template']['bindings'] = {'schema': 'af.task-bindings/1',
+                                             'providers': {'x': 'codex-personal'}, **extra}
+                with self.assertRaisesRegex(ValueError, 'may bind only personal accounts'):
+                    w.composition('bugfix/default-codex', [p, verify], FACTS)
+        malformed = [{}, [], ['schema'], ['slots'], '', 0, 1, False,
+                     {'slots': {}, 'packages': {}},
+                     {'providers': {'x': 'codex-personal'}},
+                     {'schema': 'af.task-bindings/0', 'providers': {'x': 'codex-personal'},
+                      'slots': {}, 'packages': {}},
+                     {'schema': None, 'slots': {}, 'packages': {}},
+                     {'schema': 'af.task-bindings/1', 'providers': [], 'slots': {}, 'packages': {}},
+                     {'schema': 'af.task-bindings/1', 'providers': None, 'slots': {}, 'packages': {}}]
+        for bad in malformed:
+            with self.subTest(bindings=bad):
+                p['template']['bindings'] = bad
+                with self.assertRaisesRegex(ValueError, 'may bind only personal accounts'):
+                    w.composition('bugfix/default-codex', [p, verify], FACTS)
+        for bad_providers in ({'': 'codex-personal'}, {'x': None}, {'x': 123}):
+            with self.subTest(providers=bad_providers):
+                p['template']['bindings'] = {'schema': 'af.task-bindings/1',
+                                             'providers': bad_providers, 'slots': {}, 'packages': {}}
+                with self.assertRaisesRegex(ValueError, 'require personal accounts'):
+                    w.composition('bugfix/default-codex', [p, verify], FACTS)
+
+    def test_compose_accepts_canonical_empty_slot_and_package_tables(self):
+        # Issue #1206: the runtime serializes af.task-bindings/1 with empty slots and packages.
+        for extra in ({'slots': {}, 'packages': {}}, {'slots': {}}, {'packages': {}}):
+            with self.subTest(extra=extra):
+                p = pin('bugfix/default-codex')
+                p['template']['bindings'] = {'schema': 'af.task-bindings/1',
+                                             'providers': {'x': 'codex-personal'}, **extra}
+                verify = pin(w.catalog()['verification'], 'verification')
+                verify['template']['bindings'] = copy.deepcopy(p['template']['bindings'])
+                result = w.composition('bugfix/default-codex', [p, verify], FACTS)
+                self.assertIn('issue-workflow', result['definitions'])
+                p['template']['bindings']['providers'] = {'x': 'codex-work'}
+                with self.assertRaisesRegex(ValueError, 'require personal accounts'):
+                    w.composition('bugfix/default-codex', [p, verify], FACTS)
 
 
 if __name__ == '__main__':
