@@ -92,8 +92,9 @@ steps. The sweep enforces the byte budget; age-based collection also runs when `
 Each admitted Run receives an opaque execution identity, so equal labels in separate Stores
 cannot share action idempotency keys or human decisions. The private SQLite journal
 checks its version, release, checksum, transitive pins, signatures, accounting and progress when
-read. Missing or corrupt state fails closed. `show` retains the full pinned definitions,
-receipts, child frames, intents, waiting reason and final evidence. `list` enumerates records.
+read. Missing or corrupt state fails closed. Each `show` or `list` invocation uses the snapshot
+validated when it opens the Store. `show` retains the full pinned definitions, receipts, child
+frames, intents, waiting reason and final evidence. `list` enumerates records.
 Successful command execution returns 0; Run status is data, including `waiting` and `failed`.
 After startup, refusals return 1 with the common JSON error document when `--json` is given.
 A Storage Budget setup failure returns 1 with a diagnostic on stderr before the command starts.

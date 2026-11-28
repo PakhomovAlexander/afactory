@@ -841,14 +841,14 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
             print(&run, &inspect)
         }
         ScenarioCommand::Show { run_id, inspect } => {
-            let world = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?.read()?;
+            let world = Store::inspect(Arc::new(AfHost), inspect.state.as_deref())?;
             print(
                 world.runs.get(&run_id).ok_or("Scenario Run not found")?,
                 &inspect,
             )
         }
         ScenarioCommand::List { inspect } => {
-            let world = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?.read()?;
+            let world = Store::inspect(Arc::new(AfHost), inspect.state.as_deref())?;
             print(
                 &serde_json::json!({"schema":"af/scenario-list@12","runs":world.runs}),
                 &inspect,
