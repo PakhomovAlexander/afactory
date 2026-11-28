@@ -23,7 +23,7 @@ int getpwuid_r(uid_t uid, struct passwd *entry, char *buf, size_t len, struct pa
     }
     if (!mode || !strcmp(mode, "absent")) return 0;
     if (!strcmp(mode, "io_error")) return EIO;
-    entry->pw_uid = uid;
+    entry->pw_uid = !strcmp(mode, "uid_mismatch") ? uid ^ 1 : uid;
     entry->pw_gid = getegid();
     entry->pw_name = "fixture-account";
     entry->pw_passwd = "x";

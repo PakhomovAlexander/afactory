@@ -2168,7 +2168,7 @@ fn exempt_from_dispatch(argv: &[String]) -> bool {
     // `schema` prints the schemas of the running af, as `help` lists them, and writes nothing.
     matches!(
         first,
-        None | Some("help" | "schema" | "completions" | "config" | "doctor")
+        None | Some("help" | "schema" | "completions" | "config" | "doctor" | "infra" | "cluster")
     ) || binary_management_self
         || matches!(
             (first, argv.get(command_index + 1).map(String::as_str)),

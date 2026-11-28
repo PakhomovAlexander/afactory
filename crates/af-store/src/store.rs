@@ -35,6 +35,7 @@ impl Drop for ReplayReadsGuard {
 }
 
 mod attempt_wall;
+mod observation_snapshot;
 pub mod observer;
 pub mod task;
 pub mod wake;
@@ -404,6 +405,8 @@ pub struct EventStore {
     /// Told of every commit through this connection ([`observer`]); `None` defers to the
     /// process's observer, if any.
     commit_observer: Option<Arc<dyn observer::CommitObserver>>,
+    // SQLite gives a deserialized database a synthetic filename. It has no disk path.
+    observation_snapshot: bool,
 }
 
 /// A bounded, process-local observation of this connection's database. This is only an
@@ -613,6 +616,7 @@ impl EventStore {
             conn,
             task_cache: std::cell::RefCell::new(None),
             commit_observer: None,
+            observation_snapshot: false,
         })
     }
 
@@ -620,6 +624,9 @@ impl EventStore {
     /// instance, which Telemetry names by its canonical path (design §5). A read; it changes
     /// nothing.
     pub fn database_path(&self) -> Option<std::path::PathBuf> {
+        if self.observation_snapshot {
+            return None;
+        }
         self.conn
             .path()
             .filter(|path| !path.is_empty())
@@ -669,6 +676,7 @@ impl EventStore {
             conn,
             task_cache: std::cell::RefCell::new(None),
             commit_observer: None,
+            observation_snapshot: false,
         })
     }
 
@@ -682,9 +690,7 @@ impl EventStore {
     /// before it fails with a busy error, so its caller can still decide before a deadline.
     pub fn reopen(&self, busy_timeout: std::time::Duration) -> Result<Self, StoreError> {
         let path = self
-            .conn
-            .path()
-            .filter(|path| !path.is_empty())
+            .database_path()
             .ok_or_else(|| StoreError::Conflict("Store has no database file to reopen".into()))?;
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         conn.busy_timeout(busy_timeout)?;
@@ -697,6 +703,7 @@ impl EventStore {
             conn,
             task_cache: std::cell::RefCell::new(None),
             commit_observer: self.commit_observer.clone(),
+            observation_snapshot: false,
         })
     }
 
@@ -716,6 +723,7 @@ impl EventStore {
             conn,
             task_cache: std::cell::RefCell::new(None),
             commit_observer: None,
+            observation_snapshot: false,
         })
     }
 

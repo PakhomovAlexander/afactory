@@ -27,6 +27,7 @@ pub mod event;
 pub mod exec;
 pub mod finding;
 pub mod finding_set;
+pub mod fleet;
 pub mod grouping;
 pub mod hex;
 pub mod json;

@@ -31,8 +31,9 @@ ordinary Task state root differs. Changing shell configuration cannot reset an o
 binding or bypass uncertain native admission. An unsafe or unavailable account home refuses
 wake authority instead of selecting another location.
 An absent account or an account with a relative/root home disables wake admission while ordinary
-Task plan/run and storage commands continue with valid HOME/XDG/Store settings. Account lookup I/O
-errors and existing authority corruption remain errors, never an absent capability fallback.
+Task plan/run and storage commands continue with valid HOME/XDG/Store settings. Lookup I/O failures
+report `Reading wake OS account` and a mismatched UID reports `Wake OS account identity mismatch`.
+Existing authority corruption also fails the command.
 `af self uninstall --purge` refuses before teardown when account authority exists, including partial
 or damaged state. Use `af self uninstall` to remove the installation while preserving recovery.
 Cleanup reserves authority ancestry even before the first grant, so a concurrent grant cannot lose

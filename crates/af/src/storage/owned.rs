@@ -230,20 +230,28 @@ pub(crate) fn af_bytes(state: &Path) -> std::io::Result<u64> {
     af_bytes_and_depth(state).map(|(bytes, _)| bytes)
 }
 
+/// The immediate owned entries of an external Store, using the same ownership test as removal.
+pub(crate) fn af_entries(
+    state: &Path,
+) -> std::io::Result<impl Iterator<Item = std::io::Result<std::fs::DirEntry>>> {
+    let directory = af_sandbox::open_anchor(state)?;
+    Ok(std::fs::read_dir(state)?.filter(move |entry| match entry {
+        Ok(entry) => is_af_entry(&directory, &entry.file_name()),
+        Err(_) => true,
+    }))
+}
+
 /// The allocated bytes of af's entries in the Store `state`, and the level of the deepest
 /// directory among them (the Store itself at level 0): what a Store outside af's roots counts
 /// against the budget. Anything else in the directory is not af's to count.
 pub(crate) fn af_bytes_and_depth(state: &Path) -> std::io::Result<(u64, u32)> {
-    let directory = af_sandbox::open_anchor(state)?;
     let (mut bytes, mut depth) = (0_u64, 0_u32);
-    for entry in std::fs::read_dir(state)? {
+    for entry in af_entries(state)? {
         let entry = entry?;
-        if is_af_entry(&directory, &entry.file_name()) {
-            let (held, below) = af_sandbox::storage::allocated_bytes_and_depth(&entry.path())?;
-            bytes = bytes.saturating_add(held);
-            if entry.file_type()?.is_dir() {
-                depth = depth.max(below.saturating_add(1));
-            }
+        let (held, below) = af_sandbox::storage::allocated_bytes_and_depth(&entry.path())?;
+        bytes = bytes.saturating_add(held);
+        if entry.file_type()?.is_dir() {
+            depth = depth.max(below.saturating_add(1));
         }
     }
     Ok((bytes, depth))

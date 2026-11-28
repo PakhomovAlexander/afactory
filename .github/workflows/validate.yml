@@ -200,6 +200,20 @@ jobs:
         with:
           name: validation-plan-${{ github.run_attempt }}
           path: target/test-classes
+      - name: Provide OpenSSH for authenticated Fleet acceptance
+        if: matrix.class == 'e2e'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            if [[ ! -x /usr/bin/ssh || ! -x /usr/sbin/sshd ]]; then
+              sudo apt-get update
+              sudo apt-get install -y --no-install-recommends openssh-client openssh-server
+            fi
+            sudo install -d -m 0755 /run/sshd
+          fi
+          test -x /usr/bin/ssh
+          test -x /usr/sbin/sshd
       - name: Run exactly the selected class
         env:
           TEST_CLASS: ${{ matrix.class }}

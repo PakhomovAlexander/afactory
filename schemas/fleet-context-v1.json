@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:fleet-context:1",
+  "title": "Owner-provided fleet connection descriptor",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "scope", "management"],
+  "properties": {
+    "schema": {"const": "af/fleet-context@1"},
+    "scope": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+    "management": {"$ref": "#/$defs/target"},
+    "cluster": {"enum": ["absent", "unknown"]},
+    "origins": {
+      "type": "object",
+      "maxProperties": 16,
+      "propertyNames": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["target", "project_id", "store_id"],
+        "properties": {
+          "target": {"$ref": "#/$defs/target"},
+          "project_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+          "store_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host", "port", "user", "host_key"],
+      "properties": {
+        "host": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9.:-]{0,252}$"},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "user": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+        "host_key": {
+          "type": "string",
+          "pattern": "^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)) [A-Za-z0-9+/=]{32,4096}$"
+        }
+      }
+    }
+  }
+}

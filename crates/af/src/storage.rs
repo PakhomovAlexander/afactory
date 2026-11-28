@@ -81,6 +81,7 @@ pub(crate) fn policy() -> Result<StoragePolicy, String> {
 /// Where every kind of entry lives on this machine.
 pub(crate) struct Roots {
     pub(crate) warm: PathBuf,
+    pub(crate) fleet_cache: PathBuf,
     pub(crate) workspaces: PathBuf,
     pub(crate) campaigns: PathBuf,
     pub(crate) local_reviews: PathBuf,
@@ -108,6 +109,10 @@ pub(crate) struct TelemetryRoots {
 
 impl Roots {
     pub(crate) fn current() -> Result<Self, String> {
+        Self::current_for(false)
+    }
+
+    fn current_for(admission: bool) -> Result<Self, String> {
         let cache = config::cache_home()?.join("af");
         let state_home = config::state_home()?;
         let state = state_home.join("af");
@@ -116,6 +121,14 @@ impl Roots {
             .as_ref()
             .ok()
             .and_then(|config| config.telemetry_policy().ok());
+        let telemetry_dir = if admission {
+            machine
+                .as_ref()
+                .map_err(Clone::clone)?
+                .telemetry_storage_dir()?
+        } else {
+            telemetry.as_ref().and_then(|settings| settings.dir.clone())
+        };
         let build_cache_root = machine
             .as_ref()
             .ok()
@@ -125,6 +138,7 @@ impl Roots {
             warm: build_cache_root.unwrap_or_else(|| {
                 cache.join(af_sandbox::task_build_cache::TASK_BUILD_CACHE_DIRECTORY)
             }),
+            fleet_cache: state.join("fleet-cache"),
             workspaces: cache.join("workspaces"),
             campaigns: state.join("review").join("campaigns"),
             local_reviews: state.join("review").join("local"),
@@ -134,12 +148,7 @@ impl Roots {
             installs: crate::self_management::paths()?,
             telemetry: TelemetryRoots {
                 registry: telemetry_dirs::location(&state_home),
-                current: Some(
-                    telemetry
-                        .as_ref()
-                        .and_then(|settings| settings.dir.clone())
-                        .unwrap_or_else(|| state.join("telemetry")),
-                ),
+                current: Some(telemetry_dir.unwrap_or_else(|| state.join("telemetry"))),
                 max_bytes: telemetry.as_ref().map(|settings| settings.max_bytes),
                 state_root: state,
             },
@@ -148,9 +157,10 @@ impl Roots {
 
     /// The trusted anchors every removal starts from, as configured: an entry below one is
     /// opened from it, every component below without following a link.
-    fn anchors(&self) -> [&Path; 6] {
+    fn anchors(&self) -> [&Path; 7] {
         [
             &self.warm,
+            &self.fleet_cache,
             &self.workspaces,
             &self.campaigns,
             &self.local_reviews,
@@ -186,6 +196,7 @@ impl Roots {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Kind {
     WarmKey,
+    FleetCache,
     Workspace,
     Campaign,
     Task,
@@ -211,8 +222,9 @@ pub(crate) enum Kind {
 }
 
 impl Kind {
-    const ALL: [Kind; 11] = [
+    const ALL: [Kind; 12] = [
         Kind::WarmKey,
+        Kind::FleetCache,
         Kind::Workspace,
         Kind::Campaign,
         Kind::Task,
@@ -228,6 +240,7 @@ impl Kind {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Kind::WarmKey => "warm_key",
+            Kind::FleetCache => "fleet_cache",
             Kind::Workspace => "workspace",
             Kind::Campaign => "campaign",
             Kind::Task => "task",
@@ -244,6 +257,7 @@ impl Kind {
     const fn label(self) -> &'static str {
         match self {
             Kind::WarmKey => "warm keys",
+            Kind::FleetCache => "fleet cache",
             Kind::Workspace => "warm Workspaces",
             Kind::Campaign => "review campaigns",
             Kind::Task => "finished Tasks",
@@ -320,6 +334,9 @@ pub(crate) struct Problem {
 pub(crate) struct Inventory {
     pub(crate) entries: Vec<Entry>,
     pub(crate) problems: Vec<Problem>,
+    /// Admission measures external Stores by owned entry so it can union their actual
+    /// coverage with other counted trees, without charging the rest of the Store directory.
+    admission_store_entries: BTreeMap<PathBuf, u64>,
     /// Readable Task Stores, for collection.
     pub(crate) task_stores: Vec<PathBuf>,
     /// Each Store's directory identity as inventory reached it, opened from `/` without
@@ -512,6 +529,44 @@ fn reader_artifact(path: &Path) -> bool {
             && std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.len() == 0))
 }
 
+fn fleet_cache_inventory(roots: &Roots, inventory: &mut Inventory) {
+    let root = &roots.fleet_cache;
+    if let Err(error) = std::fs::symlink_metadata(root) {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            return;
+        }
+    }
+    let state_home = roots.telemetry.state_root.parent().expect("state home");
+    if let Err(reason) = plain_path(state_home, root) {
+        inventory.problems.push(Problem {
+            path: root.clone(),
+            reason,
+        });
+        return;
+    }
+    for path in listed(inventory, root) {
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| {
+                crate::fleet::is_label(name) || name == crate::fleet::cache::STAGING
+            })
+        {
+            measure_into(inventory, roots, Kind::FleetCache, &path, |path| {
+                (fleet_cache_last_write(path), None)
+            });
+        }
+    }
+}
+
+fn fleet_cache_last_write(path: &Path) -> u64 {
+    ["pools.json", "allocations.json"]
+        .iter()
+        .filter_map(|name| modified_ms(&path.join(name)))
+        .max()
+        .unwrap_or(0)
+}
+
 /// The newest write to a Store's event log, falling back to its directory.
 fn newest_store_write(state: &Path) -> u64 {
     ["events.sqlite", "events.sqlite-wal"]
@@ -694,7 +749,9 @@ fn has_store(path: &Path) -> bool {
 
 /// How finely a Task Store is taken stock of.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Detail {
+pub(crate) enum Detail<'a> {
+    /// Measure allocated storage without opening SQLite or replaying Store data.
+    Admission { origin_state_home: &'a Path },
     /// Each Task Store as one entry of its allocated bytes: cheap, enough to know whether af
     /// is over its budget.
     Stores,
@@ -704,9 +761,11 @@ pub(crate) enum Detail {
 }
 
 /// Take stock of every entry: the default roots and the registered Stores. Reads only.
-pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
+pub(crate) fn inventory(roots: &Roots, detail: Detail<'_>) -> Inventory {
     let mut inventory = Inventory::default();
-    warm_keys(roots, &mut inventory);
+    let admission = matches!(detail, Detail::Admission { .. });
+    warm_keys(roots, &mut inventory, admission);
+    fleet_cache_inventory(roots, &mut inventory);
     for path in listed(&mut inventory, &roots.workspaces) {
         if path
             .file_name()
@@ -722,13 +781,7 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
             (last, in_use)
         });
     }
-    let registered = registry::read(&roots.registry).unwrap_or_else(|error| {
-        inventory.problems.push(Problem {
-            path: roots.registry.clone(),
-            reason: format!("the Store registry cannot be read: {error}"),
-        });
-        Vec::new()
-    });
+    let mut registered = inventory_registrations(&mut inventory, &roots.registry);
     inventory.gone_registrations = registered
         .iter()
         .filter(|entry| !holds_store(entry))
@@ -746,6 +799,20 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
         tasks.insert(path.clone());
     }
     let mut projects: BTreeSet<PathBuf> = BTreeSet::new();
+    if let Detail::Admission { origin_state_home } = detail {
+        let state = &roots.telemetry.state_root;
+        projects.extend(listed(&mut inventory, &state.join("project")));
+        let origin_state = config::canonical_root(origin_state_home).join("af");
+        if origin_state != *state {
+            // A forced reader can be given a separate Project state home by its operator.
+            projects.extend(listed(&mut inventory, &origin_state.join("project")));
+            tasks.extend(listed(&mut inventory, &origin_state.join("task/local")));
+            registered.extend(inventory_registrations(
+                &mut inventory,
+                &origin_state.join("stores.toml"),
+            ));
+        }
+    }
     for entry in &registered {
         match entry.kind {
             StoreKind::Task => {
@@ -760,55 +827,62 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
             }
         }
     }
-    inventory.delivered = delivered(roots, &projects);
-    // The Surveys of at most so many Project Stores are read, in path order (the Store
-    // discovery ceiling); every Project Store is measured all the same.
-    let discovery = crate::project::survey::collect::Discovery::current();
-    for (index, path) in projects
-        .into_iter()
-        .filter(|path| has_store(path))
-        .enumerate()
-    {
-        project_store(
-            &mut inventory,
-            roots,
-            &path,
-            index < discovery.stores,
-            discovery,
-        );
-    }
-    for path in campaigns.into_iter().filter(|path| has_store(path)) {
-        match written_by_another_release(&path, "af review campaigns") {
-            Ok(Some(reason)) => {
-                unreadable(&mut inventory, roots, &path, reason, "af review campaigns")
-            }
-            // A Store with a live writer lease is never on the sweep's list: judged here, before
-            // the plan, and checked again, in full, before a removal.
-            Ok(None) => measure_into(&mut inventory, roots, Kind::Campaign, &path, |path| {
-                (newest_store_write(path), campaign_in_use(path))
-            }),
-            Err(reason) => inventory.problems.push(Problem { path, reason }),
+    if admission {
+        measure_admission_stores(&mut inventory, roots, projects, tasks, campaigns);
+        // The install catalog ignores unreadable directories when enumerating versions.
+        listed(&mut inventory, &roots.installs.versions);
+    } else {
+        inventory.delivered = delivered(roots, &projects);
+        // The Surveys of at most so many Project Stores are read, in path order (the Store
+        // discovery ceiling); every Project Store is measured all the same.
+        let discovery = crate::project::survey::collect::Discovery::current();
+        for (index, path) in projects
+            .into_iter()
+            .filter(|path| has_store(path))
+            .enumerate()
+        {
+            project_store(
+                &mut inventory,
+                roots,
+                &path,
+                index < discovery.stores,
+                discovery,
+            );
         }
-    }
-    for path in tasks.into_iter().filter(|path| has_store(path)) {
-        match written_by_another_release(&path, &task_list_command(&path)) {
-            Ok(Some(reason)) => {
-                let command = task_list_command(&path);
-                unreadable(&mut inventory, roots, &path, reason, &command);
+        for path in campaigns.into_iter().filter(|path| has_store(path)) {
+            match written_by_another_release(&path, "af review campaigns") {
+                Ok(Some(reason)) => {
+                    unreadable(&mut inventory, roots, &path, reason, "af review campaigns")
+                }
+                // A Store with a live writer lease is never on the sweep's list: judged here, before
+                // the plan, and checked again, in full, before a removal.
+                Ok(None) => measure_into(&mut inventory, roots, Kind::Campaign, &path, |path| {
+                    (newest_store_write(path), campaign_in_use(path))
+                }),
+                Err(reason) => inventory.problems.push(Problem { path, reason }),
             }
-            Ok(None) if detail == Detail::Tasks => task_store(&mut inventory, roots, &path),
-            Ok(None) => {
-                measure_into(&mut inventory, roots, Kind::TaskStore, &path, |path| {
-                    (
-                        newest_store_write(path),
-                        Some(
-                            "the Store is kept; its finished Tasks are collected one by one".into(),
-                        ),
-                    )
-                });
-                record_store(&mut inventory, roots, path);
+        }
+        for path in tasks.into_iter().filter(|path| has_store(path)) {
+            match written_by_another_release(&path, &task_list_command(&path)) {
+                Ok(Some(reason)) => {
+                    let command = task_list_command(&path);
+                    unreadable(&mut inventory, roots, &path, reason, &command);
+                }
+                Ok(None) if detail == Detail::Tasks => task_store(&mut inventory, roots, &path),
+                Ok(None) => {
+                    measure_into(&mut inventory, roots, Kind::TaskStore, &path, |path| {
+                        (
+                            newest_store_write(path),
+                            Some(
+                                "the Store is kept; its finished Tasks are collected one by one"
+                                    .into(),
+                            ),
+                        )
+                    });
+                    record_store(&mut inventory, roots, path);
+                }
+                Err(reason) => inventory.problems.push(Problem { path, reason }),
             }
-            Err(reason) => inventory.problems.push(Problem { path, reason }),
         }
     }
     match crate::self_management::installed_for_storage(&roots.installs) {
@@ -829,9 +903,86 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
             reason,
         }),
     }
-    telemetry_inventory(roots, &mut inventory);
+    if !admission {
+        telemetry_inventory(roots, &mut inventory);
+    }
     abandoned_claims(roots, &registered, &mut inventory);
     inventory
+}
+
+fn inventory_registrations(inventory: &mut Inventory, path: &Path) -> Vec<registry::Registered> {
+    registry::read(path).unwrap_or_else(|error| {
+        inventory.problems.push(Problem {
+            path: path.to_path_buf(),
+            reason: format!("the Store registry cannot be read: {error}"),
+        });
+        Vec::new()
+    })
+}
+
+/// Measure whole Project Stores, including their nested Workspace Stores. Registered
+/// Stores can also appear under a default root or under another Store already measured.
+fn measure_admission_stores(
+    inventory: &mut Inventory,
+    roots: &Roots,
+    projects: BTreeSet<PathBuf>,
+    tasks: BTreeSet<PathBuf>,
+    campaigns: BTreeSet<PathBuf>,
+) {
+    let mut measured = BTreeSet::new();
+    let mut stores = BTreeMap::new();
+    for (paths, kind) in [
+        (projects, Kind::ProjectStore),
+        (tasks, Kind::TaskStore),
+        (campaigns, Kind::Campaign),
+    ] {
+        for path in paths {
+            match std::fs::symlink_metadata(path.join("events.sqlite")) {
+                Ok(metadata) if metadata.is_file() => {
+                    stores.entry(config::canonical_root(&path)).or_insert(kind);
+                }
+                Ok(_) => inventory.problems.push(Problem {
+                    path,
+                    reason: "the Store database is not a regular file".into(),
+                }),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => inventory.problems.push(Problem {
+                    path,
+                    reason: format!("the Store database cannot be inspected: {error}"),
+                }),
+            }
+        }
+    }
+    for (path, kind) in stores {
+        if path
+            .ancestors()
+            .skip(1)
+            .any(|parent| measured.contains(parent))
+        {
+            continue;
+        }
+        if kind == Kind::ProjectStore || !roots.outside_af_state(&path) {
+            measure_into(inventory, roots, kind, &path, |_| (0, None));
+            measured.insert(path);
+        } else {
+            let entries = owned::af_entries(&path).and_then(|entries| {
+                entries
+                    .map(|entry| {
+                        let entry = entry?.path();
+                        let bytes = af_sandbox::storage::allocated_bytes(&entry)?;
+                        Ok((entry, bytes))
+                    })
+                    .collect::<std::io::Result<Vec<_>>>()
+            });
+            match entries {
+                Ok(entries) => inventory.admission_store_entries.extend(entries),
+                Err(error) => inventory.problems.push(Problem {
+                    path,
+                    reason: format!("cannot be measured: {error}"),
+                }),
+            }
+        }
+    }
 }
 
 /// The delivered Tasks of every Project Store: the registered ones and every one under the
@@ -893,6 +1044,7 @@ pub(crate) fn accounted(roots: &Roots) -> (Vec<Accounted>, Option<String>) {
         Accounted::new(&roots.tasks, "the Task Store root"),
         Accounted::new(&roots.campaigns, "the review campaign root"),
         Accounted::new(&roots.local_reviews, "the local review root"),
+        Accounted::new(&roots.fleet_cache, "the fleet cache"),
         Accounted::new(&roots.warm, "the warm check cache"),
         Accounted::new(&roots.workspaces, "the warm Workspaces"),
         Accounted::new(&roots.installs.versions, "the release installations"),
@@ -914,7 +1066,7 @@ pub(crate) fn accounted(roots: &Roots) -> (Vec<Accounted>, Option<String>) {
 
 /// Every telemetry directory to inventory: each one registered, and the configured one when it
 /// exists, by canonical path.
-fn telemetry_roots(roots: &Roots, inventory: &mut Inventory) -> Vec<PathBuf> {
+fn telemetry_roots(roots: &Roots, inventory: &mut Inventory, admission: bool) -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = match telemetry_dirs::read(&roots.telemetry.registry) {
         Ok(registered) => registered.into_iter().map(|entry| entry.path).collect(),
         Err(reason) => {
@@ -927,7 +1079,16 @@ fn telemetry_roots(roots: &Roots, inventory: &mut Inventory) -> Vec<PathBuf> {
     };
     if let Some(current) = &roots.telemetry.current {
         let current = telemetry_dirs::canonical(current);
-        if current.is_dir() && !paths.contains(&current) {
+        if admission {
+            match std::fs::symlink_metadata(&current) {
+                Ok(_) => paths.push(current),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => inventory.problems.push(Problem {
+                    path: current,
+                    reason: format!("the telemetry directory cannot be inspected: {error}"),
+                }),
+            }
+        } else if current.is_dir() {
             paths.push(current);
         }
     }
@@ -938,7 +1099,7 @@ fn telemetry_roots(roots: &Roots, inventory: &mut Inventory) -> Vec<PathBuf> {
 
 /// The telemetry kind: every registered directory, its overlap rechecked now (ADR-0153).
 fn telemetry_inventory(roots: &Roots, inventory: &mut Inventory) {
-    let paths = telemetry_roots(roots, inventory);
+    let paths = telemetry_roots(roots, inventory, false);
     let (accounted, accounted_unknown) = accounted(roots);
     for path in &paths {
         if !path.is_dir() {
@@ -1070,7 +1231,11 @@ fn measure_into(
             let (last_use_unix_ms, in_use) = judge(path);
             let too_deep = matches!(
                 kind,
-                Kind::Workspace | Kind::Campaign | Kind::UnreadableStore | Kind::Version
+                Kind::Workspace
+                    | Kind::Campaign
+                    | Kind::UnreadableStore
+                    | Kind::Version
+                    | Kind::FleetCache
             ) && af_sandbox::deeper_than_removal_walk(depth);
             inventory.entries.push(Entry {
                 kind,
@@ -1133,11 +1298,11 @@ fn unreadable(
     }
 }
 
-fn warm_keys(roots: &Roots, inventory: &mut Inventory) {
+fn warm_keys(roots: &Roots, inventory: &mut Inventory, admission: bool) {
     let now = now_unix_ms();
     for project in listed(inventory, &roots.warm) {
         let first = inventory.entries.len();
-        project_warm_keys(roots, inventory, &project);
+        project_warm_keys(roots, inventory, &project, admission);
         keep_newest_warm_key(&mut inventory.entries[first..], now);
     }
 }
@@ -1161,7 +1326,7 @@ fn keep_newest_warm_key(keys: &mut [Entry], now: u64) {
     }
 }
 
-fn project_warm_keys(roots: &Roots, inventory: &mut Inventory, project: &Path) {
+fn project_warm_keys(roots: &Roots, inventory: &mut Inventory, project: &Path, admission: bool) {
     let Some(project_name) = project.file_name().and_then(|name| name.to_str()) else {
         return;
     };
@@ -1180,7 +1345,9 @@ fn project_warm_keys(roots: &Roots, inventory: &mut Inventory, project: &Path) {
             .or_else(|| modified_ms(&key))
             .unwrap_or(0);
         let in_use = lock_held(&lock).then(|| "a check holds its warm.lock".to_string());
-        let recorded = af_sandbox::recorded_key_size(&roots.warm, project_name, toolchain);
+        let recorded = (!admission)
+            .then(|| af_sandbox::recorded_key_size(&roots.warm, project_name, toolchain))
+            .flatten();
         let bytes = match recorded {
             Some(bytes) => Ok(bytes),
             None => af_sandbox::storage::allocated_bytes(&key),
@@ -2014,7 +2181,7 @@ fn pause_before_telemetry_eviction(segment_id: &str) {
 /// sweep measures or collects anything, whatever the current level.
 fn recover_telemetry(roots: &Roots) {
     let mut scratch = Inventory::default();
-    let paths = telemetry_roots(roots, &mut scratch);
+    let paths = telemetry_roots(roots, &mut scratch, false);
     let (accounted, unknown) = accounted(roots);
     if unknown.is_some() {
         return;
@@ -2271,6 +2438,7 @@ fn abandoned_claims(roots: &Roots, registered: &[registry::Registered], inventor
     let mut parents: Vec<PathBuf> = real_directories(&roots.warm);
     parents.extend([
         roots.workspaces.clone(),
+        roots.fleet_cache.clone(),
         roots.campaigns.clone(),
         roots.local_reviews.clone(),
         roots.tasks.clone(),
@@ -2625,6 +2793,17 @@ fn evict(
                 None => Err(failed("a check holds it now".into()).into()),
             }
         }
+        Kind::FleetCache => {
+            let _held = crate::fleet::cache::lock_root(&roots.fleet_cache)
+                .map_err(|error| failed(error.to_string()))?;
+            still_measured(entry).map_err(failed)?;
+            if fleet_cache_last_write(&entry.path) != entry.last_use_unix_ms
+                || entry.last_use_unix_ms.saturating_add(HOUR_MS) > now_unix_ms()
+            {
+                return Err(failed("the observation cache was refreshed".into()).into());
+            }
+            remove_entry(roots, entry).map_err(partly)
+        }
         Kind::Workspace => {
             // Not even its lock file is touched unless it is still the measured directory.
             still_measured(entry).map_err(failed)?;
@@ -2974,6 +3153,7 @@ fn summary_line(tally: &Tally) -> Option<String> {
 fn count_of(kind: Kind, count: u64) -> String {
     let (one, many) = match kind {
         Kind::WarmKey => ("warm key", "warm keys"),
+        Kind::FleetCache => ("fleet cache", "fleet caches"),
         Kind::Workspace => ("warm Workspace", "warm Workspaces"),
         Kind::Campaign => ("review campaign", "review campaigns"),
         Kind::Task => ("finished Task", "finished Tasks"),
@@ -3114,9 +3294,12 @@ pub(crate) fn observation(
                 Kind::UnreadableStore => StorageSweepKindV1::UnreadableStore,
                 Kind::Version => StorageSweepKindV1::Version,
                 Kind::Claim => StorageSweepKindV1::Claim,
-                // A telemetry removal and a Survey's have no kind in `af/TaskStorageSweep@2`:
-                // each is counted among the omitted removals, never listed under another kind.
-                Kind::TaskStore | Kind::ProjectStore | Kind::Survey | Kind::Telemetry => {
+                // These removals have no kind in `af/TaskStorageSweep@2` and count as omitted.
+                Kind::TaskStore
+                | Kind::ProjectStore
+                | Kind::Survey
+                | Kind::Telemetry
+                | Kind::FleetCache => {
                     return None;
                 }
             };
@@ -3349,7 +3532,7 @@ pub(crate) enum Role {
 }
 
 impl Role {
-    /// Its name in `af/storage@5`.
+    /// Its name in `af/storage@6`.
     const fn as_str(self) -> &'static str {
         match self {
             Role::Sandbox => "sandbox",
@@ -3419,6 +3602,96 @@ pub(crate) fn judge_floor(volumes: &[Volume], floor: u64) -> Result<(), String> 
         return Err(unmeasured_refusal(floor, &unmeasured));
     }
     Ok(())
+}
+
+/// Admit a diskless observation under the account lock. Existing owned bytes must fit
+/// the machine budget and available volume space must independently satisfy the floor.
+pub(crate) fn check_observation_storage(
+    policy: &StoragePolicy,
+    origin_state_home: &Path,
+) -> Result<(), String> {
+    let roots = Roots::current_for(true)?;
+    let mut stock = inventory(&roots, Detail::Admission { origin_state_home });
+    let telemetry = telemetry_roots(&roots, &mut stock, true);
+    if let Some(problem) = stock.problems.first() {
+        return Err(format!(
+            "cannot determine the observation storage budget: {}: {}",
+            problem.path.display(),
+            problem.reason
+        ));
+    }
+    if let Some(claim) = stock
+        .counted_claims()
+        .find(|claim| claim.unmeasurable.is_some() || claim.too_deep)
+    {
+        return Err(format!(
+            "cannot determine the observation storage budget: cannot measure {}",
+            claim.path.display()
+        ));
+    }
+    // The Store root was canonicalized before listing its owned entries. Keep those child
+    // paths as listed so the accounting never treats a symlink target as an owned tree.
+    let mut whole = std::mem::take(&mut stock.admission_store_entries);
+    for entry in stock.entries.iter().chain(stock.counted_claims()) {
+        let path = config::canonical_root(&entry.path);
+        whole.insert(path, entry.bytes);
+    }
+    for path in &telemetry {
+        let bytes = af_sandbox::open_anchor(path)
+            .and_then(|directory| af_sandbox::removal::checked_allocated_bytes(&directory))
+            .map_err(|error| observation_measurement_error(path, &error.to_string()))?;
+        whole.insert(path.clone(), bytes);
+    }
+    for path in telemetry {
+        // The strict byte walk above catches failures in arbitrary descendants. Check
+        // telemetry's structural inventory too, including errors on an overlapping root.
+        match budget::Directory::measure(&path, false) {
+            Ok(Some(directory)) => {
+                if let Some(problem) = directory.problems.first() {
+                    return Err(observation_measurement_error(&path, problem));
+                }
+            }
+            Ok(None) => {
+                return Err(observation_measurement_error(
+                    &path,
+                    "directory disappeared",
+                ));
+            }
+            Err(error) => return Err(observation_measurement_error(&path, &error)),
+        }
+    }
+    // Each entry covers a whole tree or a single file. Charge only the outermost roots.
+    let used = whole
+        .iter()
+        .filter_map(|(path, bytes)| {
+            (!path
+                .ancestors()
+                .skip(1)
+                .any(|parent| whole.contains_key(parent)))
+            .then_some(*bytes)
+        })
+        .try_fold(0_u64, u64::checked_add)
+        .ok_or("cannot determine the observation storage budget: inventory byte count overflow")?;
+    if used > policy.max_bytes {
+        return Err("observation snapshot exceeds the available storage budget".into());
+    }
+    let runtime = sandbox_root(policy);
+    let free = measure_volume(&runtime).free?;
+    if free < policy.min_free_bytes {
+        return Err(format!(
+            "observation volume {} has {free} free bytes below the configured floor of {}",
+            runtime.display(),
+            policy.min_free_bytes
+        ));
+    }
+    Ok(())
+}
+
+fn observation_measurement_error(path: &Path, reason: &str) -> String {
+    format!(
+        "cannot determine the observation storage budget: {}: {reason}",
+        path.display()
+    )
 }
 
 /// The directory sandboxes and check runtimes are made in under `policy`.
@@ -3859,7 +4132,7 @@ pub(crate) fn show(json_output: bool, verbose: bool) -> Result<i32, String> {
             entries.push(value);
         }
         let document = json!({
-            "schema": "af/storage@5",
+            "schema": "af/storage@6",
             "max_bytes": policy.max_bytes,
             "total_bytes": total,
             "min_free_bytes": policy.min_free_bytes,
@@ -4019,7 +4292,7 @@ pub(crate) fn show(json_output: bool, verbose: bool) -> Result<i32, String> {
     Ok(0)
 }
 
-/// One volume the floor measures, as `af/storage@5` carries it: its role, root and volume, its
+/// One volume the floor measures, as `af/storage@6` carries it: its role, root and volume, its
 /// free bytes, whether it is below `floor`, and what to do when it is or cannot be measured.
 fn volume_document(volume: &Volume, floor: u64) -> serde_json::Value {
     let below = volume.free.as_ref().ok().map(|free| *free < floor);
@@ -4089,7 +4362,7 @@ pub(crate) fn prune(apply: bool, json_output: bool, verbose: bool) -> Result<i32
     let report = sweep(&roots, &policy, true, apply);
     if json_output {
         let mut document = serde_json::to_value(&report).map_err(|e| e.to_string())?;
-        document["schema"] = json!("af/storage-prune@4");
+        document["schema"] = json!("af/storage-prune@5");
         println!(
             "{}",
             serde_json::to_string_pretty(&document).map_err(|e| e.to_string())?

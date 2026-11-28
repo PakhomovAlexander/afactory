@@ -586,6 +586,20 @@ pub(super) fn is_experiment_record(record: &TaskExecutionRecordV1) -> bool {
     )
 }
 
+impl TaskProjection {
+    /// The pending exact child plan in this checked Task prefix.
+    pub fn pending_experiment(&self) -> Option<(&str, &ExperimentPreparedV1)> {
+        self.execution
+            .as_ref()?
+            .experiments
+            .iter()
+            .find_map(|(id, value)| {
+                (value.child_plan.is_none() && value.decision.is_none())
+                    .then_some((id.as_str(), &value.prepared))
+            })
+    }
+}
+
 impl EventStore {
     pub fn pending_task_experiment(
         &self,
@@ -595,12 +609,9 @@ impl EventStore {
         let Some(state) = self.task_projection(cas, task_id)? else {
             return Ok(None);
         };
-        Ok(state.execution.and_then(|execution| {
-            execution.experiments.into_iter().find_map(|(id, value)| {
-                (value.child_plan.is_none() && value.decision.is_none())
-                    .then_some((id, value.prepared))
-            })
-        }))
+        Ok(state
+            .pending_experiment()
+            .map(|(id, prepared)| (id.to_owned(), prepared.clone())))
     }
 
     pub fn task_experiment(

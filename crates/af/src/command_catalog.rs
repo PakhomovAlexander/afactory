@@ -126,6 +126,21 @@ pub(crate) const EFFECTS: &[(&str, Effects)] = &[
             ..READS
         },
     ),
+    (
+        "af infra",
+        writes(&[(Machine, Some("when refreshing the infrastructure cache"))]),
+    ),
+    ("af infra connect", writes(&[(Machine, None)])),
+    (
+        "af infra status",
+        writes(&[(Machine, Some("when refreshing the infrastructure cache"))]),
+    ),
+    (
+        "af infra allocations",
+        writes(&[(Machine, Some("when refreshing the infrastructure cache"))]),
+    ),
+    ("af cluster", READS),
+    ("af cluster inbox", READS),
     ("af provider detect", writes(&[(Machine, Some("--apply"))])),
     ("af provider disable", writes(&[(Machine, None)])),
     ("af provider enable", writes(&[(Machine, None)])),

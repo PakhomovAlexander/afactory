@@ -430,6 +430,26 @@ impl ProjectStore {
     /// The one append made without the lock, the `SurveyFailed@1` of a refresh that could not
     /// take it, is not seen by a read already open; at worst that read fails and is run again.
     pub fn open_read_only(state_home: &Path, project_id: &str) -> Result<Self, String> {
+        Self::open_project_reader(state_home, project_id, |path| {
+            EventStore::open_unchanged(path)
+        })
+    }
+
+    /// Open a native Project for the dedicated origin command. The shared Project lock
+    /// also protects the Workspace path bindings while it observes the Task Store.
+    pub fn open_origin_snapshot(
+        state_home: &Path,
+        project_id: &str,
+        snapshot: impl FnOnce(&Path) -> Result<EventStore, af_store::StoreError>,
+    ) -> Result<Self, String> {
+        Self::open_project_reader(state_home, project_id, snapshot)
+    }
+
+    fn open_project_reader(
+        state_home: &Path,
+        project_id: &str,
+        open_events: impl FnOnce(&Path) -> Result<EventStore, af_store::StoreError>,
+    ) -> Result<Self, String> {
         use nix::fcntl::{Flock, FlockArg};
         let directory = store_directory(state_home, project_id);
         let unreadable =
@@ -440,7 +460,7 @@ impl ProjectStore {
             .map_err(|(_, errno)| unreadable(format!("locking it to read: {errno}")))?;
         let cas = Cas::open_existing(directory.join("cas"))
             .map_err(|error| unreadable(error.to_string()))?;
-        let events = EventStore::open_unchanged(directory.join("events.sqlite"))
+        let events = open_events(&directory.join("events.sqlite"))
             .map_err(|error| unreadable(error.to_string()))?;
         Ok(Self {
             directory,

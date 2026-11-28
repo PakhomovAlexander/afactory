@@ -147,6 +147,7 @@
       "common": "e2e",
       "doctor": "e2e",
       "fake_models": "e2e",
+      "fleet": "e2e",
       "help_examples": "uix",
       "help_hygiene": "uix",
       "install_script": "e2e",

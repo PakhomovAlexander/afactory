@@ -584,7 +584,13 @@ fn remove_tree(
 /// removal is accounted from.
 fn within_reach(directory: &impl AsFd) -> io::Result<u64> {
     let mut seen = std::collections::BTreeSet::new();
-    below(directory, 0, &mut seen)
+    below(directory, 0, &mut seen, false)
+}
+
+/// Measure a directory through its held descriptor, refusing an incomplete walk.
+pub fn checked_allocated_bytes(directory: &impl AsFd) -> io::Result<u64> {
+    let mut seen = std::collections::BTreeSet::new();
+    below(directory, 0, &mut seen, true)
 }
 
 #[allow(clippy::unnecessary_cast)]
@@ -597,11 +603,17 @@ fn below(
     directory: &impl AsFd,
     depth: u32,
     seen: &mut std::collections::BTreeSet<Identity>,
+    complete: bool,
 ) -> io::Result<u64> {
     use nix::errno::Errno;
     use nix::fcntl::{AtFlags, OFlag, openat};
     use nix::sys::stat::{Mode, SFlag, fstatat};
     if depth > REMOVAL_MAX_DEPTH {
+        if complete {
+            return Err(io::Error::other(format!(
+                "the tree is nested deeper than {REMOVAL_MAX_DEPTH} directories"
+            )));
+        }
         return Ok(0);
     }
     let mut listing = nix::dir::Dir::openat(directory, ".", directory_flags(), Mode::empty())
@@ -639,9 +651,10 @@ fn below(
             directory_flags() | OFlag::O_NOFOLLOW,
             Mode::empty(),
         ) {
-            Ok(child) => total = total.saturating_add(below(&child, depth + 1, seen)?),
-            // Gone, or no directory any more: counted as it was stated.
-            Err(Errno::ENOENT | Errno::ENOTDIR | Errno::ELOOP) => {}
+            Ok(child) => total = total.saturating_add(below(&child, depth + 1, seen, complete)?),
+            Err(Errno::ENOENT) => {}
+            // A removal's partial measurement counts a replaced directory as it was stated.
+            Err(Errno::ENOTDIR | Errno::ELOOP) if !complete => {}
             Err(errno) => return Err(errno.into()),
         }
     }

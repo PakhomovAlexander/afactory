@@ -506,6 +506,38 @@ pub(crate) fn make(mut inputs: Inputs<'_>, judge: &mut Judge<'_>) -> Plan {
             );
         }
     }
+    if !telemetry.only {
+        let expired: Vec<_> = model
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry.kind == Kind::FleetCache
+                    && entry.in_use.is_none()
+                    && entry
+                        .last_use_unix_ms
+                        .saturating_add(crate::fleet::cache::MAX_AGE_MS)
+                        < inputs.now
+            })
+            .cloned()
+            .collect();
+        for entry in expired {
+            let step = removal(
+                entry.kind,
+                entry.path.clone(),
+                None,
+                entry.bytes,
+                Rule::Collection,
+            );
+            let key = Some((entry.kind, entry.path.as_path(), None));
+            plan.push(
+                &mut model,
+                step,
+                Job::Evict(Box::new(entry.clone())),
+                key,
+                None,
+            );
+        }
+    }
     if inputs.collection {
         // `af telemetry gc` collects nothing but telemetry.
         if !telemetry.only {
@@ -656,7 +688,7 @@ pub(crate) fn make(mut inputs: Inputs<'_>, judge: &mut Judge<'_>) -> Plan {
 /// recorded of its own work (1, telemetry) before what the user's work recorded (2, records).
 pub(crate) fn class(kind: Kind) -> u8 {
     match kind {
-        Kind::WarmKey | Kind::Workspace | Kind::Version | Kind::Claim => 0,
+        Kind::WarmKey | Kind::Workspace | Kind::Version | Kind::Claim | Kind::FleetCache => 0,
         Kind::Telemetry => 1,
         Kind::Campaign
         | Kind::Task

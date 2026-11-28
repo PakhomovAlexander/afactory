@@ -16,6 +16,7 @@ fn layout() -> Layout {
     let base = root.path().canonicalize().unwrap();
     let roots = Roots {
         warm: base.join("cache/af/task-build-cache"),
+        fleet_cache: base.join("state/af/fleet-cache"),
         workspaces: base.join("cache/af/workspaces"),
         campaigns: base.join("state/af/review/campaigns"),
         local_reviews: base.join("state/af/review/local"),
@@ -1950,12 +1951,12 @@ fn a_failure_at_the_final_rmdir_is_a_partial_removal_with_what_it_freed() {
     std::fs::remove_dir_all(claim).unwrap();
 }
 
-/// The applied document of `report`, `af/storage-prune@4`, validated against its schema.
+/// The applied document of `report`, `af/storage-prune@5`, validated against its schema.
 fn prune_document(report: &SweepReport) -> serde_json::Value {
     let mut document = serde_json::to_value(report).unwrap();
-    document["schema"] = serde_json::json!("af/storage-prune@4");
+    document["schema"] = serde_json::json!("af/storage-prune@5");
     let schema: serde_json::Value =
-        serde_json::from_str(include_str!("../../../../schemas/storage-prune-v4.json")).unwrap();
+        serde_json::from_str(include_str!("../../../../schemas/storage-prune-v5.json")).unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();
     let errors: Vec<String> = validator
         .iter_errors(&document)

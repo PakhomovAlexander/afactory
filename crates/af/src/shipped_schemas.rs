@@ -61,6 +61,7 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("command-catalog", 1),
     schema!("error", 2),
     schema!("findings-sarif", 1),
+    schema!("fleet-briefing", 3),
     schema!("git-candidate-source-request", 2),
     schema!("git-candidate-source", 2),
     schema!("git-workspace-config", 3),
