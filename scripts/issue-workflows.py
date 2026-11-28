@@ -716,12 +716,19 @@ def composition(name, pins, facts):
         if pipeline == catalog()['verification'] and document.get('base', {}).get('commit') != template['authority_commit']:
             raise ValueError('verification base must retain the original whole-change commit')
         bindings = template.get('bindings')
-        if bindings and (set(bindings) - {'schema', 'providers', 'slots', 'packages'}
-                         or any(bindings.get(k, {}) != {} for k in ('slots', 'packages'))):
-            # The runtime writes canonical empty slot and package tables; only those may ride along.
-            raise ValueError('stage templates may bind only personal accounts')
-        if template.get('bindings') and any(p not in ('codex-personal', 'pi-personal') for p in template['bindings'].get('providers', {}).values()):
-            raise ValueError('stage templates require personal accounts')
+        if bindings is not None:
+            if (type(bindings) is not dict
+                    or bindings.get('schema') != 'af.task-bindings/1'
+                    or set(bindings) - {'schema', 'providers', 'slots', 'packages'}
+                    or any(type(bindings.get(k, {})) is not dict or bindings.get(k, {}) != {}
+                           for k in ('slots', 'packages'))
+                    or type(bindings.get('providers', {})) is not dict):
+                # The runtime writes canonical empty slot and package tables; only those may ride along.
+                raise ValueError('stage templates may bind only personal accounts')
+            if any(type(k) is not str or not k or type(p) is not str
+                   or p not in ('codex-personal', 'pi-personal')
+                   for k, p in bindings.get('providers', {}).items()):
+                raise ValueError('stage templates require personal accounts')
         templates.append(template)
         identities.append(pin['template_id'])
     if not design and issue_identity(templates[-2]['document']) != issue_identity(templates[-1]['document']):

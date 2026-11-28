@@ -757,6 +757,25 @@ class Workflows(unittest.TestCase):
                                              'providers': {'x': 'codex-personal'}, **extra}
                 with self.assertRaisesRegex(ValueError, 'may bind only personal accounts'):
                     w.composition('bugfix/default-codex', [p, verify], FACTS)
+        malformed = [{}, [], ['schema'], ['slots'], '', 0, 1, False,
+                     {'slots': {}, 'packages': {}},
+                     {'providers': {'x': 'codex-personal'}},
+                     {'schema': 'af.task-bindings/0', 'providers': {'x': 'codex-personal'},
+                      'slots': {}, 'packages': {}},
+                     {'schema': None, 'slots': {}, 'packages': {}},
+                     {'schema': 'af.task-bindings/1', 'providers': [], 'slots': {}, 'packages': {}},
+                     {'schema': 'af.task-bindings/1', 'providers': None, 'slots': {}, 'packages': {}}]
+        for bad in malformed:
+            with self.subTest(bindings=bad):
+                p['template']['bindings'] = bad
+                with self.assertRaisesRegex(ValueError, 'may bind only personal accounts'):
+                    w.composition('bugfix/default-codex', [p, verify], FACTS)
+        for bad_providers in ({'': 'codex-personal'}, {'x': None}, {'x': 123}):
+            with self.subTest(providers=bad_providers):
+                p['template']['bindings'] = {'schema': 'af.task-bindings/1',
+                                             'providers': bad_providers, 'slots': {}, 'packages': {}}
+                with self.assertRaisesRegex(ValueError, 'require personal accounts'):
+                    w.composition('bugfix/default-codex', [p, verify], FACTS)
 
     def test_compose_accepts_canonical_empty_slot_and_package_tables(self):
         # Issue #1206: the runtime serializes af.task-bindings/1 with empty slots and packages.
