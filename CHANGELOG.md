@@ -19,6 +19,45 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
+## [0.15.3-rc.4] - 2026-11-28
+
+### Authority compatibility
+
+Breaking combined Scenario/Ant and publication shapes: Scenario definitions/bundles 11, policy 8, pins/runs/list 12, Store 18 with retained driver 2 and typed bounded preflight waits; Ant definition 12, pin/tick 13, state/list 14, inspection 9; adapter request 8/response 3, workspace config 3/state 6 and GitHub journal 9, native Git candidate request/export 2. Nightly config/publish 2 and native nightly service/job/completion 1 retain separate release scope and external signing permission. Implementation startup scope 2 retains exact native scoped publication, finite progress and bounded repairs. Builtin backlog Actions settle native verified Documents and dispatch to receiver-owned native, GitHub, Markdown or Jira destinations. Markdown configuration and configured publication observations use version 2. Generic signed and performance authority stay separate. Finish or discard prior-release state; no migration or replay of retired shapes. Review and commit authority and refresh its lock before adoption. Performance executor 5, history 2, equivalence 2 and schedule 3 remain required. Native Task kernel failures are execution_failed/kernel_execution (exit 8); Task state/status/findings 3, inspection 21 and report/checks 4 replace their earlier public formats. Scenario terminal outcome 2 carries that failure without repair or publication authority. CI Health Phase 1 retains typed accepted/refused diagnosis, exact-head evidence and report-only remedies. Its watchdog remains inactive.
+
+### Changes
+
+- Release of reviewed source `8df8568290b5f4be25eafbb7d613bcb0e3a3c991`; collected change notes follow.
+
+- Tighten `scripts/pin-release.sh` with `umask go-w` so `git checkout` under an inherited `0002`
+  umask never creates group-writable lock files, and create owned release-pin test fixtures under
+  a non-group-writable umask in `scripts/test-af-pin.py` with a `umask 002` regression test.
+
+- Record the merge-first [Worker session continuation decision](
+  ../docs/adr/2026-11-28-admit-worker-session-continuation-by-reservation.md).
+  Worker Attempts still start fresh. The decision defines the admission and verification
+  required before enabling continuation.
+
+- `scripts/issue-workflows.py compose` accepts stage templates whose `af.task-bindings/1`
+  carries the canonical empty `slots: {}` and `packages: {}` tables the runtime writes, and
+  still refuses non-empty slot or package overrides, unknown keys and non-personal accounts
+  (#1206).
+
+- `af scenario show` and `af scenario list` use the validated journal snapshot from opening
+  the Store, avoiding a second full journal read.
+
+- Allow `strict_required_status_checks_policy: false` on the active `main` ruleset in
+  `scripts/dev-release.py` while continuing to require an active repository-owned
+  `required_status_checks` ruleset with no bypass actors, unchanged `main` preflight, and
+  tightened post-merge tree and exact first-parent verification matching
+  `scripts/resolve-release.sh`.
+
+- Configure the local Task gate through `.config/task-gate.json` (`af.task-gate/1`) and
+  `scripts/verify.sh --profile task`, with CLI overrides for class labels and `release-check`
+  steps, and exclude `e2e` and `dev-release-tests` from local Task gates while keeping them in
+  pull request CI, `make check-fast` and `make check`
+  ([ADR-2026-11-27-configure-the-local-task-gate-profile](docs/adr/2026-11-27-configure-the-local-task-gate-profile.md)).
+
 ## [0.15.3-rc.3] - 2026-11-27
 
 ### Authority compatibility
